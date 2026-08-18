@@ -9,11 +9,14 @@
 // Own chair, own hang (workflows:iterate), own tools. No pixel tools on the
 // desk. Architect and iterate do not share a session.
 
+import { execFileSync } from "node:child_process";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pluginUserMessage } from "./tools.mjs";
 import { formatProjection, projectJournal } from "./journal.mjs";
 import { randomUUID } from "node:crypto";
+import { runScribe } from "./scribe.mjs";
 
 export const ITERATE_LABEL = "workflows:iterate";
 export const CHILD_ORIGIN = "subagent";
@@ -25,6 +28,7 @@ export const HANDS_LOCATION = "qq-ui";
 export const REVIEWER_SYSTEM = [
   "You are the iterate reviewer for one hands delivery. Judge pass or fail only.",
   "Pass when the delivery honors the directive, does not break the keep-outs (praise), and actually answers this breath's nits.",
+  "Use the shots listing and the patch-surface diff together with the hands report. Do not run tools.",
   "Fail otherwise. Respond with exactly \"PASS\" or \"FAIL: <short reason>\". Nothing else.",
 ].join("\n");
 
@@ -39,6 +43,14 @@ export const PACKET_PATCH_LIST = [
   "- maybe a tiny qq-ui/assets/browser-*.js",
   "Do not touch SSE owner/target (#console-stream, #session-panel), PWA cache, DSH APIs, or the live host to make the UI look better. Use the fixture, not live DSH. Do not make a worktree per nit.",
 ].join("\n");
+
+export const PATCH_SURFACE = Object.freeze([
+  "qq-ui/src/render.mjs",
+  "qq-ui/assets/console.css",
+]);
+
+const DIFF_CHARS = 24_000;
+const SHOT_LIST_CAP = 80;
 
 /** A chair that may be selected as iterate. Children never are. */
 export function isIterateCandidate(agent) {
@@ -112,6 +124,74 @@ function shotsHome(env = process.env) {
   return join(stateHome, "qq", "frontend-design-loop", "shots");
 }
 
+function listShotEntries(dir, { prefix = "", limit = SHOT_LIST_CAP } = {}) {
+  const entries = [];
+  if (!existsSync(dir)) return entries;
+  let names;
+  try {
+    names = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return entries;
+  }
+  names.sort((a, b) => a.name.localeCompare(b.name));
+  for (const entry of names) {
+    if (entries.length >= limit) break;
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      entries.push(...listShotEntries(full, { prefix: rel, limit: limit - entries.length }));
+      continue;
+    }
+    let size = 0;
+    try { size = statSync(full).size; } catch {}
+    entries.push(`${rel} (${size} bytes)`);
+  }
+  return entries;
+}
+
+function patchSurfacePaths(cwd) {
+  const paths = [...PATCH_SURFACE];
+  const assets = join(cwd || "", "qq-ui", "assets");
+  if (!cwd || !existsSync(assets)) return paths;
+  try {
+    for (const name of readdirSync(assets).sort()) {
+      if (/^browser-.*\.js$/.test(name)) paths.push(`qq-ui/assets/${name}`);
+    }
+  } catch {}
+  return paths;
+}
+
+function collectPatchDiff(cwd) {
+  if (!cwd) return "(no working directory)";
+  try {
+    const out = execFileSync("git", ["diff", "--", ...patchSurfacePaths(cwd)], {
+      cwd,
+      encoding: "utf8",
+      timeout: 5_000,
+      maxBuffer: 200_000,
+    }).trim();
+    if (!out) return "(no patch-surface diff)";
+    return out.length > DIFF_CHARS ? `${out.slice(0, DIFF_CHARS)}\n…(truncated)` : out;
+  } catch {
+    return "(could not read patch-surface diff)";
+  }
+}
+
+/** Text the one-shot reviewer can actually read: shots listing + patch-surface diff. */
+export function collectReviewEvidence({ cwd, env = process.env } = {}) {
+  const home = shotsHome(env);
+  const shots = listShotEntries(home);
+  const listing = shots.length ? shots.join("\n") : "(no shots)";
+  const diff = collectPatchDiff(cwd);
+  return [
+    `Shots from the design loop (${home}):`,
+    listing,
+    "",
+    "Patch-surface diff:",
+    diff,
+  ].join("\n");
+}
+
 /** Deterministic hands packet. Off-session (compiled here, not by the talking model). */
 export function buildHandsPacket({ bundle, cwd, parentSession, parentAlias }) {
   const lines = [];
@@ -162,13 +242,13 @@ export function createIterate({
   settings,
   llm,
   agents,
-  run,
+  run = runScribe,
   registerHandsTools,
 } = {}) {
   const attached = new Map();
   let liveHands = null;
 
-  async function reviewDelivery({ bundle, text }) {
+  async function reviewDelivery({ bundle, text, cwd }) {
     const binding = settings?.get?.("reviewer");
     if (!binding) return { pass: false, reason: "reviewer role unbound" };
     const user = [
@@ -183,7 +263,7 @@ export function createIterate({
       "",
       `Hands delivery:\n${text || "(empty)"}`,
       "",
-      `Shots from the design loop live under ${shotsHome()}. Check output only; do not run tools.`,
+      collectReviewEvidence({ cwd }),
     ].join("\n");
     const verdict = await run(llm, binding, { system: REVIEWER_SYSTEM, user });
     const verdictText = String(verdict ?? "").trim();
@@ -201,7 +281,7 @@ export function createIterate({
   }
 
   /** Child completion → review → verdict mail to the desk. One shot. */
-  function watchHandsReturn({ child, parentId, bundle, queued }) {
+  function watchHandsReturn({ child, parentId, bundle, queued, cwd }) {
     const childId = child?.session?.id;
     let done = false;
     const finish = async (event) => {
@@ -212,7 +292,7 @@ export function createIterate({
       const aliases = typeof relayOf(ctx)?.alias === "function" ? relayOf(ctx).alias(childId) : undefined;
       const alias = aliases ?? "";
       const text = lastAssistantText(child.session?.events ?? []);
-      const verdict = await reviewDelivery({ bundle, text });
+      const verdict = await reviewDelivery({ bundle, text, cwd });
       const sendMail = mailRoot();
       if (verdict.pass) {
         for (const note of bundle.nits) {
@@ -359,7 +439,7 @@ export function createIterate({
       child: child.session?.id ?? childId,
       seq: 0,
     });
-    watchHandsReturn({ child, parentId: parent.id, bundle, queued });
+    watchHandsReturn({ child, parentId: parent.id, bundle, queued, cwd: parent.header?.cwd });
     child.followup({
       id: randomUUID(),
       role: "user",
@@ -391,4 +471,8 @@ export const internals = Object.freeze({
   lastAssistantText,
   buildHandsPacket,
   shotsHome,
+  listShotEntries,
+  collectPatchDiff,
+  collectReviewEvidence,
+  patchSurfacePaths,
 });

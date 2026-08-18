@@ -162,9 +162,10 @@ frontend-design-loop tools plus `qq-ui` presentation write access. One inner
 cycle: orient once, change → shoot → maybe one fix, deliver.
 
 Reviewer is an independent one-shot judge on the same journal the desk has.
-Pass honors the directive, does not break praise, and actually answers the
-nits. Fail comes back as mail and sits. No silent retry, no automatic second
-hands. Reviewer writes nothing.
+The hop is given the shots listing and the patch-surface diff, not just the
+hands report. Pass honors the directive, does not break praise, and actually
+answers the nits. Fail comes back as mail and sits. No silent retry, no
+automatic second hands. Reviewer writes nothing.
 
 Passed hands dumps unstructured wiki nodes (no taxonomy). The desk files them
 with labels it invents; merging two labels is writing one string. Nodes stay
