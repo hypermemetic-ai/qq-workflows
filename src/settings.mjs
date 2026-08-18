@@ -14,10 +14,16 @@ import {
 } from "node:fs";
 
 export const ARCHITECT_SETTINGS_SCHEMA = "qq.workflows-architect-settings/v1";
+export const ITERATE_SETTINGS_SCHEMA = "qq.workflows-iterate-settings/v1";
 export const ARCHITECT_ROLES = Object.freeze(["talking", "scribe"]);
+export const ITERATE_ROLES = Object.freeze(["desk", "hands", "reviewer"]);
 
-function emptyRoles() {
+function emptyArchitectRoles() {
   return { talking: null, scribe: null };
+}
+
+function emptyIterateRoles() {
+  return { desk: null, hands: null, reviewer: null };
 }
 
 function normalizeBinding(value) {
@@ -44,11 +50,42 @@ function normalize(raw) {
   };
 }
 
+function normalizeIterateSection(raw) {
+  if (!raw || typeof raw !== "object") return { schema: ITERATE_SETTINGS_SCHEMA, roles: emptyIterateRoles() };
+  if (raw.schema && raw.schema !== ITERATE_SETTINGS_SCHEMA) {
+    throw new Error("qq-workflows: iterate settings are malformed");
+  }
+  const roles = raw.roles && typeof raw.roles === "object" ? raw.roles : raw;
+  return {
+    schema: ITERATE_SETTINGS_SCHEMA,
+    roles: {
+      desk: normalizeBinding(roles.desk),
+      hands: normalizeBinding(roles.hands),
+      reviewer: normalizeBinding(roles.reviewer),
+    },
+  };
+}
+
 function persist(path, record) {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
   renameSync(temporary, path);
+}
+
+function readRaw(path) {
+  if (!path || !existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new Error(`qq-workflows: settings ${path} are malformed`, { cause: error });
+  }
+}
+
+/** Keep unknown keys (iterate section) when architect rewrites roles. */
+function persistArchitect(path, record) {
+  const previous = readRaw(path) ?? {};
+  persist(path, { ...previous, schema: record.schema, roles: record.roles });
 }
 
 /** Workflow-owned settings for architect: talking + scribe. */
@@ -57,7 +94,7 @@ export function createArchitectSettings({ settingsFile } = {}) {
 
   function load() {
     if (!path || !existsSync(path)) {
-      return { schema: ARCHITECT_SETTINGS_SCHEMA, roles: emptyRoles(), unbound: true };
+      return { schema: ARCHITECT_SETTINGS_SCHEMA, roles: emptyArchitectRoles(), unbound: true };
     }
     let parsed;
     try {
@@ -93,18 +130,72 @@ export function createArchitectSettings({ settingsFile } = {}) {
       if (!next) {
         throw new Error("qq-workflows: role binding requires provider and model");
       }
-      const current = existsSync(path) ? load() : { schema: ARCHITECT_SETTINGS_SCHEMA, roles: emptyRoles() };
+      const current = existsSync(path) ? load() : { schema: ARCHITECT_SETTINGS_SCHEMA, roles: emptyArchitectRoles() };
       current.roles[role] = next;
-      persist(path, { schema: ARCHITECT_SETTINGS_SCHEMA, roles: current.roles });
+      persistArchitect(path, { schema: ARCHITECT_SETTINGS_SCHEMA, roles: current.roles });
       return next;
     },
   });
 }
 
-export function formatSettingsList(name, snapshot) {
+/** Workflow-owned settings for iterate: desk + hands + reviewer. Same settingsFile. */
+export function createIterateSettings({ settingsFile } = {}) {
+  const path = typeof settingsFile === "string" && isAbsolute(settingsFile) ? settingsFile : null;
+
+  function load() {
+    if (!path || !existsSync(path)) {
+      return { schema: ITERATE_SETTINGS_SCHEMA, roles: emptyIterateRoles(), unbound: true };
+    }
+    const parsed = readRaw(path);
+    const section = parsed?.iterate;
+    return { ...normalizeIterateSection(section), unbound: false };
+  }
+
+  return Object.freeze({
+    path,
+    unbound: () => path === null || !existsSync(path),
+    list() {
+      const loaded = load();
+      return {
+        unbound: loaded.unbound,
+        roles: {
+          desk: loaded.roles.desk,
+          hands: loaded.roles.hands,
+          reviewer: loaded.roles.reviewer,
+        },
+      };
+    },
+    get(role) {
+      if (!ITERATE_ROLES.includes(role)) return null;
+      return load().roles[role];
+    },
+    write(role, binding) {
+      if (!path) {
+        throw new Error("qq-workflows: iterate settings are unbound (no settingsFile)");
+      }
+      if (!ITERATE_ROLES.includes(role)) {
+        throw new Error(`qq-workflows: unknown iterate role ${role}`);
+      }
+      const next = normalizeBinding(binding);
+      if (!next) {
+        throw new Error("qq-workflows: role binding requires provider and model");
+      }
+      const previous = readRaw(path) ?? {
+        schema: ARCHITECT_SETTINGS_SCHEMA,
+        roles: emptyArchitectRoles(),
+      };
+      const iterate = normalizeIterateSection(previous.iterate);
+      iterate.roles[role] = next;
+      persist(path, { ...previous, iterate });
+      return next;
+    },
+  });
+}
+
+export function formatSettingsList(name, snapshot, roles = ARCHITECT_ROLES) {
   if (!snapshot || snapshot.unbound) return `${name} roles: unbound`;
   const lines = [`${name} roles:`];
-  for (const role of ARCHITECT_ROLES) {
+  for (const role of roles) {
     const binding = snapshot.roles?.[role];
     if (!binding) {
       lines.push(`  ${role}: unbound`);

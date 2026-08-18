@@ -1,8 +1,8 @@
 // qq-workflows: one repository, one plugin. Cordis entry point.
 //
 // The wrapper lists registered workflows and selects which one this chair
-// is running, if any. Architect remains a standalone workflow: own tools,
-// own hang, own notebook, own clerk/fold, own role settings.
+// is running, if any. Architect and iterate are standalone workflows:
+// own tools, own hang, own notes/journal, own role settings.
 
 import { createNotebookStore, defaultNotebookDir } from "./notebook.mjs";
 import { createClerk } from "./clerk.mjs";
@@ -10,8 +10,18 @@ import { DEFAULT_H, createFolder } from "./fold.mjs";
 import { resolveScribeBinding } from "./scribe.mjs";
 import { buildArchitectTools } from "./tools.mjs";
 import { createArchitect, isArchitectCandidate } from "./architect.mjs";
+import { createIterate, isIterateCandidate } from "./iterate.mjs";
+import { createJournalStore, defaultJournalDir } from "./journal.mjs";
+import { createWikiStore, defaultWikiDir } from "./wiki.mjs";
+import { buildDeskTools, buildHandsTools } from "./iterate-tools.mjs";
 import { createSelectionStore, defaultSelectionDir } from "./selection.mjs";
-import { createArchitectSettings, formatSettingsList } from "./settings.mjs";
+import {
+  ARCHITECT_ROLES,
+  ITERATE_ROLES,
+  createArchitectSettings,
+  createIterateSettings,
+  formatSettingsList,
+} from "./settings.mjs";
 import { formatWorkflowList, parseWorkflowsInput } from "./command.mjs";
 
 export const name = "qq-workflows";
@@ -37,6 +47,9 @@ export function apply(ctx, config = {}) {
   });
   const selection = createSelectionStore(defaultSelectionDir(process.env, config));
   const architectSettings = createArchitectSettings({ settingsFile: config.settingsFile });
+  const iterateSettings = createIterateSettings({ settingsFile: config.settingsFile });
+  const journal = createJournalStore(defaultJournalDir(process.env, config));
+  const wiki = createWikiStore(defaultWikiDir(process.env, config));
   const llm = ctx.get("llm", false);
   const tokenMeter = ctx.get("tokenMeter", false);
   const sessionQuery = ctx.get("sessionQuery", false);
@@ -61,38 +74,84 @@ export function apply(ctx, config = {}) {
     folder,
     agents,
   });
+  const iterate = createIterate({
+    ctx,
+    journal,
+    wiki,
+    settings: iterateSettings,
+    llm,
+    agents,
+    run: config.runScribe,
+    registerHandsTools: (child, queue) => registerHandsTools(child, queue),
+  });
 
   const workflows = new Map();
   const toolDisposers = new Map();
+  const handsToolDisposers = new Map();
 
   function registerAgentTools(agent) {
     const sessionId = sessionIdOf(agent);
     const install = (toolCtx) => {
-      if (selectedName(sessionId) !== "architect") return;
       if (toolDisposers.has(sessionId)) return;
+      const selected = selectedName(sessionId);
+      if (selected !== "architect" && selected !== "iterate") return;
       const tools = toolsService(toolCtx) ?? toolsService(agent);
       if (!tools || typeof tools.register !== "function") return;
-      const disposers = buildArchitectTools({
-        store,
-        sessionQuery,
-        invoke: (args) => architect.invoke(args),
-      }).map((tool) => tools.register(tool));
-      toolDisposers.set(sessionId, () => {
-        for (const dispose of disposers) dispose();
-        toolDisposers.delete(sessionId);
+      const definitions = selected === "architect"
+        ? buildArchitectTools({
+            store,
+            sessionQuery,
+            invoke: (args) => architect.invoke(args),
+          })
+        : buildDeskTools({
+            journal,
+            wiki,
+            go: (args) => iterate.go(args),
+          });
+      const disposers = definitions.map((tool) => tools.register(tool));
+      toolDisposers.set(sessionId, {
+        owner: selected,
+        dispose() {
+          for (const dispose of disposers) dispose();
+          toolDisposers.delete(sessionId);
+        },
       });
     };
     if (typeof agent?.ctx?.inject === "function") agent.ctx.inject(["tools"], install);
     else install(agent?.ctx);
   }
 
-  function disposeAgentTools(agentOrId) {
+  function registerHandsTools(child, queue) {
+    const sessionId = sessionIdOf(child);
+    const install = (toolCtx) => {
+      if (handsToolDisposers.has(sessionId)) return;
+      const tools = toolsService(toolCtx) ?? toolsService(child);
+      if (!tools || typeof tools.register !== "function") return;
+      const disposers = buildHandsTools({
+        designLoop: config.designLoop,
+        onDump: ({ text }) => {
+          if (Array.isArray(queue)) queue.push(text);
+        },
+      }).map((tool) => tools.register(tool));
+      handsToolDisposers.set(sessionId, () => {
+        for (const dispose of disposers) dispose();
+        handsToolDisposers.delete(sessionId);
+      });
+    };
+    if (typeof child?.ctx?.inject === "function") child.ctx.inject(["tools"], install);
+    else install(child?.ctx);
+  }
+
+  function disposeAgentTools(agentOrId, owner) {
     const sessionId = typeof agentOrId === "string" ? agentOrId : sessionIdOf(agentOrId);
-    toolDisposers.get(sessionId)?.();
+    const record = toolDisposers.get(sessionId);
+    if (!record || (owner && record.owner !== owner)) return;
+    record.dispose();
   }
 
   const architectWorkflow = Object.freeze({
     name: "architect",
+    candidate: isArchitectCandidate,
     settings: architectSettings,
     ensureAttached(agent) {
       if (!isArchitectCandidate(agent)) return null;
@@ -101,7 +160,7 @@ export function apply(ctx, config = {}) {
       return handle;
     },
     ensureDetached(agentOrId) {
-      disposeAgentTools(agentOrId);
+      disposeAgentTools(agentOrId, "architect");
       return architect.detach(agentOrId);
     },
     listSettings() {
@@ -113,6 +172,30 @@ export function apply(ctx, config = {}) {
     },
   });
   workflows.set("architect", architectWorkflow);
+
+  const iterateWorkflow = Object.freeze({
+    name: "iterate",
+    candidate: isIterateCandidate,
+    settings: iterateSettings,
+    ensureAttached(agent) {
+      if (!isIterateCandidate(agent)) return null;
+      const handle = iterate.attach(agent);
+      registerAgentTools(agent);
+      return handle;
+    },
+    ensureDetached(agentOrId) {
+      disposeAgentTools(agentOrId, "iterate");
+      return iterate.detach(agentOrId);
+    },
+    listSettings() {
+      return formatSettingsList("iterate", iterateSettings.list(), ITERATE_ROLES);
+    },
+    writeSettings(role, binding) {
+      iterateSettings.write(role, binding);
+      return formatSettingsList("iterate", iterateSettings.list(), ITERATE_ROLES);
+    },
+  });
+  workflows.set("iterate", iterateWorkflow);
 
   function selectedName(sessionId) {
     return selection.get(sessionId);
@@ -137,8 +220,8 @@ export function apply(ctx, config = {}) {
     const workflow = workflows.get(name);
     if (!workflow) throw new Error(`unknown workflow: ${name}`);
     const agent = liveAgent(sessionId);
-    if (name === "architect" && agent && !isArchitectCandidate(agent)) {
-      throw new Error("a child session cannot select architect");
+    if (agent && !workflow.candidate(agent)) {
+      throw new Error(`a child session cannot select ${name}`);
     }
     selection.set(sessionId, name);
     if (agent) syncSession(agent);
@@ -196,8 +279,12 @@ export function apply(ctx, config = {}) {
     clerk,
     folder,
     architect,
+    iterate,
+    journal,
+    wiki,
     selection,
     settings: architectSettings,
+    iterateSettings,
     scribe: () => resolveScribeBinding({ ...config, settings: architectSettings }),
     workflows: Object.freeze({
       names: () => [...workflows.keys()],
@@ -230,6 +317,9 @@ export function apply(ctx, config = {}) {
   });
   ctx.on("agent/disposed", ({ agent }) => {
     for (const workflow of workflows.values()) workflow.ensureDetached(agent);
+    const sessionId = sessionIdOf(agent);
+    handsToolDisposers.get(sessionId)?.();
+    handsToolDisposers.delete(sessionId);
   });
 
   if (typeof agents?.list === "function") {
@@ -242,3 +332,8 @@ export function apply(ctx, config = {}) {
     }
   }
 }
+
+export const internals = Object.freeze({
+  sessionIdOf,
+  toolsService,
+});

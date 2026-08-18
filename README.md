@@ -1,8 +1,8 @@
 # `@hypermemetic-ai/qq-workflows`
 
 One repository, one plugin, one version. Named qq workflows live here.
-Loading this plugin is how a DSH host gets architect (and later research /
-implementation / judgment). Loading qq does not imply workflows.
+Loading this plugin is how a DSH host gets architect and iterate. The host
+binds the plugin when present and runs without it.
 
 A new session has no workflow until the operator picks one with `/workflows`.
 The wrapper only selects which registered workflow this chair is running, if
@@ -12,16 +12,21 @@ There is no `run_workflow(name)` dispatcher. Each workflow registers its own
 tools. Do not use DSH's model-written workflow tool as the dispatcher. Do not
 port Pi delegate / review / land.
 
+Architect and iterate do not share a session. Two methodologies, two chairs.
+Architect does not invoke iterate.
+
 ## Selection
 
 `/workflows` lists loaded workflow plugins and marks the one selected on this
-session. `/workflows architect` attaches architect. `/workflows none` (or
-`off`) clears the selection. `/workflows settings` asks the selected workflow
-for its roles; `/workflows settings architect scribe …` writes that role.
+session. `/workflows architect` attaches architect. `/workflows iterate`
+attaches iterate. `/workflows none` (or `off`) clears the selection.
+`/workflows settings` asks the selected workflow for its roles;
+`/workflows settings architect scribe …` and
+`/workflows settings iterate desk …` write those roles.
 
 Selection is per DSH session, restart-safe, default none. One file per session
 beside `DSH_HOME` (`config.selectionDir` overrides), mode `0600`. A child
-(`origin: subagent`) is never selected as architect.
+(`origin: subagent`) is never selected as architect or iterate.
 
 ## Architect
 
@@ -35,7 +40,9 @@ the label. Architect works without relay except invoke-result delivery.
 
 Role bindings live in the declared absolute `settingsFile`. Missing or
 relative path, or a missing file, is unbound. The wrapper does not read or
-write `~/.config/qq/execution-profiles.json`.
+write `~/.config/qq/execution-profiles.json`. Architect roles are
+talking/scribe; iterate roles are desk/hands/reviewer. Both workflows share
+the same attach `settingsFile`; writes touch only their own section.
 
 ### Notebook
 
@@ -106,12 +113,75 @@ loaded, invoke is refused.
 
 Bank / Spawn / Stay are not in this land.
 
+## Iterate
+
+A desk, not a conversation someone else notes. The operator talks in turns.
+The intake (talking) model extracts what it heard — nits, praise, theory,
+directive — shows the receipt, and sits. When the operator says go, this
+breath's nits go out together to one fresh hands session.
+
+Selecting iterate attaches the journal, wiki, and desk tools, and hangs
+`workflows:iterate` via qq-relay if that service is loaded; selecting something
+else or none detaches and clears the hang. Relay does not interpret the
+label. No pixel tools register on the desk.
+
+### Collect, then go
+
+Requirements arrive in turns. Each turn extracts and shows. Nothing is sent
+to hands until the operator says go (`implement` / `go ahead` / same idea).
+The receipt is what the desk heard; the next turn can correct it. Ambiguous
+input is still recorded as heard.
+
+When go fires, this breath's nits bundle into one fresh hands session — the
+desk tools, plus the existing frontend-design-loop fixtures. One live hands
+at a time; next go is a new child, not a continuation. Praise-only or a keep
+does not send work. Go is refused when qq-relay is not loaded or the reviewer
+role is unbound.
+
+### Journal
+
+Workflow-owned store keyed to the DSH session, beside `DSH_HOME`
+(`config.journalDir` overrides), mode `0600`, atomic write, restart-safe.
+Not a second transcript; DSH log is authority.
+
+Four objects: directive (one living sentence), nit / praise (same object,
+polarity flipped, cited by DSH seq), theory (one living paragraph, rare),
+and open/closed on nits. Append-only; supersede by appending. A nit closes
+when its hands passed review or the operator takes it back.
+
+Every desk turn assembles a stable projection in one order — directive,
+theory, open nits / praise, selected wiki index. New items append; the
+prefix never reshuffles. Intake writes through tools. The receipt is short.
+
+### Hands, reviewer, wiki
+
+Hands is a fresh DSH child (`origin: subagent`) seeded with a packet compiled
+off the talking session: this breath's nits, the directive, the theory, the
+keep-outs (praise), and only the selected wiki nodes. The kind pack is the
+frontend-design-loop tools plus `qq-ui` presentation write access. One inner
+cycle: orient once, change → shoot → maybe one fix, deliver.
+
+Reviewer is an independent one-shot judge on the same journal the desk has.
+Pass honors the directive, does not break praise, and actually answers the
+nits. Fail comes back as mail and sits. No silent retry, no automatic second
+hands. Reviewer writes nothing.
+
+Passed hands dumps unstructured wiki nodes (no taxonomy). The desk files them
+with labels it invents; merging two labels is writing one string. Nodes stay
+unlabeled until filed. Next hands never get the whole wiki: the desk
+projection carries a cheap index, and the packet carries only the selected
+full nodes. Missable on purpose.
+
 ## Out of this land
 
 research / implementation / judgment as products, Impulse UI, a daemon or
 second transcript, DSH auto-compact / compact-basic summarizer, beats-as-
 chapters, live notebook rewrite, every-turn notebook paste, pinning the
-phone, titles as handles, Pi agent-messages.
+phone, titles as handles, Pi agent-messages; for iterate also: a second
+workflow repo or process, pixel tools on the desk, a one-nit queue,
+unattended score loops, silent retry, hosting the desk or sharing the chair
+with architect, whole-wiki dump into hands, the wiki as T-67 pages, a
+worktree per nit.
 
 ## Validation
 
