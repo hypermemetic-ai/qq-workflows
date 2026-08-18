@@ -1,0 +1,21 @@
+{
+  "name": "@hypermemetic-ai/qq-workflows",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Named qq workflows as one Cordis plugin. Loading this plugin is how a host gets architect; loading qq does not imply workflows.",
+  "main": "src/plugin.mjs",
+  "exports": {
+    ".": "./src/plugin.mjs",
+    "./notebook": "./src/notebook.mjs",
+    "./clerk": "./src/clerk.mjs",
+    "./fold": "./src/fold.mjs",
+    "./scribe": "./src/scribe.mjs",
+    "./tools": "./src/tools.mjs",
+    "./architect": "./src/architect.mjs"
+  },
+  "files": [
+    "src/",
+    "README.md"
+  ]
+}
