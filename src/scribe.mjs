@@ -19,6 +19,7 @@ export const CLERK_SYSTEM = [
 export const PACKET_SYSTEM = [
   "You compile an invoke packet for a live child session.",
   "Read the notebook and the DSH log spine (text + tool names only). Write a short packet the child can start from.",
+  "If a return address is given, include it so the child knows the parent session. Do not invent a mailbox.",
   "No reasoning. No tool dumps. No essay.",
 ].join("\n");
 
@@ -70,24 +71,21 @@ function userMessage(text) {
 
 /**
  * One-shot llm.stream. Returns trimmed text, or empty string on miss/failure.
- * `cacheRetention: none` is recorded on the call options object for tests even
- * though DSH GenerateOptions does not accept the field; it is stripped before
- * the stream call.
+ * A fresh sessionId on each call is the no-reuse contract; DSH GenerateOptions
+ * has no cacheRetention field, so none is sent.
  */
 export async function runScribe(llm, binding, { system, user, signal } = {}) {
   if (!llm || typeof llm.stream !== "function") return "";
   if (!binding?.provider || !binding?.model) return "";
-  const options = {
+  const request = {
     provider: binding.provider,
     model: binding.model,
     ...(binding.effort ? { reasoningEffort: binding.effort } : {}),
     system,
     messages: [userMessage(user)],
     sessionId: `session-${randomUUID()}`,
-    cacheRetention: "none",
     ...(signal ? { signal } : {}),
   };
-  const { cacheRetention: _none, ...request } = options;
   let text = "";
   try {
     for await (const chunk of llm.stream(request)) {

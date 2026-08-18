@@ -11,7 +11,9 @@ import { buildArchitectTools } from "./tools.mjs";
 import { createArchitect, isArchitectSession } from "./architect.mjs";
 
 export const name = "qq-workflows";
-export const inject = ["agents", "sessions", "tools"];
+// Same load gate as qq-relay. Tools stay optional: register when the host
+// tools service appears, via nested ctx.inject rather than a hard inject.
+export const inject = ["agents", "sessions"];
 export const provide = "qq-workflows";
 
 export function apply(ctx, config = {}) {
@@ -52,20 +54,27 @@ export function apply(ctx, config = {}) {
   });
   ctx.provide("qq-workflows", service);
 
-  const tools = ctx.get("tools");
-  ctx.effect(
-    () => {
-      const disposers = buildArchitectTools({
-        store,
-        sessionQuery,
-        invoke: (args) => architect.invoke(args),
-      }).map((tool) => tools.register(tool));
-      return () => {
-        for (const dispose of disposers) dispose();
-      };
-    },
-    "qq-workflows: tools",
-  );
+  const registerTools = (toolCtx) => {
+    const tools = toolCtx.get("tools", false);
+    if (!tools || typeof tools.register !== "function") return;
+    toolCtx.effect(
+      () => {
+        const disposers = buildArchitectTools({
+          store,
+          sessionQuery,
+          invoke: (args) => architect.invoke(args),
+        }).map((tool) => tools.register(tool));
+        return () => {
+          for (const dispose of disposers) dispose();
+        };
+      },
+      "qq-workflows: tools",
+    );
+  };
+  // Wait for the host tools service without making it a hard plugin inject.
+  // A one-shot get at apply time races the tools fiber and drops registration.
+  if (typeof ctx.inject === "function") ctx.inject(["tools"], registerTools);
+  else registerTools(ctx);
 
   ctx.on("agent/created", ({ agent }) => {
     if (isArchitectSession(agent)) architect.attach(agent);

@@ -35,7 +35,8 @@ operator talk are skipped.
 Each fire reads the whole notebook plus a model-free spine of the new turn
 (seq, speaker, tool names, sizes, short extract of user text). Output: append
 one note, append a withdraw line, or append nothing. Uses the existing
-`scribe` execution-profile binding. One-shot. `cacheRetention: none`.
+`scribe` execution-profile binding. One-shot via a fresh `sessionId` on
+each call (DSH `GenerateOptions` has no `cacheRetention` field).
 
 ### Lookup tools
 
@@ -67,17 +68,20 @@ dropped surface range, carrying the frozen stub. This plugin does not call
 `ctx.compaction` and does not run compact-basic's summarizer.
 
 `compact-basic` is `auto: false` on the qq-console profile. Fat tool dumps are
-chopped when they land via the existing tool-result pruner. If the open tail
-alone cannot fit after chop: fail visibly. Do not auto-essay.
+chopped at the next `agent/request` assemble via the existing tool-result
+pruner (not from a `session/event` observer — DSH rejects reentrant append).
+If the open tail alone cannot fit after chop: fail visibly. Do not auto-essay.
 
 ### Invoke
 
 Talking tool: invoke, keep talking. The talking model does not compile the
 packet. Off-session clerk/scribe reads the notebook plus the DSH log (text +
 tool names; no reasoning, no dumps) and writes the packet. Starts a live DSH
-child session in this host and seeds it with the packet. Alias comes from
-qq-relay if loaded. Results come back through qq-relay (`default` steer). If
-relay is not loaded, invoke is refused.
+child session in this host and seeds it with the packet. The packet carries
+the parent session id and alias as the return address. Alias comes from
+qq-relay if loaded. When the child turn ends, the last assistant text is
+sent back through `qq-relay.send` with `default` steer. If relay is not
+loaded, invoke is refused.
 
 Bank / Spawn / Stay are not in this land.
 

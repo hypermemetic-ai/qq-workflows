@@ -22,13 +22,28 @@ function relayOf(ctx) {
   return ctx.get?.("qq-relay", false) ?? null;
 }
 
+function logLine(ctx, level, message) {
+  const logger = ctx?.logger;
+  if (logger && typeof logger[level] === "function") {
+    logger[level](message);
+    return;
+  }
+  if (level === "warn") console.warn(message);
+}
+
 function hangLabel(ctx, sessionId) {
   const relay = relayOf(ctx);
   if (!relay || typeof relay.hang !== "function") return false;
   try {
     relay.hang(sessionId, ARCHITECT_LABEL);
+    logLine(ctx, "info", `qq-workflows: hung ${ARCHITECT_LABEL} on ${sessionId}`);
     return true;
-  } catch {
+  } catch (error) {
+    logLine(
+      ctx,
+      "warn",
+      `qq-workflows: failed to hang ${ARCHITECT_LABEL} on ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+    );
     return false;
   }
 }
@@ -44,14 +59,60 @@ function clearLabel(ctx, sessionId) {
   }
 }
 
+/** Chop fat tool dumps at a legal append boundary. Do not call from session/event. */
 function pruneToolResults(ctx, session) {
   const pruner = ctx.get?.("toolResultPruner", false);
   if (!pruner || typeof pruner.pruneSession !== "function") return null;
-  try {
-    return pruner.pruneSession(session);
-  } catch {
-    return null;
+  return pruner.pruneSession(session);
+}
+
+function lastAssistantText(events) {
+  if (!Array.isArray(events)) return "";
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.type !== "assistant/message") continue;
+    const content = event.data?.message?.content;
+    if (!Array.isArray(content)) continue;
+    const text = content
+      .filter((block) => block?.type === "text" && typeof block.text === "string")
+      .map((block) => block.text)
+      .join("")
+      .trim();
+    if (text) return text;
   }
+  return "";
+}
+
+/** Child completion → relay.send default to the parent. One shot. */
+function watchChildReturn({ ctx, relay, child, parentId }) {
+  const childId = child?.session?.id;
+  if (!relay || typeof relay.send !== "function" || !childId || !parentId) return () => {};
+  let sent = false;
+  const sendBack = async () => {
+    if (sent) return;
+    const text = lastAssistantText(child.session?.events ?? []);
+    if (!text) return;
+    sent = true;
+    try {
+      await relay.send({
+        fromId: childId,
+        to: parentId,
+        message: text,
+        delivery: "default",
+      });
+    } catch (error) {
+      sent = false;
+      logLine(
+        ctx,
+        "warn",
+        `qq-workflows: invoke result was not delivered to ${parentId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+  const dispose = child.ctx?.on?.("session/event", async (_session, event) => {
+    if (event?.type === "turn/end") await sendBack();
+  });
+  return typeof dispose === "function" ? dispose : () => {};
 }
 
 function failVisibly(session, text) {
@@ -83,7 +144,6 @@ export function createArchitect({
     let disposeAssemble;
     try {
       disposeEvent = agent.ctx?.on?.("session/event", (_session, event) => {
-        if (event?.type === "tool/result") pruneToolResults(ctx, session);
         if (event?.type === "turn/end") lastTurn = event.data?.turn;
       });
       disposeTurn = agent.ctx?.on?.("session/event", async (_session, event) => {
@@ -105,6 +165,14 @@ export function createArchitect({
         }
       });
       disposeAssemble = agent.ctx?.on?.("agent/request", async (_payload, next) => {
+        try {
+          pruneToolResults(ctx, session);
+        } catch (error) {
+          failVisibly(
+            session,
+            `qq-workflows: tool-result prune refused (${error instanceof Error ? error.message : String(error)}).`,
+          );
+        }
         const pending = folder.pending(sessionId);
         if (clerkPending) {
           folder.decide(sessionId, {
@@ -167,10 +235,13 @@ export function createArchitect({
       return { status: "refused", reason: "invoke requires ctx.agents.create" };
     }
     const foldPoint = folder.pending(parent.id)?.startSeq;
+    const parentAlias = typeof relay.alias === "function" ? relay.alias(parent.id) : undefined;
     const packet = await clerk.compilePacket({
       sessionId: parent.id,
       events: parent.events,
       foldPoint: Number.isSafeInteger(foldPoint) ? foldPoint - 1 : undefined,
+      parentSession: parent.id,
+      parentAlias,
     });
     if (!packet) return { status: "refused", reason: "invoke packet was empty" };
     const childId = `session-${randomUUID()}`;
@@ -183,6 +254,7 @@ export function createArchitect({
       },
     });
     const child = handle?.agent ?? handle;
+    watchChildReturn({ ctx, relay, child, parentId: parent.id });
     child.followup({
       id: randomUUID(),
       role: "user",

@@ -195,14 +195,22 @@ export function createClerk({ store, llm, binding, run = runScribe } = {}) {
     return { ...parsed, ...citation };
   }
 
-  async function compilePacket({ sessionId, events, foldPoint }) {
+  async function compilePacket({ sessionId, events, foldPoint, parentSession, parentAlias } = {}) {
     const notebook = store.load(sessionId);
+    const address = parentAlias
+      ? `session ${parentSession ?? sessionId} (alias ${parentAlias})`
+      : parentSession
+        ? `session ${parentSession}`
+        : "";
     const user = [
       "Notebook:",
       formatNotebookForScribe(notebook),
       "",
       "DSH log (text + tool names; no reasoning, no dumps):",
       buildLogSpine(events, { foldPoint }) || "(empty)",
+      ...(address
+        ? ["", `Return address: ${address}. Results are delivered through qq-relay default steer.`]
+        : []),
     ].join("\n");
     const packet = await run(llm, binding, { system: PACKET_SYSTEM, user });
     return packet;
