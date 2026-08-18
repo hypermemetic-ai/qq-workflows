@@ -67,7 +67,7 @@ Durable omit is a plugin-source user message with `surfaceOp: replace` on the
 dropped surface range, carrying the frozen stub. This plugin does not call
 `ctx.compaction` and does not run compact-basic's summarizer.
 
-`compact-basic` is `auto: false` on the qq-console profile. Fat tool dumps are
+`compact-basic` is `auto: false` on the qq profile. Fat tool dumps are
 chopped at the next `agent/request` assemble via the existing tool-result
 pruner (not from a `session/event` observer — DSH rejects reentrant append).
 If the open tail alone cannot fit after chop: fail visibly. Do not auto-essay.
