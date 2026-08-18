@@ -1,8 +1,9 @@
 // Architect workflow: one live card, notebook, clerk, fold, lookup, invoke.
 //
-// Noun and verb. One per project, always on. On attach, hang
-// workflows:architect via qq-relay if loaded; clear on detach. Architect
-// works without relay except invoke-result delivery.
+// Noun and verb. One per project. The wrapper attaches this workflow when
+// the session's selection is architect. On attach, hang workflows:architect
+// via qq-relay if loaded; clear on detach. Architect works without relay
+// except invoke-result delivery.
 
 import { randomUUID } from "node:crypto";
 import { pluginUserMessage } from "./tools.mjs";
@@ -12,10 +13,16 @@ export const CHILD_ORIGIN = "subagent";
 
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export function isArchitectSession(agent) {
+/** A chair that may be selected as architect. Children never are. */
+export function isArchitectCandidate(agent) {
   const origin = agent?.session?.header?.origin;
   if (origin === CHILD_ORIGIN) return false;
   return SESSION_ID.test(agent?.session?.id ?? agent?.id ?? "");
+}
+
+/** @deprecated Use isArchitectCandidate plus session membership. */
+export function isArchitectSession(agent) {
+  return isArchitectCandidate(agent);
 }
 
 function relayOf(ctx) {
@@ -130,7 +137,7 @@ export function createArchitect({
   const attached = new Map();
 
   function attach(agent) {
-    if (!isArchitectSession(agent)) return null;
+    if (!isArchitectCandidate(agent)) return null;
     const session = agent.session;
     const sessionId = session.id;
     if (attached.has(sessionId)) return attached.get(sessionId);
@@ -228,7 +235,7 @@ export function createArchitect({
     const relay = relayOf(ctx);
     if (!relay) return { status: "refused", reason: "invoke requires qq-relay" };
     const parent = agent?.session;
-    if (!parent?.id || !isArchitectSession(agent)) {
+    if (!parent?.id || !isArchitectCandidate(agent) || !attached.has(parent.id)) {
       return { status: "refused", reason: "invoke requires a live architect session" };
     }
     if (!agents || typeof agents.create !== "function") {

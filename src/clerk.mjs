@@ -169,7 +169,12 @@ export function buildLogSpine(events, { foldPoint } = {}) {
   return lines.join("\n");
 }
 
-export function createClerk({ store, llm, binding, run = runScribe } = {}) {
+export function createClerk({ store, llm, binding, resolveBinding, run = runScribe } = {}) {
+  function currentBinding() {
+    if (typeof resolveBinding === "function") return resolveBinding();
+    return binding;
+  }
+
   async function fire({ sessionId, events, turn }) {
     const slice = Number.isSafeInteger(turn) ? eventsForTurn(events, turn) : events;
     if (!turnHasOperatorTalk(slice)) return { action: "skip", reason: "not-operator" };
@@ -183,7 +188,7 @@ export function createClerk({ store, llm, binding, run = runScribe } = {}) {
       "Turn spine:",
       formatSpine(spine),
     ].join("\n");
-    const raw = await run(llm, binding, { system: CLERK_SYSTEM, user });
+    const raw = await run(llm, currentBinding(), { system: CLERK_SYSTEM, user });
     const parsed = parseClerkOutput(raw);
     if (parsed.action === "nothing") return parsed;
     const citation = { startSeq: spine.startSeq, endSeq: spine.endSeq };
@@ -212,7 +217,7 @@ export function createClerk({ store, llm, binding, run = runScribe } = {}) {
         ? ["", `Return address: ${address}. Results are delivered through qq-relay default steer.`]
         : []),
     ].join("\n");
-    const packet = await run(llm, binding, { system: PACKET_SYSTEM, user });
+    const packet = await run(llm, currentBinding(), { system: PACKET_SYSTEM, user });
     return packet;
   }
 

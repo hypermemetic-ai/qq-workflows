@@ -1,14 +1,12 @@
 // One-shot scribe hop for clerk and invoke-packet compilation.
 //
-// Uses the existing execution-profile `scribe` binding when present. The
-// talking model is never asked to write notes or compile packets. DSH
-// GenerateOptions has no cacheRetention field; a fresh sessionId on each
-// call is the one-shot / no-reuse contract.
+// Binding comes from architect settings (settingsFile) or an explicit
+// config.scribe override for tests. execution-profiles.json is not
+// destination authority. Unbound clerk/scribe no-ops. DSH GenerateOptions
+// has no cacheRetention field; a fresh sessionId on each call is the
+// one-shot / no-reuse contract.
 
 import { randomUUID } from "node:crypto";
-import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
-import { existsSync, readFileSync } from "node:fs";
 
 export const CLERK_SYSTEM = [
   "You are the architect clerk. You receive the notebook and a spine of the latest operator+architect turn.",
@@ -23,16 +21,8 @@ export const PACKET_SYSTEM = [
   "No reasoning. No tool dumps. No essay.",
 ].join("\n");
 
-function defaultPolicyPath(env = process.env) {
-  const configHome = env.XDG_CONFIG_HOME;
-  if (configHome && isAbsolute(configHome)) return join(configHome, "qq", "execution-profiles.json");
-  const home = env.HOME || homedir();
-  if (home && isAbsolute(home)) return join(home, ".config", "qq", "execution-profiles.json");
-  return null;
-}
-
-/** Resolve the scribe binding from plugin config or the execution-profile file. */
-export function resolveScribeBinding(config = {}, env = process.env) {
+/** Resolve the scribe binding from explicit config or architect settings. */
+export function resolveScribeBinding(config = {}, _env = process.env) {
   if (config.scribe && typeof config.scribe.provider === "string" && typeof config.scribe.model === "string") {
     return {
       provider: config.scribe.provider,
@@ -40,16 +30,10 @@ export function resolveScribeBinding(config = {}, env = process.env) {
       effort: config.scribe.effort,
     };
   }
-  const path = config.executionProfilesPath ?? defaultPolicyPath(env);
-  if (!path || !existsSync(path)) return null;
-  try {
-    const policy = JSON.parse(readFileSync(path, "utf8"));
-    const scribe = policy.scribe ?? policy.compactor;
-    if (!scribe || typeof scribe.provider !== "string" || typeof scribe.model !== "string") return null;
-    return { provider: scribe.provider, model: scribe.model, effort: scribe.effort };
-  } catch {
-    return null;
+  if (config.settings && typeof config.settings.get === "function") {
+    return config.settings.get("scribe");
   }
+  return null;
 }
 
 function textOfChunk(chunk) {
@@ -109,7 +93,6 @@ export function parseClerkOutput(text) {
 }
 
 export const internals = Object.freeze({
-  defaultPolicyPath,
   textOfChunk,
   userMessage,
 });

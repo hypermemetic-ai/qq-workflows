@@ -4,18 +4,38 @@ One repository, one plugin, one version. Named qq workflows live here.
 Loading this plugin is how a DSH host gets architect (and later research /
 implementation / judgment). Loading qq does not imply workflows.
 
+A new session has no workflow until the operator picks one with `/workflows`.
+The wrapper only selects which registered workflow this chair is running, if
+any. It does not own a workflow's store, stitch, or config schema.
+
 There is no `run_workflow(name)` dispatcher. Each workflow registers its own
 tools. Do not use DSH's model-written workflow tool as the dispatcher. Do not
 port Pi delegate / review / land.
+
+## Selection
+
+`/workflows` lists loaded workflow plugins and marks the one selected on this
+session. `/workflows architect` attaches architect. `/workflows none` (or
+`off`) clears the selection. `/workflows settings` asks the selected workflow
+for its roles; `/workflows settings architect scribe …` writes that role.
+
+Selection is per DSH session, restart-safe, default none. One file per session
+beside `DSH_HOME` (`config.selectionDir` overrides), mode `0600`. A child
+(`origin: subagent`) is never selected as architect.
 
 ## Architect
 
 Noun and verb. One live card (the current concern). No park. Two live objects
 are two sessions, or replace.
 
-On attach, hang `workflows:architect` on the live session via qq-relay if that
-service is loaded; clear on detach. Relay does not interpret the label.
-Architect works without relay except invoke-result delivery.
+Selecting architect attaches notebook, clerk, fold, and tools, and hangs
+`workflows:architect` via qq-relay if that service is loaded; selecting
+something else or none detaches and clears the hang. Relay does not interpret
+the label. Architect works without relay except invoke-result delivery.
+
+Role bindings live in the declared absolute `settingsFile`. Missing or
+relative path, or a missing file, is unbound. The wrapper does not read or
+write `~/.config/qq/execution-profiles.json`.
 
 ### Notebook
 
@@ -34,9 +54,10 @@ operator talk are skipped.
 
 Each fire reads the whole notebook plus a model-free spine of the new turn
 (seq, speaker, tool names, sizes, short extract of user text). Output: append
-one note, append a withdraw line, or append nothing. Uses the existing
-`scribe` execution-profile binding. One-shot via a fresh `sessionId` on
-each call (DSH `GenerateOptions` has no `cacheRetention` field).
+one note, append a withdraw line, or append nothing. Uses the architect
+`scribe` role from `settingsFile` when bound; unbound clerk no-ops. One-shot
+via a fresh `sessionId` on each call (DSH `GenerateOptions` has no
+`cacheRetention` field).
 
 ### Lookup tools
 
@@ -96,5 +117,6 @@ phone, titles as handles, Pi agent-messages.
 
 ```bash
 node tests/test-qq-workflows-plugin.mjs .
+node tests/test-session-prompt.mjs
 tests/test-qq-workflows-boot.sh
 ```

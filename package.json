@@ -12,7 +12,10 @@
     "./fold": "./src/fold.mjs",
     "./scribe": "./src/scribe.mjs",
     "./tools": "./src/tools.mjs",
-    "./architect": "./src/architect.mjs"
+    "./architect": "./src/architect.mjs",
+    "./selection": "./src/selection.mjs",
+    "./settings": "./src/settings.mjs",
+    "./command": "./src/command.mjs"
   },
   "files": [
     "src/",
