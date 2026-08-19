@@ -2,7 +2,8 @@
 // Never on send. Never after every tool. Host/land/relay injects that are
 // not operator talk are skipped.
 
-import { CLERK_SYSTEM, PACKET_SYSTEM, parseClerkOutput, runScribe } from "./scribe.mjs";
+import { oneShot } from "../../qq/src/ask.mjs";
+import { CLERK_SYSTEM, PACKET_SYSTEM, parseClerkOutput } from "./scribe.mjs";
 
 const USER_EXTRACT_CHARS = 240;
 const TOOL_DUMP_CHARS = 80;
@@ -169,7 +170,7 @@ export function buildLogSpine(events, { foldPoint } = {}) {
   return lines.join("\n");
 }
 
-export function createClerk({ store, llm, binding, resolveBinding, run = runScribe } = {}) {
+export function createClerk({ store, llm, binding, resolveBinding, run = oneShot } = {}) {
   function currentBinding() {
     if (typeof resolveBinding === "function") return resolveBinding();
     return binding;

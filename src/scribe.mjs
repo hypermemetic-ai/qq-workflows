@@ -1,12 +1,4 @@
-// One-shot scribe hop for clerk and invoke-packet compilation.
-//
-// Binding comes from architect settings (settingsFile) or an explicit
-// config.scribe override for tests. execution-profiles.json is not
-// destination authority. Unbound clerk/scribe no-ops. DSH GenerateOptions
-// has no cacheRetention field; a fresh sessionId on each call is the
-// one-shot / no-reuse contract.
-
-import { randomUUID } from "node:crypto";
+// Note + brief prompts and parse. The one-shot hop lives on qq.
 
 export const CLERK_SYSTEM = [
   "You are the architect clerk. You receive the notebook and a spine of the latest operator+architect turn.",
@@ -21,7 +13,7 @@ export const PACKET_SYSTEM = [
   "No reasoning. No tool dumps. No essay.",
 ].join("\n");
 
-/** Resolve the scribe binding from explicit config or architect settings. */
+/** Resolve the note/brief binding from explicit config or architect settings. */
 export function resolveScribeBinding(config = {}, _env = process.env) {
   if (config.scribe && typeof config.scribe.provider === "string" && typeof config.scribe.model === "string") {
     return {
@@ -36,51 +28,6 @@ export function resolveScribeBinding(config = {}, _env = process.env) {
   return null;
 }
 
-function textOfChunk(chunk) {
-  if (chunk?.type === "text-delta" && typeof chunk.text === "string") return chunk.text;
-  if (chunk?.type === "block-end" && chunk.block?.type === "text" && typeof chunk.block.text === "string") {
-    return chunk.block.text;
-  }
-  return "";
-}
-
-function userMessage(text) {
-  return {
-    id: randomUUID(),
-    role: "user",
-    content: [{ type: "text", text }],
-    source: { kind: "plugin", plugin: "qq-workflows", form: "notice" },
-  };
-}
-
-/**
- * One-shot llm.stream. Returns trimmed text, or empty string on miss/failure.
- * A fresh sessionId on each call is the no-reuse contract; DSH GenerateOptions
- * has no cacheRetention field, so none is sent.
- */
-export async function runScribe(llm, binding, { system, user, signal } = {}) {
-  if (!llm || typeof llm.stream !== "function") return "";
-  if (!binding?.provider || !binding?.model) return "";
-  const request = {
-    provider: binding.provider,
-    model: binding.model,
-    ...(binding.effort ? { reasoningEffort: binding.effort } : {}),
-    system,
-    messages: [userMessage(user)],
-    sessionId: `session-${randomUUID()}`,
-    ...(signal ? { signal } : {}),
-  };
-  let text = "";
-  try {
-    for await (const chunk of llm.stream(request)) {
-      if (chunk?.type === "text-delta") text += chunk.text ?? "";
-    }
-  } catch {
-    return "";
-  }
-  return text.trim();
-}
-
 export function parseClerkOutput(text) {
   const trimmed = String(text ?? "").trim();
   if (!trimmed || /^(nothing|none|\(none\)|n\/a)$/i.test(trimmed)) {
@@ -91,8 +38,3 @@ export function parseClerkOutput(text) {
   }
   return { action: "note", text: trimmed };
 }
-
-export const internals = Object.freeze({
-  textOfChunk,
-  userMessage,
-});

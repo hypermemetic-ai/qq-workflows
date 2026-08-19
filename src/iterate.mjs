@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { pluginUserMessage } from "./tools.mjs";
 import { formatProjection, projectJournal } from "./journal.mjs";
 import { randomUUID } from "node:crypto";
-import { runScribe } from "./scribe.mjs";
+import { oneShot } from "../../qq/src/ask.mjs";
 
 export const ITERATE_LABEL = "workflows:iterate";
 export const CHILD_ORIGIN = "subagent";
@@ -242,7 +242,7 @@ export function createIterate({
   settings,
   llm,
   agents,
-  run = runScribe,
+  run = oneShot,
   registerHandsTools,
 } = {}) {
   const attached = new Map();
