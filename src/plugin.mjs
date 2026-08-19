@@ -73,6 +73,7 @@ export function apply(ctx, config = {}) {
     clerk,
     folder,
     agents,
+    tasks: () => ctx.get?.("qq-tasks", false) ?? null,
   });
   const iterate = createIterate({
     ctx,
@@ -281,6 +282,8 @@ export function apply(ctx, config = {}) {
     clerk,
     folder,
     architect,
+    offer: (sessionId) => architect.offer(sessionId),
+    choose: (sessionId, args) => architect.choose(sessionId, args),
     iterate,
     journal,
     wiki,

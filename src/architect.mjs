@@ -7,6 +7,16 @@
 
 import { randomUUID } from "node:crypto";
 import { pluginUserMessage } from "./tools.mjs";
+import { buildSpine } from "./clerk.mjs";
+import {
+  askedHandoff,
+  classifyLeftover,
+  createOfferBook,
+  leftoverDigest,
+  leftoverProse,
+  leftoverTitle,
+  splitOperatorBrief,
+} from "./offer.mjs";
 
 export const ARCHITECT_LABEL = "workflows:architect";
 export const CHILD_ORIGIN = "subagent";
@@ -122,14 +132,40 @@ function failVisibly(session, text) {
   session.append("user/message", pluginUserMessage(text, "notice"), { surfaceOp: "append" });
 }
 
+function publicOffer(offer) {
+  if (!offer) return null;
+  return {
+    id: offer.id,
+    title: offer.title,
+    brief: offer.operatorBrief || offer.brief,
+    runnerBrief: offer.runnerBrief || "",
+    choices: ["handoff", "bank", "ignore"],
+  };
+}
+
 export function createArchitect({
   ctx,
   store,
   clerk,
   folder,
   agents,
+  tasks,
 } = {}) {
   const attached = new Map();
+  const offers = createOfferBook();
+
+  function tasksOf() {
+    return typeof tasks === "function" ? tasks() : tasks ?? null;
+  }
+
+  function bankProse(title, prose) {
+    const service = tasksOf();
+    if (!service || typeof service.create !== "function") {
+      return { status: "refused", reason: "bank requires qq-tasks" };
+    }
+    const id = service.create({ title, body: prose });
+    return { status: "ok", action: "bank", id, title };
+  }
 
   function attach(agent) {
     if (!isArchitectCandidate(agent)) return null;
@@ -160,8 +196,9 @@ export function createArchitect({
             route: agent.options,
             pendingClerk: false,
           });
+          await considerOffer({ sessionId, events: session.events, turn, session });
         } catch {
-          // Clerk/fold must not block the talking loop.
+          // Clerk/fold/offer must not block the talking loop.
         } finally {
           clerkPending = false;
         }
@@ -206,12 +243,15 @@ export function createArchitect({
 
     const handle = {
       sessionId,
+      agent,
       lastTurn: () => lastTurn,
+      offer: () => publicOffer(offers.get(sessionId)),
       detach() {
         disposeEvent?.();
         disposeTurn?.();
         disposeAssemble?.();
         clearLabel(ctx, sessionId);
+        offers.clear(sessionId);
         attached.delete(sessionId);
       },
     };
@@ -226,7 +266,88 @@ export function createArchitect({
     return Boolean(handle);
   }
 
-  async function invoke({ agent } = {}) {
+  async function considerOffer({ sessionId, events, turn, session } = {}) {
+    const notebook = store.load(sessionId);
+    const card = store.openCard(notebook) ?? notebook.cards.at(-1);
+    const spine = buildSpine(events, turn);
+    const asked = askedHandoff(spine.userExtract);
+    const digest = leftoverDigest(card, { asked });
+    const existing = offers.get(sessionId);
+    if (existing?.digest === digest) return existing;
+    if (offers.alreadyHandled(sessionId, digest)) return { status: "skip", reason: "already-handled" };
+    const kind = classifyLeftover(card, { asked });
+    if (kind === "skip") {
+      offers.remember(sessionId, digest);
+      return { status: "skip", reason: "empty" };
+    }
+    const prose = leftoverProse(card);
+    const title = leftoverTitle(card, prose);
+    if (kind === "bank") {
+      const filed = bankProse(title, prose);
+      if (filed.status === "ok") {
+        offers.clear(sessionId);
+        offers.remember(sessionId, digest);
+        return { ...filed, silent: true };
+      }
+      // Missing qq-tasks: refuse-not-invent, then offer so hand off / ignore still work.
+    }
+    if (typeof clerk.compilePacket !== "function") return { status: "skip", reason: "empty-brief" };
+    const foldPoint = folder?.pending?.(sessionId)?.startSeq;
+    const parentAlias = typeof relayOf(ctx)?.alias === "function"
+      ? relayOf(ctx).alias(sessionId)
+      : undefined;
+    const packet = await clerk.compilePacket({
+      sessionId,
+      events,
+      foldPoint: Number.isSafeInteger(foldPoint) ? foldPoint - 1 : undefined,
+      parentSession: sessionId,
+      parentAlias,
+    });
+    if (!packet) return { status: "skip", reason: "empty-brief" };
+    const split = splitOperatorBrief(packet);
+    return offers.put(sessionId, {
+      id: randomUUID(),
+      digest,
+      title,
+      prose,
+      packet,
+      brief: split.brief,
+      operatorBrief: split.operatorBrief,
+      runnerBrief: split.runnerBrief,
+    });
+  }
+
+  function offer(sessionId) {
+    return publicOffer(offers.get(sessionId));
+  }
+
+  async function choose(sessionId, { choice, agent } = {}) {
+    const current = offers.get(sessionId);
+    if (!current) return { status: "refused", reason: "no leftover offer" };
+    if (choice === "ignore") {
+      offers.clear(sessionId);
+      offers.remember(sessionId, current.digest);
+      return { status: "ok", action: "ignore" };
+    }
+    if (choice === "bank") {
+      const filed = bankProse(current.title, current.prose);
+      if (filed.status !== "ok") return filed;
+      offers.clear(sessionId);
+      offers.remember(sessionId, current.digest);
+      return filed;
+    }
+    if (choice === "handoff" || choice === "hand off") {
+      const live = agent ?? attached.get(sessionId)?.agent;
+      const started = await invoke({ agent: live, packet: current.packet });
+      if (started.status !== "ok") return started;
+      offers.clear(sessionId);
+      offers.remember(sessionId, current.digest);
+      return { ...started, action: "handoff", brief: current.brief };
+    }
+    return { status: "refused", reason: "unknown leftover choice" };
+  }
+
+  async function invoke({ agent, packet: compiled } = {}) {
     const relay = relayOf(ctx);
     if (!relay) return { status: "refused", reason: "invoke requires qq-relay" };
     const parent = agent?.session;
@@ -238,7 +359,7 @@ export function createArchitect({
     }
     const foldPoint = folder.pending(parent.id)?.startSeq;
     const parentAlias = typeof relay.alias === "function" ? relay.alias(parent.id) : undefined;
-    const packet = await clerk.compilePacket({
+    const packet = compiled || await clerk.compilePacket({
       sessionId: parent.id,
       events: parent.events,
       foldPoint: Number.isSafeInteger(foldPoint) ? foldPoint - 1 : undefined,
@@ -276,6 +397,9 @@ export function createArchitect({
     attach,
     detach,
     invoke,
+    offer,
+    choose,
+    considerOffer,
     attached: (sessionId) => attached.get(sessionId),
     label: ARCHITECT_LABEL,
   });

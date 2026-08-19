@@ -124,7 +124,13 @@ qq-relay if loaded. When the child turn ends, the last assistant text is
 sent back through `qq-relay.send` with `default` steer. If relay is not
 loaded, invoke is refused.
 
-Bank / Spawn / Stay are not in this land.
+### Leftover offer
+
+After clerk, a hop reads the live card. Obviously unfinished leftovers bank
+silently when qq-tasks is loaded. Ambiguous-or-better leftovers compile the
+same packet invoke uses and offer hand off, bank, or ignore on the phone.
+The talking turn is not held. Missing qq-tasks refuses bank and still offers
+hand off and ignore. Spawn / Stay are not in this land.
 
 ## Iterate
 
