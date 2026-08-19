@@ -77,6 +77,19 @@ via a fresh `sessionId` on each call (DSH `GenerateOptions` has no
 The talking prompt appends. It does not paste the notebook, a map, or a
 standing "read the notes" instruction.
 
+### Rundown
+
+Architect-owned talking tool. This package does not import `qq-tasks`.
+At tool-register time, if `ctx.get("qq-tasks")` is present and the chair is
+architect, `rundown` registers. Absent: no tool, architect still works.
+
+`rundown` execute calls the tasks service. Tasks runs a one-shot model job
+on its own `rundown` role (`provider`, `model`, `effort` on that plugin's
+absolute `settingsFile`) and returns a report: what is on the pile, when it
+landed, what looks stale, what contradicts. Not a raw file listing. Not a
+judgment. Missing path, missing file, or empty role: the tool refuses. Do
+not reuse architect `scribe`. Do not write `execution-profiles.json`.
+
 ### Fold
 
 After the turn, after clerk. Decision off-session. Apply at the next request
@@ -190,4 +203,6 @@ worktree per nit.
 node tests/test-qq-workflows-plugin.mjs .
 node tests/test-session-prompt.mjs
 tests/test-qq-workflows-boot.sh
+node tests/test-qq-tasks.mjs .
+tests/test-qq-tasks-boot.sh
 ```

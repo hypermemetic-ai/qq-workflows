@@ -97,11 +97,13 @@ export function apply(ctx, config = {}) {
       if (selected !== "architect" && selected !== "iterate") return;
       const tools = toolsService(toolCtx) ?? toolsService(agent);
       if (!tools || typeof tools.register !== "function") return;
+      const tasks = ctx.get?.("qq-tasks", false) ?? null;
       const definitions = selected === "architect"
         ? buildArchitectTools({
             store,
             sessionQuery,
             invoke: (args) => architect.invoke(args),
+            tasks,
           })
         : buildDeskTools({
             journal,

@@ -1,5 +1,6 @@
-// Talking-architect tools: notes_list, notes_expand, session_search, invoke.
-// Invocation is these tools. There is no run_workflow(name) dispatcher.
+// Talking-architect tools: notes_list, notes_expand, session_search, invoke,
+// and rundown when qq-tasks is loaded. Invocation is these tools. There is
+// no run_workflow(name) dispatcher.
 
 import { randomUUID } from "node:crypto";
 
@@ -72,8 +73,42 @@ async function expandSeqs({ sessionQuery, session, seqs, before = 0, after = 0 }
   return windows;
 }
 
-export function buildArchitectTools({ store, sessionQuery, invoke } = {}) {
-  return [
+function buildRundownTool(tasks) {
+  return {
+    name: "rundown",
+    description: "Report on the live task pile: what is on it, when it landed, what looks stale, what contradicts. Not a raw file listing. Not a judgment — operator and architect judge the report.",
+    parameters: {},
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: true,
+        properties: {
+          status: { type: "string" },
+          report: { type: "string" },
+          reason: { type: "string" },
+        },
+      },
+      render: (_args, value) => {
+        if (value.status === "refused") return [textBlock(`Rundown refused: ${value.reason}`)];
+        return [textBlock(value.report || "(empty pile)")];
+      },
+    },
+    async execute() {
+      try {
+        if (!tasks || typeof tasks.rundown !== "function") {
+          return refusal("rundown requires qq-tasks");
+        }
+        const report = await tasks.rundown();
+        return { status: "ok", report };
+      } catch (error) {
+        return refusal(error instanceof Error ? error.message : String(error));
+      }
+    },
+  };
+}
+
+export function buildArchitectTools({ store, sessionQuery, invoke, tasks } = {}) {
+  const tools = [
     {
       name: "notes_list",
       description: "List the architect notebook for this session: cards, short notes with seq citations, and any frozen fold stubs. Cheap. Use this before asking to expand a citation.",
@@ -256,6 +291,8 @@ export function buildArchitectTools({ store, sessionQuery, invoke } = {}) {
       },
     },
   ];
+  if (tasks && typeof tasks.rundown === "function") tools.push(buildRundownTool(tasks));
+  return tools;
 }
 
 export function pluginUserMessage(text, form = "notice") {
