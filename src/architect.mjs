@@ -20,11 +20,6 @@ export function isArchitectCandidate(agent) {
   return SESSION_ID.test(agent?.session?.id ?? agent?.id ?? "");
 }
 
-/** @deprecated Use isArchitectCandidate plus session membership. */
-export function isArchitectSession(agent) {
-  return isArchitectCandidate(agent);
-}
-
 function relayOf(ctx) {
   return ctx.get?.("qq-relay", false) ?? null;
 }

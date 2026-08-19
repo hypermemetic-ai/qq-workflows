@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Named qq workflows as one Cordis plugin. Loading this plugin is how a host gets architect; loading qq does not imply workflows.",
+  "description": "Named workflows, architect and iterate. qq expects the plugin and still runs if it is absent.",
   "main": "src/plugin.mjs",
   "exports": {
     ".": "./src/plugin.mjs",

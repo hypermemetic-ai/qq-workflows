@@ -304,7 +304,7 @@ export function buildHandsTools({ designLoop, onDump } = {}) {
   return [
     {
       name: "design_loop_start",
-      description: "Start the dsh-console browser fixture with live CSS/JS assets and return the origin plus session URL.",
+      description: "Start the design loop with live CSS/JS assets and return the origin plus session URL.",
       parameters: { live: { type: "boolean" } },
       output: {
         schema: { type: "object", additionalProperties: true },
