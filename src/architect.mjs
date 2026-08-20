@@ -393,9 +393,14 @@ export function createArchitect({
     };
   }
 
+  function dispose() {
+    for (const handle of [...attached.values()]) handle.detach();
+  }
+
   return Object.freeze({
     attach,
     detach,
+    dispose,
     invoke,
     offer,
     choose,

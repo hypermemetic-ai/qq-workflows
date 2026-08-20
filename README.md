@@ -1,8 +1,8 @@
 # `@hypermemetic-ai/qq-workflows`
 
 One repository, one plugin, one version. Named qq workflows live here.
-Loading this plugin is how a DSH host gets architect and iterate. The host
-binds the plugin when present and runs without it.
+Loading this plugin is how a DSH host gets architect, iterate, and find. The
+host binds the plugin when present and runs without it.
 
 A new session has no workflow until the operator picks one with `/workflows`.
 The wrapper only selects which registered workflow this chair is running, if
@@ -19,14 +19,15 @@ Architect does not invoke iterate.
 
 `/workflows` lists loaded workflow plugins and marks the one selected on this
 session. `/workflows architect` attaches architect. `/workflows iterate`
-attaches iterate. `/workflows none` (or `off`) clears the selection.
-`/workflows settings` asks the selected workflow for its roles;
-`/workflows settings architect scribe …` and
-`/workflows settings iterate desk …` write those roles.
+attaches iterate. `/workflows find` attaches find (image-finder sitting).
+`/workflows none` (or `off`) clears the selection. `/workflows settings` asks
+the selected workflow for its roles; `/workflows settings architect scribe …`
+and `/workflows settings iterate desk …` write those roles. Find has no roles.
 
 Selection is per DSH session, restart-safe, default none. One file per session
 beside `DSH_HOME` (`config.selectionDir` overrides), mode `0600`. A child
-(`origin: subagent`) is never selected as architect or iterate.
+(`origin: subagent`) is never selected as architect, iterate, or find.
+Empty `/find` still arms or leaves; it also selects or clears this workflow.
 
 ## Architect
 

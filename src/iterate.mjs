@@ -284,10 +284,12 @@ export function createIterate({
   function watchHandsReturn({ child, parentId, bundle, queued, cwd }) {
     const childId = child?.session?.id;
     let done = false;
+    let unregister = () => {};
     const finish = async (event) => {
       if (done || !childId) return;
       done = true;
-      liveHands = null;
+      unregister();
+      if (liveHands?.childId === childId) liveHands = null;
       const seq = Number.isSafeInteger(event?.seq) ? event.seq : 0;
       const aliases = typeof relayOf(ctx)?.alias === "function" ? relayOf(ctx).alias(childId) : undefined;
       const alias = aliases ?? "";
@@ -327,10 +329,16 @@ export function createIterate({
         });
       }
     };
-    const dispose = child.ctx?.on?.("session/event", async (_session, event) => {
+    const registered = child.ctx?.on?.("session/event", async (_session, event) => {
       if (event?.type === "turn/end") await finish(event);
     });
-    return typeof dispose === "function" ? dispose : () => {};
+    unregister = typeof registered === "function" ? registered : () => {};
+    return () => {
+      if (done) return;
+      done = true;
+      unregister();
+      if (liveHands?.childId === childId) liveHands = null;
+    };
   }
 
   function attach(agent) {
@@ -439,7 +447,13 @@ export function createIterate({
       child: child.session?.id ?? childId,
       seq: 0,
     });
-    watchHandsReturn({ child, parentId: parent.id, bundle, queued, cwd: parent.header?.cwd });
+    liveHands.dispose = watchHandsReturn({
+      child,
+      parentId: parent.id,
+      bundle,
+      queued,
+      cwd: parent.header?.cwd,
+    });
     child.followup({
       id: randomUUID(),
       role: "user",
@@ -456,9 +470,16 @@ export function createIterate({
     };
   }
 
+  function dispose() {
+    liveHands?.dispose?.();
+    liveHands = null;
+    for (const handle of [...attached.values()]) handle.detach();
+  }
+
   return Object.freeze({
     attach,
     detach,
+    dispose,
     go,
     attached: (sessionId) => attached.get(sessionId),
     live: () => liveHands,

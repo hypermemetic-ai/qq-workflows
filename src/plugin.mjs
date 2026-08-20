@@ -1,8 +1,9 @@
 // qq-workflows: one repository, one plugin. Cordis entry point.
 //
 // The wrapper lists registered workflows and selects which one this chair
-// is running, if any. Architect and iterate are standalone workflows:
-// own tools, own hang, own notes/journal, own role settings.
+// is running, if any. Architect, iterate, and find are standalone workflows.
+// Architect and iterate own tools, hang, notes/journal, and role settings.
+// Find owns the image-finder sitting: hang, arm, leave. No roles.
 
 import { createNotebookStore, defaultNotebookDir } from "./notebook.mjs";
 import { createClerk } from "./clerk.mjs";
@@ -28,6 +29,7 @@ export const name = "qq-workflows";
 // Same load gate as qq-relay. Commands and tools stay optional.
 export const inject = ["agents", "sessions"];
 export const provide = "qq-workflows";
+export const FIND_LABEL = "workflows:find";
 
 function sessionIdOf(agent) {
   return agent?.session?.id ?? agent?.id ?? "";
@@ -204,6 +206,66 @@ export function apply(ctx, config = {}) {
     return selection.get(sessionId);
   }
 
+  function finderOf() {
+    return ctx.get?.("image-finder", false) ?? null;
+  }
+
+  function hangFind(sessionId) {
+    const relay = ctx.get?.("qq-relay", false) ?? null;
+    if (!relay || typeof relay.hang !== "function") return false;
+    try {
+      relay.hang(sessionId, FIND_LABEL);
+      return true;
+    } catch (error) {
+      ctx.logger?.warn?.(
+        `qq-workflows: failed to hang ${FIND_LABEL} on ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return false;
+    }
+  }
+
+  function clearFind(sessionId) {
+    const relay = ctx.get?.("qq-relay", false) ?? null;
+    if (!relay || typeof relay.clear !== "function") return false;
+    try {
+      return Boolean(relay.clear(sessionId, FIND_LABEL));
+    } catch {
+      return false;
+    }
+  }
+
+  const findAttached = new Set();
+  const findWorkflow = Object.freeze({
+    name: "find",
+    candidate: isArchitectCandidate,
+    ensureAttached(agent) {
+      if (!isArchitectCandidate(agent)) return null;
+      const sessionId = sessionIdOf(agent);
+      if (!sessionId) return null;
+      if (!findAttached.has(sessionId)) {
+        hangFind(sessionId);
+        findAttached.add(sessionId);
+      }
+      finderOf()?.arm?.(sessionId);
+      return sessionId;
+    },
+    ensureDetached(agentOrId) {
+      const sessionId = typeof agentOrId === "string" ? agentOrId : sessionIdOf(agentOrId);
+      if (!sessionId || !findAttached.has(sessionId)) return null;
+      findAttached.delete(sessionId);
+      clearFind(sessionId);
+      finderOf()?.leave?.(sessionId);
+      return sessionId;
+    },
+    listSettings() {
+      return "find has no roles";
+    },
+    writeSettings() {
+      throw new Error("find has no roles");
+    },
+  });
+  workflows.set("find", findWorkflow);
+
   function liveAgent(sessionId) {
     if (!sessionId || typeof agents?.get !== "function") return null;
     return agents.get(sessionId) ?? null;
@@ -308,7 +370,7 @@ export function apply(ctx, config = {}) {
       () => commands.register({
         name: "workflows",
         description: "List, select, or configure loaded workflow plugins for this session.",
-        input: { hint: "architect | iterate | none | settings [workflow] [role provider model [effort]]" },
+        input: { hint: "architect | iterate | find | none | settings [workflow] [role provider model [effort]]" },
         handler: handleWorkflows,
       }),
       "qq-workflows: /workflows",
@@ -316,6 +378,40 @@ export function apply(ctx, config = {}) {
   };
   if (typeof ctx.inject === "function") ctx.inject(["commands"], registerCommand);
   else registerCommand(ctx);
+
+  const armSelectedFind = () => {
+    if (typeof agents?.list !== "function") return;
+    for (const agent of agents.list()) {
+      if (selectedName(sessionIdOf(agent)) === "find") findWorkflow.ensureAttached(agent);
+    }
+  };
+  if (typeof ctx.inject === "function") ctx.inject(["image-finder"], armSelectedFind);
+  else armSelectedFind();
+
+  // Relay labels are projections of the durable workflow selection. A relay
+  // fiber replacement starts with an empty label board, so republish them when
+  // that coeffect becomes available again.
+  let observedRelay = ctx.get?.("qq-relay", false) ?? null;
+  const syncRelayLabels = () => {
+    const relay = ctx.get?.("qq-relay", false) ?? null;
+    if (!relay || relay === observedRelay) return;
+    observedRelay = relay;
+    if (typeof relay.hang !== "function" || typeof agents?.list !== "function") return;
+    for (const agent of agents.list()) {
+      const sessionId = sessionIdOf(agent);
+      const selected = selectedName(sessionId);
+      const label = selected === "architect"
+        ? architect.label
+        : selected === "iterate"
+          ? iterate.label
+          : selected === "find"
+            ? FIND_LABEL
+            : "";
+      if (!sessionId || !label) continue;
+      try { relay.hang(sessionId, label); } catch {}
+    }
+  };
+  if (typeof ctx.inject === "function") ctx.inject(["qq-relay"], syncRelayLabels);
 
   ctx.on("agent/created", ({ agent }) => {
     syncSession(agent);
@@ -336,6 +432,19 @@ export function apply(ctx, config = {}) {
       }
     }
   }
+
+  ctx.effect(() => () => {
+    if (typeof agents?.list === "function") {
+      for (const agent of agents.list()) {
+        for (const workflow of workflows.values()) workflow.ensureDetached(agent);
+      }
+    }
+    architect.dispose?.();
+    iterate.dispose?.();
+    for (const record of [...toolDisposers.values()]) record.dispose();
+    for (const dispose of [...handsToolDisposers.values()]) dispose();
+    findAttached.clear();
+  }, "qq-workflows: live attachments");
 }
 
 export const internals = Object.freeze({
