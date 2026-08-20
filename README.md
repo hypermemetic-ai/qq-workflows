@@ -6,7 +6,10 @@ host binds the plugin when present and runs without it.
 
 A new session has no workflow until the operator picks one with `/workflows`.
 The wrapper only selects which registered workflow this chair is running, if
-any. It does not own a workflow's store, stitch, or config schema.
+any. It does not own a workflow's store, stitch, or config schema. Sibling
+plugins can reversibly join the live registry through
+`service.workflows.register(spec)`; the sibling continues to own all workflow
+behavior and state.
 
 There is no `run_workflow(name)` dispatcher. Each workflow registers its own
 tools. Do not use DSH's model-written workflow tool as the dispatcher. Do not
@@ -28,6 +31,29 @@ Selection is per DSH session, restart-safe, default none. One file per session
 beside `DSH_HOME` (`config.selectionDir` overrides), mode `0600`. A child
 (`origin: subagent`) is never selected as architect, iterate, or find.
 Empty `/find` still arms or leaves; it also selects or clears this workflow.
+
+A persisted selection remains visible through `workflows.selected(sessionId)`
+when its sibling plugin is absent. It then appears in `/workflows` as
+`<name> (selected, unbound)`, attaches nothing, and paints no UI mode chip.
+`/workflows none` clears it. Re-registering the sibling immediately restores
+its workflow on matching live candidate chairs.
+
+### Sibling registration
+
+Call `workflows.register(spec)` with the six stable fields: `name`,
+`candidate(agent)`, idempotent
+`ensureAttached(agent)` and `ensureDetached(agentOrId)`, `listSettings()`, and
+`writeSettings(role, binding)`. The wrapper validates those fields and keeps a
+frozen snapshot. Names must match `/^[a-z][a-z0-9-]{0,31}$/`; `none`, `off`,
+`settings`, `architect`, `iterate`, and `find` are reserved. Duplicate live
+owners are refused.
+
+Registration returns an idempotent disposer. Disposal detaches the sibling
+workflow and removes its live name without erasing durable selection, so a
+later registration can reclaim it. The sibling's attach/detach methods own any
+`workflows:<name>` relay label; this wrapper does not hang or clear relay labels
+for registered siblings. A workflow with no roles conventionally returns
+`<name> has no roles` from `listSettings()` and rejects settings writes.
 
 ## Architect
 

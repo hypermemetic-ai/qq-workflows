@@ -31,6 +31,49 @@ export const inject = ["agents", "sessions"];
 export const provide = "qq-workflows";
 export const FIND_LABEL = "workflows:find";
 
+const WORKFLOW_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+const EXTERNAL_WORKFLOW_RESERVED = new Set([
+  "none",
+  "off",
+  "settings",
+  "architect",
+  "iterate",
+  "find",
+]);
+const REGISTERED_WORKFLOW_METHODS = [
+  "candidate",
+  "ensureAttached",
+  "ensureDetached",
+  "listSettings",
+  "writeSettings",
+];
+
+function registeredWorkflowSpec(spec) {
+  if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
+    throw new Error("invalid workflow spec");
+  }
+  const workflow = {
+    name: spec.name,
+    candidate: spec.candidate,
+    ensureAttached: spec.ensureAttached,
+    ensureDetached: spec.ensureDetached,
+    listSettings: spec.listSettings,
+    writeSettings: spec.writeSettings,
+  };
+  if (typeof workflow.name !== "string" || !WORKFLOW_NAME.test(workflow.name)) {
+    throw new Error(`invalid workflow name: ${String(workflow.name ?? "")}`);
+  }
+  if (EXTERNAL_WORKFLOW_RESERVED.has(workflow.name)) {
+    throw new Error(`workflow name is reserved: ${workflow.name}`);
+  }
+  for (const method of REGISTERED_WORKFLOW_METHODS) {
+    if (typeof workflow[method] !== "function") {
+      throw new Error(`workflow ${workflow.name} must define ${method}()`);
+    }
+  }
+  return Object.freeze(workflow);
+}
+
 function sessionIdOf(agent) {
   return agent?.session?.id ?? agent?.id ?? "";
 }
@@ -276,16 +319,47 @@ export function apply(ctx, config = {}) {
     const sessionId = sessionIdOf(agent);
     const chosen = selectedName(sessionId);
     for (const [name, workflow] of workflows) {
-      if (name === chosen) workflow.ensureAttached(agent);
+      if (name === chosen && workflow.candidate(agent) === true) workflow.ensureAttached(agent);
       else workflow.ensureDetached(agent);
     }
+  }
+
+  function registerWorkflow(spec) {
+    const workflow = registeredWorkflowSpec(spec);
+    if (workflows.has(workflow.name)) {
+      throw new Error(`workflow already registered: ${workflow.name}`);
+    }
+    workflows.set(workflow.name, workflow);
+
+    if (typeof agents?.list === "function") {
+      for (const agent of agents.list()) {
+        if (selectedName(sessionIdOf(agent)) !== workflow.name) continue;
+        syncSession(agent);
+      }
+    }
+
+    let disposed = false;
+    return () => {
+      if (disposed) return;
+      disposed = true;
+      try {
+        if (typeof agents?.list === "function") {
+          for (const agent of agents.list()) {
+            if (selectedName(sessionIdOf(agent)) !== workflow.name) continue;
+            workflow.ensureDetached(agent);
+          }
+        }
+      } finally {
+        if (workflows.get(workflow.name) === workflow) workflows.delete(workflow.name);
+      }
+    };
   }
 
   function selectWorkflow(sessionId, name) {
     const workflow = workflows.get(name);
     if (!workflow) throw new Error(`unknown workflow: ${name}`);
     const agent = liveAgent(sessionId);
-    if (agent && !workflow.candidate(agent)) {
+    if (agent && workflow.candidate(agent) !== true) {
       throw new Error(`a child session cannot select ${name}`);
     }
     selection.set(sessionId, name);
@@ -358,6 +432,7 @@ export function apply(ctx, config = {}) {
       selected: selectedName,
       select: selectWorkflow,
       clear: clearWorkflow,
+      register: registerWorkflow,
     }),
     handleWorkflows,
   });

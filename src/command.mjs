@@ -34,8 +34,10 @@ export function parseWorkflowsInput(rawInput) {
 }
 
 export function formatWorkflowList(names, selected) {
-  if (!Array.isArray(names) || names.length === 0) return "no workflows loaded";
-  const lines = names.map((name) => (name === selected ? `${name} (selected)` : name));
-  if (!selected) lines.push("none selected");
-  return lines.join("\n");
+  const registered = Array.isArray(names) ? names : [];
+  if (registered.length === 0 && !selected) return "no workflows loaded";
+  const lines = registered.map((name) => (name === selected ? `${name} (selected)` : name));
+  if (selected && !registered.includes(selected)) lines.push(`${selected} (selected, unbound)`);
+  else if (!selected) lines.push("none selected");
+  return lines.length > 0 ? lines.join("\n") : "no workflows loaded";
 }
