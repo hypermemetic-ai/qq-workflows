@@ -4,6 +4,8 @@
 // is running, if any. Architect, iterate, and find are standalone workflows.
 // Architect and iterate own tools, hang, notes/journal, and role settings.
 // Find owns the image-finder sitting: hang, arm, leave. No roles.
+// Session context and awaitable leave/transition live on service.workflows;
+// /workflows select and clear stay the command path.
 
 import { createNotebookStore, defaultNotebookDir } from "./notebook.mjs";
 import { createClerk } from "./clerk.mjs";
@@ -24,6 +26,14 @@ import {
   formatSettingsList,
 } from "./settings.mjs";
 import { formatWorkflowList, parseWorkflowsInput } from "./command.mjs";
+import { DEFAULT_ACCEPTED_CONTEXTS, normalizeAcceptedContexts } from "./context.mjs";
+import { createWorkflowSessionApi } from "./transition.mjs";
+
+export {
+  DEFAULT_ACCEPTED_CONTEXTS,
+  LEAVE_REASONS,
+  SESSION_CONTEXTS,
+} from "./context.mjs";
 
 export const name = "qq-workflows";
 // Same load gate as qq-relay. Commands and tools stay optional.
@@ -59,6 +69,7 @@ function registeredWorkflowSpec(spec) {
     ensureDetached: spec.ensureDetached,
     listSettings: spec.listSettings,
     writeSettings: spec.writeSettings,
+    acceptedContexts: normalizeAcceptedContexts(spec.acceptedContexts),
   };
   if (typeof workflow.name !== "string" || !WORKFLOW_NAME.test(workflow.name)) {
     throw new Error(`invalid workflow name: ${String(workflow.name ?? "")}`);
@@ -200,6 +211,7 @@ export function apply(ctx, config = {}) {
   const architectWorkflow = Object.freeze({
     name: "architect",
     candidate: isArchitectCandidate,
+    acceptedContexts: DEFAULT_ACCEPTED_CONTEXTS,
     settings: architectSettings,
     ensureAttached(agent) {
       if (!isArchitectCandidate(agent)) return null;
@@ -224,6 +236,7 @@ export function apply(ctx, config = {}) {
   const iterateWorkflow = Object.freeze({
     name: "iterate",
     candidate: isIterateCandidate,
+    acceptedContexts: DEFAULT_ACCEPTED_CONTEXTS,
     settings: iterateSettings,
     ensureAttached(agent) {
       if (!isIterateCandidate(agent)) return null;
@@ -281,6 +294,7 @@ export function apply(ctx, config = {}) {
   const findWorkflow = Object.freeze({
     name: "find",
     candidate: isArchitectCandidate,
+    acceptedContexts: DEFAULT_ACCEPTED_CONTEXTS,
     ensureAttached(agent) {
       if (!isArchitectCandidate(agent)) return null;
       const sessionId = sessionIdOf(agent);
@@ -313,6 +327,14 @@ export function apply(ctx, config = {}) {
     if (!sessionId || typeof agents?.get !== "function") return null;
     return agents.get(sessionId) ?? null;
   }
+
+  const sessionApi = createWorkflowSessionApi({
+    getWorkflow: (name) => workflows.get(name) ?? null,
+    selectedName,
+    persistSelection: (sessionId, name) => selection.set(sessionId, name),
+    liveAgent,
+    names: () => [...workflows.keys()],
+  });
 
   function syncSession(agent) {
     if (!agent) return;
@@ -433,6 +455,13 @@ export function apply(ctx, config = {}) {
       select: selectWorkflow,
       clear: clearWorkflow,
       register: registerWorkflow,
+      acceptedContexts: sessionApi.acceptedContexts,
+      accepts: sessionApi.accepts,
+      accepting: sessionApi.accepting,
+      describe: sessionApi.describe,
+      compatible: sessionApi.compatible,
+      leave: sessionApi.leave,
+      transition: sessionApi.transition,
     }),
     handleWorkflows,
   });

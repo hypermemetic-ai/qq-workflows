@@ -48,12 +48,40 @@ frozen snapshot. Names must match `/^[a-z][a-z0-9-]{0,31}$/`; `none`, `off`,
 `settings`, `architect`, `iterate`, and `find` are reserved. Duplicate live
 owners are refused.
 
+`acceptedContexts` is optional. Omitted, it defaults to `project` only — the
+legacy sibling default. New workflows opt into `scratch`, or both, by declaring
+the array explicitly. Architect, iterate, and find declare `project` explicitly.
+Queries (`acceptedContexts`, `accepts`, `accepting`, `describe`, `compatible`)
+are plugin-blind: they resolve a target's context without mutating selection.
+
 Registration returns an idempotent disposer. Disposal detaches the sibling
 workflow and removes its live name without erasing durable selection, so a
 later registration can reclaim it. The sibling's attach/detach methods own any
 `workflows:<name>` relay label; this wrapper does not hang or clear relay labels
 for registered siblings. A workflow with no roles conventionally returns
 `<name> has no roles` from `listSettings()` and rejects settings writes.
+
+### Leave and transition
+
+Internal workflow state or dismiss is outside this API and does not leave.
+`/workflows` select and clear stay the command path; they do not take a session
+context. Future Home/workflow UI uses the awaitable service:
+
+- `leave(sessionId, reason)` awaits cleanup/detach, then clears durable
+  selection. Refusal or throw keeps the old selection and re-attaches when
+  possible. Persist failure after a successful detach re-attaches; if that also
+  fails, selection lands in `none` rather than claiming a detached workflow.
+- `transition(sessionId, { name, context, reason })` validates that the target
+  exists, accepts the requested context, and is a candidate before leaving the
+  current workflow. Invalid target, context, or candidate leaves the current
+  selection untouched. After a successful leave, attach then persist only
+  truthful state. Target-attach or persist failure lands explicitly in `none`;
+  it does not silently resurrect the previous workflow.
+- Same-name requests re-attach idempotently and do not leave or duplicate.
+- Agent or plugin disposal still detaches safely and does not clear durable
+  selection.
+- Reasons are the closed set `back`, `home`, `workflow-switch`,
+  `context-navigation`, `session-close`. Never a workflow-name branch.
 
 ## Architect
 
@@ -234,6 +262,7 @@ worktree per nit.
 
 ```bash
 node tests/test-qq-workflows-plugin.mjs .
+node tests/test-qq-workflows-context.mjs
 node tests/test-session-prompt.mjs
 tests/test-qq-workflows-boot.sh
 node tests/test-qq-tasks.mjs .

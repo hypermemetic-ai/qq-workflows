@@ -20,7 +20,9 @@
     "./iterate-tools": "./src/iterate-tools.mjs",
     "./selection": "./src/selection.mjs",
     "./settings": "./src/settings.mjs",
-    "./command": "./src/command.mjs"
+    "./command": "./src/command.mjs",
+    "./context": "./src/context.mjs",
+    "./transition": "./src/transition.mjs"
   },
   "files": [
     "src/",
