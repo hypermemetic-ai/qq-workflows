@@ -78,19 +78,29 @@ export function createWorkflowSessionApi({
     }
   }
 
+  async function restoreOrClear(sessionId, name) {
+    try {
+      await attachNamed(sessionId, name);
+    } catch {
+      try { await detachNamed(sessionId, name); } catch {}
+      try { persistSelection(sessionId, null); } catch {}
+    }
+  }
+
   async function leave(sessionId, reason) {
     assertLeaveReason(reason);
     const current = selectedName(sessionId);
     if (!current) return null;
-    await detachNamed(sessionId, current);
+    try {
+      await detachNamed(sessionId, current);
+    } catch (error) {
+      await restoreOrClear(sessionId, current);
+      throw error;
+    }
     try {
       persistSelection(sessionId, null);
     } catch (error) {
-      try {
-        await attachNamed(sessionId, current);
-      } catch {
-        try { persistSelection(sessionId, null); } catch {}
-      }
+      await restoreOrClear(sessionId, current);
       throw error;
     }
     return null;

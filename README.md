@@ -69,8 +69,9 @@ context. Future Home/workflow UI uses the awaitable service:
 
 - `leave(sessionId, reason)` awaits cleanup/detach, then clears durable
   selection. Refusal or throw keeps the old selection and re-attaches when
-  possible. Persist failure after a successful detach re-attaches; if that also
-  fails, selection lands in `none` rather than claiming a detached workflow.
+  possible. If re-attach fails, or persist fails after a successful detach and
+  re-attach also fails, selection lands in `none` rather than claiming a
+  detached workflow.
 - `transition(sessionId, { name, context, reason })` validates that the target
   exists, accepts the requested context, and is a candidate before leaving the
   current workflow. Invalid target, context, or candidate leaves the current
