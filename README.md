@@ -1,8 +1,8 @@
 # `@hypermemetic-ai/qq-workflows`
 
 One repository, one plugin, one version. Named qq workflows live here.
-Loading this plugin is how a DSH host gets architect, iterate, and find. The
-host binds the plugin when present and runs without it.
+Loading this plugin is how a DSH host gets architect, iterate, land, and find.
+The host binds the plugin when present and runs without it.
 
 A new session has no workflow until the operator picks one with `/workflows`.
 The wrapper only selects which registered workflow this chair is running, if
@@ -12,8 +12,9 @@ plugins can reversibly join the live registry through
 behavior and state.
 
 There is no `run_workflow(name)` dispatcher. Each workflow registers its own
-tools. Do not use DSH's model-written workflow tool as the dispatcher. Do not
-port Pi delegate / review / land.
+tools. Do not use DSH's model-written workflow tool as the dispatcher. Land is
+the DSH port of the old Pi/Herdr review-and-land job: architect does not merge,
+the implementer calls `done`, and this chair stamps land or review.
 
 Architect and iterate do not share a session. Two methodologies, two chairs.
 Architect does not invoke iterate.
@@ -22,8 +23,8 @@ Architect does not invoke iterate.
 
 `/workflows` lists loaded workflow plugins and marks the one selected on this
 session. `/workflows architect` attaches architect. `/workflows iterate`
-attaches iterate. `/workflows find` attaches find (image-finder sitting).
-`/workflows none` (or `off`) clears the selection. `/workflows settings` asks
+attaches iterate. `/workflows land` attaches land. `/workflows find` attaches
+find (image-finder sitting). `/workflows none` (or `off`) clears the selection. `/workflows settings` asks
 the selected workflow for its roles; `/workflows settings architect scribe …`,
 `/workflows settings iterate desk …`, and `/workflows settings base talking …`
 write those roles. Base is the floor chair: one `talking` seat, used when no
@@ -33,7 +34,7 @@ grammar: workflow names, roles, `xai-auth`/`openai-codex`, `grok-4.6` /
 
 Selection is per DSH session, restart-safe, default none. One file per session
 beside `DSH_HOME` (`config.selectionDir` overrides), mode `0600`. A child
-(`origin: subagent`) is never selected as architect, iterate, or find.
+(`origin: subagent`) is never selected as architect, iterate, land, or find.
 Empty `/find` still arms or leaves; it also selects or clears this workflow.
 
 A persisted selection remains visible through `workflows.selected(sessionId)`
@@ -265,6 +266,19 @@ unlabeled until filed. Next hands never get the whole wiki: the desk
 projection carries a cheap index, and the packet carries only the selected
 full nodes. Missable on purpose.
 
+## Land
+
+Own chair, own hang (`workflows:land`), own tools. Architect does not merge.
+An implementer child calls `done`; the packet is the brief plus file counts
+and diff pointers (`qq.route-packet/v1`). This chair stamps `land` or
+`review` (default review when uncertain; control paths stay on review; paint
+may land). `land` merges to the named base and cleans the worktree. `review`
+starts an isolated QA child with `read,bash,edit,write,qa_verdict`. QA may
+commit test-only changes and must call `qa_verdict` exactly once. Look 1
+fail starts exactly one fresh implementer. Look 2 is final: pass lands, fail
+stops. Every terminal outcome packets the architect session through qq-relay
+default steer. This is not iterate's pixel reviewer.
+
 ## Out of this land
 
 research / implementation / judgment as products, Impulse UI, a daemon or
@@ -281,6 +295,7 @@ worktree per nit.
 ```bash
 node tests/test-qq-workflows-plugin.mjs .
 node tests/test-qq-workflows-context.mjs
+node tests/test-qq-land.mjs
 node tests/test-session-prompt.mjs
 tests/test-qq-workflows-boot.sh
 node tests/test-qq-tasks.mjs .

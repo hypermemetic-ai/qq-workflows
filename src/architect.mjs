@@ -156,6 +156,7 @@ export function createArchitect({
   agents,
   tasks,
   talking,
+  onInvokeChild,
   env = process.env,
 } = {}) {
   const attached = new Map();
@@ -412,7 +413,21 @@ export function createArchitect({
       ...childCreateOptions(route),
     });
     const child = handle?.agent ?? handle;
-    watchChildReturn({ ctx, relay, child, parentId: parent.id });
+    let adopted = false;
+    if (typeof onInvokeChild === "function") {
+      try {
+        const result = await onInvokeChild(child, {
+          packet,
+          parent,
+          parentSession: parent.id,
+          cwd: targetCwd,
+        });
+        adopted = result === true || result?.status === "ok";
+      } catch {
+        adopted = false;
+      }
+    }
+    if (!adopted) watchChildReturn({ ctx, relay, child, parentId: parent.id });
     child.followup({
       id: randomUUID(),
       role: "user",
