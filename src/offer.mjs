@@ -29,7 +29,12 @@ export function liveNotes(card) {
 }
 
 export function leftoverNotes(card) {
-  return liveNotes(card).filter((note) => !isClerkRecap(note.text));
+  return liveNotes(card).filter((note) => {
+    const text = String(note?.text ?? "").trim();
+    if (!text || isClerkRecap(text)) return false;
+    if (/^fact:/i.test(text)) return false;
+    return true;
+  });
 }
 
 /**

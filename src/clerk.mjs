@@ -3,6 +3,7 @@
 // not operator talk are skipped.
 
 import { oneShot } from "../../core/src/ask.mjs";
+import { isClerkRecap, liveNotes } from "./offer.mjs";
 import { CLERK_SYSTEM, PACKET_SYSTEM, parseClerkOutput } from "./scribe.mjs";
 
 const USER_EXTRACT_CHARS = 240;
@@ -116,19 +117,26 @@ export function buildSpine(events, turn) {
   };
 }
 
-export function formatNotebookForScribe(notebook) {
+/** Cheap current board: standing facts, leftover lines, fold ranges. Not the diary. */
+export function formatLiveBoard(notebook) {
   const cards = notebook?.cards ?? [];
   if (cards.length === 0) return "(empty notebook)";
   return cards.map((card) => {
     const flag = card.open ? "open" : "closed";
-    const notes = card.notes.length === 0
-      ? "  (no notes)"
-      : card.notes.map((note) => `  - ${note.text} [${note.startSeq}-${note.endSeq}]`).join("\n");
-    const stubs = (card.stubs ?? []).length === 0
+    const standing = liveNotes(card).filter((note) => !isClerkRecap(note.text));
+    const notes = standing.length === 0
+      ? "  (no standing notes)"
+      : standing.map((note) => `  - ${note.text} [${note.startSeq}-${note.endSeq}]`).join("\n");
+    const stubs = card.stubs ?? [];
+    const folded = stubs.length === 0
       ? ""
-      : `\n  stubs:\n${card.stubs.map((stub) => `  - [${stub.startSeq}-${stub.endSeq}] ${stub.text}`).join("\n")}`;
-    return `card ${card.name} (${flag})\n${notes}${stubs}`;
+      : `\n${stubs.map((stub) => `  folded ${stub.startSeq}-${stub.endSeq}`).join("\n")}`;
+    return `card ${card.name} (${flag})\n${notes}${folded}`;
   }).join("\n\n");
+}
+
+export function formatNotebookForScribe(notebook) {
+  return formatLiveBoard(notebook);
 }
 
 export function formatSpine(spine) {
@@ -183,8 +191,8 @@ export function createClerk({ store, llm, binding, resolveBinding, run = oneShot
     if (spine.empty) return { action: "nothing", reason: "empty-spine" };
     const notebook = store.load(sessionId);
     const user = [
-      "Notebook:",
-      formatNotebookForScribe(notebook),
+      "Live board:",
+      formatLiveBoard(notebook),
       "",
       "Turn spine:",
       formatSpine(spine),
@@ -209,8 +217,8 @@ export function createClerk({ store, llm, binding, resolveBinding, run = oneShot
         ? `session ${parentSession}`
         : "";
     const user = [
-      "Notebook:",
-      formatNotebookForScribe(notebook),
+      "Live board:",
+      formatLiveBoard(notebook),
       "",
       "DSH log (text + tool names; no reasoning, no dumps):",
       buildLogSpine(events, { foldPoint }) || "(empty)",

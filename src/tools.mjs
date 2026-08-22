@@ -3,6 +3,7 @@
 // no run_workflow(name) dispatcher.
 
 import { randomUUID } from "node:crypto";
+import { formatLiveBoard } from "./clerk.mjs";
 
 function textBlock(text) {
   return { type: "text", text };
@@ -10,20 +11,6 @@ function textBlock(text) {
 
 function refusal(reason) {
   return { status: "refused", reason };
-}
-
-function formatNotebook(notebook) {
-  if (!notebook?.cards?.length) return "(empty notebook)";
-  return notebook.cards.map((card) => {
-    const flag = card.open ? "open" : "closed";
-    const notes = card.notes.length === 0
-      ? "  (no notes)"
-      : card.notes.map((note) => `  - ${note.text} [${note.startSeq}-${note.endSeq}]`).join("\n");
-    const stubs = (card.stubs ?? []).length === 0
-      ? ""
-      : `\n  stubs:\n${card.stubs.map((stub) => `  - [${stub.startSeq}-${stub.endSeq}] ${stub.text}`).join("\n")}`;
-    return `card ${card.name} (${flag})\n${notes}${stubs}`;
-  }).join("\n\n");
 }
 
 function eventPayload(event) {
@@ -125,7 +112,7 @@ export function buildArchitectTools({ store, sessionQuery, invoke, tasks } = {})
         },
         render: (_args, value) => {
           if (value.status === "refused") return [textBlock(`Notes refused: ${value.reason}`)];
-          return [textBlock(formatNotebook(value.notebook))];
+          return [textBlock(formatLiveBoard(value.notebook))];
         },
       },
       async execute(_args, exec) {
@@ -304,7 +291,8 @@ export function pluginUserMessage(text, form = "notice") {
 }
 
 export const internals = Object.freeze({
-  formatNotebook,
+  formatNotebook: formatLiveBoard,
+  formatLiveBoard,
   expandSeqs,
   textBlock,
   refusal,
