@@ -1,9 +1,10 @@
 // qq-workflows: one repository, one plugin. Cordis entry point.
 //
 // The wrapper lists registered workflows and selects which one this chair
-// is running, if any. Architect, iterate, and find are standalone workflows.
-// Architect and iterate own tools, hang, notes/journal, and role settings.
-// Find owns the image-finder sitting: hang, arm, leave. No roles.
+// is running, if any. Architect, iterate, land, and find are standalone
+// workflows. Architect and iterate own tools, hang, notes/journal, and role
+// settings. Land owns done/qa_verdict on children, hang, and land/review
+// routing. Find owns the image-finder sitting: hang, arm, leave. No roles.
 // Session context and awaitable leave/transition live on service.workflows;
 // /workflows select and clear stay the command path.
 
@@ -20,6 +21,8 @@ import {
   toolsOf,
 } from "./hide-harness.mjs";
 import { createIterate, isIterateCandidate } from "./iterate.mjs";
+import { createLand, isLandCandidate } from "./land.mjs";
+import { createLandStore, defaultLandDir } from "./land-store.mjs";
 import { createJournalStore, defaultJournalDir } from "./journal.mjs";
 import { createWikiStore, defaultWikiDir } from "./wiki.mjs";
 import { buildDeskTools, buildHandsTools } from "./iterate-tools.mjs";
@@ -28,9 +31,11 @@ import {
   ARCHITECT_ROLES,
   BASE_ROLES,
   ITERATE_ROLES,
+  LAND_ROLES,
   createArchitectSettings,
   createBaseSettings,
   createIterateSettings,
+  createLandSettings,
   formatSettingsList,
 } from "./settings.mjs";
 import { completeComposerLine, formatWorkflowList, parseWorkflowsInput } from "./command.mjs";
@@ -56,6 +61,7 @@ const EXTERNAL_WORKFLOW_RESERVED = new Set([
   "settings",
   "architect",
   "iterate",
+  "land",
   "find",
   "base",
 ]);
@@ -125,9 +131,11 @@ export function apply(ctx, config = {}) {
   const selection = createSelectionStore(defaultSelectionDir(process.env, config));
   const architectSettings = createArchitectSettings({ settingsFile: config.settingsFile });
   const iterateSettings = createIterateSettings({ settingsFile: config.settingsFile });
+  const landSettings = createLandSettings({ settingsFile: config.settingsFile });
   const baseSettings = createBaseSettings({ settingsFile: config.settingsFile });
   const journal = createJournalStore(defaultJournalDir(process.env, config));
   const wiki = createWikiStore(defaultWikiDir(process.env, config));
+  const landStore = createLandStore(defaultLandDir(process.env, config));
   const llm = ctx.get("llm", false);
   const tokenMeter = ctx.get("tokenMeter", false);
   const sessionQuery = ctx.get("sessionQuery", false);
@@ -145,6 +153,14 @@ export function apply(ctx, config = {}) {
     q: config.q,
     now: config.now,
   });
+  const land = createLand({
+    ctx,
+    store: landStore,
+    settings: landSettings,
+    agents,
+    llm,
+    run: config.runCommand,
+  });
   const architect = createArchitect({
     ctx,
     store,
@@ -153,6 +169,7 @@ export function apply(ctx, config = {}) {
     agents,
     tasks: () => ctx.get?.("qq-tasks", false) ?? null,
     talking: () => architectSettings.get("talking"),
+    onInvokeChild: (child, info) => land.adoptImplementer(child, info),
   });
   const iterate = createIterate({
     ctx,
@@ -327,6 +344,28 @@ export function apply(ctx, config = {}) {
     },
   });
   workflows.set("iterate", iterateWorkflow);
+
+  const landWorkflow = Object.freeze({
+    name: "land",
+    candidate: isLandCandidate,
+    acceptedContexts: DEFAULT_ACCEPTED_CONTEXTS,
+    settings: landSettings,
+    ensureAttached(agent) {
+      if (!isLandCandidate(agent)) return null;
+      return land.attach(agent);
+    },
+    ensureDetached(agentOrId) {
+      return land.detach(agentOrId);
+    },
+    listSettings() {
+      return formatSettingsList("land", landSettings.list(), LAND_ROLES);
+    },
+    writeSettings(role, binding) {
+      landSettings.write(role, binding);
+      return formatSettingsList("land", landSettings.list(), LAND_ROLES);
+    },
+  });
+  workflows.set("land", landWorkflow);
 
   function selectedName(sessionId) {
     return selection.get(sessionId);
@@ -535,11 +574,13 @@ export function apply(ctx, config = {}) {
     offer: (sessionId) => architect.offer(sessionId),
     choose: (sessionId, args) => architect.choose(sessionId, args),
     iterate,
+    land,
     journal,
     wiki,
     selection,
     settings: architectSettings,
     iterateSettings,
+    landSettings,
     baseSettings,
     complete: (line) => completeComposerLine(line, {
       names: [...workflows.keys()],
@@ -547,6 +588,7 @@ export function apply(ctx, config = {}) {
         [...workflows.entries()].map(([name, workflow]) => {
           if (name === "architect") return [name, [...ARCHITECT_ROLES]];
           if (name === "iterate") return [name, [...ITERATE_ROLES]];
+          if (name === "land") return [name, [...LAND_ROLES]];
           if (name === "base") return [name, [...BASE_ROLES]];
           return [name, []];
         }),
@@ -578,7 +620,7 @@ export function apply(ctx, config = {}) {
       () => commands.register({
         name: "workflows",
         description: "List, select, or configure loaded workflow plugins for this session.",
-        input: { hint: "architect | iterate | find | base | none | settings [workflow] [role provider model [effort]]" },
+        input: { hint: "architect | iterate | land | find | base | none | settings [workflow] [role provider model [effort]]" },
         handler: handleWorkflows,
       }),
       "qq-workflows: /workflows",
@@ -612,9 +654,11 @@ export function apply(ctx, config = {}) {
         ? architect.label
         : selected === "iterate"
           ? iterate.label
-          : selected === "find"
-            ? FIND_LABEL
-            : "";
+          : selected === "land"
+            ? land.label
+            : selected === "find"
+              ? FIND_LABEL
+              : "";
       if (!sessionId || !label) continue;
       try { relay.hang(sessionId, label); } catch {}
     }
@@ -626,6 +670,7 @@ export function apply(ctx, config = {}) {
     const selected = selectedName(sessionId);
     if (selected === "architect") return architectSettings.get("talking") ?? baseSettings.get("talking");
     if (selected === "iterate") return iterateSettings.get("desk") ?? baseSettings.get("talking");
+    if (selected === "land") return landSettings.get("router") ?? baseSettings.get("talking");
     return baseSettings.get("talking");
   }
   function pinTalking(agent) {
@@ -695,6 +740,7 @@ export function apply(ctx, config = {}) {
     }
     architect.dispose?.();
     iterate.dispose?.();
+    land.dispose?.();
     for (const record of [...toolDisposers.values()]) record.dispose();
     for (const dispose of [...handsToolDisposers.values()]) dispose();
     for (const dispose of [...hideDisposers.values()]) dispose();

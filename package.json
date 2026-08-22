@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Named workflows, architect and iterate. qq expects the plugin and still runs if it is absent.",
+  "description": "Named workflows, architect, iterate, and land. qq expects the plugin and still runs if it is absent.",
   "main": "src/plugin.mjs",
   "exports": {
     ".": "./src/plugin.mjs",
@@ -15,6 +15,9 @@
     "./architect": "./src/architect.mjs",
     "./offer": "./src/offer.mjs",
     "./iterate": "./src/iterate.mjs",
+    "./land": "./src/land.mjs",
+    "./land-store": "./src/land-store.mjs",
+    "./land-tools": "./src/land-tools.mjs",
     "./journal": "./src/journal.mjs",
     "./wiki": "./src/wiki.mjs",
     "./iterate-tools": "./src/iterate-tools.mjs",
