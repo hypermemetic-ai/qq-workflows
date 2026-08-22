@@ -10,8 +10,9 @@ export const CLERK_SYSTEM = [
   "LEFTOVER <still open under this concern>",
   "X withdrawn / replaced by <what is done>",
   "NOTHING if the spine adds no durable fact.",
-  "Do not recap the turn. Do not paste the board. A recap dump is NOTHING.",
-  `Max ${NOTE_MAX_CHARS} characters.`,
+  "Do not recap the turn. Do not paste the board.",
+  "A recap dump or unprefixed diary line is refused: rewrite as FACT or LEFTOVER. Do not stop.",
+  `NOTHING only when the spine adds no durable fact. Max ${NOTE_MAX_CHARS} characters.`,
 ].join("\n");
 
 export const PACKET_SYSTEM = [
@@ -61,13 +62,16 @@ export function parseClerkOutput(text) {
     return { action: "nothing" };
   }
   if (isClerkDump(trimmed)) {
-    return { action: "nothing" };
+    return {
+      action: "error",
+      reason: `refused: recap dump or overlong. Write one FACT or LEFTOVER line (max ${NOTE_MAX_CHARS}).`,
+    };
   }
   if (/\bwithdrawn\b/i.test(trimmed) || /^x withdrawn/i.test(trimmed)) {
     return { action: "withdraw", text: trimmed };
   }
   if (!boardKind(trimmed)) {
-    return { action: "nothing" };
+    return { action: "error", reason: "refused: need a FACT or LEFTOVER line." };
   }
   return { action: "note", text: trimmed };
 }

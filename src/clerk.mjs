@@ -178,6 +178,8 @@ export function buildLogSpine(events, { foldPoint } = {}) {
   return lines.join("\n");
 }
 
+export const CLERK_WRITE_ATTEMPTS = 2;
+
 export function createClerk({ store, llm, binding, resolveBinding, run = oneShot } = {}) {
   function currentBinding() {
     if (typeof resolveBinding === "function") return resolveBinding();
@@ -190,23 +192,32 @@ export function createClerk({ store, llm, binding, resolveBinding, run = oneShot
     const spine = buildSpine(events, turn);
     if (spine.empty) return { action: "nothing", reason: "empty-spine" };
     const notebook = store.load(sessionId);
-    const user = [
-      "Live board:",
-      formatLiveBoard(notebook),
-      "",
-      "Turn spine:",
-      formatSpine(spine),
-    ].join("\n");
-    const raw = await run(llm, currentBinding(), { system: CLERK_SYSTEM, user });
-    const parsed = parseClerkOutput(raw);
-    if (parsed.action === "nothing") return parsed;
     const citation = { startSeq: spine.startSeq, endSeq: spine.endSeq };
-    if (parsed.action === "withdraw") {
-      store.appendWithdraw(sessionId, { text: parsed.text, ...citation });
-    } else {
-      store.appendNote(sessionId, { text: parsed.text, ...citation });
+    let lastError = "";
+    for (let attempt = 0; attempt < CLERK_WRITE_ATTEMPTS; attempt += 1) {
+      const user = [
+        "Live board:",
+        formatLiveBoard(notebook),
+        "",
+        "Turn spine:",
+        formatSpine(spine),
+        ...(lastError ? ["", `Previous write refused: ${lastError}`] : []),
+      ].join("\n");
+      const raw = await run(llm, currentBinding(), { system: CLERK_SYSTEM, user });
+      const parsed = parseClerkOutput(raw);
+      if (parsed.action === "error") {
+        lastError = parsed.reason;
+        continue;
+      }
+      if (parsed.action === "nothing") return parsed;
+      if (parsed.action === "withdraw") {
+        store.appendWithdraw(sessionId, { text: parsed.text, ...citation });
+      } else {
+        store.appendNote(sessionId, { text: parsed.text, ...citation });
+      }
+      return { ...parsed, ...citation };
     }
-    return { ...parsed, ...citation };
+    return { action: "error", reason: lastError, ...citation };
   }
 
   async function compilePacket({ sessionId, events, foldPoint, parentSession, parentAlias } = {}) {
