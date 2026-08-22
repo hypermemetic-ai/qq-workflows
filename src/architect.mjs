@@ -10,6 +10,7 @@ import { pluginUserMessage } from "./tools.mjs";
 import { buildSpine } from "./clerk.mjs";
 import { repoRootFor } from "./iterate.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
+import { hideHarnessToolsOn } from "./hide-harness.mjs";
 import {
   classifyLeftover,
   createOfferBook,
@@ -412,6 +413,7 @@ export function createArchitect({
       ...childCreateOptions(route),
     });
     const child = handle?.agent ?? handle;
+    hideHarnessToolsOn(child);
     watchChildReturn({ ctx, relay, child, parentId: parent.id });
     child.followup({
       id: randomUUID(),
