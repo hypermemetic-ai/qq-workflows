@@ -15,6 +15,7 @@ import { homedir } from "node:os";
 import { dirname, extname, join } from "node:path";
 import { pluginUserMessage } from "./tools.mjs";
 import { childCreateOptions } from "./child-model.mjs";
+import { hideHarnessToolsOn } from "./hide-harness.mjs";
 import { formatProjection, projectJournal } from "./journal.mjs";
 import { randomUUID } from "node:crypto";
 import { oneShot } from "../../core/src/ask.mjs";
@@ -502,6 +503,7 @@ export function createIterate({
       }),
     });
     const child = handle?.agent ?? handle;
+    hideHarnessToolsOn(child);
     liveHands = { childId: child.session?.id ?? childId, bundle, queued: [] };
     const queued = liveHands.queued;
     registerHandsTools?.(child, queued);

@@ -12,7 +12,12 @@ import { createClerk } from "./clerk.mjs";
 import { DEFAULT_H, createFolder } from "./fold.mjs";
 import { resolveScribeBinding } from "./scribe.mjs";
 import { buildArchitectTools } from "./tools.mjs";
-import { createArchitect, isArchitectCandidate } from "./architect.mjs";
+import { CHILD_ORIGIN, createArchitect, isArchitectCandidate } from "./architect.mjs";
+import {
+  hideHarnessTools,
+  stripHiddenHarnessTools,
+  toolsOf,
+} from "./hide-harness.mjs";
 import { createIterate, isIterateCandidate } from "./iterate.mjs";
 import { createJournalStore, defaultJournalDir } from "./journal.mjs";
 import { createWikiStore, defaultWikiDir } from "./wiki.mjs";
@@ -150,6 +155,41 @@ export function apply(ctx, config = {}) {
   const workflows = new Map();
   const toolDisposers = new Map();
   const handsToolDisposers = new Map();
+  const hideDisposers = new Map();
+
+  function originOf(agent) {
+    return agent?.session?.header?.origin;
+  }
+
+  function shouldHideHarness(agent) {
+    if (!agent) return false;
+    if (originOf(agent) === CHILD_ORIGIN) return true;
+    const selected = selectedName(sessionIdOf(agent));
+    return selected === "architect" || selected === "iterate";
+  }
+
+  function installHide(agent) {
+    const sessionId = sessionIdOf(agent);
+    if (!sessionId || hideDisposers.has(sessionId)) return;
+    const install = (toolCtx) => {
+      if (hideDisposers.has(sessionId)) return;
+      const tools = toolsOf(toolCtx) ?? toolsService(agent);
+      const dispose = hideHarnessTools(tools);
+      if (!dispose) return;
+      hideDisposers.set(sessionId, () => {
+        dispose();
+        hideDisposers.delete(sessionId);
+      });
+    };
+    if (typeof agent?.ctx?.inject === "function") agent.ctx.inject(["tools"], install);
+    else install(agent?.ctx);
+  }
+
+  function liftHide(agentOrId) {
+    const sessionId = typeof agentOrId === "string" ? agentOrId : sessionIdOf(agentOrId);
+    hideDisposers.get(sessionId)?.();
+    hideDisposers.delete(sessionId);
+  }
 
   function registerAgentTools(agent) {
     const sessionId = sessionIdOf(agent);
@@ -159,6 +199,7 @@ export function apply(ctx, config = {}) {
       if (selected !== "architect" && selected !== "iterate") return;
       const tools = toolsService(toolCtx) ?? toolsService(agent);
       if (!tools || typeof tools.register !== "function") return;
+      installHide(agent);
       const tasks = ctx.get?.("qq-tasks", false) ?? null;
       const definitions = selected === "architect"
         ? buildArchitectTools({
@@ -191,6 +232,7 @@ export function apply(ctx, config = {}) {
       if (handsToolDisposers.has(sessionId)) return;
       const tools = toolsService(toolCtx) ?? toolsService(child);
       if (!tools || typeof tools.register !== "function") return;
+      installHide(child);
       const disposers = buildHandsTools({
         designLoop: config.designLoop,
         onDump: ({ text }) => {
@@ -226,6 +268,7 @@ export function apply(ctx, config = {}) {
     },
     ensureDetached(agentOrId) {
       disposeAgentTools(agentOrId, "architect");
+      liftHide(agentOrId);
       return architect.detach(agentOrId);
     },
     listSettings() {
@@ -251,6 +294,7 @@ export function apply(ctx, config = {}) {
     },
     ensureDetached(agentOrId) {
       disposeAgentTools(agentOrId, "iterate");
+      liftHide(agentOrId);
       return iterate.detach(agentOrId);
     },
     listSettings() {
@@ -583,6 +627,7 @@ export function apply(ctx, config = {}) {
 
   ctx.on("agent/created", ({ agent }) => {
     pinTalking(agent);
+    if (originOf(agent) === CHILD_ORIGIN) installHide(agent);
     syncSession(agent);
   });
   ctx.on("agent/disposed", ({ agent }) => {
@@ -590,6 +635,15 @@ export function apply(ctx, config = {}) {
     const sessionId = sessionIdOf(agent);
     handsToolDisposers.get(sessionId)?.();
     handsToolDisposers.delete(sessionId);
+    liftHide(agent);
+  });
+  ctx.on("system-prompt/assemble", async (_assembly, context, next) => {
+    const agent = context?.agent ?? context?.scope;
+    const result = await next();
+    if (!shouldHideHarness(agent)) return result;
+    const tools = stripHiddenHarnessTools(result?.tools);
+    if (tools === result?.tools) return result;
+    return { ...result, tools };
   });
 
   if (typeof agents?.list === "function") {
@@ -613,6 +667,8 @@ export function apply(ctx, config = {}) {
     iterate.dispose?.();
     for (const record of [...toolDisposers.values()]) record.dispose();
     for (const dispose of [...handsToolDisposers.values()]) dispose();
+    for (const dispose of [...hideDisposers.values()]) dispose();
+    hideDisposers.clear();
     findAttached.clear();
   }, "qq-workflows: live attachments");
 }
