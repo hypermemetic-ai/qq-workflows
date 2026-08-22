@@ -4,8 +4,8 @@
 const UNFINISHED = /\b(todo\b|tbd\b|wip\b|unfinished|placeholder|not sure yet|need to think|coming soon|\?\?\?)/i;
 const ASKED_HANDOFF = /\b(please\s+hand[\s-]?off|hand[\s-]?off this|delegate this|file this(?: as a (?:task|ticket))?|run this)\b/i;
 const RUNNER_LINE = /^(return address\b|results are delivered through qq-relay\b|for the runner\b|runner[- ]only\b|child session\b|parent session\b)/i;
-const CLERK_RECAP_START = /^(card\s+\S+\s+\(open\)|-\s*User\b|User asked\b|User:|User got\b)/i;
-const CLERK_RECAP_BODY = /\boperator (explored|updated|listed|read|ran|wrote|got)\b/i;
+const CLERK_RECAP_START = /^(card\s+\S+\s+\(open\)|-\s*User\b|User\b)/i;
+const CLERK_RECAP_BODY = /\boperator\b/i;
 
 export function askedHandoff(text) {
   return ASKED_HANDOFF.test(String(text ?? ""));
