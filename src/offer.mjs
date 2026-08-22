@@ -1,10 +1,10 @@
 // Junction 1 leftover offer: classify, split the compiled brief, bank/ignore/handoff.
 // Detection is a hop after the talking turn. It does not write into architect talk.
 
+import { boardKind, isClerkDump } from "./scribe.mjs";
+
 const UNFINISHED = /\b(todo\b|tbd\b|wip\b|unfinished|placeholder|not sure yet|need to think|coming soon|\?\?\?)/i;
 const RUNNER_LINE = /^(return address\b|results are delivered through qq-relay\b|for the runner\b|runner[- ]only\b|child session\b|parent session\b)/i;
-const CLERK_RECAP_START = /^(card\s+\S+\s+\(open\)|-\s*User\b|User\b)/i;
-const CLERK_RECAP_BODY = /\boperator\b/i;
 
 export function isObviouslyUnfinished(prose) {
   const trimmed = String(prose ?? "").trim();
@@ -13,11 +13,10 @@ export function isObviouslyUnfinished(prose) {
   return UNFINISHED.test(trimmed) && trimmed.length < 280;
 }
 
-/** Clerk recap of the standing concern is not a leftover. */
-export function isClerkRecap(text) {
-  const trimmed = String(text ?? "").trim();
-  if (!trimmed) return true;
-  return CLERK_RECAP_START.test(trimmed) || CLERK_RECAP_BODY.test(trimmed);
+function noteKind(note) {
+  const text = String(note?.text ?? "").trim();
+  if (!text || isClerkDump(text)) return null;
+  return boardKind(text);
 }
 
 export function liveNotes(card) {
@@ -28,13 +27,13 @@ export function liveNotes(card) {
   });
 }
 
+/** FACT and LEFTOVER lines that still state the current board. */
+export function standingNotes(card) {
+  return liveNotes(card).filter((note) => noteKind(note) != null);
+}
+
 export function leftoverNotes(card) {
-  return liveNotes(card).filter((note) => {
-    const text = String(note?.text ?? "").trim();
-    if (!text || isClerkRecap(text)) return false;
-    if (/^fact:/i.test(text)) return false;
-    return true;
-  });
+  return liveNotes(card).filter((note) => noteKind(note) === "leftover");
 }
 
 /**
@@ -67,8 +66,9 @@ export function leftoverTitle(card, prose = leftoverProse(card)) {
   const defined = notes.map((note) => note.text.trim()).filter((text) => !isObviouslyUnfinished(text));
   const source = defined.at(-1) || String(prose ?? "").trim();
   const line = source.split(/\n/)[0]?.replace(/^[-*]\s+/, "") ?? "";
-  if (!line) return "Leftover";
-  return line.length > 80 ? `${line.slice(0, 77).trimEnd()}...` : line;
+  const title = line.replace(/^leftover\b\s*:?\s*/i, "");
+  if (!title) return "Leftover";
+  return title.length > 80 ? `${title.slice(0, 77).trimEnd()}...` : title;
 }
 
 /** Same compiled packet run gets; runner-only lines move to the bottom. */

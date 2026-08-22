@@ -3,7 +3,7 @@
 // not operator talk are skipped.
 
 import { oneShot } from "../../core/src/ask.mjs";
-import { isClerkRecap, liveNotes } from "./offer.mjs";
+import { standingNotes } from "./offer.mjs";
 import { CLERK_SYSTEM, PACKET_SYSTEM, parseClerkOutput } from "./scribe.mjs";
 
 const USER_EXTRACT_CHARS = 240;
@@ -123,7 +123,7 @@ export function formatLiveBoard(notebook) {
   if (cards.length === 0) return "(empty notebook)";
   return cards.map((card) => {
     const flag = card.open ? "open" : "closed";
-    const standing = liveNotes(card).filter((note) => !isClerkRecap(note.text));
+    const standing = standingNotes(card);
     const notes = standing.length === 0
       ? "  (no standing notes)"
       : standing.map((note) => `  - ${note.text} [${note.startSeq}-${note.endSeq}]`).join("\n");

@@ -10,8 +10,8 @@ export const CLERK_SYSTEM = [
   "LEFTOVER <still open under this concern>",
   "X withdrawn / replaced by <what is done>",
   "NOTHING if the spine adds no durable fact.",
-  "Do not recap the turn. Do not paste the board. Do not write User: or operator. Do not list tools.",
-  `Max ${NOTE_MAX_CHARS} characters. A dump is NOTHING.`,
+  "Do not recap the turn. Do not paste the board. A recap dump is NOTHING.",
+  `Max ${NOTE_MAX_CHARS} characters.`,
 ].join("\n");
 
 export const PACKET_SYSTEM = [
@@ -36,14 +36,21 @@ export function resolveScribeBinding(config = {}, _env = process.env) {
   return null;
 }
 
-/** True when clerk output is a notebook paste, turn recap, or overlong dump. */
+const BOARD_KIND = /^(fact|leftover)\b\s*:?\s*(\S.*)$/i;
+
+/** FACT (still true) or LEFTOVER (still open). Recap dumps have no kind. */
+export function boardKind(text) {
+  const match = BOARD_KIND.exec(String(text ?? "").trim());
+  return match ? match[1].toLowerCase() : null;
+}
+
+/** True when clerk output is a notebook paste, fold stub, or overlong dump. */
 export function isClerkDump(text) {
   const trimmed = String(text ?? "").trim();
   if (!trimmed) return false;
   if (trimmed.length > NOTE_MAX_CHARS) return true;
   if (/^card\s+\S+\s+\((open|closed)\)/i.test(trimmed)) return true;
   if (/Dropped conversation seq\s+\d+/i.test(trimmed)) return true;
-  if (/^(-\s*)?User\b/i.test(trimmed)) return true;
   if (trimmed.includes("\n") && trimmed.split(/\n/).length > 4) return true;
   return false;
 }
@@ -58,6 +65,9 @@ export function parseClerkOutput(text) {
   }
   if (/\bwithdrawn\b/i.test(trimmed) || /^x withdrawn/i.test(trimmed)) {
     return { action: "withdraw", text: trimmed };
+  }
+  if (!boardKind(trimmed)) {
+    return { action: "nothing" };
   }
   return { action: "note", text: trimmed };
 }
