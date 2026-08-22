@@ -100,6 +100,18 @@ function toolsService(holder) {
     ?? null;
 }
 
+/**
+ * DSH binds Agent create/resume lifecycle to the accessing fiber. Plugin HMR
+ * unloads that fiber and would abort in-flight turns. Workflow children must
+ * outlive a qq-workflows replacement, so create/resume through the host root.
+ */
+function hostAgents(ctx) {
+  const host = ctx?.root && typeof ctx.root.get === "function" ? ctx.root : ctx;
+  const agents = typeof host.get === "function" ? host.get("agents") : undefined;
+  if (agents) return agents;
+  return typeof ctx?.get === "function" ? ctx.get("agents") : undefined;
+}
+
 export function apply(ctx, config = {}) {
   const store = createNotebookStore(defaultNotebookDir(process.env, config), {
     now: config.now,
@@ -113,7 +125,7 @@ export function apply(ctx, config = {}) {
   const llm = ctx.get("llm", false);
   const tokenMeter = ctx.get("tokenMeter", false);
   const sessionQuery = ctx.get("sessionQuery", false);
-  const agents = ctx.get("agents");
+  const agents = hostAgents(ctx);
   const clerk = createClerk({
     store,
     llm,
@@ -620,4 +632,5 @@ export function apply(ctx, config = {}) {
 export const internals = Object.freeze({
   sessionIdOf,
   toolsService,
+  hostAgents,
 });
