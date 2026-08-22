@@ -1,5 +1,6 @@
 // Hide DSH harness extras this chair does not use. Relay is the mailbox.
-// invoke/go are the children. Do not sermon the model: the tools are gone.
+// invoke/go are the children. Do not sermon the model: the tools are gone,
+// and architect/iterate do not receive AGENTS.md dumps.
 
 export const HIDDEN_HARNESS_TOOLS = Object.freeze([
   "subagent",
@@ -37,6 +38,19 @@ export function stripHiddenHarnessTools(tools) {
   if (!Array.isArray(tools)) return tools;
   const next = tools.filter((tool) => !HIDDEN.has(tool?.name));
   return next.length === tools.length ? tools : next;
+}
+
+export function isAgentInstructionsMessage(message) {
+  const source = message?.source;
+  if (!source || typeof source !== "object") return false;
+  if (source.kind === "agent-instructions") return true;
+  return source.kind === "plugin" && source.plugin === "agent-instructions";
+}
+
+export function stripAgentInstructionMessages(messages) {
+  if (!Array.isArray(messages)) return messages;
+  const next = messages.filter((message) => !isAgentInstructionsMessage(message));
+  return next.length === messages.length ? messages : next;
 }
 
 /** Restrict + guard. Returns a lift, or null when tools cannot hide. */

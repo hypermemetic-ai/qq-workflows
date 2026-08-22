@@ -15,6 +15,7 @@ import { buildArchitectTools } from "./tools.mjs";
 import { CHILD_ORIGIN, createArchitect, isArchitectCandidate } from "./architect.mjs";
 import {
   hideHarnessTools,
+  stripAgentInstructionMessages,
   stripHiddenHarnessTools,
   toolsOf,
 } from "./hide-harness.mjs";
@@ -176,6 +177,14 @@ export function apply(ctx, config = {}) {
   function shouldHideHarness(agent) {
     if (!agent) return false;
     if (originOf(agent) === CHILD_ORIGIN) return true;
+    const selected = selectedName(sessionIdOf(agent));
+    return selected === "architect" || selected === "iterate";
+  }
+
+  // Children keep nested AGENTS.md (qq-ui). Architect and iterate do not
+  // get the DSH workspace-instruction dump.
+  function shouldHideInstructions(agent) {
+    if (!agent || originOf(agent) === CHILD_ORIGIN) return false;
     const selected = selectedName(sessionIdOf(agent));
     return selected === "architect" || selected === "iterate";
   }
@@ -656,6 +665,15 @@ export function apply(ctx, config = {}) {
     const tools = stripHiddenHarnessTools(result?.tools);
     if (tools === result?.tools) return result;
     return { ...result, tools };
+  });
+  ctx.on("agent/pre-step", async (event, next) => {
+    const decision = await next();
+    const agent = event?.agent ?? event?.scope;
+    if (!shouldHideInstructions(agent)) return decision;
+    if (!decision || decision.kind === "reject") return decision;
+    const messages = stripAgentInstructionMessages(decision.messages);
+    if (messages === decision.messages) return decision;
+    return { ...decision, messages };
   });
 
   if (typeof agents?.list === "function") {
