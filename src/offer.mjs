@@ -1,5 +1,6 @@
-// Junction 1 leftover offer: classify, split the compiled brief, bank/ignore/handoff.
-// Detection is a hop after the talking turn. It does not write into architect talk.
+// Leftover coverage hop after the talking turn. Unfinished stubs silent-bank.
+// A new leftover on the same card is the live board, not a topic switch.
+// Invoke is the handoff path. This hop does not write into architect talk.
 
 import { boardKind, isClerkDump } from "./scribe.mjs";
 
@@ -49,21 +50,19 @@ export function incomingLeftoverNotes(card, turnStartSeq) {
 }
 
 /**
- * Topic switch, not implementer handoff.
- * Incoming leftover with no prior leftover is the live concern — no popup.
- * Prior leftover with no incoming stays on the board, except unfinished stubs
- * which silent-bank. Prior + incoming is a new conversation.
+ * Leftover is coverage of the live concern.
+ * Incoming leftover stays on the board — settling one topic is not a branch.
+ * Prior leftover stays, except unfinished stubs which silent-bank.
+ * This hop does not popup. A later explicit branch signal can still return
+ * switch; leftover notes are not that signal. Invoke is the handoff.
  */
 export function classifyJunction(card, { turnStartSeq } = {}) {
   const prior = priorLeftoverNotes(card, turnStartSeq);
   const incoming = incomingLeftoverNotes(card, turnStartSeq);
-  if (incoming.length === 0) {
-    if (prior.length === 0) return "skip";
-    if (prior.every((note) => isObviouslyUnfinished(note.text))) return "bank";
-    return "skip";
-  }
+  if (incoming.length > 0) return "skip";
   if (prior.length === 0) return "skip";
-  return "switch";
+  if (prior.every((note) => isObviouslyUnfinished(note.text))) return "bank";
+  return "skip";
 }
 
 /** @deprecated use classifyJunction */

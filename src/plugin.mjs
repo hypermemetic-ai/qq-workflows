@@ -7,6 +7,7 @@
 // routing. Find owns the image-finder sitting: hang, arm, leave. No roles.
 // Session context and awaitable leave/transition live on service.workflows;
 // /workflows select and clear stay the command path.
+// leftover-coverage hop: clerk rewrites the board; bank sees the live pile.
 
 import { createNotebookStore, defaultNotebookDir } from "./notebook.mjs";
 import { createClerk } from "./clerk.mjs";
@@ -170,6 +171,9 @@ export function apply(ctx, config = {}) {
     tasks: () => ctx.get?.("qq-tasks", false) ?? null,
     talking: () => architectSettings.get("talking"),
     onInvokeChild: (child, info) => land.adoptImplementer(child, info),
+    llm,
+    resolveBinding: () => resolveScribeBinding({ ...config, settings: architectSettings }),
+    runScribe: config.runScribe,
   });
   const iterate = createIterate({
     ctx,

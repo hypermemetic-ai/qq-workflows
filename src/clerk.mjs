@@ -178,7 +178,37 @@ export function buildLogSpine(events, { foldPoint } = {}) {
   return lines.join("\n");
 }
 
-export const CLERK_WRITE_ATTEMPTS = 2;
+export const CLERK_WRITE_ATTEMPTS = 3;
+
+function formatLookback(events, ranges) {
+  const log = Array.isArray(events) ? events : [];
+  const blocks = [];
+  for (const range of ranges ?? []) {
+    const slice = log.filter((event) => (
+      Number(event?.seq) >= range.startSeq && Number(event?.seq) <= range.endSeq
+    ));
+    const lines = [`Look ${range.startSeq}-${range.endSeq}:`];
+    if (slice.length === 0) {
+      lines.push("(no events)");
+    } else {
+      for (const event of slice) {
+        const text = eventText(event).trim().replace(/\s+/g, " ").slice(0, USER_EXTRACT_CHARS);
+        if (text) lines.push(`${event.seq} ${event.type} ${text}`);
+        else lines.push(`${event.seq} ${event.type}`);
+      }
+    }
+    blocks.push(lines.join("\n"));
+  }
+  return blocks.join("\n\n");
+}
+
+function stampNotes(notes, citation) {
+  return (notes ?? []).map((note) => ({
+    text: note.text,
+    startSeq: Number.isSafeInteger(note.startSeq) ? note.startSeq : citation.startSeq,
+    endSeq: Number.isSafeInteger(note.endSeq) ? note.endSeq : citation.endSeq,
+  }));
+}
 
 export function createClerk({ store, llm, binding, resolveBinding, run = oneShot } = {}) {
   function currentBinding() {
@@ -194,6 +224,7 @@ export function createClerk({ store, llm, binding, resolveBinding, run = oneShot
     const notebook = store.load(sessionId);
     const citation = { startSeq: spine.startSeq, endSeq: spine.endSeq };
     let lastError = "";
+    let lookback = "";
     for (let attempt = 0; attempt < CLERK_WRITE_ATTEMPTS; attempt += 1) {
       const user = [
         "Live board:",
@@ -201,6 +232,7 @@ export function createClerk({ store, llm, binding, resolveBinding, run = oneShot
         "",
         "Turn spine:",
         formatSpine(spine),
+        ...(lookback ? ["", "Look-back:", lookback] : []),
         ...(lastError ? ["", `Previous write refused: ${lastError}`] : []),
       ].join("\n");
       const raw = await run(llm, currentBinding(), { system: CLERK_SYSTEM, user });
@@ -209,13 +241,23 @@ export function createClerk({ store, llm, binding, resolveBinding, run = oneShot
         lastError = parsed.reason;
         continue;
       }
+      if (parsed.action === "look") {
+        lookback = formatLookback(events, parsed.ranges);
+        if (!lookback) lastError = "look-back found no events";
+        else lastError = "";
+        continue;
+      }
       if (parsed.action === "nothing") return parsed;
       if (parsed.action === "withdraw") {
         store.appendWithdraw(sessionId, { text: parsed.text, ...citation });
-      } else {
-        store.appendNote(sessionId, { text: parsed.text, ...citation });
+        return { ...parsed, ...citation };
       }
-      return { ...parsed, ...citation };
+      const notes = stampNotes(
+        parsed.notes ?? [{ text: parsed.text }],
+        citation,
+      );
+      store.replaceStandingNotes(sessionId, notes);
+      return { ...parsed, notes, ...citation };
     }
     return { action: "error", reason: lastError, ...citation };
   }

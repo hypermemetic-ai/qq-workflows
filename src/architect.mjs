@@ -21,6 +21,8 @@ import {
   priorLeftoverNotes,
   switchBrief,
 } from "./offer.mjs";
+import { bankLeftover, bankNotice } from "./bank.mjs";
+import { oneShot } from "../../core/src/ask.mjs";
 
 export const ARCHITECT_LABEL = "workflows:architect";
 export const CHILD_ORIGIN = "subagent";
@@ -141,10 +143,10 @@ function noticeLeftover(session, text) {
 }
 
 function publicOffer(offer) {
-  if (!offer) return null;
+  if (!offer || offer.kind !== "switch") return null;
   return {
     id: offer.id,
-    kind: offer.kind || "switch",
+    kind: "switch",
     title: offer.title,
     brief: offer.operatorBrief || offer.brief,
     runnerBrief: "",
@@ -162,21 +164,33 @@ export function createArchitect({
   talking,
   onInvokeChild,
   env = process.env,
+  offerBook,
+  llm,
+  resolveBinding,
+  runScribe = oneShot,
 } = {}) {
   const attached = new Map();
-  const offers = createOfferBook();
+  const offers = offerBook ?? createOfferBook();
 
   function tasksOf() {
     return typeof tasks === "function" ? tasks() : tasks ?? null;
   }
 
-  function bankProse(title, prose) {
+  async function bankProse(title, prose) {
     const service = tasksOf();
     if (!service || typeof service.create !== "function") {
       return { status: "refused", reason: "bank requires qq-tasks" };
     }
-    const id = service.create({ title, body: prose });
-    return { status: "ok", action: "bank", id, title };
+    const llmOf = typeof llm === "function" ? llm() : llm;
+    const binding = typeof resolveBinding === "function" ? resolveBinding() : resolveBinding;
+    return bankLeftover({
+      tasks: service,
+      title,
+      leftover: prose,
+      llm: llmOf,
+      binding,
+      run: runScribe,
+    });
   }
 
   function rememberHandled(sessionId, digest) {
@@ -188,6 +202,34 @@ export function createArchitect({
     if (offers.alreadyHandled(sessionId, digest)) return true;
     const persisted = store?.handledLeftovers?.(sessionId);
     return Array.isArray(persisted) && persisted.includes(digest);
+  }
+
+  function liveDigest(sessionId) {
+    if (!store || typeof store.load !== "function") return "";
+    try {
+      const notebook = store.load(sessionId);
+      const card = store.openCard(notebook) ?? notebook.cards.at(-1);
+      return leftoverDigest(card);
+    } catch {
+      return "";
+    }
+  }
+
+  /** Pre-f3a61e9 leftover prompts compiled a child packet and used handoff/bank/ignore. */
+  function discardStaleOffer(sessionId, current) {
+    offers.clear(sessionId);
+    rememberHandled(sessionId, current?.digest);
+    const digest = liveDigest(sessionId);
+    if (digest && digest !== current?.digest) rememberHandled(sessionId, digest);
+    return current;
+  }
+
+  function liveSwitchOffer(sessionId) {
+    const current = offers.get(sessionId);
+    if (!current) return { offer: null, dropped: false };
+    if (current.kind === "switch") return { offer: current, dropped: false };
+    discardStaleOffer(sessionId, current);
+    return { offer: null, dropped: true };
   }
 
   function liveSession(sessionId, agent) {
@@ -272,7 +314,7 @@ export function createArchitect({
       sessionId,
       agent,
       lastTurn: () => lastTurn,
-      offer: () => publicOffer(offers.get(sessionId)),
+      offer: () => publicOffer(liveSwitchOffer(sessionId).offer),
       detach() {
         disposeEvent?.();
         disposeTurn?.();
@@ -299,7 +341,8 @@ export function createArchitect({
     const spine = buildSpine(events, turn);
     const digest = leftoverDigest(card);
     const existing = offers.get(sessionId);
-    if (existing?.digest === digest) return existing;
+    if (existing && existing.kind !== "switch") discardStaleOffer(sessionId, existing);
+    else if (existing?.digest === digest) return existing;
     if (wasHandled(sessionId, digest)) return { status: "skip", reason: "already-handled" };
     const kind = classifyJunction(card, { turnStartSeq: spine.startSeq });
     if (kind === "skip") {
@@ -310,11 +353,12 @@ export function createArchitect({
     if (kind === "bank") {
       const prose = leftoverProse({ notes: prior });
       const title = leftoverTitle({ name: card?.name, notes: prior }, prose);
-      const filed = bankProse(title, prose);
+      const filed = await bankProse(title, prose);
       if (filed.status === "ok") {
+        withdrawNotes(sessionId, prior);
         offers.clear(sessionId);
         rememberHandled(sessionId, digest);
-        noticeLeftover(session, `Leftover banked as ${filed.id}: ${title}`);
+        noticeLeftover(session, bankNotice(filed, title));
         return { ...filed, silent: true };
       }
       return { status: "skip", reason: "bank-unavailable" };
@@ -337,7 +381,7 @@ export function createArchitect({
   }
 
   function offer(sessionId) {
-    return publicOffer(offers.get(sessionId));
+    return publicOffer(liveSwitchOffer(sessionId).offer);
   }
 
   function withdrawNotes(sessionId, notes) {
@@ -352,8 +396,12 @@ export function createArchitect({
   }
 
   async function choose(sessionId, { choice, agent } = {}) {
-    const current = offers.get(sessionId);
-    if (!current) return { status: "refused", reason: "no leftover offer" };
+    const { offer: current, dropped } = liveSwitchOffer(sessionId);
+    if (!current) {
+      return dropped
+        ? { status: "ok", action: "dismiss" }
+        : { status: "refused", reason: "no leftover offer" };
+    }
     const live = liveSession(sessionId, agent);
     if (choice === "abandon" || choice === "ignore") {
       withdrawNotes(sessionId, current.prior);
@@ -362,14 +410,14 @@ export function createArchitect({
       noticeLeftover(live, "Previous leftover abandoned.");
       return { status: "ok", action: "abandon" };
     }
-    if (choice === "start" || choice === "now") {
+    if (choice === "start" || choice === "now" || choice === "handoff") {
       const prose = current.prose || leftoverProse({ notes: current.prior ?? [] });
       const title = leftoverTitle({ name: "concern", notes: current.prior ?? [] }, prose);
       let filed = { status: "ok", action: "start" };
       if (prose && !String(prose).split("\n").every((line) => !line.trim())) {
-        filed = bankProse(title, prose);
+        filed = await bankProse(title, prose);
         if (filed.status !== "ok") return filed;
-        noticeLeftover(live, `Previous leftover banked as ${filed.id}: ${title}`);
+        noticeLeftover(live, bankNotice(filed, title).replace(/^Leftover /, "Previous leftover "));
       }
       withdrawNotes(sessionId, current.prior);
       offers.clear(sessionId);
@@ -379,12 +427,12 @@ export function createArchitect({
     if (choice === "later" || choice === "bank") {
       const prose = current.incomingProse || leftoverProse({ notes: current.incoming ?? [] });
       const title = current.title || leftoverTitle({ name: "concern", notes: current.incoming ?? [] }, prose);
-      const filed = bankProse(title, prose);
+      const filed = await bankProse(title, prose);
       if (filed.status !== "ok") return filed;
       withdrawNotes(sessionId, current.incoming);
       offers.clear(sessionId);
       rememberHandled(sessionId, current.digest);
-      noticeLeftover(live, `New idea banked as ${filed.id}: ${title}`);
+      noticeLeftover(live, bankNotice(filed, title).replace(/^Leftover /, "New idea "));
       return { ...filed, action: "later" };
     }
     return { status: "refused", reason: "unknown leftover choice" };

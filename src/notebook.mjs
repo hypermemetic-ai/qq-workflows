@@ -2,7 +2,8 @@
 //
 // One JSON file per DSH session, beside DSH_HOME (config.notebookDir
 // overrides). Mode 0600, atomic write. Restart does not lose notes.
-// Cards are append-only; supersede by appending a withdraw line.
+// Standing notes on the open card can be rewritten in place (clerk
+// snapshot). Withdraw still appends. Fold stubs stay as an index.
 
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
@@ -191,6 +192,30 @@ export function createNotebookStore(dirPath, options = {}) {
 
     openCard(notebook) {
       return notebook.cards.find((card) => card.open) ?? notebook.cards.at(-1);
+    },
+
+    /**
+     * Replace standing notes on the open card. Stubs stay. The transcript
+     * is the source of truth; this snapshot is the cache of what matters.
+     */
+    replaceStandingNotes(sessionId, notes) {
+      return mutate(sessionId, (notebook) => {
+        const card = store.openCard(notebook);
+        if (!card) throw new Error("qq-workflows: notebook has no open card");
+        const next = [];
+        for (const note of notes ?? []) {
+          if (!validNote(note) || note.text.trim().length === 0) {
+            throw new Error("qq-workflows: note must have text and seq citations");
+          }
+          next.push({
+            text: note.text,
+            startSeq: note.startSeq,
+            endSeq: note.endSeq,
+          });
+        }
+        card.notes = next;
+        return next.map((note) => ({ ...note }));
+      });
     },
 
     /** Append one note to the open card. */
