@@ -665,7 +665,7 @@ export function apply(ctx, config = {}) {
   };
   if (typeof ctx.inject === "function") ctx.inject(["qq-relay"], syncRelayLabels);
 
-  const talkingPinned = new WeakSet();
+  const talkingOff = new Map();
   function talkingBinding(sessionId) {
     const selected = selectedName(sessionId);
     if (selected === "architect") return architectSettings.get("talking") ?? baseSettings.get("talking");
@@ -673,13 +673,20 @@ export function apply(ctx, config = {}) {
     if (selected === "land") return landSettings.get("router") ?? baseSettings.get("talking");
     return baseSettings.get("talking");
   }
+  function unpinTalking(agentOrId) {
+    const sessionId = typeof agentOrId === "string" ? agentOrId : sessionIdOf(agentOrId);
+    const off = talkingOff.get(sessionId);
+    if (!off) return;
+    talkingOff.delete(sessionId);
+    try { off(); } catch {}
+  }
   function pinTalking(agent) {
-    if (!agent || talkingPinned.has(agent) || !isArchitectCandidate(agent)) return;
+    const sessionId = sessionIdOf(agent);
+    if (!sessionId || talkingOff.has(sessionId) || !isArchitectCandidate(agent)) return;
     if (typeof agent.ctx?.on !== "function") return;
-    talkingPinned.add(agent);
-    agent.ctx.on("agent/request", async (_payload, next) => {
+    const off = agent.ctx.on("agent/request", async (_payload, next) => {
       const result = await next();
-      const binding = talkingBinding(sessionIdOf(agent));
+      const binding = talkingBinding(sessionId);
       if (!binding) return result;
       const { reasoningEffort: _inherited, ...rest } = result;
       return {
@@ -689,6 +696,7 @@ export function apply(ctx, config = {}) {
         ...(binding.effort ? { reasoningEffort: binding.effort } : {}),
       };
     });
+    talkingOff.set(sessionId, typeof off === "function" ? off : () => {});
   }
 
   ctx.on("agent/created", ({ agent }) => {
@@ -701,6 +709,7 @@ export function apply(ctx, config = {}) {
     const sessionId = sessionIdOf(agent);
     handsToolDisposers.get(sessionId)?.();
     handsToolDisposers.delete(sessionId);
+    unpinTalking(sessionId);
     liftHide(agent);
   });
   ctx.on("system-prompt/assemble", async (_assembly, context, next) => {
@@ -745,6 +754,7 @@ export function apply(ctx, config = {}) {
     for (const dispose of [...handsToolDisposers.values()]) dispose();
     for (const dispose of [...hideDisposers.values()]) dispose();
     hideDisposers.clear();
+    for (const sessionId of [...talkingOff.keys()]) unpinTalking(sessionId);
     findAttached.clear();
   }, "qq-workflows: live attachments");
 }
