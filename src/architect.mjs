@@ -8,6 +8,7 @@
 import { randomUUID } from "node:crypto";
 import { pluginUserMessage } from "./tools.mjs";
 import { buildSpine } from "./clerk.mjs";
+import { repoRootFor } from "./iterate.mjs";
 import {
   askedHandoff,
   classifyLeftover,
@@ -368,10 +369,11 @@ export function createArchitect({
     });
     if (!packet) return { status: "refused", reason: "invoke packet was empty" };
     const childId = `session-${randomUUID()}`;
+    const targetCwd = repoRootFor(parent.header?.cwd);
     const handle = await agents.create({
       sessionId: childId,
       meta: {
-        cwd: parent.header?.cwd,
+        cwd: targetCwd,
         parentSession: parent.id,
         origin: CHILD_ORIGIN,
       },

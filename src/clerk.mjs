@@ -2,7 +2,7 @@
 // Never on send. Never after every tool. Host/land/relay injects that are
 // not operator talk are skipped.
 
-import { oneShot } from "../../qq/src/ask.mjs";
+import { oneShot } from "../../core/src/ask.mjs";
 import { CLERK_SYSTEM, PACKET_SYSTEM, parseClerkOutput } from "./scribe.mjs";
 
 const USER_EXTRACT_CHARS = 240;

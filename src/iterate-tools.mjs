@@ -3,6 +3,7 @@
 
 import { isOperatorUserMessage } from "./clerk.mjs";
 import { formatProjection, projectJournal } from "./journal.mjs";
+import { repoRootFor } from "./iterate.mjs";
 
 const DESIGN_LOOP_URL = new URL("../../bin/lib/frontend-design-loop.mjs", import.meta.url);
 
@@ -151,7 +152,15 @@ export function buildDeskTools({ journal, wiki, go } = {}) {
           const sessionId = sessionIdOf(exec);
           if (!sessionId) return refusal("journal_list requires a live session");
           const projection = formatProjection(journal.load(sessionId), wiki?.index(sessionId) ?? []);
-          return { status: "ok", projection, journal: projectJournal(journal.load(sessionId)) };
+          const proj = projectJournal(journal.load(sessionId));
+          return {
+            status: "ok",
+            projection,
+            journal: {
+              ...proj,
+              sent: Array.from(proj.sent ?? []),
+            },
+          };
         } catch (error) {
           return refusal(error instanceof Error ? error.message : String(error));
         }
@@ -312,16 +321,18 @@ export function buildHandsTools({ designLoop, onDump } = {}) {
       },
       async execute(args, exec) {
         const cwd = exec?.agent?.session?.header?.cwd;
+        const root = repoRootFor(cwd);
         return run("start", (impl) => impl.startFixture({
-          root: cwd,
+          root,
           live: args?.live !== false,
         }), (started) => `Design-loop fixture listening at ${started.origin}. Open ${started.sessionUrl}. Live assets: ${started.live ? "on" : "off"}.`);
       },
     },
     {
       name: "design_loop_capture",
-      description: "Reload the fixture session, shoot desktop 1280x800 and Pixel 10 412x915 (optional 412x520 short), and measure default boxes.",
+      description: "Open a URL (the live product the nits are about, or a fixture), shoot desktop 1280x800 and Pixel 10 412x915 (optional 412x520 short), and measure default boxes. Then look at the PNGs.",
       parameters: {
+        url: { type: "string", description: "Page to shoot. Live product or fixture. Required unless a fixture is already running." },
         label: { type: "string" },
         short: { type: "boolean" },
       },
@@ -330,10 +341,15 @@ export function buildHandsTools({ designLoop, onDump } = {}) {
         render: (_args, value) => renderLoop("design_loop_capture", value),
       },
       async execute(args) {
-        return run("capture", (impl) => impl.captureShots({
-          label: args?.label,
-          short: args?.short === true,
-        }), (captured) => {
+        return run("capture", async (impl) => {
+          const { captureProduct } = await import(new URL("./live-capture.mjs", import.meta.url));
+          return captureProduct({
+            impl,
+            url: typeof args?.url === "string" ? args.url : undefined,
+            label: args?.label,
+            short: args?.short === true,
+          });
+        }, (captured) => {
           const shotList = Object.entries(captured.shots ?? {}).map(([name, path]) => `${name}=${path}`).join(" ");
           return `Captured ${captured.label}: ${shotList}`;
         });

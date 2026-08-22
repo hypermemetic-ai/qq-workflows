@@ -15,8 +15,10 @@ import {
 
 export const ARCHITECT_SETTINGS_SCHEMA = "qq.workflows-architect-settings/v1";
 export const ITERATE_SETTINGS_SCHEMA = "qq.workflows-iterate-settings/v1";
+export const BASE_SETTINGS_SCHEMA = "qq.workflows-base-settings/v1";
 export const ARCHITECT_ROLES = Object.freeze(["talking", "scribe"]);
 export const ITERATE_ROLES = Object.freeze(["desk", "hands", "reviewer"]);
+export const BASE_ROLES = Object.freeze(["talking"]);
 
 function emptyArchitectRoles() {
   return { talking: null, scribe: null };
@@ -24,6 +26,10 @@ function emptyArchitectRoles() {
 
 function emptyIterateRoles() {
   return { desk: null, hands: null, reviewer: null };
+}
+
+function emptyBaseRoles() {
+  return { talking: null };
 }
 
 function normalizeBinding(value) {
@@ -187,6 +193,65 @@ export function createIterateSettings({ settingsFile } = {}) {
       const iterate = normalizeIterateSection(previous.iterate);
       iterate.roles[role] = next;
       persist(path, { ...previous, iterate });
+      return next;
+    },
+  });
+}
+
+function normalizeBaseSection(raw) {
+  if (!raw || typeof raw !== "object") return { schema: BASE_SETTINGS_SCHEMA, roles: emptyBaseRoles() };
+  if (raw.schema && raw.schema !== BASE_SETTINGS_SCHEMA) {
+    throw new Error("qq-workflows: base settings are malformed");
+  }
+  const roles = raw.roles && typeof raw.roles === "object" ? raw.roles : raw;
+  return {
+    schema: BASE_SETTINGS_SCHEMA,
+    roles: { talking: normalizeBinding(roles.talking) },
+  };
+}
+
+/** Workflow-owned settings for the floor chair: one talking seat. Same settingsFile. */
+export function createBaseSettings({ settingsFile } = {}) {
+  const path = typeof settingsFile === "string" && isAbsolute(settingsFile) ? settingsFile : null;
+
+  function load() {
+    if (!path || !existsSync(path)) {
+      return { schema: BASE_SETTINGS_SCHEMA, roles: emptyBaseRoles(), unbound: true };
+    }
+    const parsed = readRaw(path);
+    const section = parsed?.base;
+    return { ...normalizeBaseSection(section), unbound: false };
+  }
+
+  return Object.freeze({
+    path,
+    unbound: () => path === null || !existsSync(path),
+    list() {
+      const loaded = load();
+      return { unbound: loaded.unbound, roles: { talking: loaded.roles.talking } };
+    },
+    get(role) {
+      if (!BASE_ROLES.includes(role)) return null;
+      return load().roles[role];
+    },
+    write(role, binding) {
+      if (!path) {
+        throw new Error("qq-workflows: base settings are unbound (no settingsFile)");
+      }
+      if (!BASE_ROLES.includes(role)) {
+        throw new Error(`qq-workflows: unknown base role ${role}`);
+      }
+      const next = normalizeBinding(binding);
+      if (!next) {
+        throw new Error("qq-workflows: role binding requires provider and model");
+      }
+      const previous = readRaw(path) ?? {
+        schema: ARCHITECT_SETTINGS_SCHEMA,
+        roles: emptyArchitectRoles(),
+      };
+      const base = normalizeBaseSection(previous.base);
+      base.roles[role] = next;
+      persist(path, { ...previous, base });
       return next;
     },
   });

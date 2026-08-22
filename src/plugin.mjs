@@ -20,12 +20,14 @@ import { buildDeskTools, buildHandsTools } from "./iterate-tools.mjs";
 import { createSelectionStore, defaultSelectionDir } from "./selection.mjs";
 import {
   ARCHITECT_ROLES,
+  BASE_ROLES,
   ITERATE_ROLES,
   createArchitectSettings,
+  createBaseSettings,
   createIterateSettings,
   formatSettingsList,
 } from "./settings.mjs";
-import { formatWorkflowList, parseWorkflowsInput } from "./command.mjs";
+import { completeComposerLine, formatWorkflowList, parseWorkflowsInput } from "./command.mjs";
 import { DEFAULT_ACCEPTED_CONTEXTS, normalizeAcceptedContexts } from "./context.mjs";
 import { createWorkflowSessionApi } from "./transition.mjs";
 
@@ -49,6 +51,7 @@ const EXTERNAL_WORKFLOW_RESERVED = new Set([
   "architect",
   "iterate",
   "find",
+  "base",
 ]);
 const REGISTERED_WORKFLOW_METHODS = [
   "candidate",
@@ -104,6 +107,7 @@ export function apply(ctx, config = {}) {
   const selection = createSelectionStore(defaultSelectionDir(process.env, config));
   const architectSettings = createArchitectSettings({ settingsFile: config.settingsFile });
   const iterateSettings = createIterateSettings({ settingsFile: config.settingsFile });
+  const baseSettings = createBaseSettings({ settingsFile: config.settingsFile });
   const journal = createJournalStore(defaultJournalDir(process.env, config));
   const wiki = createWikiStore(defaultWikiDir(process.env, config));
   const llm = ctx.get("llm", false);
@@ -323,6 +327,28 @@ export function apply(ctx, config = {}) {
   });
   workflows.set("find", findWorkflow);
 
+  const baseWorkflow = Object.freeze({
+    name: "base",
+    candidate: isArchitectCandidate,
+    acceptedContexts: DEFAULT_ACCEPTED_CONTEXTS,
+    settings: baseSettings,
+    ensureAttached(agent) {
+      if (!isArchitectCandidate(agent)) return null;
+      return sessionIdOf(agent);
+    },
+    ensureDetached() {
+      return null;
+    },
+    listSettings() {
+      return formatSettingsList("base", baseSettings.list(), BASE_ROLES);
+    },
+    writeSettings(role, binding) {
+      baseSettings.write(role, binding);
+      return formatSettingsList("base", baseSettings.list(), BASE_ROLES);
+    },
+  });
+  workflows.set("base", baseWorkflow);
+
   function liveAgent(sessionId) {
     if (!sessionId || typeof agents?.get !== "function") return null;
     return agents.get(sessionId) ?? null;
@@ -448,6 +474,18 @@ export function apply(ctx, config = {}) {
     selection,
     settings: architectSettings,
     iterateSettings,
+    baseSettings,
+    complete: (line) => completeComposerLine(line, {
+      names: [...workflows.keys()],
+      roles: Object.fromEntries(
+        [...workflows.entries()].map(([name, workflow]) => {
+          if (name === "architect") return [name, [...ARCHITECT_ROLES]];
+          if (name === "iterate") return [name, [...ITERATE_ROLES]];
+          if (name === "base") return [name, [...BASE_ROLES]];
+          return [name, []];
+        }),
+      ),
+    }),
     scribe: () => resolveScribeBinding({ ...config, settings: architectSettings }),
     workflows: Object.freeze({
       names: () => [...workflows.keys()],
@@ -474,7 +512,7 @@ export function apply(ctx, config = {}) {
       () => commands.register({
         name: "workflows",
         description: "List, select, or configure loaded workflow plugins for this session.",
-        input: { hint: "architect | iterate | find | none | settings [workflow] [role provider model [effort]]" },
+        input: { hint: "architect | iterate | find | base | none | settings [workflow] [role provider model [effort]]" },
         handler: handleWorkflows,
       }),
       "qq-workflows: /workflows",
@@ -517,7 +555,33 @@ export function apply(ctx, config = {}) {
   };
   if (typeof ctx.inject === "function") ctx.inject(["qq-relay"], syncRelayLabels);
 
+  const talkingPinned = new WeakSet();
+  function talkingBinding(sessionId) {
+    const selected = selectedName(sessionId);
+    if (selected === "architect") return architectSettings.get("talking") ?? baseSettings.get("talking");
+    if (selected === "iterate") return iterateSettings.get("desk") ?? baseSettings.get("talking");
+    return baseSettings.get("talking");
+  }
+  function pinTalking(agent) {
+    if (!agent || talkingPinned.has(agent) || !isArchitectCandidate(agent)) return;
+    if (typeof agent.ctx?.on !== "function") return;
+    talkingPinned.add(agent);
+    agent.ctx.on("agent/request", async (_payload, next) => {
+      const result = await next();
+      const binding = talkingBinding(sessionIdOf(agent));
+      if (!binding) return result;
+      const { reasoningEffort: _inherited, ...rest } = result;
+      return {
+        ...rest,
+        provider: binding.provider,
+        model: binding.model,
+        ...(binding.effort ? { reasoningEffort: binding.effort } : {}),
+      };
+    });
+  }
+
   ctx.on("agent/created", ({ agent }) => {
+    pinTalking(agent);
     syncSession(agent);
   });
   ctx.on("agent/disposed", ({ agent }) => {
@@ -530,6 +594,7 @@ export function apply(ctx, config = {}) {
   if (typeof agents?.list === "function") {
     for (const agent of agents.list()) {
       try {
+        pinTalking(agent);
         syncSession(agent);
       } catch {
         // One live agent must not unload the plugin.
