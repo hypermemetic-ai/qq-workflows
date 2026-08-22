@@ -21,6 +21,7 @@ import {
   routePacket,
   stampFromEvidence,
 } from "../../bin/lib/review.mjs";
+import { createQaVerdict } from "../../bin/lib/qa-verdict.mjs";
 import { oneShot } from "../../core/src/ask.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
 import {
@@ -308,6 +309,7 @@ export function createLand({
 } = {}) {
   const attached = new Map();
   const childTools = new Map();
+  const settledQa = new Set();
 
   function binding(role) {
     return settings?.get?.(role) ?? null;
@@ -449,8 +451,48 @@ export function createLand({
     return child;
   }
 
+  async function packetDiff(state) {
+    const diff = await run(
+      "git",
+      ["diff", "-U0", "--no-color", `${state.baseRef}...${state.ref}`],
+      { cwd: state.worktree },
+    );
+    const text = String(diff?.stdout ?? "").trim();
+    if (!text) return "(no diff)";
+    return text.length > 24_000 ? `${text.slice(0, 24_000)}\n…(truncated)` : text;
+  }
+
+  function watchQaSettle(child, runId) {
+    const childId = sessionIdOf(child);
+    if (!childId) return;
+    const finish = async () => {
+      if (settledQa.has(childId)) return;
+      const state = store.load(runId);
+      if (!state || state.qaSession !== childId || state.status !== "reviewing") return;
+      if (state.qaVerdict) {
+        settledQa.add(childId);
+        return;
+      }
+      settledQa.add(childId);
+      await submitVerdict({
+        agent: child,
+        runId,
+        verdict: createQaVerdict({
+          verdict: "fail",
+          summary: "qa ended without a structured verdict",
+          feedback: "qa ended without a structured verdict",
+          tests_modified: false,
+        }),
+      });
+    };
+    child.ctx?.on?.("session/event", async (_session, event) => {
+      if (event?.type === "turn/end") await finish();
+    });
+  }
+
   async function startQa(state) {
     const parentSession = [...attached.keys()][0] || state.architectSession;
+    const diff = await packetDiff(state);
     const user = [
       qaLookPrompt({
         ...state,
@@ -459,6 +501,9 @@ export function createLand({
       }),
       "",
       formatPacket(state.packet),
+      "",
+      "Diff:",
+      diff,
     ].join("\n");
     const child = await spawnChild({
       role: "qa",
@@ -469,12 +514,14 @@ export function createLand({
       install: (next) => installQa(next, state.id),
     });
     const qaSession = sessionIdOf(child);
-    return store.save({
+    const next = store.save({
       ...state,
       status: "reviewing",
       qaSession,
       qaVerdict: null,
     });
+    watchQaSettle(child, next.id);
+    return next;
   }
 
   async function startFixer(state, verdict) {
@@ -603,6 +650,7 @@ export function createLand({
         ref: enforced.verdict.verdict === "pass" && enforced.testOnlyCommit ? enforced.qaHead : state.ref,
         qaVerdict: enforced.verdict,
       });
+      settledQa.add(sessionId);
       if (enforced.verdict.verdict === "pass") {
         return finishLand(next, sessionId);
       }
