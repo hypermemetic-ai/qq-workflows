@@ -277,8 +277,7 @@ export function buildArchitectTools({ store, sessionQuery, invoke, tasks } = {})
         },
         render: (_args, value) => {
           if (value.status === "refused") return [textBlock(`Invoke refused: ${value.reason}`)];
-          const alias = value.alias ? ` alias ${value.alias}` : "";
-          return [textBlock(`invoked ${value.child}${alias}`)];
+          return [textBlock(`invoked ${value.alias || value.child}`)];
         },
       },
       async execute(_args, exec) {
