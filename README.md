@@ -186,14 +186,17 @@ loaded, invoke is refused.
 
 ### Leftover offer
 
-After clerk, a hop reads the live card. Clerk recaps of the standing concern
-are not leftovers. Obviously unfinished leftovers bank silently when qq-tasks
-is loaded. Ambiguous-or-better leftovers compile the same packet invoke uses
-and offer hand off, bank, or ignore on the phone. Mentioning "handoff" in
-ordinary talk is not an ask; "hand off this" / "please hand off" is. Handled
-leftovers persist on the notebook across restart. The talking turn is not
-held. Missing qq-tasks refuses bank and still offers hand off and ignore.
-Spawn / Stay are not in this land.
+After clerk, a hop reads the live card. This is coverage for work that would
+be missed, and a nudge not to branch recklessly. It is not how an explicit
+hand-off works. Operator saying "hand it off" is the architect's `invoke`
+tool. Clerk recaps of the standing concern are not leftovers. Obviously
+unfinished leftovers bank silently when qq-tasks is loaded. Ambiguous-or-better
+leftovers compile the same packet invoke uses and offer hand off, bank, or
+ignore on the phone. If this hop already invoked this turn, skip the popup.
+Bank and hand-off append a plugin notice on the architect session (not
+operator talk). Handled leftovers persist on the notebook across restart.
+The talking turn is not held. Missing qq-tasks refuses bank and still offers
+hand off and ignore. Spawn / Stay are not in this land.
 
 ## Iterate
 

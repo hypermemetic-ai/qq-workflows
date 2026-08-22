@@ -262,7 +262,7 @@ export function buildArchitectTools({ store, sessionQuery, invoke, tasks } = {})
     },
     {
       name: "invoke",
-      description: "Keep talking and start one live child session from the notebook plus the DSH log. You do not compile the packet. Results come back through qq-relay default steer. Refused when qq-relay is not loaded.",
+      description: "Keep talking and start one live child session from the notebook plus the DSH log. You do not compile the packet. Results come back through qq-relay default steer. Refused when qq-relay is not loaded. Operator asking to hand work off is this tool — leftover offer is coverage, not that path.",
       parameters: {},
       output: {
         schema: {

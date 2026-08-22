@@ -2,14 +2,9 @@
 // Detection is a hop after the talking turn. It does not write into architect talk.
 
 const UNFINISHED = /\b(todo\b|tbd\b|wip\b|unfinished|placeholder|not sure yet|need to think|coming soon|\?\?\?)/i;
-const ASKED_HANDOFF = /\b(please\s+hand[\s-]?off|hand[\s-]?off this|delegate this|file this(?: as a (?:task|ticket))?|run this)\b/i;
 const RUNNER_LINE = /^(return address\b|results are delivered through qq-relay\b|for the runner\b|runner[- ]only\b|child session\b|parent session\b)/i;
 const CLERK_RECAP_START = /^(card\s+\S+\s+\(open\)|-\s*User\b|User\b)/i;
 const CLERK_RECAP_BODY = /\boperator\b/i;
-
-export function askedHandoff(text) {
-  return ASKED_HANDOFF.test(String(text ?? ""));
-}
 
 export function isObviouslyUnfinished(prose) {
   const trimmed = String(prose ?? "").trim();
@@ -33,32 +28,29 @@ export function liveNotes(card) {
   });
 }
 
-export function leftoverNotes(card, { asked = false } = {}) {
-  const notes = liveNotes(card);
-  if (asked) return notes;
-  return notes.filter((note) => !isClerkRecap(note.text));
+export function leftoverNotes(card) {
+  return liveNotes(card).filter((note) => !isClerkRecap(note.text));
 }
 
 /**
- * Low bar: skip empty/recap, bank obviously unfinished, offer ambiguous-or-better.
- * Operator asking to hand off this leftover always offers the same popup.
- * Mentioning "handoff" in ordinary talk is not an ask.
+ * Coverage hop, not an explicit-hand-off interpreter.
+ * Skip empty/recap, bank obviously unfinished, offer ambiguous-or-better.
+ * "Please hand it off" is the architect's invoke tool, not this popup.
  */
-export function classifyLeftover(card, { asked = false } = {}) {
-  const notes = leftoverNotes(card, { asked });
+export function classifyLeftover(card) {
+  const notes = leftoverNotes(card);
   const prose = notes.map((note) => note.text.trim()).filter(Boolean).join("\n");
-  if (asked) return prose ? "offer" : "skip";
   if (!prose) return "skip";
   if (notes.every((note) => isObviouslyUnfinished(note.text))) return "bank";
   return "offer";
 }
 
-export function leftoverProse(card, { asked = false } = {}) {
-  return leftoverNotes(card, { asked }).map((note) => note.text.trim()).join("\n");
+export function leftoverProse(card) {
+  return leftoverNotes(card).map((note) => note.text.trim()).join("\n");
 }
 
-export function leftoverDigest(card, { asked = false } = {}) {
-  const notes = leftoverNotes(card, { asked: false });
+export function leftoverDigest(card) {
+  const notes = leftoverNotes(card);
   const body = notes.map((note) => `${note.startSeq ?? ""}:${note.endSeq ?? ""}:${note.text}`).join("|");
   return `${card?.name ?? ""}:${body}`;
 }

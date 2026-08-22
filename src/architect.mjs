@@ -11,7 +11,6 @@ import { buildSpine } from "./clerk.mjs";
 import { repoRootFor } from "./iterate.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
 import {
-  askedHandoff,
   classifyLeftover,
   createOfferBook,
   leftoverDigest,
@@ -134,6 +133,10 @@ function failVisibly(session, text) {
   session.append("user/message", pluginUserMessage(text, "notice"), { surfaceOp: "append" });
 }
 
+function noticeLeftover(session, text) {
+  failVisibly(session, text);
+}
+
 function publicOffer(offer) {
   if (!offer) return null;
   return {
@@ -180,6 +183,10 @@ export function createArchitect({
     if (offers.alreadyHandled(sessionId, digest)) return true;
     const persisted = store?.handledLeftovers?.(sessionId);
     return Array.isArray(persisted) && persisted.includes(digest);
+  }
+
+  function liveSession(sessionId, agent) {
+    return agent?.session ?? attached.get(sessionId)?.agent?.session;
   }
 
   function attach(agent) {
@@ -285,26 +292,29 @@ export function createArchitect({
     const notebook = store.load(sessionId);
     const card = store.openCard(notebook) ?? notebook.cards.at(-1);
     const spine = buildSpine(events, turn);
-    const asked = askedHandoff(spine.userExtract);
     const digest = leftoverDigest(card);
     const existing = offers.get(sessionId);
     if (existing?.digest === digest) return existing;
     if (wasHandled(sessionId, digest)) return { status: "skip", reason: "already-handled" };
-    const kind = classifyLeftover(card, { asked });
+    const kind = classifyLeftover(card);
     if (kind === "skip") {
       rememberHandled(sessionId, digest);
       return { status: "skip", reason: "empty" };
     }
-    const prose = leftoverProse(card, { asked });
+    const prose = leftoverProse(card);
     const title = leftoverTitle(card, prose);
     if (kind === "bank") {
       const filed = bankProse(title, prose);
       if (filed.status === "ok") {
         offers.clear(sessionId);
         rememberHandled(sessionId, digest);
+        noticeLeftover(session, `Leftover banked as ${filed.id}: ${title}`);
         return { ...filed, silent: true };
       }
       // Missing qq-tasks: refuse-not-invent, then offer so hand off / ignore still work.
+    }
+    if (spine.tools.some((tool) => tool.name === "invoke")) {
+      return { status: "skip", reason: "already-invoked" };
     }
     if (typeof clerk.compilePacket !== "function") return { status: "skip", reason: "empty-brief" };
     const foldPoint = folder?.pending?.(sessionId)?.startSeq;
@@ -349,6 +359,7 @@ export function createArchitect({
       if (filed.status !== "ok") return filed;
       offers.clear(sessionId);
       rememberHandled(sessionId, current.digest);
+      noticeLeftover(liveSession(sessionId, agent), `Leftover banked as ${filed.id}: ${current.title}`);
       return filed;
     }
     if (choice === "handoff" || choice === "hand off") {
@@ -357,6 +368,8 @@ export function createArchitect({
       if (started.status !== "ok") return started;
       offers.clear(sessionId);
       rememberHandled(sessionId, current.digest);
+      const child = started.child ? ` ${started.child}` : "";
+      noticeLeftover(live.session ?? liveSession(sessionId, agent), `Leftover handed off${child}: ${current.title}`);
       return { ...started, action: "handoff", brief: current.brief };
     }
     return { status: "refused", reason: "unknown leftover choice" };
