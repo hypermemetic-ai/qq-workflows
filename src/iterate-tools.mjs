@@ -320,8 +320,9 @@ export function buildHandsTools({ designLoop, onDump } = {}) {
     },
     {
       name: "design_loop_capture",
-      description: "Reload the fixture session, shoot desktop 1280x800 and Pixel 10 412x915 (optional 412x520 short), and measure default boxes.",
+      description: "Open a URL (the live product the nits are about, or a fixture), shoot desktop 1280x800 and Pixel 10 412x915 (optional 412x520 short), and measure default boxes. Then look at the PNGs.",
       parameters: {
+        url: { type: "string", description: "Page to shoot. Live product or fixture. Required unless a fixture is already running." },
         label: { type: "string" },
         short: { type: "boolean" },
       },
@@ -331,6 +332,7 @@ export function buildHandsTools({ designLoop, onDump } = {}) {
       },
       async execute(args) {
         return run("capture", (impl) => impl.captureShots({
+          url: typeof args?.url === "string" ? args.url : undefined,
           label: args?.label,
           short: args?.short === true,
         }), (captured) => {

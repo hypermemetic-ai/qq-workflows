@@ -208,10 +208,10 @@ The receipt is what the desk heard; the next turn can correct it. Ambiguous
 input is still recorded as heard.
 
 When go fires, this breath's nits bundle into one fresh hands session — the
-desk tools, plus the existing frontend-design-loop fixtures. One live hands
-at a time; next go is a new child, not a continuation. Praise-only or a keep
-does not send work. Go is refused when qq-relay is not loaded or the reviewer
-role is unbound.
+desk tools, plus capture tools for the live product (fixture remains an
+optional repro harness). One live hands at a time; next go is a new child,
+not a continuation. Praise-only or a keep does not send work. Go is refused
+when qq-relay is not loaded or the reviewer role is unbound.
 
 ### Journal
 
@@ -233,14 +233,21 @@ prefix never reshuffles. Intake writes through tools. The receipt is short.
 Hands is a fresh DSH child (`origin: subagent`) seeded with a packet compiled
 off the talking session: this breath's nits, the directive, the theory, the
 keep-outs (praise), and only the selected wiki nodes. The kind pack is the
-frontend-design-loop tools plus `qq-ui` presentation write access. One inner
-cycle: orient once, change → shoot → maybe one fix, deliver.
+frontend-design-loop tools plus `qq-ui` presentation write access. Iterate is
+a methodology, not a qq-ui-only loop; the first use case is visual products.
+When the work is about how something looks, hands shoot the actual product
+(the live thing the operator sees), open the pictures, and reason from them.
+A fixture may exist as a repro harness. It is not the thing you pass. Hands
+must not mutate the live host to make the UI look better. One inner cycle:
+orient once, change → shoot the product → look at the pictures → maybe one
+fix, deliver. Empty report is not done.
 
 Reviewer is an independent one-shot judge on the same journal the desk has.
-The hop is given the shots listing and the patch-surface diff, not just the
-hands report. Pass honors the directive, does not break praise, and actually
-answers the nits. Fail comes back as mail and sits. No silent retry, no
-automatic second hands. Reviewer writes nothing.
+The hop is given the pictures themselves, the patch-surface diff, and the
+hands report. Look at the pictures. Pass honors the directive, does not break
+praise, answers the nits, and the pictures of the product show that. No
+pictures or an empty report is fail. Fail comes back as mail and sits. No
+silent retry, no automatic second hands. Reviewer writes nothing.
 
 Passed hands dumps unstructured wiki nodes (no taxonomy). The desk files them
 with labels it invents; merging two labels is writing one string. Nodes stay

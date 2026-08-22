@@ -10,9 +10,9 @@
 // desk. Architect and iterate do not share a session.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { extname, join } from "node:path";
 import { pluginUserMessage } from "./tools.mjs";
 import { formatProjection, projectJournal } from "./journal.mjs";
 import { randomUUID } from "node:crypto";
@@ -27,13 +27,14 @@ export const HANDS_LOCATION = "qq-ui";
 
 export const REVIEWER_SYSTEM = [
   "You are the iterate reviewer for one hands delivery. Judge pass or fail only.",
-  "Pass when the delivery honors the directive, does not break the keep-outs (praise), and actually answers this breath's nits.",
-  "Use the shots listing and the patch-surface diff together with the hands report. Do not run tools.",
-  "Fail otherwise. Respond with exactly \"PASS\" or \"FAIL: <short reason>\". Nothing else.",
+  "Pass when the delivery honors the directive, does not break the keep-outs (praise), actually answers this breath's nits, and the pictures of the product show that.",
+  "You are given the pictures themselves, the patch-surface diff, and the hands report. Look at the pictures. Do not run tools.",
+  "Fail if there are no pictures, the report is empty, or the pictures do not show the nits answered.",
+  "Respond with exactly \"PASS\" or \"FAIL: <short reason>\". Nothing else.",
 ].join("\n");
 
 export const PACKET_CYCLE = [
-  "Method (one inner cycle): orient once, do the bundle, then change \u2192 shoot \u2192 maybe one fix. Do not accumulate five failed attempts. When done, deliver a short plain report of what changed and end your turn. An independent reviewer judges after you deliver; do not self-grade.",
+  "Method (one inner cycle): orient once, do the bundle, then change \u2192 shoot the product \u2192 look at the pictures \u2192 maybe one fix. Do not accumulate five failed attempts. When done, deliver a short plain report of what changed and end your turn. An independent reviewer judges after you deliver; do not self-grade.",
 ].join("\n");
 
 export const PACKET_PATCH_LIST = [
@@ -41,7 +42,8 @@ export const PACKET_PATCH_LIST = [
   "- qq-ui/src/render.mjs",
   "- qq-ui/assets/console.css",
   "- maybe a tiny qq-ui/assets/browser-*.js",
-  "Do not touch SSE owner/target (#console-stream, #session-panel), PWA cache, DSH APIs, or the live host to make the UI look better. Use the fixture, not live DSH. Do not make a worktree per nit.",
+  "Do not touch SSE owner/target (#console-stream, #session-panel), PWA cache, DSH APIs, or mutate the live host to make the UI look better. Read-only look is required.",
+  "When the work is about how something looks: shoot the actual product the nits are about (the live thing the operator is looking at), open the pictures, and reason from them. A fixture may exist as a repro harness. It is not the thing you pass. If it is not visible on the product, it is not done. Do not pass on an empty report. Do not make a worktree per nit.",
 ].join("\n");
 
 export const PATCH_SURFACE = Object.freeze([
@@ -51,6 +53,13 @@ export const PATCH_SURFACE = Object.freeze([
 
 const DIFF_CHARS = 24_000;
 const SHOT_LIST_CAP = 80;
+const IMAGE_MEDIA = Object.freeze({
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+});
 
 /** A chair that may be selected as iterate. Children never are. */
 export function isIterateCandidate(agent) {
@@ -124,29 +133,38 @@ function shotsHome(env = process.env) {
   return join(stateHome, "qq", "frontend-design-loop", "shots");
 }
 
-function listShotEntries(dir, { prefix = "", limit = SHOT_LIST_CAP } = {}) {
-  const entries = [];
-  if (!existsSync(dir)) return entries;
+function listShotFiles(dir, { prefix = "", limit = SHOT_LIST_CAP } = {}) {
+  const files = [];
+  if (!existsSync(dir)) return files;
   let names;
   try {
     names = readdirSync(dir, { withFileTypes: true });
   } catch {
-    return entries;
+    return files;
   }
   names.sort((a, b) => a.name.localeCompare(b.name));
   for (const entry of names) {
-    if (entries.length >= limit) break;
+    if (files.length >= limit) break;
     const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
-      entries.push(...listShotEntries(full, { prefix: rel, limit: limit - entries.length }));
+      files.push(...listShotFiles(full, { prefix: rel, limit: limit - files.length }));
       continue;
     }
     let size = 0;
     try { size = statSync(full).size; } catch {}
-    entries.push(`${rel} (${size} bytes)`);
+    files.push({ rel, full, size });
   }
-  return entries;
+  return files;
+}
+
+function listShotEntries(dir, options) {
+  return listShotFiles(dir, options).map((file) => `${file.rel} (${file.size} bytes)`);
+}
+
+function liveOrigin(env = process.env) {
+  const port = String(env?.QQ_PORT || "3082").trim() || "3082";
+  return `http://127.0.0.1:${port}`;
 }
 
 function patchSurfacePaths(cwd) {
@@ -177,14 +195,14 @@ function collectPatchDiff(cwd) {
   }
 }
 
-/** Text the one-shot reviewer can actually read: shots listing + patch-surface diff. */
+/** Text the one-shot reviewer can actually read: shot listing + patch-surface diff. */
 export function collectReviewEvidence({ cwd, env = process.env } = {}) {
   const home = shotsHome(env);
   const shots = listShotEntries(home);
   const listing = shots.length ? shots.join("\n") : "(no shots)";
   const diff = collectPatchDiff(cwd);
   return [
-    `Shots from the design loop (${home}):`,
+    `Pictures of the product (${home}):`,
     listing,
     "",
     "Patch-surface diff:",
@@ -192,8 +210,27 @@ export function collectReviewEvidence({ cwd, env = process.env } = {}) {
   ].join("\n");
 }
 
+/** Image blocks for the reviewer hop. Everyone sees the pictures. */
+export function collectReviewImages({ env = process.env } = {}) {
+  const blocks = [];
+  for (const file of listShotFiles(shotsHome(env))) {
+    const mediaType = IMAGE_MEDIA[extname(file.rel).toLowerCase()];
+    if (!mediaType) continue;
+    let data;
+    try { data = readFileSync(file.full); } catch { continue; }
+    if (!data.length) continue;
+    blocks.push({
+      type: "image",
+      mediaType,
+      data: data.toString("base64"),
+      name: file.rel,
+    });
+  }
+  return blocks;
+}
+
 /** Deterministic hands packet. Off-session (compiled here, not by the talking model). */
-export function buildHandsPacket({ bundle, cwd, parentSession, parentAlias }) {
+export function buildHandsPacket({ bundle, cwd, parentSession, parentAlias, env = process.env }) {
   const lines = [];
   lines.push("You are hands. This is a fresh session; the desk does not continue anything here.");
   lines.push(`Work on the ${HANDS_LOCATION} presentation workbench. Working directory: ${cwd ?? "(inherited)"}.`);
@@ -225,6 +262,8 @@ export function buildHandsPacket({ bundle, cwd, parentSession, parentAlias }) {
   }
   lines.push(PACKET_PATCH_LIST);
   lines.push("");
+  lines.push(`Live host origin (read-only): ${liveOrigin(env)}. Capture the view the nits are about, then look at the PNGs.`);
+  lines.push("");
   lines.push(PACKET_CYCLE);
   if (parentSession) {
     const address = parentAlias
@@ -244,6 +283,7 @@ export function createIterate({
   agents,
   run = oneShot,
   registerHandsTools,
+  env = process.env,
 } = {}) {
   const attached = new Map();
   let liveHands = null;
@@ -251,6 +291,10 @@ export function createIterate({
   async function reviewDelivery({ bundle, text, cwd }) {
     const binding = settings?.get?.("reviewer");
     if (!binding) return { pass: false, reason: "reviewer role unbound" };
+    const report = String(text || "").trim();
+    if (!report) return { pass: false, reason: "empty hands report" };
+    const pictures = collectReviewImages({ env });
+    if (!pictures.length) return { pass: false, reason: "no pictures of the product" };
     const user = [
       "Directive:",
       bundle.directive?.text ?? "(none)",
@@ -261,11 +305,15 @@ export function createIterate({
       "This breath's nits:",
       ...bundle.nits.map((note) => `- ${note.id}: ${note.text}`),
       "",
-      `Hands delivery:\n${text || "(empty)"}`,
+      `Hands delivery:\n${report}`,
       "",
-      collectReviewEvidence({ cwd }),
+      collectReviewEvidence({ cwd, env }),
     ].join("\n");
-    const verdict = await run(llm, binding, { system: REVIEWER_SYSTEM, user });
+    const verdict = await run(llm, binding, {
+      system: REVIEWER_SYSTEM,
+      user,
+      content: [{ type: "text", text: user }, ...pictures],
+    });
     const verdictText = String(verdict ?? "").trim();
     if (/^pass(?:$|\s)/i.test(verdictText)) return { pass: true, reason: "" };
     const reason = verdictText.replace(/^fail:?\s*/i, "").trim() || "not stated";
@@ -422,6 +470,7 @@ export function createIterate({
       cwd: parent.header?.cwd,
       parentSession: parent.id,
       parentAlias: typeof relay.alias === "function" ? relay.alias(parent.id) : undefined,
+      env,
     });
 
     const childId = `session-${randomUUID()}`;
@@ -493,7 +542,10 @@ export const internals = Object.freeze({
   buildHandsPacket,
   shotsHome,
   listShotEntries,
+  listShotFiles,
   collectPatchDiff,
   collectReviewEvidence,
+  collectReviewImages,
+  liveOrigin,
   patchSurfacePaths,
 });
