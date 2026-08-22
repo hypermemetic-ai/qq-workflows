@@ -16,6 +16,7 @@ import {
 
 export const NOTEBOOK_SCHEMA = "qq.workflows-notebook/v1";
 export const DEFAULT_CARD_NAME = "concern";
+const HANDLED_CAP = 32;
 
 function requireAbsolute(path, label) {
   if (typeof path !== "string" || path.length === 0 || !isAbsolute(path)) {
@@ -46,6 +47,7 @@ function emptyNotebook(sessionId) {
     schema: NOTEBOOK_SCHEMA,
     session: sessionId,
     cards: [defaultCard()],
+    leftoverHandled: [],
   };
 }
 
@@ -105,13 +107,17 @@ function normalize(raw, sessionId) {
       if (card.open && card !== open.at(-1)) card.open = false;
     }
   }
-  return { schema: NOTEBOOK_SCHEMA, session: sessionId, cards };
+  const leftoverHandled = Array.isArray(raw.leftoverHandled)
+    ? raw.leftoverHandled.filter((item) => typeof item === "string" && item.length > 0).slice(-HANDLED_CAP)
+    : [];
+  return { schema: NOTEBOOK_SCHEMA, session: sessionId, cards, leftoverHandled };
 }
 
 function snapshot(notebook) {
   return {
     schema: notebook.schema,
     session: notebook.session,
+    leftoverHandled: [...(notebook.leftoverHandled ?? [])],
     cards: notebook.cards.map((card) => ({
       name: card.name,
       open: card.open,
@@ -255,6 +261,19 @@ export function createNotebookStore(dirPath, options = {}) {
         const next = defaultCard(name || DEFAULT_CARD_NAME);
         notebook.cards.push(next);
         return { name: next.name };
+      });
+    },
+
+    handledLeftovers(sessionId) {
+      return [...(load(sessionId).leftoverHandled ?? [])];
+    },
+
+    rememberLeftover(sessionId, digest) {
+      if (typeof digest !== "string" || digest.length === 0) return [];
+      return mutate(sessionId, (notebook) => {
+        const next = [...(notebook.leftoverHandled ?? []).filter((item) => item !== digest), digest];
+        notebook.leftoverHandled = next.slice(-HANDLED_CAP);
+        return [...notebook.leftoverHandled];
       });
     },
 

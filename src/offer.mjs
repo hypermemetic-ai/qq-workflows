@@ -2,8 +2,10 @@
 // Detection is a hop after the talking turn. It does not write into architect talk.
 
 const UNFINISHED = /\b(todo\b|tbd\b|wip\b|unfinished|placeholder|not sure yet|need to think|coming soon|\?\?\?)/i;
-const ASKED_HANDOFF = /\b(hand[\s-]?off|handoff|delegate this|file this(?: as a (?:task|ticket))?|run this)\b/i;
+const ASKED_HANDOFF = /\b(please\s+hand[\s-]?off|hand[\s-]?off this|delegate this|file this(?: as a (?:task|ticket))?|run this)\b/i;
 const RUNNER_LINE = /^(return address\b|results are delivered through qq-relay\b|for the runner\b|runner[- ]only\b|child session\b|parent session\b)/i;
+const CLERK_RECAP_START = /^(card\s+\S+\s+\(open\)|-\s*User\b|User asked\b|User:|User got\b)/i;
+const CLERK_RECAP_BODY = /\boperator (explored|updated|listed|read|ran|wrote|got)\b/i;
 
 export function askedHandoff(text) {
   return ASKED_HANDOFF.test(String(text ?? ""));
@@ -16,17 +18,11 @@ export function isObviouslyUnfinished(prose) {
   return UNFINISHED.test(trimmed) && trimmed.length < 280;
 }
 
-/**
- * Low bar: skip empty, bank obviously unfinished, offer ambiguous-or-better.
- * Operator asking to hand off always offers the same popup.
- */
-export function classifyLeftover(card, { asked = false } = {}) {
-  const notes = liveNotes(card);
-  const prose = notes.map((note) => note.text.trim()).filter(Boolean).join("\n");
-  if (asked) return prose ? "offer" : "skip";
-  if (!prose) return "skip";
-  if (notes.every((note) => isObviouslyUnfinished(note.text))) return "bank";
-  return "offer";
+/** Clerk recap of the standing concern is not a leftover. */
+export function isClerkRecap(text) {
+  const trimmed = String(text ?? "").trim();
+  if (!trimmed) return true;
+  return CLERK_RECAP_START.test(trimmed) || CLERK_RECAP_BODY.test(trimmed);
 }
 
 export function liveNotes(card) {
@@ -37,20 +33,40 @@ export function liveNotes(card) {
   });
 }
 
-export function leftoverProse(card) {
-  return liveNotes(card).map((note) => note.text.trim()).join("\n");
+export function leftoverNotes(card, { asked = false } = {}) {
+  const notes = liveNotes(card);
+  if (asked) return notes;
+  return notes.filter((note) => !isClerkRecap(note.text));
+}
+
+/**
+ * Low bar: skip empty/recap, bank obviously unfinished, offer ambiguous-or-better.
+ * Operator asking to hand off this leftover always offers the same popup.
+ * Mentioning "handoff" in ordinary talk is not an ask.
+ */
+export function classifyLeftover(card, { asked = false } = {}) {
+  const notes = leftoverNotes(card, { asked });
+  const prose = notes.map((note) => note.text.trim()).filter(Boolean).join("\n");
+  if (asked) return prose ? "offer" : "skip";
+  if (!prose) return "skip";
+  if (notes.every((note) => isObviouslyUnfinished(note.text))) return "bank";
+  return "offer";
+}
+
+export function leftoverProse(card, { asked = false } = {}) {
+  return leftoverNotes(card, { asked }).map((note) => note.text.trim()).join("\n");
 }
 
 export function leftoverDigest(card, { asked = false } = {}) {
-  const notes = liveNotes(card);
+  const notes = leftoverNotes(card, { asked: false });
   const body = notes.map((note) => `${note.startSeq ?? ""}:${note.endSeq ?? ""}:${note.text}`).join("|");
-  return `${asked ? "ask:" : ""}${card?.name ?? ""}:${body}`;
+  return `${card?.name ?? ""}:${body}`;
 }
 
 export function leftoverTitle(card, prose = leftoverProse(card)) {
   const name = typeof card?.name === "string" ? card.name.trim() : "";
   if (name && name !== "concern") return name.slice(0, 80);
-  const notes = liveNotes(card);
+  const notes = leftoverNotes(card);
   const defined = notes.map((note) => note.text.trim()).filter((text) => !isObviouslyUnfinished(text));
   const source = defined.at(-1) || String(prose ?? "").trim();
   const line = source.split(/\n/)[0]?.replace(/^[-*]\s+/, "") ?? "";

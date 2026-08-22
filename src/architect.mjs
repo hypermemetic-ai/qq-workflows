@@ -171,6 +171,17 @@ export function createArchitect({
     return { status: "ok", action: "bank", id, title };
   }
 
+  function rememberHandled(sessionId, digest) {
+    offers.remember(sessionId, digest);
+    store?.rememberLeftover?.(sessionId, digest);
+  }
+
+  function wasHandled(sessionId, digest) {
+    if (offers.alreadyHandled(sessionId, digest)) return true;
+    const persisted = store?.handledLeftovers?.(sessionId);
+    return Array.isArray(persisted) && persisted.includes(digest);
+  }
+
   function attach(agent) {
     if (!isArchitectCandidate(agent)) return null;
     const session = agent.session;
@@ -275,22 +286,22 @@ export function createArchitect({
     const card = store.openCard(notebook) ?? notebook.cards.at(-1);
     const spine = buildSpine(events, turn);
     const asked = askedHandoff(spine.userExtract);
-    const digest = leftoverDigest(card, { asked });
+    const digest = leftoverDigest(card);
     const existing = offers.get(sessionId);
     if (existing?.digest === digest) return existing;
-    if (offers.alreadyHandled(sessionId, digest)) return { status: "skip", reason: "already-handled" };
+    if (wasHandled(sessionId, digest)) return { status: "skip", reason: "already-handled" };
     const kind = classifyLeftover(card, { asked });
     if (kind === "skip") {
-      offers.remember(sessionId, digest);
+      rememberHandled(sessionId, digest);
       return { status: "skip", reason: "empty" };
     }
-    const prose = leftoverProse(card);
+    const prose = leftoverProse(card, { asked });
     const title = leftoverTitle(card, prose);
     if (kind === "bank") {
       const filed = bankProse(title, prose);
       if (filed.status === "ok") {
         offers.clear(sessionId);
-        offers.remember(sessionId, digest);
+        rememberHandled(sessionId, digest);
         return { ...filed, silent: true };
       }
       // Missing qq-tasks: refuse-not-invent, then offer so hand off / ignore still work.
@@ -330,14 +341,14 @@ export function createArchitect({
     if (!current) return { status: "refused", reason: "no leftover offer" };
     if (choice === "ignore") {
       offers.clear(sessionId);
-      offers.remember(sessionId, current.digest);
+      rememberHandled(sessionId, current.digest);
       return { status: "ok", action: "ignore" };
     }
     if (choice === "bank") {
       const filed = bankProse(current.title, current.prose);
       if (filed.status !== "ok") return filed;
       offers.clear(sessionId);
-      offers.remember(sessionId, current.digest);
+      rememberHandled(sessionId, current.digest);
       return filed;
     }
     if (choice === "handoff" || choice === "hand off") {
@@ -345,7 +356,7 @@ export function createArchitect({
       const started = await invoke({ agent: live, packet: current.packet });
       if (started.status !== "ok") return started;
       offers.clear(sessionId);
-      offers.remember(sessionId, current.digest);
+      rememberHandled(sessionId, current.digest);
       return { ...started, action: "handoff", brief: current.brief };
     }
     return { status: "refused", reason: "unknown leftover choice" };

@@ -4,6 +4,7 @@ export const CLERK_SYSTEM = [
   "You are the architect clerk. You receive the notebook and a spine of the latest operator+architect turn.",
   "Append one short note, or one withdraw line (\"X withdrawn / replaced by \u2026\"), or output NOTHING if the spine is empty or adds no durable fact.",
   "Do not dump the turn. Do not write reasoning. Do not rewrite the notebook.",
+  "Do not paste the Notebook: block back as a note. A User:/operator recap is NOTHING unless the spine adds a new durable fact.",
 ].join("\n");
 
 export const PACKET_SYSTEM = [

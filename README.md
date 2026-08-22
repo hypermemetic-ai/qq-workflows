@@ -186,11 +186,14 @@ loaded, invoke is refused.
 
 ### Leftover offer
 
-After clerk, a hop reads the live card. Obviously unfinished leftovers bank
-silently when qq-tasks is loaded. Ambiguous-or-better leftovers compile the
-same packet invoke uses and offer hand off, bank, or ignore on the phone.
-The talking turn is not held. Missing qq-tasks refuses bank and still offers
-hand off and ignore. Spawn / Stay are not in this land.
+After clerk, a hop reads the live card. Clerk recaps of the standing concern
+are not leftovers. Obviously unfinished leftovers bank silently when qq-tasks
+is loaded. Ambiguous-or-better leftovers compile the same packet invoke uses
+and offer hand off, bank, or ignore on the phone. Mentioning "handoff" in
+ordinary talk is not an ask; "hand off this" / "please hand off" is. Handled
+leftovers persist on the notebook across restart. The talking turn is not
+held. Missing qq-tasks refuses bank and still offers hand off and ignore.
+Spawn / Stay are not in this land.
 
 ## Iterate
 
