@@ -14,6 +14,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, extname, join } from "node:path";
 import { pluginUserMessage } from "./tools.mjs";
+import { childCreateOptions } from "./child-model.mjs";
 import { formatProjection, projectJournal } from "./journal.mjs";
 import { randomUUID } from "node:crypto";
 import { oneShot } from "../../core/src/ask.mjs";
@@ -494,9 +495,11 @@ export function createIterate({
         parentSession: parent.id,
         origin: CHILD_ORIGIN,
       },
-      ...(handsBinding
-        ? { agentOptions: { provider: handsBinding.provider, model: handsBinding.model, ...(handsBinding.effort ? { reasoningEffort: handsBinding.effort } : {}) } }
-        : {}),
+      ...childCreateOptions(handsBinding && {
+        provider: handsBinding.provider,
+        model: handsBinding.model,
+        ...(handsBinding.effort ? { reasoningEffort: handsBinding.effort } : {}),
+      }),
     });
     const child = handle?.agent ?? handle;
     liveHands = { childId: child.session?.id ?? childId, bundle, queued: [] };

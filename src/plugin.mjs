@@ -134,6 +134,7 @@ export function apply(ctx, config = {}) {
     folder,
     agents,
     tasks: () => ctx.get?.("qq-tasks", false) ?? null,
+    talking: () => architectSettings.get("talking"),
   });
   const iterate = createIterate({
     ctx,

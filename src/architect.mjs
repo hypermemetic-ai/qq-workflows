@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { pluginUserMessage } from "./tools.mjs";
 import { buildSpine } from "./clerk.mjs";
 import { repoRootFor } from "./iterate.mjs";
+import { childCreateOptions, childRoute } from "./child-model.mjs";
 import {
   askedHandoff,
   classifyLeftover,
@@ -151,6 +152,8 @@ export function createArchitect({
   folder,
   agents,
   tasks,
+  talking,
+  env = process.env,
 } = {}) {
   const attached = new Map();
   const offers = createOfferBook();
@@ -370,6 +373,11 @@ export function createArchitect({
     if (!packet) return { status: "refused", reason: "invoke packet was empty" };
     const childId = `session-${randomUUID()}`;
     const targetCwd = repoRootFor(parent.header?.cwd);
+    const route = childRoute({
+      binding: typeof talking === "function" ? talking() : talking,
+      options: agent?.options,
+      env,
+    });
     const handle = await agents.create({
       sessionId: childId,
       meta: {
@@ -377,6 +385,7 @@ export function createArchitect({
         parentSession: parent.id,
         origin: CHILD_ORIGIN,
       },
+      ...childCreateOptions(route),
     });
     const child = handle?.agent ?? handle;
     watchChildReturn({ ctx, relay, child, parentId: parent.id });
