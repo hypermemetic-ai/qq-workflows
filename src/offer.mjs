@@ -36,17 +36,54 @@ export function leftoverNotes(card) {
   return liveNotes(card).filter((note) => noteKind(note) === "leftover");
 }
 
-/**
- * Coverage hop, not an explicit-hand-off interpreter.
- * Skip empty/recap, bank obviously unfinished, offer ambiguous-or-better.
- * "Please hand it off" is the architect's invoke tool, not this popup.
- */
-export function classifyLeftover(card) {
+export function priorLeftoverNotes(card, turnStartSeq) {
   const notes = leftoverNotes(card);
-  const prose = notes.map((note) => note.text.trim()).filter(Boolean).join("\n");
-  if (!prose) return "skip";
-  if (notes.every((note) => isObviouslyUnfinished(note.text))) return "bank";
-  return "offer";
+  if (!Number.isSafeInteger(turnStartSeq)) return notes;
+  return notes.filter((note) => Number(note.endSeq) < turnStartSeq);
+}
+
+export function incomingLeftoverNotes(card, turnStartSeq) {
+  const notes = leftoverNotes(card);
+  if (!Number.isSafeInteger(turnStartSeq)) return [];
+  return notes.filter((note) => Number(note.startSeq) >= turnStartSeq);
+}
+
+/**
+ * Topic switch, not implementer handoff.
+ * Incoming leftover with no prior leftover is the live concern — no popup.
+ * Prior leftover with no incoming stays on the board, except unfinished stubs
+ * which silent-bank. Prior + incoming is a new conversation.
+ */
+export function classifyJunction(card, { turnStartSeq } = {}) {
+  const prior = priorLeftoverNotes(card, turnStartSeq);
+  const incoming = incomingLeftoverNotes(card, turnStartSeq);
+  if (incoming.length === 0) {
+    if (prior.length === 0) return "skip";
+    if (prior.every((note) => isObviouslyUnfinished(note.text))) return "bank";
+    return "skip";
+  }
+  if (prior.length === 0) return "skip";
+  return "switch";
+}
+
+/** @deprecated use classifyJunction */
+export function classifyLeftover(card, extra) {
+  return classifyJunction(card, extra);
+}
+
+export function switchBrief(prior, incoming) {
+  const lines = (notes) => notes.map((note) => note.text.trim()).filter(Boolean).join("\n") || "(none)";
+  return [
+    "New conversation.",
+    "",
+    "Previous leftover:",
+    lines(prior),
+    "",
+    "New:",
+    lines(incoming),
+    "",
+    "Start this now (bank previous if it is still open), abandon previous, or bank this for later.",
+  ].join("\n");
 }
 
 export function leftoverProse(card) {
