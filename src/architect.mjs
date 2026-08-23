@@ -22,6 +22,7 @@ import {
   priorLeftoverNotes,
 } from "./offer.mjs";
 import { bankLeftover, bankNotice } from "./bank.mjs";
+import { decideChop, guardContext, OVERFLOW_MESSAGE } from "./chop.mjs";
 import { oneShot } from "../../core/src/ask.mjs";
 
 export const ARCHITECT_LABEL = "workflows:architect";
@@ -77,11 +78,9 @@ function clearLabel(ctx, sessionId) {
   }
 }
 
-/** Chop fat tool dumps at a legal append boundary. Do not call from session/event. */
-function pruneToolResults(ctx, session) {
-  const pruner = ctx.get?.("toolResultPruner", false);
-  if (!pruner || typeof pruner.pruneSession !== "function") return null;
-  return pruner.pruneSession(session);
+function refuseOverflow(session) {
+  failVisibly(session, OVERFLOW_MESSAGE);
+  throw new Error(OVERFLOW_MESSAGE);
 }
 
 function lastAssistantText(events) {
@@ -274,12 +273,11 @@ export function createArchitect({
         }
       });
       disposeAssemble = agent.ctx?.on?.("agent/request", async (_payload, next) => {
-        try {
-          pruneToolResults(ctx, session);
-        } catch (error) {
+        const guard = guardContext({ ctx, session, route: agent.options });
+        if (guard.pruneError) {
           failVisibly(
             session,
-            `qq-workflows: tool-result prune refused (${error instanceof Error ? error.message : String(error)}).`,
+            `qq-workflows: tool-result prune refused (${guard.pruneError instanceof Error ? guard.pruneError.message : String(guard.pruneError)}).`,
           );
         }
         const pending = folder.pending(sessionId);
@@ -291,24 +289,51 @@ export function createArchitect({
             pendingClerk: true,
           });
         } else if (pending?.action === "fail") {
-          failVisibly(session, "qq-workflows: open tail cannot fit after chop; fold refused.");
           folder.clear(sessionId);
         } else if (pending?.action === "drop") {
           try {
             folder.apply(sessionId, { events: session.events, session });
           } catch (error) {
+            folder.clear(sessionId);
             failVisibly(
               session,
               `qq-workflows: open tail cannot fit after chop; fold refused (${error instanceof Error ? error.message : String(error)}).`,
             );
-            folder.clear(sessionId);
+            throw error;
           }
         }
+        const after = decideChop({
+          events: session.events,
+          session,
+          route: agent.options,
+          tokenMeter: ctx.get?.("tokenMeter", false),
+        });
+        if ((after.talking ?? 0) > (after.q ?? 0)) refuseOverflow(session);
         return next();
       });
     } catch {
       // Listeners are best-effort. Notebook + label must survive a host that
       // rejects agent.ctx.on from the plugin fiber.
+    }
+
+    if (agent.status !== "running") {
+      try { guardContext({ ctx, session, route: agent.options }); } catch { /* attach must not fail */ }
+      if (folder && typeof folder.decide === "function") {
+        try {
+          folder.decide(sessionId, {
+            events: session.events ?? [],
+            session,
+            route: agent.options,
+            pendingClerk: false,
+          });
+          const pending = folder.pending?.(sessionId);
+          if (pending?.action === "drop") {
+            folder.apply(sessionId, { events: session.events ?? [], session });
+          }
+        } catch {
+          try { folder.clear?.(sessionId); } catch { /* attach must not fail */ }
+        }
+      }
     }
 
     const handle = {

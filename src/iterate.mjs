@@ -14,6 +14,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, extname, join } from "node:path";
 import { pluginUserMessage } from "./tools.mjs";
+import { guardContext, OVERFLOW_MESSAGE } from "./chop.mjs";
 import { childCreateOptions } from "./child-model.mjs";
 import { hideHarnessToolsOn } from "./hide-harness.mjs";
 import { formatProjection, projectJournal } from "./journal.mjs";
@@ -418,6 +419,13 @@ export function createIterate({
       // directive, theory, open nits / praise, selected wiki index. Same order
       // every turn. New entries append; the prefix never reshuffles.
       disposeAssemble = agent.ctx?.on?.("agent/request", async (_payload, next) => {
+        const guard = guardContext({ ctx, session, route: agent.options });
+        if (guard.overflow) {
+          if (typeof session.append === "function") {
+            session.append("user/message", pluginUserMessage(OVERFLOW_MESSAGE, "notice"), { surfaceOp: "append" });
+          }
+          throw new Error(OVERFLOW_MESSAGE);
+        }
         try {
           const latest = `${journal.load(sessionId).entries.length}/${wiki.load(sessionId).entries.length}`;
           if (latest !== lastProjection) {
