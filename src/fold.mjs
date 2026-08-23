@@ -52,10 +52,28 @@ export function estimateEventTokens(event, tokenMeter) {
   return estimateTokensFromChars(eventChars(event));
 }
 
+function reasonKind(reason) {
+  return reason && typeof reason === "object" ? reason.kind : reason;
+}
+
+function isIncompleteSlice(slice) {
+  const end = [...slice].reverse().find((event) => event.type === "turn/end");
+  if (!end) return true;
+  const kind = reasonKind(end.data?.reason);
+  return kind === "aborted" || kind === "interrupted";
+}
+
+function hasOperator(slice) {
+  return slice.some((event) =>
+    event.type === "user/message" && event.data?.source?.kind !== "plugin");
+}
+
 /**
  * Operator+architect pairs from a turn-bounded event log. A pair starts at
- * the first operator user/message of a turn and ends at that turn's
- * turn/end (or the last event of the turn). Plugin-only turns are not pairs.
+ * the first operator user/message of a stretch and ends at a completed
+ * turn/end. Aborted or interrupted turns are not pairs; a resume after abort
+ * (operator continue, host continue) stays the same open stretch. Plugin-only
+ * turns are not pairs.
  */
 export function pairBoundaries(events) {
   const byTurn = new Map();
@@ -72,10 +90,32 @@ export function pairBoundaries(events) {
     if (event.type === "turn/end") current = undefined;
   }
   const pairs = [];
+  let open = null;
   for (const [turn, slice] of [...byTurn.entries()].sort((a, b) => a[0] - b[0])) {
-    const operator = slice.some((event) =>
-      event.type === "user/message" && event.data?.source?.kind !== "plugin");
+    const operator = hasOperator(slice);
+    const incomplete = isIncompleteSlice(slice);
+    if (open) {
+      open.events.push(...slice);
+      if (operator && open.turn == null) open.turn = turn;
+      open.hasOperator = open.hasOperator || operator;
+      if (!incomplete) {
+        if (open.hasOperator) {
+          pairs.push({
+            turn: open.turn ?? turn,
+            startSeq: open.startSeq,
+            endSeq: slice.at(-1).seq,
+            events: open.events,
+          });
+        }
+        open = null;
+      }
+      continue;
+    }
     if (!operator) continue;
+    if (incomplete) {
+      open = { turn, startSeq: slice[0].seq, events: [...slice], hasOperator: true };
+      continue;
+    }
     pairs.push({
       turn,
       startSeq: slice[0].seq,
@@ -253,4 +293,7 @@ export const internals = Object.freeze({
   surfaceNodes,
   surfaceRange,
   tokensForEvents,
+  reasonKind,
+  isIncompleteSlice,
+  hasOperator,
 });

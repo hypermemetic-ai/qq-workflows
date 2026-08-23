@@ -62,7 +62,7 @@ function syncTask(cases, tasks, sessionId, text) {
 function buildCaseWriteTool(cases, tasks) {
   return {
     name: "case_write",
-    description: "Replace working memory for this session. Send the whole small markdown document, not a patch.",
+    description: "Replace working memory for this session and end the turn. Send the whole small markdown document, not a patch.",
     parameters: {
       text: { type: "string", description: "Full markdown of working memory." },
     },
@@ -89,6 +89,7 @@ function buildCaseWriteTool(cases, tasks) {
         if (typeof args?.text !== "string") return refusal("case_write requires text");
         const written = cases.write(sessionId, args.text);
         const id = syncTask(cases, tasks, sessionId, written.text);
+        try { exec?.concludeTurn?.(); } catch { /* write already committed */ }
         return { status: "ok", title: titleOf(written.text), ...(id ? { id } : {}) };
       } catch (error) {
         return refusal(error instanceof Error ? error.message : String(error));
@@ -138,4 +139,42 @@ export function pluginUserMessage(text, form = "notice") {
   };
 }
 
-export const internals = Object.freeze({ textBlock, refusal });
+export const CASE_WRITE_GATE_TEXT = "Call case_write to end the turn.";
+export const CASE_WRITE_GATE_LIMIT = 8;
+
+function reasonKind(reason) {
+  return reason && typeof reason === "object" ? reason.kind : reason;
+}
+
+export function isExceptionalTurn(reason) {
+  const kind = reasonKind(reason);
+  return kind === "aborted" || kind === "interrupted";
+}
+
+function sliceTurn(events, turn) {
+  const list = Array.isArray(events) ? events : [];
+  let start = -1;
+  let end = list.length;
+  for (let i = 0; i < list.length; i += 1) {
+    const event = list[i];
+    const eventTurn = event?.data?.turn;
+    if (event?.type === "turn/start" && (turn === undefined || eventTurn === turn)) start = i;
+    if (event?.type === "turn/end" && (turn === undefined || eventTurn === turn) && start >= 0) {
+      end = i + 1;
+      if (turn !== undefined) break;
+    }
+  }
+  if (start >= 0) return list.slice(start, end);
+  if (Number.isSafeInteger(turn)) return list.filter((event) => event?.data?.turn === turn);
+  return list;
+}
+
+export function decideCaseWriteGate(events, { turn, reason } = {}) {
+  if (isExceptionalTurn(reason)) return { action: "pass", reason: "aborted" };
+  const slice = sliceTurn(events, turn);
+  const wrote = slice.some((event) => event?.type === "tool/call" && event.data?.name === "case_write");
+  if (wrote) return { action: "pass", reason: "wrote" };
+  return { action: "hold", reason: "no-write" };
+}
+
+export const internals = Object.freeze({ textBlock, refusal, reasonKind, sliceTurn });

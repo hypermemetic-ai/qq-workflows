@@ -2,7 +2,12 @@
 // The document is both standing context and the child's complete work packet.
 
 import { randomUUID } from "node:crypto";
-import { pluginUserMessage } from "./tools.mjs";
+import {
+  CASE_WRITE_GATE_LIMIT,
+  CASE_WRITE_GATE_TEXT,
+  decideCaseWriteGate,
+  pluginUserMessage,
+} from "./tools.mjs";
 import { repoRootFor } from "./iterate.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
 import { hideHarnessToolsOn } from "./hide-harness.mjs";
@@ -120,6 +125,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
     hangLabel(ctx, sessionId);
 
     let lastTurn;
+    let gateStreak = 0;
     let disposeEvent;
     let disposeTurn;
     let disposeAssemble;
@@ -159,6 +165,22 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
           folder?.decide?.(sessionId, { events: session.events, session, route: agent.options });
         } catch {
           // Fold decisions never block the talking loop.
+        }
+        try {
+          const decision = decideCaseWriteGate(session.events, {
+            turn: event.data?.turn,
+            reason: event.data?.reason,
+          });
+          if (decision.action !== "hold") {
+            gateStreak = 0;
+            return;
+          }
+          gateStreak += 1;
+          if (gateStreak > CASE_WRITE_GATE_LIMIT) return;
+          if (typeof agent.followup !== "function") return;
+          agent.followup(pluginUserMessage(CASE_WRITE_GATE_TEXT, "notice"));
+        } catch {
+          // Write-close followup never blocks the talking loop.
         }
       });
       disposeAssemble = agent.ctx?.on?.("agent/request", async (payload, next) => {
