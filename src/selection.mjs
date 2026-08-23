@@ -1,7 +1,7 @@
 // Per-session workflow selection. Operator-declared, restart-safe, default none.
 //
 // One file per DSH session, beside DSH_HOME (config.selectionDir overrides).
-// Mode 0600, atomic write. This is not a transcript, notebook, or settings file.
+// Mode 0600, atomic write. This is not a transcript, working memory, or settings file.
 
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";

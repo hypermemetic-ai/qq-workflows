@@ -1,7 +1,6 @@
 // Iterate tools. Desk has journal + wiki + go. Hands have the frontend
 // kind pack. Pixel tools never register on the desk.
 
-import { isOperatorUserMessage } from "./clerk.mjs";
 import { formatProjection, projectJournal } from "./journal.mjs";
 import { repoRootFor } from "./iterate.mjs";
 
@@ -13,6 +12,12 @@ function textBlock(text) {
 
 function refusal(reason) {
   return { status: "refused", reason };
+}
+
+function isOperatorUserMessage(event) {
+  if (event?.type !== "user/message") return false;
+  const source = event.data?.source;
+  return !source || source.kind === "user";
 }
 
 function lastOperatorSeq(session) {

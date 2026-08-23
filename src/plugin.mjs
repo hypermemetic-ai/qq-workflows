@@ -2,17 +2,13 @@
 //
 // The wrapper lists registered workflows and selects which one this chair
 // is running, if any. Architect, iterate, land, and find are standalone
-// workflows. Architect and iterate own tools, hang, notes/journal, and role
-// settings. Land owns done/qa_verdict on children, hang, and land/review
-// routing. Find owns the image-finder sitting: hang, arm, leave. No roles.
+// workflows. Architect owns working memory, fold/chop, delegate, and role
+// settings. Land owns done/qa_verdict on children and land/review routing.
 // Session context and awaitable leave/transition live on service.workflows;
 // /workflows select and clear stay the command path.
-// leftover-coverage hop: clerk rewrites the board; bank sees the live pile.
 
-import { createNotebookStore, defaultNotebookDir } from "./notebook.mjs";
-import { createClerk } from "./clerk.mjs";
+import { createCaseStore, defaultCaseDir, titleOf } from "./casefile.mjs";
 import { DEFAULT_H, createFolder } from "./fold.mjs";
-import { resolveScribeBinding } from "./scribe.mjs";
 import { buildArchitectTools } from "./tools.mjs";
 import { CHILD_ORIGIN, createArchitect, isArchitectCandidate } from "./architect.mjs";
 import {
@@ -126,9 +122,7 @@ function hostAgents(ctx) {
 }
 
 export function apply(ctx, config = {}) {
-  const store = createNotebookStore(defaultNotebookDir(process.env, config), {
-    now: config.now,
-  });
+  const cases = createCaseStore(defaultCaseDir(process.env, config));
   const selection = createSelectionStore(defaultSelectionDir(process.env, config));
   const architectSettings = createArchitectSettings({ settingsFile: config.settingsFile });
   const iterateSettings = createIterateSettings({ settingsFile: config.settingsFile });
@@ -139,16 +133,8 @@ export function apply(ctx, config = {}) {
   const landStore = createLandStore(defaultLandDir(process.env, config));
   const llm = ctx.get("llm", false);
   const tokenMeter = ctx.get("tokenMeter", false);
-  const sessionQuery = ctx.get("sessionQuery", false);
   const agents = hostAgents(ctx);
-  const clerk = createClerk({
-    store,
-    llm,
-    resolveBinding: () => resolveScribeBinding({ ...config, settings: architectSettings }),
-    run: config.runScribe,
-  });
   const folder = createFolder({
-    store,
     tokenMeter,
     h: config.h ?? DEFAULT_H,
     q: config.q,
@@ -160,20 +146,17 @@ export function apply(ctx, config = {}) {
     settings: landSettings,
     agents,
     llm,
+    tasks: () => ctx.get?.("qq-tasks", false) ?? null,
     run: config.runCommand,
   });
   const architect = createArchitect({
     ctx,
-    store,
-    clerk,
+    cases,
     folder,
     agents,
     tasks: () => ctx.get?.("qq-tasks", false) ?? null,
     talking: () => architectSettings.get("talking"),
     onInvokeChild: (child, info) => land.adoptImplementer(child, info),
-    llm,
-    resolveBinding: () => resolveScribeBinding({ ...config, settings: architectSettings }),
-    runScribe: config.runScribe,
   });
   const iterate = createIterate({
     ctx,
@@ -245,9 +228,8 @@ export function apply(ctx, config = {}) {
       const tasks = ctx.get?.("qq-tasks", false) ?? null;
       const definitions = selected === "architect"
         ? buildArchitectTools({
-            store,
-            sessionQuery,
-            invoke: (args) => architect.invoke(args),
+            cases,
+            delegate: (args) => architect.delegate(args),
             tasks,
           })
         : buildDeskTools({
@@ -571,12 +553,21 @@ export function apply(ctx, config = {}) {
   }
 
   const service = Object.freeze({
-    store,
-    clerk,
+    cases,
     folder,
     architect,
-    offer: (sessionId) => architect.offer(sessionId),
-    choose: (sessionId, args) => architect.choose(sessionId, args),
+    caseFile(sessionId) {
+      if (selectedName(sessionId) !== "architect") return null;
+      const loaded = cases.ensure(sessionId);
+      const id = cases.taskId?.(sessionId);
+      return {
+        title: titleOf(loaded.text),
+        text: loaded.text,
+        kind: "markdown",
+        identity: id ? `working memory · ${id}` : "working memory",
+        ...(id ? { id } : {}),
+      };
+    },
     iterate,
     land,
     journal,
@@ -598,7 +589,6 @@ export function apply(ctx, config = {}) {
         }),
       ),
     }),
-    scribe: () => resolveScribeBinding({ ...config, settings: architectSettings }),
     workflows: Object.freeze({
       names: () => [...workflows.keys()],
       selected: selectedName,

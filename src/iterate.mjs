@@ -15,6 +15,7 @@ import { homedir } from "node:os";
 import { dirname, extname, join } from "node:path";
 import { pluginUserMessage } from "./tools.mjs";
 import { guardContext, OVERFLOW_MESSAGE } from "./chop.mjs";
+import { markAssemble } from "./assemble-mark.mjs";
 import { childCreateOptions } from "./child-model.mjs";
 import { hideHarnessToolsOn } from "./hide-harness.mjs";
 import { formatProjection, projectJournal } from "./journal.mjs";
@@ -418,30 +419,45 @@ export function createIterate({
       // Stable projection injected at request assemble (architect's pattern):
       // directive, theory, open nits / praise, selected wiki index. Same order
       // every turn. New entries append; the prefix never reshuffles.
-      disposeAssemble = agent.ctx?.on?.("agent/request", async (_payload, next) => {
-        const guard = guardContext({ ctx, session, route: agent.options });
-        if (guard.overflow) {
-          if (typeof session.append === "function") {
-            session.append("user/message", pluginUserMessage(OVERFLOW_MESSAGE, "notice"), { surfaceOp: "append" });
-          }
-          throw new Error(OVERFLOW_MESSAGE);
-        }
+      disposeAssemble = agent.ctx?.on?.("agent/request", async (payload, next) => {
+        const started = Date.now();
+        let talking;
+        let q;
         try {
-          const latest = `${journal.load(sessionId).entries.length}/${wiki.load(sessionId).entries.length}`;
-          if (latest !== lastProjection) {
-            lastProjection = latest;
-            const body = [
-              "desk projection (stable order):",
-              formatProjection(journal.load(sessionId), wiki.index(sessionId)),
-            ].join("\n");
+          const guard = guardContext({ ctx, session, route: agent.options });
+          talking = guard.talking;
+          q = guard.q;
+          if (guard.overflow) {
             if (typeof session.append === "function") {
-              session.append("user/message", pluginUserMessage(body, "notice"), { surfaceOp: "append" });
+              session.append("user/message", pluginUserMessage(OVERFLOW_MESSAGE, "notice"), { surfaceOp: "append" });
             }
+            throw new Error(OVERFLOW_MESSAGE);
           }
-        } catch {
-          // Projection is best-effort. Journal tools still answer on demand.
+          try {
+            const latest = `${journal.load(sessionId).entries.length}/${wiki.load(sessionId).entries.length}`;
+            if (latest !== lastProjection) {
+              lastProjection = latest;
+              const body = [
+                "desk projection (stable order):",
+                formatProjection(journal.load(sessionId), wiki.index(sessionId)),
+              ].join("\n");
+              if (typeof session.append === "function") {
+                session.append("user/message", pluginUserMessage(body, "notice"), { surfaceOp: "append" });
+              }
+            }
+          } catch {
+            // Projection is best-effort. Journal tools still answer on demand.
+          }
+          return await next();
+        } finally {
+          markAssemble(session, {
+            turn: payload?.turn,
+            step: payload?.step,
+            ms: Date.now() - started,
+            talking,
+            q,
+          });
         }
-        return next();
       });
     } catch {
       // Listeners are best-effort. Journal + wiki + label must survive.

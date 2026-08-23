@@ -7,13 +7,9 @@
   "main": "src/plugin.mjs",
   "exports": {
     ".": "./src/plugin.mjs",
-    "./notebook": "./src/notebook.mjs",
-    "./clerk": "./src/clerk.mjs",
     "./fold": "./src/fold.mjs",
-    "./scribe": "./src/scribe.mjs",
     "./tools": "./src/tools.mjs",
     "./architect": "./src/architect.mjs",
-    "./offer": "./src/offer.mjs",
     "./iterate": "./src/iterate.mjs",
     "./land": "./src/land.mjs",
     "./land-store": "./src/land-store.mjs",

@@ -34,7 +34,7 @@ export function parseWorkflowsInput(rawInput) {
 }
 
 export const SETTINGS_ROLES = Object.freeze({
-  architect: Object.freeze(["talking", "scribe"]),
+  architect: Object.freeze(["talking"]),
   iterate: Object.freeze(["desk", "hands", "reviewer"]),
   land: Object.freeze(["router", "qa", "implementer"]),
   base: Object.freeze(["talking"]),

@@ -5,7 +5,8 @@
 // packets the architect session through qq-relay default steer.
 //
 // This is not iterate's pixel reviewer. QA has tools and owns test-only
-// commits. Paint-only changes may land; control paths default to review.
+// commits. Paint-only changes may land; control paths default to review. The
+// bound qq-task archives only after the merge/cleanup succeeds.
 
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -302,6 +303,7 @@ export function createLand({
   store,
   settings,
   agents,
+  tasks,
   llm,
   run = runCommand,
   complete,
@@ -310,6 +312,10 @@ export function createLand({
   const attached = new Map();
   const childTools = new Map();
   const settledQa = new Set();
+
+  function tasksOf() {
+    return typeof tasks === "function" ? tasks() : tasks ?? null;
+  }
 
   function binding(role) {
     return settings?.get?.(role) ?? null;
@@ -411,6 +417,7 @@ export function createLand({
     }
     const record = store.create({
       architectSession,
+      taskId: info.taskId,
       implementerSession: sessionId,
       originalImplementerSession: sessionId,
       brief,
@@ -547,14 +554,6 @@ export function createLand({
     let next = store.save({ ...state, status: "landing" });
     try {
       await landWorktree(run, next);
-      next = store.save({
-        ...next,
-        status: "landed",
-        landedAt: new Date().toISOString(),
-        packet: next.packet ? { ...next.packet, mark: "land" } : next.packet,
-      });
-      await sendPacket(next, "landed", fromId);
-      return { status: "ok", mark: "land", outcome: formatOutcome(next, "landed"), run: next.id };
     } catch (error) {
       const blocked = store.save({
         ...next,
@@ -565,6 +564,31 @@ export function createLand({
       await sendPacket(blocked, "blocked", fromId);
       return { status: "ok", mark: "fail", outcome: formatOutcome(blocked, "blocked"), run: blocked.id };
     }
+
+    let archivedTaskId = "";
+    let archiveError = "";
+    if (next.taskId) {
+      try {
+        const service = tasksOf();
+        if (!service || typeof service.archive !== "function") {
+          throw new Error("qq-tasks is unavailable");
+        }
+        archivedTaskId = String(await service.archive(next.taskId));
+      } catch (error) {
+        archiveError = error instanceof Error ? error.message : String(error);
+        logLine(ctx, "warn", `qq-workflows: landed ${next.id} but could not archive task ${next.taskId}: ${archiveError}`);
+      }
+    }
+    next = store.save({
+      ...next,
+      status: "landed",
+      landedAt: new Date().toISOString(),
+      archivedTaskId,
+      archiveError,
+      packet: next.packet ? { ...next.packet, mark: "land" } : next.packet,
+    });
+    await sendPacket(next, "landed", fromId);
+    return { status: "ok", mark: "land", outcome: formatOutcome(next, "landed"), run: next.id };
   }
 
   async function done({ agent, ref = "HEAD", runId } = {}) {

@@ -1,13 +1,8 @@
-// Fold: after the turn, after clerk. Decision off-session. Apply at the next
-// request assemble. Never mid-turn. Never block send. Clerk late → skip.
+// Fold: decide after a turn, apply at the next request. Never mid-turn.
 //
-// Drop Old when Old >= ((1-h)/h) * Tail. Default h = 0.1. Keep at least two
-// operator+architect pairs. Snap to turn boundaries. Never split a pair.
-// Never drop the latest pair. Quality ceiling Q = 256000 tokens of the
-// talking blob (Grok uses 200000). Durable omit is a plugin-source
-// user/message with surfaceOp: replace carrying the frozen stub.
-
-import { formatStub } from "./notebook.mjs";
+// Drop Old when Old >= ((1-h)/h) * Tail. Keep the current and previous
+// operator+architect pair. The short replacement points back to the visible
+// working-memory document instead of maintaining another standing store.
 
 export const DEFAULT_H = 0.1;
 export const DEFAULT_Q = 256_000;
@@ -116,7 +111,7 @@ function surfaceNodes(session, events) {
 
 /**
  * Decide a fold. Returns null when nothing drops. Never splits a pair and
- * never drops the latest pair. Clerk late (pendingClerk) skips this turn.
+ * never drops the latest pair.
  */
 export function decideFold({
   events,
@@ -125,9 +120,7 @@ export function decideFold({
   h = DEFAULT_H,
   q,
   route,
-  pendingClerk = false,
 } = {}) {
-  if (pendingClerk) return { action: "skip", reason: "clerk-late" };
   const pairs = pairBoundaries(events);
   if (pairs.length <= MIN_PAIRS) return { action: "keep", reason: "two-turn-floor", pairs: pairs.length };
   const surface = surfaceNodes(session, events);
@@ -167,16 +160,6 @@ export function decideFold({
   };
 }
 
-function notesForSpan(notebook, startSeq, endSeq) {
-  const notes = [];
-  for (const card of notebook?.cards ?? []) {
-    for (const note of card.notes) {
-      if (note.startSeq <= endSeq && note.endSeq >= startSeq) notes.push(note);
-    }
-  }
-  return notes;
-}
-
 function surfaceRange(session, events, startSeq, endSeq) {
   const nodes = Array.isArray(session?.surface?.nodes) ? [...session.surface.nodes] : [];
   if (nodes.length === 0) {
@@ -186,12 +169,23 @@ function surfaceRange(session, events, startSeq, endSeq) {
     if (inRange.length === 0) return null;
     return { start: inRange[0].seq, end: inRange.at(-1).seq, seqs: inRange.map((event) => event.seq) };
   }
-  const inRange = nodes.filter((seq) => seq >= startSeq && seq <= endSeq);
-  if (inRange.length === 0) return null;
-  return { start: inRange[0], end: inRange.at(-1), seqs: inRange };
+  let startIdx = -1;
+  let endIdx = -1;
+  for (let index = 0; index < nodes.length; index += 1) {
+    const seq = nodes[index];
+    if (seq >= startSeq && seq <= endSeq) {
+      if (startIdx < 0) startIdx = index;
+      endIdx = index;
+    }
+  }
+  if (startIdx < 0) return null;
+  // Chop stubs land in the hole with a later seq. DSH shadows by index
+  // between start and end, so provenance must include those inserts.
+  const seqs = nodes.slice(startIdx, endIdx + 1);
+  return { start: seqs[0], end: seqs.at(-1), seqs };
 }
 
-export function createFolder({ store, tokenMeter, h = DEFAULT_H, q, now } = {}) {
+export function createFolder({ tokenMeter, h = DEFAULT_H, q, now } = {}) {
   const pending = new Map();
 
   function queue(sessionId, decision) {
@@ -200,7 +194,7 @@ export function createFolder({ store, tokenMeter, h = DEFAULT_H, q, now } = {}) 
     return decision;
   }
 
-  function decide(sessionId, { events, session, route, pendingClerk } = {}) {
+  function decide(sessionId, { events, session, route } = {}) {
     const decision = decideFold({
       events,
       session,
@@ -208,7 +202,6 @@ export function createFolder({ store, tokenMeter, h = DEFAULT_H, q, now } = {}) 
       h,
       q: q ?? qualityCeiling(route),
       route,
-      pendingClerk,
     });
     return queue(sessionId, decision);
   }
@@ -230,13 +223,7 @@ export function createFolder({ store, tokenMeter, h = DEFAULT_H, q, now } = {}) 
       pending.delete(sessionId);
       return { action: "skip", reason: "no-surface-range" };
     }
-    const notebook = store.load(sessionId);
-    const stub = store.freezeStub(sessionId, {
-      startSeq: decision.startSeq,
-      endSeq: decision.endSeq,
-    });
-    const notes = notesForSpan(notebook, decision.startSeq, decision.endSeq);
-    const text = stub.text || formatStub(notes, decision.startSeq, decision.endSeq);
+    const text = `Conversation seq ${decision.startSeq}-${decision.endSeq} omitted. Working memory is authoritative.`;
     const message = {
       id: `qq-workflows-fold-${sessionId}-${decision.startSeq}-${decision.endSeq}`,
       role: "user",
@@ -248,7 +235,7 @@ export function createFolder({ store, tokenMeter, h = DEFAULT_H, q, now } = {}) 
       sourceEventSeqs: range.seqs,
     });
     pending.delete(sessionId);
-    return { ...decision, applied: true, stub, at: now?.() ?? Date.now() };
+    return { ...decision, applied: true, at: now?.() ?? Date.now() };
   }
 
   return Object.freeze({
@@ -265,6 +252,5 @@ export const internals = Object.freeze({
   eventChars,
   surfaceNodes,
   surfaceRange,
-  notesForSpan,
   tokensForEvents,
 });
