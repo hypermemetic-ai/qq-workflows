@@ -156,7 +156,8 @@ export function apply(ctx, config = {}) {
     folder,
     agents,
     tasks: () => ctx.get?.("qq-tasks", false) ?? null,
-    talking: () => architectSettings.get("talking"),
+    talking: () => architectSettings.get("talking") ?? baseSettings.get("talking"),
+    hands: () => architectSettings.get("hands"),
     onInvokeChild: (child, info) => land.adoptImplementer(child, info),
   });
   const iterate = createIterate({

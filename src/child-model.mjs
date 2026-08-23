@@ -97,11 +97,14 @@ function normalizeRoute(value) {
   if (!value || typeof value !== "object") return null;
   if (typeof value.provider !== "string" || value.provider.length === 0) return null;
   if (typeof value.model !== "string" || value.model.length === 0) return null;
+  const reasoningEffort = typeof value.reasoningEffort === "string" && value.reasoningEffort
+    ? value.reasoningEffort
+    : typeof value.effort === "string" && value.effort
+      ? value.effort
+      : null;
   return {
     provider: value.provider,
     model: value.model,
-    ...(typeof value.reasoningEffort === "string" && value.reasoningEffort
-      ? { reasoningEffort: value.reasoningEffort }
-      : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
   };
 }

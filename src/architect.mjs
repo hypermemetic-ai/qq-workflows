@@ -106,7 +106,7 @@ function watchChildReturn({ ctx, relay, child, parentId }) {
   return typeof off === "function" ? off : () => {};
 }
 
-export function createArchitect({ ctx, cases, folder, agents, tasks, talking, onInvokeChild, env = process.env } = {}) {
+export function createArchitect({ ctx, cases, folder, agents, tasks, talking, hands, onInvokeChild, env = process.env } = {}) {
   const attached = new Map();
   const tasksOf = () => (typeof tasks === "function" ? tasks() : tasks ?? null);
 
@@ -253,8 +253,10 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, on
     const taskId = cases?.taskId?.(parent.id) ?? null;
     const childId = `session-${randomUUID()}`;
     const targetCwd = repoRootFor(parent.header?.cwd);
+    const handsBinding = typeof hands === "function" ? hands() : hands;
+    const talkingBinding = typeof talking === "function" ? talking() : talking;
     const route = childRoute({
-      binding: typeof talking === "function" ? talking() : talking,
+      binding: handsBinding ?? talkingBinding,
       options: agent?.options,
       env,
     });

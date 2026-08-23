@@ -17,13 +17,13 @@ export const ARCHITECT_SETTINGS_SCHEMA = "qq.workflows-architect-settings/v1";
 export const ITERATE_SETTINGS_SCHEMA = "qq.workflows-iterate-settings/v1";
 export const LAND_SETTINGS_SCHEMA = "qq.workflows-land-settings/v1";
 export const BASE_SETTINGS_SCHEMA = "qq.workflows-base-settings/v1";
-export const ARCHITECT_ROLES = Object.freeze(["talking"]);
+export const ARCHITECT_ROLES = Object.freeze(["talking", "hands"]);
 export const ITERATE_ROLES = Object.freeze(["desk", "hands", "reviewer"]);
 export const LAND_ROLES = Object.freeze(["router", "qa", "implementer"]);
 export const BASE_ROLES = Object.freeze(["talking"]);
 
 function emptyArchitectRoles() {
-  return { talking: null };
+  return { talking: null, hands: null };
 }
 
 function emptyIterateRoles() {
@@ -57,6 +57,7 @@ function normalize(raw) {
     schema: ARCHITECT_SETTINGS_SCHEMA,
     roles: {
       talking: normalizeBinding(raw.roles.talking),
+      hands: normalizeBinding(raw.roles.hands),
     },
   };
 }
@@ -99,7 +100,7 @@ function persistArchitect(path, record) {
   persist(path, { ...previous, schema: record.schema, roles: record.roles });
 }
 
-/** Workflow-owned settings for the architect talking role. */
+/** Workflow-owned settings for the architect talking and hands roles. */
 export function createArchitectSettings({ settingsFile } = {}) {
   const path = typeof settingsFile === "string" && isAbsolute(settingsFile) ? settingsFile : null;
 
@@ -123,7 +124,10 @@ export function createArchitectSettings({ settingsFile } = {}) {
       const loaded = load();
       return {
         unbound: loaded.unbound,
-        roles: { talking: loaded.roles.talking },
+        roles: {
+          talking: loaded.roles.talking,
+          hands: loaded.roles.hands,
+        },
       };
     },
     get(role) {
