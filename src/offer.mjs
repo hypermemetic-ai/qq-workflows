@@ -50,16 +50,14 @@ export function incomingLeftoverNotes(card, turnStartSeq) {
 }
 
 /**
- * Leftover is coverage of the live concern.
- * Incoming leftover stays on the board — settling one topic is not a branch.
- * Prior leftover stays, except unfinished stubs which silent-bank.
- * This hop does not popup. A later explicit branch signal can still return
- * switch; leftover notes are not that signal. Invoke is the handoff.
+ * Leftover hop never popups. Incoming leftover is the live concern.
+ * Prior leftover is a separable concern: silent-bank into the pile.
+ * Unfinished stubs silent-bank when nothing new arrived.
  */
 export function classifyJunction(card, { turnStartSeq } = {}) {
   const prior = priorLeftoverNotes(card, turnStartSeq);
   const incoming = incomingLeftoverNotes(card, turnStartSeq);
-  if (incoming.length > 0) return "skip";
+  if (incoming.length > 0) return prior.length > 0 ? "bank" : "skip";
   if (prior.length === 0) return "skip";
   if (prior.every((note) => isObviouslyUnfinished(note.text))) return "bank";
   return "skip";

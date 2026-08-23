@@ -16,10 +16,10 @@ import {
   createOfferBook,
   incomingLeftoverNotes,
   leftoverDigest,
+  leftoverNotes,
   leftoverProse,
   leftoverTitle,
   priorLeftoverNotes,
-  switchBrief,
 } from "./offer.mjs";
 import { bankLeftover, bankNotice } from "./bank.mjs";
 import { oneShot } from "../../core/src/ask.mjs";
@@ -258,6 +258,7 @@ export function createArchitect({
         const turn = event.data?.turn;
         clerkPending = true;
         try {
+          const parked = leftoverNotes(store.openCard(store.load(sessionId)));
           await clerk.fire({ sessionId, events: session.events, turn });
           folder.decide(sessionId, {
             events: session.events,
@@ -265,7 +266,7 @@ export function createArchitect({
             route: agent.options,
             pendingClerk: false,
           });
-          await considerOffer({ sessionId, events: session.events, turn, session });
+          await considerOffer({ sessionId, events: session.events, turn, session, parked });
         } catch {
           // Clerk/fold/offer must not block the talking loop.
         } finally {
@@ -335,49 +336,38 @@ export function createArchitect({
     return Boolean(handle);
   }
 
-  async function considerOffer({ sessionId, events, turn, session } = {}) {
+  function sameLeftover(left, right) {
+    return left?.text?.trim() === right?.text?.trim()
+      || (left?.startSeq === right?.startSeq && left?.endSeq === right?.endSeq);
+  }
+
+  async function considerOffer({ sessionId, events, turn, session, parked } = {}) {
     const notebook = store.load(sessionId);
     const card = store.openCard(notebook) ?? notebook.cards.at(-1);
     const spine = buildSpine(events, turn);
     const digest = leftoverDigest(card);
     const existing = offers.get(sessionId);
-    if (existing && existing.kind !== "switch") discardStaleOffer(sessionId, existing);
-    else if (existing?.digest === digest) return existing;
+    if (existing) offers.clear(sessionId);
     if (wasHandled(sessionId, digest)) return { status: "skip", reason: "already-handled" };
+    const after = leftoverNotes(card);
+    const dropped = (parked ?? []).filter((note) => !after.some((live) => sameLeftover(note, live)));
     const kind = classifyJunction(card, { turnStartSeq: spine.startSeq });
-    if (kind === "skip") {
+    const prior = priorLeftoverNotes(card, spine.startSeq);
+    const toBank = dropped.length > 0 ? dropped : kind === "bank" ? prior : [];
+    if (toBank.length === 0) {
       return { status: "skip", reason: "empty" };
     }
-    const prior = priorLeftoverNotes(card, spine.startSeq);
-    const incoming = incomingLeftoverNotes(card, spine.startSeq);
-    if (kind === "bank") {
-      const prose = leftoverProse({ notes: prior });
-      const title = leftoverTitle({ name: card?.name, notes: prior }, prose);
-      const filed = await bankProse(title, prose);
-      if (filed.status === "ok") {
-        withdrawNotes(sessionId, prior);
-        offers.clear(sessionId);
-        rememberHandled(sessionId, digest);
-        noticeLeftover(session, bankNotice(filed, title));
-        return { ...filed, silent: true };
-      }
-      return { status: "skip", reason: "bank-unavailable" };
+    const prose = leftoverProse({ notes: toBank });
+    const title = leftoverTitle({ name: card?.name, notes: toBank }, prose);
+    const filed = await bankProse(title, prose);
+    if (filed.status === "ok") {
+      withdrawNotes(sessionId, toBank);
+      offers.clear(sessionId);
+      rememberHandled(sessionId, digest);
+      noticeLeftover(session, bankNotice(filed, title));
+      return { ...filed, silent: true };
     }
-    const title = leftoverTitle({ name: "concern", notes: incoming });
-    const brief = switchBrief(prior, incoming);
-    return offers.put(sessionId, {
-      id: randomUUID(),
-      kind: "switch",
-      digest,
-      title,
-      prior,
-      incoming,
-      prose: leftoverProse({ notes: prior }),
-      incomingProse: leftoverProse({ notes: incoming }),
-      brief,
-      operatorBrief: brief,
-      runnerBrief: "",
-    });
+    return { status: "skip", reason: "bank-unavailable" };
   }
 
   function offer(sessionId) {
