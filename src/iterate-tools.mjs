@@ -1,8 +1,8 @@
 // Iterate tools. Desk has journal + wiki + go. Hands have the frontend
 // kind pack. Pixel tools never register on the desk.
 
-import { isOperatorUserMessage } from "./clerk.mjs";
 import { formatProjection, projectJournal } from "./journal.mjs";
+import { repoRootFor } from "./iterate.mjs";
 
 const DESIGN_LOOP_URL = new URL("../../bin/lib/frontend-design-loop.mjs", import.meta.url);
 
@@ -12,6 +12,12 @@ function textBlock(text) {
 
 function refusal(reason) {
   return { status: "refused", reason };
+}
+
+function isOperatorUserMessage(event) {
+  if (event?.type !== "user/message") return false;
+  const source = event.data?.source;
+  return !source || source.kind === "user";
 }
 
 function lastOperatorSeq(session) {
@@ -151,7 +157,15 @@ export function buildDeskTools({ journal, wiki, go } = {}) {
           const sessionId = sessionIdOf(exec);
           if (!sessionId) return refusal("journal_list requires a live session");
           const projection = formatProjection(journal.load(sessionId), wiki?.index(sessionId) ?? []);
-          return { status: "ok", projection, journal: projectJournal(journal.load(sessionId)) };
+          const proj = projectJournal(journal.load(sessionId));
+          return {
+            status: "ok",
+            projection,
+            journal: {
+              ...proj,
+              sent: Array.from(proj.sent ?? []),
+            },
+          };
         } catch (error) {
           return refusal(error instanceof Error ? error.message : String(error));
         }
@@ -312,8 +326,9 @@ export function buildHandsTools({ designLoop, onDump } = {}) {
       },
       async execute(args, exec) {
         const cwd = exec?.agent?.session?.header?.cwd;
+        const root = repoRootFor(cwd);
         return run("start", (impl) => impl.startFixture({
-          root: cwd,
+          root,
           live: args?.live !== false,
         }), (started) => `Design-loop fixture listening at ${started.origin}. Open ${started.sessionUrl}. Live assets: ${started.live ? "on" : "off"}.`);
       },
@@ -331,11 +346,15 @@ export function buildHandsTools({ designLoop, onDump } = {}) {
         render: (_args, value) => renderLoop("design_loop_capture", value),
       },
       async execute(args) {
-        return run("capture", (impl) => impl.captureShots({
-          url: typeof args?.url === "string" ? args.url : undefined,
-          label: args?.label,
-          short: args?.short === true,
-        }), (captured) => {
+        return run("capture", async (impl) => {
+          const { captureProduct } = await import(new URL("./live-capture.mjs", import.meta.url));
+          return captureProduct({
+            impl,
+            url: typeof args?.url === "string" ? args.url : undefined,
+            label: args?.label,
+            short: args?.short === true,
+          });
+        }, (captured) => {
           const shotList = Object.entries(captured.shots ?? {}).map(([name, path]) => `${name}=${path}`).join(" ");
           return `Captured ${captured.label}: ${shotList}`;
         });

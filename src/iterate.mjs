@@ -12,14 +12,26 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { extname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import { pluginUserMessage } from "./tools.mjs";
+import { guardContext, OVERFLOW_MESSAGE } from "./chop.mjs";
+import { markAssemble } from "./assemble-mark.mjs";
+import { childCreateOptions } from "./child-model.mjs";
+import { hideHarnessToolsOn } from "./hide-harness.mjs";
 import { formatProjection, projectJournal } from "./journal.mjs";
 import { randomUUID } from "node:crypto";
-import { oneShot } from "../../qq/src/ask.mjs";
+import { oneShot } from "../../core/src/ask.mjs";
 
 export const ITERATE_LABEL = "workflows:iterate";
 export const CHILD_ORIGIN = "subagent";
+
+export function repoRootFor(cwd) {
+  if (!cwd || typeof cwd !== "string") return cwd;
+  if (existsSync(join(cwd, "qq-ui"))) return cwd;
+  const parent = dirname(cwd);
+  if (existsSync(join(parent, "qq-ui"))) return parent;
+  return cwd;
+}
 
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -168,9 +180,10 @@ function liveOrigin(env = process.env) {
 }
 
 function patchSurfacePaths(cwd) {
+  const root = repoRootFor(cwd);
   const paths = [...PATCH_SURFACE];
-  const assets = join(cwd || "", "qq-ui", "assets");
-  if (!cwd || !existsSync(assets)) return paths;
+  const assets = join(root || "", "qq-ui", "assets");
+  if (!root || !existsSync(assets)) return paths;
   try {
     for (const name of readdirSync(assets).sort()) {
       if (/^browser-.*\.js$/.test(name)) paths.push(`qq-ui/assets/${name}`);
@@ -180,10 +193,11 @@ function patchSurfacePaths(cwd) {
 }
 
 function collectPatchDiff(cwd) {
-  if (!cwd) return "(no working directory)";
+  const root = repoRootFor(cwd);
+  if (!root) return "(no working directory)";
   try {
-    const out = execFileSync("git", ["diff", "--", ...patchSurfacePaths(cwd)], {
-      cwd,
+    const out = execFileSync("git", ["diff", "--", ...patchSurfacePaths(root)], {
+      cwd: root,
       encoding: "utf8",
       timeout: 5_000,
       maxBuffer: 200_000,
@@ -197,10 +211,11 @@ function collectPatchDiff(cwd) {
 
 /** Text the one-shot reviewer can actually read: shot listing + patch-surface diff. */
 export function collectReviewEvidence({ cwd, env = process.env } = {}) {
+  const root = repoRootFor(cwd);
   const home = shotsHome(env);
   const shots = listShotEntries(home);
   const listing = shots.length ? shots.join("\n") : "(no shots)";
-  const diff = collectPatchDiff(cwd);
+  const diff = collectPatchDiff(root);
   return [
     `Pictures of the product (${home}):`,
     listing,
@@ -404,23 +419,45 @@ export function createIterate({
       // Stable projection injected at request assemble (architect's pattern):
       // directive, theory, open nits / praise, selected wiki index. Same order
       // every turn. New entries append; the prefix never reshuffles.
-      disposeAssemble = agent.ctx?.on?.("agent/request", async (_payload, next) => {
+      disposeAssemble = agent.ctx?.on?.("agent/request", async (payload, next) => {
+        const started = Date.now();
+        let talking;
+        let q;
         try {
-          const latest = `${journal.load(sessionId).entries.length}/${wiki.load(sessionId).entries.length}`;
-          if (latest !== lastProjection) {
-            lastProjection = latest;
-            const body = [
-              "desk projection (stable order):",
-              formatProjection(journal.load(sessionId), wiki.index(sessionId)),
-            ].join("\n");
+          const guard = guardContext({ ctx, session, route: agent.options });
+          talking = guard.talking;
+          q = guard.q;
+          if (guard.overflow) {
             if (typeof session.append === "function") {
-              session.append("user/message", pluginUserMessage(body, "notice"), { surfaceOp: "append" });
+              session.append("user/message", pluginUserMessage(OVERFLOW_MESSAGE, "notice"), { surfaceOp: "append" });
             }
+            throw new Error(OVERFLOW_MESSAGE);
           }
-        } catch {
-          // Projection is best-effort. Journal tools still answer on demand.
+          try {
+            const latest = `${journal.load(sessionId).entries.length}/${wiki.load(sessionId).entries.length}`;
+            if (latest !== lastProjection) {
+              lastProjection = latest;
+              const body = [
+                "desk projection (stable order):",
+                formatProjection(journal.load(sessionId), wiki.index(sessionId)),
+              ].join("\n");
+              if (typeof session.append === "function") {
+                session.append("user/message", pluginUserMessage(body, "notice"), { surfaceOp: "append" });
+              }
+            }
+          } catch {
+            // Projection is best-effort. Journal tools still answer on demand.
+          }
+          return await next();
+        } finally {
+          markAssemble(session, {
+            turn: payload?.turn,
+            step: payload?.step,
+            ms: Date.now() - started,
+            talking,
+            q,
+          });
         }
-        return next();
       });
     } catch {
       // Listeners are best-effort. Journal + wiki + label must survive.
@@ -465,9 +502,10 @@ export function createIterate({
     }
     // Selected wiki nodes only. Missable on purpose.
     const selectedNodes = wiki.selected(parent.id, bundle.selected);
+    const targetCwd = repoRootFor(parent.header?.cwd);
     const packet = buildHandsPacket({
       bundle: { ...bundle, wikiNodes: selectedNodes },
-      cwd: parent.header?.cwd,
+      cwd: targetCwd,
       parentSession: parent.id,
       parentAlias: typeof relay.alias === "function" ? relay.alias(parent.id) : undefined,
       env,
@@ -478,15 +516,18 @@ export function createIterate({
     const handle = await agents.create({
       sessionId: childId,
       meta: {
-        cwd: parent.header?.cwd,
+        cwd: targetCwd,
         parentSession: parent.id,
         origin: CHILD_ORIGIN,
       },
-      ...(handsBinding
-        ? { agentOptions: { provider: handsBinding.provider, model: handsBinding.model, ...(handsBinding.effort ? { reasoningEffort: handsBinding.effort } : {}) } }
-        : {}),
+      ...childCreateOptions(handsBinding && {
+        provider: handsBinding.provider,
+        model: handsBinding.model,
+        ...(handsBinding.effort ? { reasoningEffort: handsBinding.effort } : {}),
+      }),
     });
     const child = handle?.agent ?? handle;
+    hideHarnessToolsOn(child);
     liveHands = { childId: child.session?.id ?? childId, bundle, queued: [] };
     const queued = liveHands.queued;
     registerHandsTools?.(child, queued);
@@ -501,7 +542,7 @@ export function createIterate({
       parentId: parent.id,
       bundle,
       queued,
-      cwd: parent.header?.cwd,
+      cwd: targetCwd,
     });
     child.followup({
       id: randomUUID(),

@@ -1,32 +1,29 @@
-// Architect workflow: one live card, notebook, clerk, fold, lookup, invoke.
-//
-// Noun and verb. One per project. The wrapper attaches this workflow when
-// the session's selection is architect. On attach, hang workflows:architect
-// via qq-relay if loaded; clear on detach. Architect works without relay
-// except invoke-result delivery.
+// Architect workflow: visible working memory, fold/chop, and delegate.
+// The document is both standing context and the child's complete work packet.
 
 import { randomUUID } from "node:crypto";
 import { pluginUserMessage } from "./tools.mjs";
-import { buildSpine } from "./clerk.mjs";
-import {
-  askedHandoff,
-  classifyLeftover,
-  createOfferBook,
-  leftoverDigest,
-  leftoverProse,
-  leftoverTitle,
-  splitOperatorBrief,
-} from "./offer.mjs";
+import { repoRootFor } from "./iterate.mjs";
+import { childCreateOptions, childRoute } from "./child-model.mjs";
+import { hideHarnessToolsOn } from "./hide-harness.mjs";
+import { CASE_CONTEXT_NAME, EMPTY_CASE } from "./casefile.mjs";
+import { guardContext, OVERFLOW_MESSAGE } from "./chop.mjs";
+import { markAssemble } from "./assemble-mark.mjs";
 
 export const ARCHITECT_LABEL = "workflows:architect";
 export const CHILD_ORIGIN = "subagent";
+export const ARCHITECT_PROMPT_NAME = "qq-workflows:architect";
+export const ARCHITECT_PROMPT = [
+  "You are the architect. Settle the operator's intent in working memory, the document they can see.",
+  "A settled document is project context, a backlog item. Rundown loads it.",
+  "The goal is settled and dispatched: decompose work from that document and delegate children to do it. A settled document is a complete session.",
+  "Rewrite working memory with case_write when the campaign moves. Send the whole file.",
+].join("\n");
 
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/** A chair that may be selected as architect. Children never are. */
 export function isArchitectCandidate(agent) {
-  const origin = agent?.session?.header?.origin;
-  if (origin === CHILD_ORIGIN) return false;
+  if (agent?.session?.header?.origin === CHILD_ORIGIN) return false;
   return SESSION_ID.test(agent?.session?.id ?? agent?.id ?? "");
 }
 
@@ -34,13 +31,17 @@ function relayOf(ctx) {
   return ctx.get?.("qq-relay", false) ?? null;
 }
 
+function systemPromptOf(holder) {
+  return holder?.systemPrompt
+    ?? holder?.get?.("systemPrompt", false)
+    ?? holder?.ctx?.systemPrompt
+    ?? holder?.ctx?.get?.("systemPrompt", false)
+    ?? null;
+}
+
 function logLine(ctx, level, message) {
-  const logger = ctx?.logger;
-  if (logger && typeof logger[level] === "function") {
-    logger[level](message);
-    return;
-  }
-  if (level === "warn") console.warn(message);
+  if (typeof ctx?.logger?.[level] === "function") ctx.logger[level](message);
+  else if (level === "warn") console.warn(message);
 }
 
 function hangLabel(ctx, sessionId) {
@@ -51,11 +52,7 @@ function hangLabel(ctx, sessionId) {
     logLine(ctx, "info", `qq-workflows: hung ${ARCHITECT_LABEL} on ${sessionId}`);
     return true;
   } catch (error) {
-    logLine(
-      ctx,
-      "warn",
-      `qq-workflows: failed to hang ${ARCHITECT_LABEL} on ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    logLine(ctx, "warn", `qq-workflows: failed to hang ${ARCHITECT_LABEL} on ${sessionId}: ${error instanceof Error ? error.message : String(error)}`);
     return false;
   }
 }
@@ -71,11 +68,9 @@ function clearLabel(ctx, sessionId) {
   }
 }
 
-/** Chop fat tool dumps at a legal append boundary. Do not call from session/event. */
-function pruneToolResults(ctx, session) {
-  const pruner = ctx.get?.("toolResultPruner", false);
-  if (!pruner || typeof pruner.pruneSession !== "function") return null;
-  return pruner.pruneSession(session);
+function failVisibly(session, text) {
+  if (typeof session?.append !== "function") return;
+  session.append("user/message", pluginUserMessage(text, "notice"), { surfaceOp: "append" });
 }
 
 function lastAssistantText(events) {
@@ -83,9 +78,7 @@ function lastAssistantText(events) {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
     if (event?.type !== "assistant/message") continue;
-    const content = event.data?.message?.content;
-    if (!Array.isArray(content)) continue;
-    const text = content
+    const text = (event.data?.message?.content ?? [])
       .filter((block) => block?.type === "text" && typeof block.text === "string")
       .map((block) => block.text)
       .join("")
@@ -95,7 +88,6 @@ function lastAssistantText(events) {
   return "";
 }
 
-/** Child completion → relay.send default to the parent. One shot. */
 function watchChildReturn({ ctx, relay, child, parentId }) {
   const childId = child?.session?.id;
   if (!relay || typeof relay.send !== "function" || !childId || !parentId) return () => {};
@@ -106,152 +98,129 @@ function watchChildReturn({ ctx, relay, child, parentId }) {
     if (!text) return;
     sent = true;
     try {
-      await relay.send({
-        fromId: childId,
-        to: parentId,
-        message: text,
-        delivery: "default",
-      });
+      await relay.send({ fromId: childId, to: parentId, message: text, delivery: "default" });
     } catch (error) {
       sent = false;
-      logLine(
-        ctx,
-        "warn",
-        `qq-workflows: invoke result was not delivered to ${parentId}: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      logLine(ctx, "warn", `qq-workflows: delegate result was not delivered to ${parentId}: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
-  const dispose = child.ctx?.on?.("session/event", async (_session, event) => {
+  const off = child.ctx?.on?.("session/event", async (_session, event) => {
     if (event?.type === "turn/end") await sendBack();
   });
-  return typeof dispose === "function" ? dispose : () => {};
+  return typeof off === "function" ? off : () => {};
 }
 
-function failVisibly(session, text) {
-  if (!session || typeof session.append !== "function") return;
-  session.append("user/message", pluginUserMessage(text, "notice"), { surfaceOp: "append" });
-}
-
-function publicOffer(offer) {
-  if (!offer) return null;
-  return {
-    id: offer.id,
-    title: offer.title,
-    brief: offer.operatorBrief || offer.brief,
-    runnerBrief: offer.runnerBrief || "",
-    choices: ["handoff", "bank", "ignore"],
-  };
-}
-
-export function createArchitect({
-  ctx,
-  store,
-  clerk,
-  folder,
-  agents,
-  tasks,
-} = {}) {
+export function createArchitect({ ctx, cases, folder, agents, tasks, talking, onInvokeChild, env = process.env } = {}) {
   const attached = new Map();
-  const offers = createOfferBook();
-
-  function tasksOf() {
-    return typeof tasks === "function" ? tasks() : tasks ?? null;
-  }
-
-  function bankProse(title, prose) {
-    const service = tasksOf();
-    if (!service || typeof service.create !== "function") {
-      return { status: "refused", reason: "bank requires qq-tasks" };
-    }
-    const id = service.create({ title, body: prose });
-    return { status: "ok", action: "bank", id, title };
-  }
+  const tasksOf = () => (typeof tasks === "function" ? tasks() : tasks ?? null);
 
   function attach(agent) {
     if (!isArchitectCandidate(agent)) return null;
     const session = agent.session;
     const sessionId = session.id;
     if (attached.has(sessionId)) return attached.get(sessionId);
-    store.ensure(sessionId);
+    cases?.open?.(sessionId, tasksOf());
+    cases?.ensure?.(sessionId);
     hangLabel(ctx, sessionId);
 
     let lastTurn;
-    let clerkPending = false;
     let disposeEvent;
     let disposeTurn;
     let disposeAssemble;
+    const contextOffs = [];
+
+    function bindCaseContext(holder) {
+      const prompt = systemPromptOf(holder) ?? systemPromptOf(agent);
+      if (typeof prompt?.context !== "function") return;
+      while (contextOffs.length) {
+        try { contextOffs.pop()?.(); } catch { /* lift */ }
+      }
+      const promptOff = prompt.context({ name: ARCHITECT_PROMPT_NAME, order: 10, text: () => ARCHITECT_PROMPT });
+      if (typeof promptOff === "function") contextOffs.push(promptOff);
+      if (!cases) return;
+      const caseOff = prompt.context({
+        name: CASE_CONTEXT_NAME,
+        order: 20,
+        text: () => {
+          const body = String(cases.load(sessionId)?.text ?? "").trim();
+          if (!body) return "";
+          const id = cases.taskId?.(sessionId);
+          return id ? `Working memory (${id}):\n\n${body}` : `Working memory:\n\n${body}`;
+        },
+      });
+      if (typeof caseOff === "function") contextOffs.push(caseOff);
+    }
+    if (typeof agent?.ctx?.inject === "function") agent.ctx.inject(["systemPrompt"], bindCaseContext);
+    else bindCaseContext(agent?.ctx ?? agent);
+
     try {
       disposeEvent = agent.ctx?.on?.("session/event", (_session, event) => {
         if (event?.type === "turn/end") lastTurn = event.data?.turn;
       });
-      disposeTurn = agent.ctx?.on?.("session/event", async (_session, event) => {
+      disposeTurn = agent.ctx?.on?.("session/event", (_session, event) => {
         if (event?.type !== "turn/end") return;
-        const turn = event.data?.turn;
-        clerkPending = true;
         try {
-          await clerk.fire({ sessionId, events: session.events, turn });
-          folder.decide(sessionId, {
-            events: session.events,
-            session,
-            route: agent.options,
-            pendingClerk: false,
-          });
-          await considerOffer({ sessionId, events: session.events, turn, session });
+          folder?.decide?.(sessionId, { events: session.events, session, route: agent.options });
         } catch {
-          // Clerk/fold/offer must not block the talking loop.
-        } finally {
-          clerkPending = false;
+          // Fold decisions never block the talking loop.
         }
       });
-      disposeAssemble = agent.ctx?.on?.("agent/request", async (_payload, next) => {
+      disposeAssemble = agent.ctx?.on?.("agent/request", async (payload, next) => {
+        const started = Date.now();
+        let talkingTokens;
+        let q;
         try {
-          pruneToolResults(ctx, session);
-        } catch (error) {
-          failVisibly(
-            session,
-            `qq-workflows: tool-result prune refused (${error instanceof Error ? error.message : String(error)}).`,
-          );
-        }
-        const pending = folder.pending(sessionId);
-        if (clerkPending) {
-          folder.decide(sessionId, {
-            events: session.events,
-            session,
-            route: agent.options,
-            pendingClerk: true,
-          });
-        } else if (pending?.action === "fail") {
-          failVisibly(session, "qq-workflows: open tail cannot fit after chop; fold refused.");
-          folder.clear(sessionId);
-        } else if (pending?.action === "drop") {
-          try {
-            folder.apply(sessionId, { events: session.events, session });
-          } catch (error) {
-            failVisibly(
-              session,
-              `qq-workflows: open tail cannot fit after chop; fold refused (${error instanceof Error ? error.message : String(error)}).`,
-            );
-            folder.clear(sessionId);
+          const guard = guardContext({ ctx, session, route: agent.options });
+          if (guard.pruneError) {
+            failVisibly(session, `qq-workflows: tool-result prune refused (${guard.pruneError instanceof Error ? guard.pruneError.message : String(guard.pruneError)}).`);
           }
+          const pending = folder?.pending?.(sessionId);
+          if (pending?.action === "fail") folder.clear(sessionId);
+          else if (pending?.action === "drop") folder.apply(sessionId, { events: session.events, session });
+          const after = guardContext({ ctx, session, route: agent.options });
+          talkingTokens = after.talking;
+          q = after.q;
+          if ((after.talking ?? 0) > (after.q ?? 0)) {
+            failVisibly(session, OVERFLOW_MESSAGE);
+            throw new Error(OVERFLOW_MESSAGE);
+          }
+          return await next();
+        } finally {
+          markAssemble(session, {
+            turn: payload?.turn,
+            step: payload?.step,
+            ms: Date.now() - started,
+            talking: talkingTokens,
+            q,
+          });
         }
-        return next();
       });
     } catch {
-      // Listeners are best-effort. Notebook + label must survive a host that
-      // rejects agent.ctx.on from the plugin fiber.
+      // Working memory and the label survive hosts that reject fiber listeners.
+    }
+
+    if (agent.status !== "running") {
+      try { guardContext({ ctx, session, route: agent.options }); } catch { /* attach must not fail */ }
+      try {
+        const decision = folder?.decide?.(sessionId, { events: session.events ?? [], session, route: agent.options });
+        if (decision?.action === "drop") folder.apply(sessionId, { events: session.events ?? [], session });
+      } catch {
+        try { folder?.clear?.(sessionId); } catch { /* attach must not fail */ }
+      }
     }
 
     const handle = {
       sessionId,
       agent,
       lastTurn: () => lastTurn,
-      offer: () => publicOffer(offers.get(sessionId)),
       detach() {
         disposeEvent?.();
         disposeTurn?.();
         disposeAssemble?.();
+        while (contextOffs.length) {
+          try { contextOffs.pop()?.(); } catch { /* lift */ }
+        }
         clearLabel(ctx, sessionId);
-        offers.clear(sessionId);
         attached.delete(sessionId);
       },
     };
@@ -266,124 +235,58 @@ export function createArchitect({
     return Boolean(handle);
   }
 
-  async function considerOffer({ sessionId, events, turn, session } = {}) {
-    const notebook = store.load(sessionId);
-    const card = store.openCard(notebook) ?? notebook.cards.at(-1);
-    const spine = buildSpine(events, turn);
-    const asked = askedHandoff(spine.userExtract);
-    const digest = leftoverDigest(card, { asked });
-    const existing = offers.get(sessionId);
-    if (existing?.digest === digest) return existing;
-    if (offers.alreadyHandled(sessionId, digest)) return { status: "skip", reason: "already-handled" };
-    const kind = classifyLeftover(card, { asked });
-    if (kind === "skip") {
-      offers.remember(sessionId, digest);
-      return { status: "skip", reason: "empty" };
-    }
-    const prose = leftoverProse(card);
-    const title = leftoverTitle(card, prose);
-    if (kind === "bank") {
-      const filed = bankProse(title, prose);
-      if (filed.status === "ok") {
-        offers.clear(sessionId);
-        offers.remember(sessionId, digest);
-        return { ...filed, silent: true };
-      }
-      // Missing qq-tasks: refuse-not-invent, then offer so hand off / ignore still work.
-    }
-    if (typeof clerk.compilePacket !== "function") return { status: "skip", reason: "empty-brief" };
-    const foldPoint = folder?.pending?.(sessionId)?.startSeq;
-    const parentAlias = typeof relayOf(ctx)?.alias === "function"
-      ? relayOf(ctx).alias(sessionId)
-      : undefined;
-    const packet = await clerk.compilePacket({
-      sessionId,
-      events,
-      foldPoint: Number.isSafeInteger(foldPoint) ? foldPoint - 1 : undefined,
-      parentSession: sessionId,
-      parentAlias,
-    });
-    if (!packet) return { status: "skip", reason: "empty-brief" };
-    const split = splitOperatorBrief(packet);
-    return offers.put(sessionId, {
-      id: randomUUID(),
-      digest,
-      title,
-      prose,
-      packet,
-      brief: split.brief,
-      operatorBrief: split.operatorBrief,
-      runnerBrief: split.runnerBrief,
-    });
-  }
-
-  function offer(sessionId) {
-    return publicOffer(offers.get(sessionId));
-  }
-
-  async function choose(sessionId, { choice, agent } = {}) {
-    const current = offers.get(sessionId);
-    if (!current) return { status: "refused", reason: "no leftover offer" };
-    if (choice === "ignore") {
-      offers.clear(sessionId);
-      offers.remember(sessionId, current.digest);
-      return { status: "ok", action: "ignore" };
-    }
-    if (choice === "bank") {
-      const filed = bankProse(current.title, current.prose);
-      if (filed.status !== "ok") return filed;
-      offers.clear(sessionId);
-      offers.remember(sessionId, current.digest);
-      return filed;
-    }
-    if (choice === "handoff" || choice === "hand off") {
-      const live = agent ?? attached.get(sessionId)?.agent;
-      const started = await invoke({ agent: live, packet: current.packet });
-      if (started.status !== "ok") return started;
-      offers.clear(sessionId);
-      offers.remember(sessionId, current.digest);
-      return { ...started, action: "handoff", brief: current.brief };
-    }
-    return { status: "refused", reason: "unknown leftover choice" };
-  }
-
-  async function invoke({ agent, packet: compiled } = {}) {
+  async function delegate({ agent } = {}) {
     const relay = relayOf(ctx);
-    if (!relay) return { status: "refused", reason: "invoke requires qq-relay" };
+    if (!relay) return { status: "refused", reason: "delegate requires qq-relay" };
     const parent = agent?.session;
     if (!parent?.id || !isArchitectCandidate(agent) || !attached.has(parent.id)) {
-      return { status: "refused", reason: "invoke requires a live architect session" };
+      return { status: "refused", reason: "delegate requires a live architect session" };
     }
     if (!agents || typeof agents.create !== "function") {
-      return { status: "refused", reason: "invoke requires ctx.agents.create" };
+      return { status: "refused", reason: "delegate requires ctx.agents.create" };
     }
-    const foldPoint = folder.pending(parent.id)?.startSeq;
-    const parentAlias = typeof relay.alias === "function" ? relay.alias(parent.id) : undefined;
-    const packet = compiled || await clerk.compilePacket({
-      sessionId: parent.id,
-      events: parent.events,
-      foldPoint: Number.isSafeInteger(foldPoint) ? foldPoint - 1 : undefined,
-      parentSession: parent.id,
-      parentAlias,
-    });
-    if (!packet) return { status: "refused", reason: "invoke packet was empty" };
+    const packet = String(cases?.load?.(parent.id)?.text ?? "");
+    if (!packet.trim() || packet.trim() === EMPTY_CASE.trim()) {
+      return { status: "refused", reason: "delegate requires settled working memory" };
+    }
+    const taskId = cases?.taskId?.(parent.id) ?? null;
     const childId = `session-${randomUUID()}`;
-    const handle = await agents.create({
-      sessionId: childId,
-      meta: {
-        cwd: parent.header?.cwd,
-        parentSession: parent.id,
-        origin: CHILD_ORIGIN,
-      },
+    const targetCwd = repoRootFor(parent.header?.cwd);
+    const route = childRoute({
+      binding: typeof talking === "function" ? talking() : talking,
+      options: agent?.options,
+      env,
     });
-    const child = handle?.agent ?? handle;
-    watchChildReturn({ ctx, relay, child, parentId: parent.id });
+    const created = await agents.create({
+      sessionId: childId,
+      meta: { cwd: targetCwd, parentSession: parent.id, origin: CHILD_ORIGIN },
+      ...childCreateOptions(route),
+    });
+    const child = created?.agent ?? created;
+    hideHarnessToolsOn(child);
+    let adopted = false;
+    if (typeof onInvokeChild === "function") {
+      try {
+        const result = await onInvokeChild(child, {
+          packet,
+          taskId,
+          parent,
+          parentSession: parent.id,
+          cwd: targetCwd,
+        });
+        adopted = result === true || result?.status === "ok";
+      } catch {
+        adopted = false;
+      }
+    }
+    if (!adopted) watchChildReturn({ ctx, relay, child, parentId: parent.id });
     child.followup({
       id: randomUUID(),
       role: "user",
       content: [{ type: "text", text: packet }],
       source: { kind: "plugin", plugin: "qq-workflows", form: "notice" },
     });
+    cases?.consume?.(parent.id);
     const alias = typeof relay.alias === "function" ? relay.alias(child.session?.id ?? childId) : undefined;
     return {
       status: "ok",
@@ -401,10 +304,7 @@ export function createArchitect({
     attach,
     detach,
     dispose,
-    invoke,
-    offer,
-    choose,
-    considerOffer,
+    delegate,
     attached: (sessionId) => attached.get(sessionId),
     label: ARCHITECT_LABEL,
   });
