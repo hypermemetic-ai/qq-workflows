@@ -13,12 +13,7 @@ import { markAssemble } from "./assemble-mark.mjs";
 export const ARCHITECT_LABEL = "workflows:architect";
 export const CHILD_ORIGIN = "subagent";
 export const ARCHITECT_PROMPT_NAME = "qq-workflows:architect";
-export const ARCHITECT_PROMPT = [
-  "You are the architect. Settle the operator's intent in working memory, the document they can see.",
-  "A settled document is project context, a backlog item. Rundown loads it.",
-  "The goal is settled and dispatched: decompose work from that document and delegate children to do it. A settled document is a complete session.",
-  "Rewrite working memory with case_write when the campaign moves. Send the whole file.",
-].join("\n");
+export const ARCHITECT_PROMPT = "You are the architect. Settle intent in working memory and delegate the work once the operator approves. They see the same working memory document.";
 
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -245,10 +240,15 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, on
     if (!agents || typeof agents.create !== "function") {
       return { status: "refused", reason: "delegate requires ctx.agents.create" };
     }
-    const packet = String(cases?.load?.(parent.id)?.text ?? "");
-    if (!packet.trim() || packet.trim() === EMPTY_CASE.trim()) {
+    const brief = String(cases?.load?.(parent.id)?.text ?? "");
+    if (!brief.trim() || brief.trim() === EMPTY_CASE.trim()) {
       return { status: "refused", reason: "delegate requires settled working memory" };
     }
+    const parentAlias = typeof relay.alias === "function" ? relay.alias(parent.id) : undefined;
+    const returnAddress = parentAlias
+      ? `Return address: session ${parent.id} (alias ${parentAlias}).`
+      : `Return address: session ${parent.id}.`;
+    const packet = `${brief.trimEnd()}\n\n${returnAddress} Results are delivered through qq-relay default steer.`;
     const taskId = cases?.taskId?.(parent.id) ?? null;
     const childId = `session-${randomUUID()}`;
     const targetCwd = repoRootFor(parent.header?.cwd);
@@ -264,22 +264,20 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, on
     });
     const child = created?.agent ?? created;
     hideHarnessToolsOn(child);
-    let adopted = false;
+    watchChildReturn({ ctx, relay, child, parentId: parent.id });
     if (typeof onInvokeChild === "function") {
       try {
-        const result = await onInvokeChild(child, {
+        await onInvokeChild(child, {
           packet,
           taskId,
           parent,
           parentSession: parent.id,
           cwd: targetCwd,
         });
-        adopted = result === true || result?.status === "ok";
       } catch {
-        adopted = false;
+        // Adoption is optional; the child still receives its packet and return route.
       }
     }
-    if (!adopted) watchChildReturn({ ctx, relay, child, parentId: parent.id });
     child.followup({
       id: randomUUID(),
       role: "user",
