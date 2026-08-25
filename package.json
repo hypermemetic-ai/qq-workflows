@@ -10,6 +10,7 @@
     "./fold": "./src/fold.mjs",
     "./tools": "./src/tools.mjs",
     "./architect": "./src/architect.mjs",
+    "./mini": "./src/mini.mjs",
     "./iterate": "./src/iterate.mjs",
     "./land": "./src/land.mjs",
     "./land-store": "./src/land-store.mjs",

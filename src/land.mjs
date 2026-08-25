@@ -25,6 +25,7 @@ import {
 import { createQaVerdict } from "../../bin/lib/qa-verdict.mjs";
 import { oneShot } from "../../core/src/ask.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
+import { MINI_KIND, miniSetup } from "./mini.mjs";
 import {
   buildDoneTool,
   buildQaVerdictTool,
@@ -436,6 +437,7 @@ export function createLand({
       env,
     });
     const childId = `session-${randomUUID()}`;
+    const mini = role === "implementer";
     const handle = await agents.create({
       sessionId: childId,
       meta: {
@@ -443,8 +445,9 @@ export function createLand({
         parentSession,
         origin: CHILD_ORIGIN,
         landRole: role,
+        ...(mini ? { kind: MINI_KIND, agentPreset: MINI_KIND } : {}),
       },
-      ...childCreateOptions(route),
+      ...childCreateOptions(route, mini ? { setup: miniSetup } : {}),
     });
     const child = handle?.agent ?? handle;
     install?.(child);

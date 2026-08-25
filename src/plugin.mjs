@@ -11,6 +11,7 @@ import { createCaseStore, defaultCaseDir, titleOf } from "./casefile.mjs";
 import { DEFAULT_H, createFolder } from "./fold.mjs";
 import { buildArchitectTools } from "./tools.mjs";
 import { CHILD_ORIGIN, createArchitect, isArchitectCandidate } from "./architect.mjs";
+import { isMiniAgent } from "./mini.mjs";
 import {
   hideHarnessTools,
   stripAgentInstructionMessages,
@@ -185,10 +186,13 @@ export function apply(ctx, config = {}) {
     return selected === "architect" || selected === "iterate";
   }
 
-  // Children keep nested AGENTS.md (qq-ui). Architect and iterate do not
-  // get the DSH workspace-instruction dump.
+  // Architect standing context is role, working memory, and fold. DSH
+  // agent-instructions is not a fifth channel. Minis also drop the dump.
+  // Iterate and QA children keep it.
   function shouldHideInstructions(agent) {
-    if (!agent || originOf(agent) === CHILD_ORIGIN) return false;
+    if (!agent) return false;
+    if (isMiniAgent(agent)) return true;
+    if (originOf(agent) === CHILD_ORIGIN) return false;
     const selected = selectedName(sessionIdOf(agent));
     return selected === "architect" || selected === "iterate";
   }
@@ -714,6 +718,8 @@ export function apply(ctx, config = {}) {
     if (tools === result?.tools) return result;
     return { ...result, tools };
   });
+  // Prepend: agent-instructions injects after next(). Wrapping it is the
+  // only way the dump does not re-enter the batch we just stripped.
   ctx.on("agent/pre-step", async (event, next) => {
     const decision = await next();
     const agent = event?.agent ?? event?.scope;
@@ -722,7 +728,7 @@ export function apply(ctx, config = {}) {
     const messages = stripAgentInstructionMessages(decision.messages);
     if (messages === decision.messages) return decision;
     return { ...decision, messages };
-  });
+  }, { prepend: true });
 
   if (typeof agents?.list === "function") {
     for (const agent of agents.list()) {

@@ -17,16 +17,31 @@ export function childRoute(sources = {}) {
   return null;
 }
 
-export function childCreateOptions(route) {
+export function composeSetups(...fns) {
+  const setups = fns.filter((fn) => typeof fn === "function");
+  if (setups.length === 0) return undefined;
+  if (setups.length === 1) return setups[0];
+  return (agentCtx) => {
+    for (const setup of setups) setup(agentCtx);
+  };
+}
+
+export function childCreateOptions(route, extra = {}) {
   const normalized = normalizeRoute(route);
-  if (!normalized) return {};
+  const setup = composeSetups(
+    normalized ? childModelSetup(normalized) : undefined,
+    extra.setup,
+  );
+  if (!normalized && !setup) return {};
   return {
-    agentOptions: {
-      provider: normalized.provider,
-      model: normalized.model,
-      ...(normalized.reasoningEffort ? { reasoningEffort: normalized.reasoningEffort } : {}),
-    },
-    setup: childModelSetup(normalized),
+    ...(normalized ? {
+      agentOptions: {
+        provider: normalized.provider,
+        model: normalized.model,
+        ...(normalized.reasoningEffort ? { reasoningEffort: normalized.reasoningEffort } : {}),
+      },
+    } : {}),
+    ...(setup ? { setup } : {}),
   };
 }
 

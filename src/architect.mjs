@@ -6,6 +6,7 @@ import { pluginUserMessage } from "./tools.mjs";
 import { repoRootFor } from "./iterate.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
 import { hideHarnessToolsOn } from "./hide-harness.mjs";
+import { MINI_KIND, miniSetup } from "./mini.mjs";
 import { CASE_CONTEXT_NAME, EMPTY_CASE } from "./casefile.mjs";
 import { guardContext, OVERFLOW_MESSAGE } from "./chop.mjs";
 import { markAssemble } from "./assemble-mark.mjs";
@@ -259,8 +260,14 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, on
     });
     const created = await agents.create({
       sessionId: childId,
-      meta: { cwd: targetCwd, parentSession: parent.id, origin: CHILD_ORIGIN },
-      ...childCreateOptions(route),
+      meta: {
+        cwd: targetCwd,
+        parentSession: parent.id,
+        origin: CHILD_ORIGIN,
+        kind: MINI_KIND,
+        agentPreset: MINI_KIND,
+      },
+      ...childCreateOptions(route, { setup: miniSetup }),
     });
     const child = created?.agent ?? created;
     hideHarnessToolsOn(child);
