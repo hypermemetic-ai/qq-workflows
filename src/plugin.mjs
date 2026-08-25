@@ -3,7 +3,7 @@
 // The wrapper lists registered workflows and selects which one this chair
 // is running, if any. Architect, iterate, land, and find are standalone
 // workflows. Architect owns working memory, fold/chop, delegate, and role
-// settings. Land owns done/qa_verdict on children and land/review routing.
+// settings. Land owns Mini's completion bridge and qa_verdict/review routing.
 // Session context and awaitable leave/transition live on service.workflows;
 // /workflows select and clear stay the command path.
 
@@ -11,7 +11,7 @@ import { createCaseStore, defaultCaseDir, titleOf } from "./casefile.mjs";
 import { DEFAULT_H, createFolder } from "./fold.mjs";
 import { buildArchitectTools } from "./tools.mjs";
 import { CHILD_ORIGIN, createArchitect, isArchitectCandidate } from "./architect.mjs";
-import { isMiniAgent } from "./mini.mjs";
+import { ensureMiniMounted, isMiniAgent, MINI_SWE_MIGRATION } from "./official-mini.mjs";
 import {
   hideHarnessTools,
   stripAgentInstructionMessages,
@@ -697,8 +697,16 @@ export function apply(ctx, config = {}) {
     talkingOff.set(sessionId, typeof off === "function" ? off : () => {});
   }
 
+  function syncMini(agent) {
+    if (!isMiniAgent(agent)) return false;
+    ensureMiniMounted(agent);
+    land.resumeImplementer(agent);
+    return true;
+  }
+
   ctx.on("agent/created", ({ agent }) => {
     pinTalking(agent);
+    syncMini(agent);
     if (originOf(agent) === CHILD_ORIGIN) installHide(agent);
     syncSession(agent);
   });
@@ -734,8 +742,12 @@ export function apply(ctx, config = {}) {
     for (const agent of agents.list()) {
       try {
         pinTalking(agent);
+        syncMini(agent);
         syncSession(agent);
-      } catch {
+      } catch (error) {
+        ctx.logger?.warn?.(
+          `qq-workflows: live agent sync failed (${MINI_SWE_MIGRATION}): ${error instanceof Error ? error.message : String(error)}`,
+        );
         // One live agent must not unload the plugin.
       }
     }

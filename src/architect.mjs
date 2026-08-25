@@ -6,7 +6,7 @@ import { pluginUserMessage } from "./tools.mjs";
 import { repoRootFor } from "./iterate.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
 import { hideHarnessToolsOn } from "./hide-harness.mjs";
-import { MINI_KIND, miniSetup } from "./mini.mjs";
+import { MINI_KIND, miniSetup, renderMiniSweTask } from "./official-mini.mjs";
 import { CASE_CONTEXT_NAME, EMPTY_CASE } from "./casefile.mjs";
 import { guardContext, OVERFLOW_MESSAGE } from "./chop.mjs";
 import { markAssemble } from "./assemble-mark.mjs";
@@ -271,24 +271,43 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, on
     });
     const child = created?.agent ?? created;
     hideHarnessToolsOn(child);
-    watchChildReturn({ ctx, relay, child, parentId: parent.id });
-    if (typeof onInvokeChild === "function") {
+    const refuseAdoption = async (reason) => {
+      let cleanupError = "";
       try {
-        await onInvokeChild(child, {
+        await created?.dispose?.();
+      } catch (error) {
+        cleanupError = error instanceof Error ? error.message : String(error);
+      }
+      return {
+        status: "refused",
+        reason: cleanupError
+          ? `land adoption failed: ${reason}; child cleanup failed: ${cleanupError}`
+          : `land adoption failed: ${reason}`,
+      };
+    };
+    if (typeof onInvokeChild === "function") {
+      let adoption;
+      try {
+        adoption = await onInvokeChild(child, {
           packet,
           taskId,
           parent,
           parentSession: parent.id,
           cwd: targetCwd,
         });
-      } catch {
-        // Adoption is optional; the child still receives its packet and return route.
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        return refuseAdoption(detail);
+      }
+      if (adoption?.status === "refused") {
+        return refuseAdoption(adoption.reason || "refused");
       }
     }
+    watchChildReturn({ ctx, relay, child, parentId: parent.id });
     child.followup({
       id: randomUUID(),
       role: "user",
-      content: [{ type: "text", text: packet }],
+      content: [{ type: "text", text: renderMiniSweTask(packet) }],
       source: { kind: "plugin", plugin: "qq-workflows", form: "notice" },
     });
     cases?.consume?.(parent.id);

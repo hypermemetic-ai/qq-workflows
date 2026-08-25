@@ -1,8 +1,9 @@
 // Land workflow: route stamp, isolated QA, two-look cap, then merge.
 //
-// Architect does not merge. The implementer calls `done`. This chair stamps
-// land or review, runs the land worker or an isolated QA child, and always
-// packets the architect session through qq-relay default steer.
+// Architect does not merge. Official Mini submits through its completion command;
+// this chair bridges it to Land, stamps land or review, runs the land worker or
+// an isolated QA child, and always packets the architect through qq-relay
+// default steer.
 //
 // This is not iterate's pixel reviewer. QA has tools and owns test-only
 // commits. Paint-only changes may land; control paths default to review. The
@@ -25,7 +26,13 @@ import {
 import { createQaVerdict } from "../../bin/lib/qa-verdict.mjs";
 import { oneShot } from "../../core/src/ask.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
-import { MINI_KIND, miniSetup } from "./mini.mjs";
+import {
+  bindMiniSubmit,
+  isMiniAgent,
+  MINI_KIND,
+  miniSetup,
+  renderMiniSweTask,
+} from "./official-mini.mjs";
 import {
   buildDoneTool,
   buildQaVerdictTool,
@@ -380,11 +387,10 @@ export function createLand({
   function installDone(child, runId) {
     const sessionId = sessionIdOf(child);
     childTools.get(sessionId)?.();
-    const dispose = registerTools(child, [
-      buildDoneTool({
-        submit: (args) => done({ ...args, runId }),
-      }),
-    ]);
+    const submit = (args) => done({ ...args, runId });
+    const dispose = isMiniAgent(child)
+      ? bindMiniSubmit(child, submit)
+      : registerTools(child, [buildDoneTool({ submit })]);
     childTools.set(sessionId, dispose);
     return dispose;
   }
@@ -416,16 +422,34 @@ export function createLand({
         inspectError: error instanceof Error ? error.message : String(error),
       };
     }
-    const record = store.create({
-      architectSession,
-      taskId: info.taskId,
-      implementerSession: sessionId,
-      originalImplementerSession: sessionId,
-      brief,
-      ...git,
-    });
-    installDone(child, record.id);
-    return { status: "ok", run: record.id, child: sessionId };
+    const runId = `land-${randomUUID().slice(0, 8)}`;
+    let disposeBinding;
+    try {
+      disposeBinding = installDone(child, runId);
+      const record = store.create({
+        id: runId,
+        architectSession,
+        taskId: info.taskId,
+        implementerSession: sessionId,
+        originalImplementerSession: sessionId,
+        brief,
+        ...git,
+      });
+      return { status: "ok", run: record.id, child: sessionId };
+    } catch (error) {
+      try { disposeBinding?.(); } catch { /* best effort rollback */ }
+      childTools.delete(sessionId);
+      throw error;
+    }
+  }
+
+  function resumeImplementer(child) {
+    const sessionId = sessionIdOf(child);
+    if (!sessionId || !isMiniAgent(child)) return false;
+    const state = store.bySession(sessionId);
+    if (!state || state.implementerSession !== sessionId) return false;
+    installDone(child, state.id);
+    return true;
   }
 
   async function spawnChild({ role, cwd, parentSession, system, user, install }) {
@@ -452,10 +476,11 @@ export function createLand({
     const child = handle?.agent ?? handle;
     install?.(child);
     const seed = [system, user].filter(Boolean).join("\n\n");
+    const content = mini ? renderMiniSweTask(seed) : seed;
     child.followup?.({
       id: randomUUID(),
       role: "user",
-      content: [{ type: "text", text: seed }],
+      content: [{ type: "text", text: content }],
       source: { kind: "plugin", plugin: "qq-workflows", form: "notice" },
     });
     return child;
@@ -716,6 +741,7 @@ export function createLand({
     detach,
     dispose,
     adoptImplementer,
+    resumeImplementer,
     done,
     submitVerdict,
     attached: (sessionId) => attached.get(sessionId),
