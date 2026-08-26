@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Named workflows, architect, iterate, and land. qq expects the plugin and still runs if it is absent.",
+  "description": "Named workflows, architect, find, and base. Land is a git side effect, not a selectable workflow. qq expects the plugin and still runs if it is absent.",
   "main": "src/plugin.mjs",
   "exports": {
     ".": "./src/plugin.mjs",
@@ -11,6 +11,7 @@
     "./tools": "./src/tools.mjs",
     "./architect": "./src/architect.mjs",
     "./mini": "./src/mini.mjs",
+    "./git": "./src/git.mjs",
     "./iterate": "./src/iterate.mjs",
     "./land": "./src/land.mjs",
     "./land-store": "./src/land-store.mjs",

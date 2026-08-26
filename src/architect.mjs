@@ -8,7 +8,7 @@ import {
   decideCaseWriteGate,
   pluginUserMessage,
 } from "./tools.mjs";
-import { repoRootFor } from "./iterate.mjs";
+import { createDelegatedWorktree, repoRootFor, runCommand } from "./git.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
 import { hideHarnessToolsOn } from "./hide-harness.mjs";
 import { MINI_KIND, miniSetup, renderMiniSweTask } from "./official-mini.mjs";
@@ -111,7 +111,7 @@ function watchChildReturn({ ctx, relay, child, parentId }) {
   return typeof off === "function" ? off : () => {};
 }
 
-export function createArchitect({ ctx, cases, folder, agents, tasks, talking, hands, onInvokeChild, env = process.env } = {}) {
+export function createArchitect({ ctx, cases, folder, agents, tasks, talking, hands, onInvokeChild, run = runCommand, env = process.env } = {}) {
   const attached = new Map();
   const tasksOf = () => (typeof tasks === "function" ? tasks() : tasks ?? null);
 
@@ -274,7 +274,21 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
     const packet = `${brief.trimEnd()}\n\n${returnAddress} Results are delivered through qq-relay default steer.`;
     const taskId = cases?.taskId?.(parent.id) ?? null;
     const childId = `session-${randomUUID()}`;
-    const targetCwd = repoRootFor(parent.header?.cwd);
+    let targetCwd = repoRootFor(parent.header?.cwd);
+    try {
+      const prepared = await createDelegatedWorktree(run, {
+        cwd: targetCwd,
+        brief: packet,
+        id: childId,
+        env,
+      });
+      targetCwd = prepared.worktree;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/not a git worktree/i.test(message)) {
+        return { status: "refused", reason: `delegate worktree: ${message}` };
+      }
+    }
     const handsBinding = typeof hands === "function" ? hands() : hands;
     const talkingBinding = typeof talking === "function" ? talking() : talking;
     const route = childRoute({

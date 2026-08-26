@@ -2,6 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import { bodyOf, titleOf } from "./casefile.mjs";
+import { buildLandTool } from "./land-tools.mjs";
 
 function textBlock(text) {
   return { type: "text", text };
@@ -98,7 +99,7 @@ function buildCaseWriteTool(cases, tasks) {
   };
 }
 
-export function buildArchitectTools({ delegate, tasks, cases } = {}) {
+export function buildArchitectTools({ delegate, tasks, cases, land } = {}) {
   const tools = [{
     name: "delegate",
     description: "Start one live child from working memory. Results return through qq-relay default steer.",
@@ -125,6 +126,7 @@ export function buildArchitectTools({ delegate, tasks, cases } = {}) {
       }
     },
   }];
+  if (typeof land === "function") tools.push(buildLandTool({ invoke: land }));
   if (cases && typeof cases.write === "function") tools.push(buildCaseWriteTool(cases, tasks));
   if (typeof tasks?.rundown === "function") tools.push(buildRundownTool(tasks));
   return tools;

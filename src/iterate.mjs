@@ -12,12 +12,13 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, extname, join } from "node:path";
+import { extname, join } from "node:path";
 import { pluginUserMessage } from "./tools.mjs";
 import { guardContext, OVERFLOW_MESSAGE } from "./chop.mjs";
 import { markAssemble } from "./assemble-mark.mjs";
 import { childCreateOptions } from "./child-model.mjs";
 import { hideHarnessToolsOn } from "./hide-harness.mjs";
+import { repoRootFor } from "./git.mjs";
 import { formatProjection, projectJournal } from "./journal.mjs";
 import { randomUUID } from "node:crypto";
 import { oneShot } from "../../core/src/ask.mjs";
@@ -25,13 +26,7 @@ import { oneShot } from "../../core/src/ask.mjs";
 export const ITERATE_LABEL = "workflows:iterate";
 export const CHILD_ORIGIN = "subagent";
 
-export function repoRootFor(cwd) {
-  if (!cwd || typeof cwd !== "string") return cwd;
-  if (existsSync(join(cwd, "qq-ui"))) return cwd;
-  const parent = dirname(cwd);
-  if (existsSync(join(parent, "qq-ui"))) return parent;
-  return cwd;
-}
+export { repoRootFor };
 
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 

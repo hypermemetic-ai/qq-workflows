@@ -1,9 +1,9 @@
 // qq-workflows: one repository, one plugin. Cordis entry point.
 //
 // The wrapper lists registered workflows and selects which one this chair
-// is running, if any. Architect, iterate, land, and find are standalone
-// workflows. Architect owns working memory, fold/chop, delegate, and role
-// settings. Land owns Mini's completion bridge and qa_verdict/review routing.
+// is running, if any. Architect, find, and base are selectable. Land is git
+// machinery: official Mini completion and the architect/base land tool.
+// Architect owns working memory, fold/chop, delegate, and role settings.
 // Session context and awaitable leave/transition live on service.workflows;
 // /workflows select and clear stay the command path.
 
@@ -18,21 +18,19 @@ import {
   stripHiddenHarnessTools,
   toolsOf,
 } from "./hide-harness.mjs";
-import { createIterate, isIterateCandidate } from "./iterate.mjs";
-import { createLand, isLandCandidate } from "./land.mjs";
+import { runCommand } from "./git.mjs";
+import { createLand } from "./land.mjs";
 import { createLandStore, defaultLandDir } from "./land-store.mjs";
 import { createJournalStore, defaultJournalDir } from "./journal.mjs";
 import { createWikiStore, defaultWikiDir } from "./wiki.mjs";
-import { buildDeskTools, buildHandsTools } from "./iterate-tools.mjs";
 import { createSelectionStore, defaultSelectionDir } from "./selection.mjs";
+import { buildLandTool } from "./land-tools.mjs";
 import {
   ARCHITECT_ROLES,
   BASE_ROLES,
-  ITERATE_ROLES,
   LAND_ROLES,
   createArchitectSettings,
   createBaseSettings,
-  createIterateSettings,
   createLandSettings,
   formatSettingsList,
 } from "./settings.mjs";
@@ -126,7 +124,6 @@ export function apply(ctx, config = {}) {
   const cases = createCaseStore(defaultCaseDir(process.env, config));
   const selection = createSelectionStore(defaultSelectionDir(process.env, config));
   const architectSettings = createArchitectSettings({ settingsFile: config.settingsFile });
-  const iterateSettings = createIterateSettings({ settingsFile: config.settingsFile });
   const landSettings = createLandSettings({ settingsFile: config.settingsFile });
   const baseSettings = createBaseSettings({ settingsFile: config.settingsFile });
   const journal = createJournalStore(defaultJournalDir(process.env, config));
@@ -158,22 +155,12 @@ export function apply(ctx, config = {}) {
     tasks: () => ctx.get?.("qq-tasks", false) ?? null,
     talking: () => architectSettings.get("talking") ?? baseSettings.get("talking"),
     hands: () => architectSettings.get("hands"),
+    run: config.runCommand ?? runCommand,
     onInvokeChild: (child, info) => land.adoptImplementer(child, info),
-  });
-  const iterate = createIterate({
-    ctx,
-    journal,
-    wiki,
-    settings: iterateSettings,
-    llm,
-    agents,
-    run: config.runScribe,
-    registerHandsTools: (child, queue) => registerHandsTools(child, queue),
   });
 
   const workflows = new Map();
   const toolDisposers = new Map();
-  const handsToolDisposers = new Map();
   const hideDisposers = new Map();
 
   function originOf(agent) {
@@ -184,18 +171,18 @@ export function apply(ctx, config = {}) {
     if (!agent) return false;
     if (originOf(agent) === CHILD_ORIGIN) return true;
     const selected = selectedName(sessionIdOf(agent));
-    return selected === "architect" || selected === "iterate";
+    return selected === "architect";
   }
 
   // Architect standing context is role, working memory, and fold. DSH
-  // agent-instructions is not a fifth channel. Minis also drop the dump.
-  // Iterate and QA children keep it.
+  // agent-instructions is not a fifth channel. Minis also drop the dump;
+  // other children keep nested AGENTS.md.
   function shouldHideInstructions(agent) {
     if (!agent) return false;
     if (isMiniAgent(agent)) return true;
     if (originOf(agent) === CHILD_ORIGIN) return false;
     const selected = selectedName(sessionIdOf(agent));
-    return selected === "architect" || selected === "iterate";
+    return selected === "architect";
   }
 
   function installHide(agent) {
@@ -226,22 +213,20 @@ export function apply(ctx, config = {}) {
     const install = (toolCtx) => {
       if (toolDisposers.has(sessionId)) return;
       const selected = selectedName(sessionId);
-      if (selected !== "architect" && selected !== "iterate") return;
+      if (selected !== "architect" && selected !== "base") return;
       const tools = toolsService(toolCtx) ?? toolsService(agent);
       if (!tools || typeof tools.register !== "function") return;
-      installHide(agent);
+      if (selected === "architect") installHide(agent);
       const tasks = ctx.get?.("qq-tasks", false) ?? null;
+      const invokeLand = (args) => land.invoke(args);
       const definitions = selected === "architect"
         ? buildArchitectTools({
             cases,
             delegate: (args) => architect.delegate(args),
             tasks,
+            land: invokeLand,
           })
-        : buildDeskTools({
-            journal,
-            wiki,
-            go: (args) => iterate.go(args),
-          });
+        : [buildLandTool({ invoke: invokeLand })];
       const disposers = definitions.map((tool) => tools.register(tool));
       toolDisposers.set(sessionId, {
         owner: selected,
@@ -253,28 +238,6 @@ export function apply(ctx, config = {}) {
     };
     if (typeof agent?.ctx?.inject === "function") agent.ctx.inject(["tools"], install);
     else install(agent?.ctx);
-  }
-
-  function registerHandsTools(child, queue) {
-    const sessionId = sessionIdOf(child);
-    const install = (toolCtx) => {
-      if (handsToolDisposers.has(sessionId)) return;
-      const tools = toolsService(toolCtx) ?? toolsService(child);
-      if (!tools || typeof tools.register !== "function") return;
-      installHide(child);
-      const disposers = buildHandsTools({
-        designLoop: config.designLoop,
-        onDump: ({ text }) => {
-          if (Array.isArray(queue)) queue.push(text);
-        },
-      }).map((tool) => tools.register(tool));
-      handsToolDisposers.set(sessionId, () => {
-        for (const dispose of disposers) dispose();
-        handsToolDisposers.delete(sessionId);
-      });
-    };
-    if (typeof child?.ctx?.inject === "function") child.ctx.inject(["tools"], install);
-    else install(child?.ctx);
   }
 
   function disposeAgentTools(agentOrId, owner) {
@@ -310,44 +273,7 @@ export function apply(ctx, config = {}) {
   });
   workflows.set("architect", architectWorkflow);
 
-  const iterateWorkflow = Object.freeze({
-    name: "iterate",
-    candidate: isIterateCandidate,
-    acceptedContexts: DEFAULT_ACCEPTED_CONTEXTS,
-    settings: iterateSettings,
-    ensureAttached(agent) {
-      if (!isIterateCandidate(agent)) return null;
-      const handle = iterate.attach(agent);
-      registerAgentTools(agent);
-      return handle;
-    },
-    ensureDetached(agentOrId) {
-      disposeAgentTools(agentOrId, "iterate");
-      liftHide(agentOrId);
-      return iterate.detach(agentOrId);
-    },
-    listSettings() {
-      return formatSettingsList("iterate", iterateSettings.list(), ITERATE_ROLES);
-    },
-    writeSettings(role, binding) {
-      iterateSettings.write(role, binding);
-      return formatSettingsList("iterate", iterateSettings.list(), ITERATE_ROLES);
-    },
-  });
-  workflows.set("iterate", iterateWorkflow);
-
-  const landWorkflow = Object.freeze({
-    name: "land",
-    candidate: isLandCandidate,
-    acceptedContexts: DEFAULT_ACCEPTED_CONTEXTS,
-    settings: landSettings,
-    ensureAttached(agent) {
-      if (!isLandCandidate(agent)) return null;
-      return land.attach(agent);
-    },
-    ensureDetached(agentOrId) {
-      return land.detach(agentOrId);
-    },
+  const landSettingsFacade = Object.freeze({
     listSettings() {
       return formatSettingsList("land", landSettings.list(), LAND_ROLES);
     },
@@ -356,7 +282,6 @@ export function apply(ctx, config = {}) {
       return formatSettingsList("land", landSettings.list(), LAND_ROLES);
     },
   });
-  workflows.set("land", landWorkflow);
 
   function selectedName(sessionId) {
     return selection.get(sessionId);
@@ -430,9 +355,11 @@ export function apply(ctx, config = {}) {
     settings: baseSettings,
     ensureAttached(agent) {
       if (!isArchitectCandidate(agent)) return null;
+      registerAgentTools(agent);
       return sessionIdOf(agent);
     },
-    ensureDetached() {
+    ensureDetached(agentOrId) {
+      disposeAgentTools(agentOrId, "base");
       return null;
     },
     listSettings() {
@@ -450,12 +377,16 @@ export function apply(ctx, config = {}) {
     return agents.get(sessionId) ?? null;
   }
 
+  function userFacingNames() {
+    return [...workflows.keys()];
+  }
+
   const sessionApi = createWorkflowSessionApi({
     getWorkflow: (name) => workflows.get(name) ?? null,
     selectedName,
     persistSelection: (sessionId, name) => selection.set(sessionId, name),
     liveAgent,
-    names: () => [...workflows.keys()],
+    names: userFacingNames,
   });
 
   function syncSession(agent) {
@@ -500,6 +431,7 @@ export function apply(ctx, config = {}) {
   }
 
   function selectWorkflow(sessionId, name) {
+    if (name === "land") throw new Error("land is not a selectable workflow");
     const workflow = workflows.get(name);
     if (!workflow) throw new Error(`unknown workflow: ${name}`);
     const agent = liveAgent(sessionId);
@@ -519,6 +451,7 @@ export function apply(ctx, config = {}) {
   }
 
   function settingsOf(name) {
+    if (name === "land") return landSettingsFacade;
     const workflow = workflows.get(name);
     if (!workflow) throw new Error(`unknown workflow: ${name}`);
     return workflow;
@@ -532,7 +465,7 @@ export function apply(ctx, config = {}) {
       if (parsed.action === "list") {
         return {
           kind: "success",
-          text: formatWorkflowList([...workflows.keys()], selectedName(sessionId)),
+          text: formatWorkflowList(userFacingNames(), selectedName(sessionId)),
         };
       }
       if (parsed.action === "clear") {
@@ -573,29 +506,28 @@ export function apply(ctx, config = {}) {
         ...(id ? { id } : {}),
       };
     },
-    iterate,
     land,
     journal,
     wiki,
     selection,
     settings: architectSettings,
-    iterateSettings,
     landSettings,
     baseSettings,
     complete: (line) => completeComposerLine(line, {
-      names: [...workflows.keys()],
-      roles: Object.fromEntries(
-        [...workflows.entries()].map(([name, workflow]) => {
-          if (name === "architect") return [name, [...ARCHITECT_ROLES]];
-          if (name === "iterate") return [name, [...ITERATE_ROLES]];
-          if (name === "land") return [name, [...LAND_ROLES]];
-          if (name === "base") return [name, [...BASE_ROLES]];
-          return [name, []];
-        }),
-      ),
+      names: userFacingNames(),
+      roles: {
+        ...Object.fromEntries(
+          [...workflows.keys()].map((name) => {
+            if (name === "architect") return [name, [...ARCHITECT_ROLES]];
+            if (name === "base") return [name, [...BASE_ROLES]];
+            return [name, []];
+          }),
+        ),
+        land: [...LAND_ROLES],
+      },
     }),
     workflows: Object.freeze({
-      names: () => [...workflows.keys()],
+      names: userFacingNames,
       selected: selectedName,
       select: selectWorkflow,
       clear: clearWorkflow,
@@ -619,7 +551,7 @@ export function apply(ctx, config = {}) {
       () => commands.register({
         name: "workflows",
         description: "List, select, or configure loaded workflow plugins for this session.",
-        input: { hint: "architect | iterate | land | find | base | none | settings [workflow] [role provider model [effort]]" },
+        input: { hint: "architect | find | base | none | settings [workflow] [role provider model [effort]]" },
         handler: handleWorkflows,
       }),
       "qq-workflows: /workflows",
@@ -651,13 +583,9 @@ export function apply(ctx, config = {}) {
       const selected = selectedName(sessionId);
       const label = selected === "architect"
         ? architect.label
-        : selected === "iterate"
-          ? iterate.label
-          : selected === "land"
-            ? land.label
-            : selected === "find"
-              ? FIND_LABEL
-              : "";
+        : selected === "find"
+          ? FIND_LABEL
+          : "";
       if (!sessionId || !label) continue;
       try { relay.hang(sessionId, label); } catch {}
     }
@@ -668,8 +596,6 @@ export function apply(ctx, config = {}) {
   function talkingBinding(sessionId) {
     const selected = selectedName(sessionId);
     if (selected === "architect") return architectSettings.get("talking") ?? baseSettings.get("talking");
-    if (selected === "iterate") return iterateSettings.get("desk") ?? baseSettings.get("talking");
-    if (selected === "land") return landSettings.get("router") ?? baseSettings.get("talking");
     return baseSettings.get("talking");
   }
   function unpinTalking(agentOrId) {
@@ -714,8 +640,6 @@ export function apply(ctx, config = {}) {
   ctx.on("agent/disposed", ({ agent }) => {
     for (const workflow of workflows.values()) workflow.ensureDetached(agent);
     const sessionId = sessionIdOf(agent);
-    handsToolDisposers.get(sessionId)?.();
-    handsToolDisposers.delete(sessionId);
     unpinTalking(sessionId);
     liftHide(agent);
   });
@@ -761,10 +685,8 @@ export function apply(ctx, config = {}) {
       }
     }
     architect.dispose?.();
-    iterate.dispose?.();
     land.dispose?.();
     for (const record of [...toolDisposers.values()]) record.dispose();
-    for (const dispose of [...handsToolDisposers.values()]) dispose();
     for (const dispose of [...hideDisposers.values()]) dispose();
     hideDisposers.clear();
     for (const sessionId of [...talkingOff.keys()]) unpinTalking(sessionId);

@@ -1,6 +1,6 @@
 // Hide DSH harness extras this chair does not use. Relay is the mailbox.
-// delegate/go are the children. Do not sermon the model: the tools are gone,
-// and architect/iterate do not receive AGENTS.md as a standing dump.
+// Delegate and go start children. Do not sermon the model: the tools are gone,
+// and architect/Mini do not receive AGENTS.md as a standing dump.
 
 export const HIDDEN_HARNESS_TOOLS = Object.freeze([
   "subagent",

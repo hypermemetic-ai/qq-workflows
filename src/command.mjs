@@ -35,7 +35,6 @@ export function parseWorkflowsInput(rawInput) {
 
 export const SETTINGS_ROLES = Object.freeze({
   architect: Object.freeze(["talking", "hands"]),
-  iterate: Object.freeze(["desk", "hands", "reviewer"]),
   land: Object.freeze(["router", "qa", "implementer"]),
   base: Object.freeze(["talking"]),
 });
@@ -87,7 +86,7 @@ export function completeWorkflowsInput(rawInput, {
     pool = selectable;
   } else if (committed[0] === "settings") {
     if (committed.length === 1) {
-      pool = Object.keys(roles).filter((name) => names.includes(name)).sort();
+      pool = Object.keys(roles).sort();
     } else if (committed.length === 2) {
       pool = [...(roles[committed[1]] ?? [])];
     } else if (committed.length === 3) {

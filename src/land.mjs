@@ -1,18 +1,16 @@
-// Land workflow: route stamp, isolated QA, two-look cap, then merge.
-//
-// Architect does not merge. Official Mini submits through its completion command;
-// this chair bridges it to Land, stamps land or review, runs the land worker or
-// an isolated QA child, and always packets the architect through qq-relay
-// default steer.
+// Land is not a selectable workflow. Official Mini submits through its
+// completion command; the architect/base `land` tool may submit an existing
+// worktree. Both paths stamp land or review, run the land worker or an isolated
+// QA child, and packet the architect session through qq-relay default steer.
 //
 // This is not iterate's pixel reviewer. QA has tools and owns test-only
 // commits. Paint-only changes may land; control paths default to review. The
 // bound qq-task archives only after the merge/cleanup succeeds.
 
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { dirname } from "node:path";
+import { checked, inspectWorktree, reason, runCommand } from "./git.mjs";
 
 import {
   compilePacket,
@@ -63,41 +61,14 @@ export const QA_SYSTEM = [
   "A pass requires a clean worktree; any test changes must already be committed.",
 ].join(" ");
 
-/** A chair that may be selected as land. Children never are. */
+/** A chair that may invoke land. Children never are. */
 export function isLandCandidate(agent) {
   const origin = agent?.session?.header?.origin;
   if (origin === CHILD_ORIGIN) return false;
   return SESSION_ID.test(agent?.session?.id ?? agent?.id ?? "");
 }
 
-export function runCommand(command, args, options = {}) {
-  return new Promise((resolve) => {
-    execFile(command, args, {
-      cwd: options.cwd,
-      encoding: "utf8",
-      maxBuffer: 2_000_000,
-      timeout: options.timeout ?? 30_000,
-      env: options.env,
-    }, (error, stdout, stderr) => {
-      if (error) {
-        const code = Number.isInteger(error.code) ? error.code : 1;
-        resolve({ code, stdout: stdout ?? "", stderr: stderr ?? error.message });
-        return;
-      }
-      resolve({ code: 0, stdout: stdout ?? "", stderr: stderr ?? "" });
-    });
-  });
-}
-
-function reason(result, fallback) {
-  return result?.stderr?.trim() || result?.stdout?.trim() || fallback;
-}
-
-async function checked(run, command, args, options, label) {
-  const result = await run(command, args, options);
-  if (result?.code !== 0) throw new Error(`${label}: ${reason(result, "command failed")}`);
-  return result;
-}
+export { inspectWorktree, runCommand };
 
 function relayOf(ctx) {
   return ctx.get?.("qq-relay", false) ?? null;
@@ -173,37 +144,6 @@ export function formatOutcome(state, kind) {
     return [`Blocked: ${why}`, body].filter(Boolean).join("\n\n");
   }
   return body;
-}
-
-export async function inspectWorktree(run, cwd) {
-  if (!cwd || typeof cwd !== "string") throw new Error("done requires a worktree");
-  const top = await checked(run, "git", ["rev-parse", "--show-toplevel"], { cwd }, "not a git worktree");
-  const worktree = (await realpath(top.stdout.trim()));
-  const common = await checked(
-    run, "git", ["rev-parse", "--git-common-dir"], { cwd: worktree }, "cannot resolve git common dir",
-  );
-  const commonDir = common.stdout.trim();
-  const gitDir = await realpath(commonDir.startsWith("/") ? commonDir : `${worktree}/${commonDir}`);
-  const mainRoot = await realpath(gitDir.endsWith(".git") ? dirname(gitDir) : gitDir);
-  const branch = await checked(
-    run, "git", ["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: worktree }, "worktree HEAD is detached",
-  );
-  let baseBranch = "main";
-  const mainCheck = await run("git", ["rev-parse", "--verify", "refs/heads/main"], { cwd: mainRoot });
-  if (mainCheck?.code !== 0) {
-    const master = await run("git", ["rev-parse", "--verify", "refs/heads/master"], { cwd: mainRoot });
-    if (master?.code === 0) baseBranch = "master";
-  }
-  const base = await checked(
-    run, "git", ["rev-parse", "--verify", baseBranch], { cwd: mainRoot }, `cannot resolve ${baseBranch}`,
-  );
-  return {
-    worktree,
-    mainRoot,
-    branch: branch.stdout.trim(),
-    baseBranch,
-    baseRef: base.stdout.trim(),
-  };
 }
 
 export async function enforceQaWorktree(run, state, verdict) {
@@ -619,31 +559,37 @@ export function createLand({
     return { status: "ok", mark: "land", outcome: formatOutcome(next, "landed"), run: next.id };
   }
 
-  async function done({ agent, ref = "HEAD", runId } = {}) {
-    const sessionId = sessionIdOf(agent);
-    const state = (runId ? store.load(runId) : null) ?? store.bySession(sessionId);
-    if (!state) return { status: "refused", reason: "done has no land run for this session" };
-    if (state.implementerSession && state.implementerSession !== sessionId) {
-      return { status: "refused", reason: "done requires the owned implementer session" };
-    }
+  function notReady(state) {
     if (state.status === "blocked" || state.status === "landed") {
-      return { status: "refused", reason: `handoff is ${state.status}, not ready for done` };
+      return `handoff is ${state.status}, not ready for done`;
     }
     if (state.status === "reviewing" || state.status === "landing") {
-      return { status: "refused", reason: `handoff is ${state.status}, not ready for done` };
+      return `handoff is ${state.status}, not ready for done`;
     }
     if (state.status === "waiting_fix") {
-      if (state.look !== 1) return { status: "refused", reason: "qa already used both looks" };
-    } else if (state.status !== "running") {
-      return { status: "refused", reason: `handoff is ${state.status}, not ready for done` };
-    } else if (state.look !== 0) {
-      return { status: "refused", reason: "qa already used both looks" };
+      if (state.look !== 1) return "qa already used both looks";
+      return "";
     }
+    if (state.status !== "running") return `handoff is ${state.status}, not ready for done`;
+    if (state.look !== 0) return "qa already used both looks";
+    return "";
+  }
+
+  function runForWorktree(path) {
+    if (!path) return null;
+    for (const record of store.list()) {
+      if (record.worktree === path && (record.status === "running" || record.status === "waiting_fix")) {
+        return record;
+      }
+    }
+    return null;
+  }
+
+  async function submitRef(state, { ref = "HEAD", fromId } = {}) {
+    if (!state.worktree) return { status: "refused", reason: "done requires a worktree" };
+    const blocked = notReady(state);
+    if (blocked) return { status: "refused", reason: blocked };
     try {
-      if (!state.worktree) return { status: "refused", reason: "done requires a worktree" };
-      const cwd = await realpath(agent?.session?.header?.cwd || state.worktree);
-      const expected = await realpath(state.worktree);
-      if (cwd !== expected) return { status: "refused", reason: "done must run from its delegated worktree" };
       const revision = await checked(
         run, "git", ["rev-parse", "--verify", `${ref}^{commit}`], { cwd: state.worktree }, "ref is not a commit",
       );
@@ -670,13 +616,59 @@ export function createLand({
         packet,
         status: mark === "land" ? "landing" : "reviewing",
       });
-      if (mark === "land") return finishLand(next, sessionId);
+      if (mark === "land") return finishLand(next, fromId);
       next = store.save({ ...next, look: look === 0 ? 1 : look, status: "reviewing" });
       next = await startQa(next);
       return { status: "ok", mark: "review", look: next.look, run: next.id, qa: next.qaSession };
     } catch (error) {
       return { status: "refused", reason: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  async function done({ agent, ref = "HEAD", runId } = {}) {
+    const sessionId = sessionIdOf(agent);
+    const state = (runId ? store.load(runId) : null) ?? store.bySession(sessionId);
+    if (!state) return { status: "refused", reason: "done has no land run for this session" };
+    if (state.implementerSession && state.implementerSession !== sessionId) {
+      return { status: "refused", reason: "done requires the owned implementer session" };
+    }
+    if (!state.worktree) return { status: "refused", reason: "done requires a worktree" };
+    try {
+      const cwd = await realpath(agent?.session?.header?.cwd || state.worktree);
+      const expected = await realpath(state.worktree);
+      if (cwd !== expected) return { status: "refused", reason: "done must run from its delegated worktree" };
+    } catch (error) {
+      return { status: "refused", reason: error instanceof Error ? error.message : String(error) };
+    }
+    return submitRef(state, { ref, fromId: sessionId });
+  }
+
+  async function invoke({ agent, worktree, ref = "HEAD", brief } = {}) {
+    if (!isLandCandidate(agent)) {
+      return { status: "refused", reason: "land requires a root session" };
+    }
+    const sessionId = sessionIdOf(agent);
+    const cwd = worktree || agent?.session?.header?.cwd;
+    let git;
+    try {
+      git = await inspectWorktree(run, cwd);
+    } catch (error) {
+      return { status: "refused", reason: error instanceof Error ? error.message : String(error) };
+    }
+    if (git.worktree === git.mainRoot) {
+      return { status: "refused", reason: "land refuses the primary checkout; use a branch worktree" };
+    }
+    const existing = runForWorktree(git.worktree);
+    const state = existing ?? store.create({
+      architectSession: sessionId,
+      implementerSession: sessionId,
+      brief: String(brief ?? existing?.brief ?? ""),
+      ...git,
+    });
+    if (brief && existing) {
+      return submitRef(store.save({ ...state, brief: String(brief) }), { ref, fromId: sessionId });
+    }
+    return submitRef(state, { ref, fromId: sessionId });
   }
 
   async function submitVerdict({ agent, verdict, runId } = {}) {
@@ -743,6 +735,7 @@ export function createLand({
     adoptImplementer,
     resumeImplementer,
     done,
+    invoke,
     submitVerdict,
     attached: (sessionId) => attached.get(sessionId),
     run: (id) => store.load(id),
