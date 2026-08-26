@@ -120,6 +120,11 @@ function hostAgents(ctx) {
   return typeof ctx?.get === "function" ? ctx.get("agents") : undefined;
 }
 
+function syncLiveLandChild(land, agent) {
+  if (isMiniAgent(agent)) ensureMiniMounted(agent);
+  return land?.resumeChild?.(agent) ?? false;
+}
+
 export function apply(ctx, config = {}) {
   const cases = createCaseStore(defaultCaseDir(process.env, config));
   const selection = createSelectionStore(defaultSelectionDir(process.env, config));
@@ -628,8 +633,7 @@ export function apply(ctx, config = {}) {
   }
 
   function syncMini(agent) {
-    if (isMiniAgent(agent)) ensureMiniMounted(agent);
-    return land.resumeChild?.(agent) ?? false;
+    return syncLiveLandChild(land, agent);
   }
 
   ctx.on("agent/created", ({ agent }) => {
@@ -700,4 +704,5 @@ export const internals = Object.freeze({
   sessionIdOf,
   toolsService,
   hostAgents,
+  syncLiveLandChild,
 });

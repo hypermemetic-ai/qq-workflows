@@ -49,6 +49,7 @@ export const ROUTE_PACKET_SCHEMA = "qq.route-packet/v1";
 
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CHILD_AGENT_HANDLE = Symbol.for("@hypermemetic-ai/qq-workflows/child-agent-handle");
+const SETTLEMENT_TRANSITIONS = new Set(["dispose", "start_qa", "start_fixer"]);
 
 export const ROUTE_SYSTEM = [
   "You stamp a completion packet land or review.",
@@ -470,9 +471,9 @@ export function createLand({
     try { disposeTools?.(); } catch { /* child teardown is best effort */ }
   }
 
-  function clearOwnerLifecycle(owner) {
+  function clearOwnerLifecycle(owner, { notifyFailure = true } = {}) {
     for (const pending of owner?.settlements?.values?.() ?? []) {
-      if (!pending.failureNotified) {
+      if (notifyFailure && !pending.failureNotified) {
         try { pending.onFailure?.(); } catch { /* retry policy is best effort */ }
       }
       pending.resolve(false);
@@ -481,7 +482,36 @@ export function createLand({
     for (const off of owner?.lifecycleOffs ?? []) {
       try { off?.(); } catch { /* best effort */ }
     }
-    if (owner) owner.lifecycleOffs = [];
+    if (owner) {
+      owner.lifecycleOffs = [];
+      owner.qaSettleOff = null;
+    }
+  }
+
+  function rememberSettlement(owner, transition, callId = "") {
+    if (!SETTLEMENT_TRANSITIONS.has(transition)) {
+      throw new Error(`unknown child settlement transition ${transition}`);
+    }
+    const state = store.load(owner.runId);
+    if (!state) throw new Error(`child settlement has no land run ${owner.runId}`);
+    return store.save({
+      ...state,
+      settlementSession: owner.sessionId,
+      settlementCallId: callId,
+      settlementTransition: transition,
+    });
+  }
+
+  function clearRememberedSettlement(owner, callId = "") {
+    const state = store.load(owner.runId);
+    if (!state || state.settlementSession !== owner.sessionId) return state;
+    if (callId && state.settlementCallId && state.settlementCallId !== callId) return state;
+    return store.save({
+      ...state,
+      settlementSession: "",
+      settlementCallId: "",
+      settlementTransition: "",
+    });
   }
 
   function runArmedSettlement(owner, pending) {
@@ -497,11 +527,13 @@ export function createLand({
           logLine(ctx, "warn", `qq-workflows: failed tool-result recovery for ${owner.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
         }
         if (delivered) await disposeChild(owner.sessionId, "failed tool result reported");
+        clearRememberedSettlement(owner, pending.callId);
         pending.resolve(false);
         return false;
       }
       try {
         await pending.action();
+        clearRememberedSettlement(owner, pending.callId);
         pending.resolve(true);
         return true;
       } catch (error) {
@@ -510,6 +542,8 @@ export function createLand({
         return false;
       }
     })();
+    owner.activeTransitions.add(promise);
+    void promise.finally(() => owner.activeTransitions.delete(promise));
     settlementPromises.set(owner.sessionId, promise);
   }
 
@@ -565,40 +599,59 @@ export function createLand({
     owner.lifecycleOffs = offs;
   }
 
-  function postToolSettlement(sessionId, result, reason, action) {
+  function failureActionFor(owner, reason) {
+    return async () => {
+      const currentOwner = childOwners.get(owner.sessionId);
+      if (!currentOwner) return true;
+      const blocked = blockOwnedWork(currentOwner, `${reason} failed before settlement`);
+      const state = blocked.state ?? store.load(currentOwner.runId);
+      if (!state) return true;
+      if (!blocked.changed && !state.reportPending) return true;
+      const report = await deliverRequiredPacket(
+        state,
+        state.reportKind || "blocked",
+        state.reportFromSession || owner.sessionId,
+      );
+      return report.delivered;
+    };
+  }
+
+  function addPendingSettlement(owner, { callId, reason, action, onFailure, resolve }) {
+    if (owner.settlements.has(callId)) return owner.settlements.get(callId);
+    const pending = {
+      callId,
+      reason,
+      action,
+      onFailure,
+      failureAction: failureActionFor(owner, reason),
+      resolve,
+      resultCommitted: false,
+      resultFailed: false,
+      failureNotified: false,
+      idle: owner.child.status === "idle",
+      started: false,
+    };
+    owner.settlements.set(callId, pending);
+    return pending;
+  }
+
+  function postToolSettlement(sessionId, result, reason, transition, action) {
     const owner = childOwners.get(sessionId);
     if (!owner) return null;
+    rememberSettlement(owner, transition);
     const waiting = Promise.withResolvers();
     const settlement = {
       settled: waiting.promise,
       arm({ callId, onFailure } = {}) {
         if (typeof callId !== "string" || !callId) throw new Error("child settlement requires a tool call id");
         if (owner.settlements.has(callId)) throw new Error(`child settlement already armed for ${callId}`);
-        owner.settlements.set(callId, {
+        rememberSettlement(owner, transition, callId);
+        addPendingSettlement(owner, {
           callId,
           reason,
           action,
           onFailure,
-          failureAction: async () => {
-            const currentOwner = childOwners.get(sessionId);
-            if (!currentOwner) return true;
-            const blocked = blockOwnedWork(currentOwner, `${reason} failed before settlement`);
-            const state = blocked.state ?? store.load(currentOwner.runId);
-            if (!state) return true;
-            if (!blocked.changed && !state.reportPending) return true;
-            const report = await deliverRequiredPacket(
-              state,
-              state.reportKind || "blocked",
-              state.reportFromSession || sessionId,
-            );
-            return report.delivered;
-          },
           resolve: waiting.resolve,
-          resultCommitted: false,
-          resultFailed: false,
-          failureNotified: false,
-          idle: owner.child.status === "idle",
-          started: false,
         });
       },
     };
@@ -636,6 +689,8 @@ export function createLand({
       externalDisposed: false,
       settlements: new Map(),
       lifecycleOffs: [],
+      qaSettleOff: null,
+      activeTransitions: new Set(),
     };
     childOwners.set(sessionId, owner);
     hangChildLabels(ctx, owner);
@@ -665,6 +720,19 @@ export function createLand({
     clearRetainedHandle(owner);
     if (childOwners.get(owner.sessionId) === owner) childOwners.delete(owner.sessionId);
     settledQa.delete(owner.sessionId);
+  }
+
+  function detachChildOwner(owner) {
+    if (!owner) return false;
+    clearChildTools(owner.sessionId);
+    clearOwnerLifecycle(owner, { notifyFailure: false });
+    clearChildLabels(ctx, owner);
+    if (childOwners.get(owner.sessionId) === owner) childOwners.delete(owner.sessionId);
+    settledQa.delete(owner.sessionId);
+    // The AgentHandle capability deliberately remains on the live child. A
+    // replacement controller discovers that child through agents.list() and
+    // re-retains this exact handle from the durable land run.
+    return true;
   }
 
   async function disposeChild(agentOrId, reason = "settled") {
@@ -853,6 +921,52 @@ export function createLand({
     return report.delivered;
   }
 
+  function rememberedResult(child, callId) {
+    const events = Array.isArray(child?.session?.events) ? child.session.events : [];
+    for (let index = events.length - 1; index >= 0; index--) {
+      const event = events[index];
+      if (event?.type !== "tool/result") continue;
+      const message = event.data?.message;
+      if (resultCallId(message) !== callId) continue;
+      const blocks = resultBlocksFor(message, callId);
+      if (blocks.length === 0) continue;
+      return { failed: blocks.some((block) => block.isError === true) };
+    }
+    return null;
+  }
+
+  function resumeRememberedSettlement(owner, state) {
+    if (state.settlementSession !== owner.sessionId) return false;
+    if (!SETTLEMENT_TRANSITIONS.has(state.settlementTransition)) return false;
+    const callId = state.settlementCallId;
+    if (!callId) return true;
+    if (owner.settlements.has(callId) || owner.activeTransitions.size > 0) return true;
+    const waiting = Promise.withResolvers();
+    const reason = state.settlementTransition === "start_qa"
+      ? "implementer done result committed"
+      : state.settlementTransition === "start_fixer"
+        ? "qa look 1 result committed"
+        : "terminal child result committed";
+    const pending = addPendingSettlement(owner, {
+      callId,
+      reason,
+      action: () => applyPostResultTransition({
+        sessionId: owner.sessionId,
+        runId: owner.runId,
+        transition: state.settlementTransition,
+      }),
+      resolve: waiting.resolve,
+    });
+    const remembered = rememberedResult(owner.child, callId);
+    if (remembered?.failed) failArmedSettlement(owner, pending);
+    else if (remembered) {
+      pending.resultCommitted = true;
+      runArmedSettlement(owner, pending);
+    }
+    settlementPromises.set(owner.sessionId, waiting.promise);
+    return true;
+  }
+
   function resumeChild(child) {
     const sessionId = sessionIdOf(child);
     if (!sessionId) return false;
@@ -867,12 +981,13 @@ export function createLand({
       void retryPendingReport(owner, state);
       return true;
     }
-    if (role === "implementer" && isMiniAgent(child) && (state.status === "running" || state.status === "waiting_fix")) {
-      installDone(child, state.id);
+    if (resumeRememberedSettlement(owner, state)) return true;
+    if (role === "implementer" && (state.status === "running" || state.status === "waiting_fix")) {
+      if (!childTools.has(sessionId)) installDone(child, state.id);
       return true;
     }
     if (role === "qa" && state.status === "reviewing") {
-      installQa(child, state.id);
+      if (!childTools.has(sessionId)) installQa(child, state.id);
       watchQaSettle(child, state.id);
       return true;
     }
@@ -961,7 +1076,8 @@ export function createLand({
 
   function watchQaSettle(child, runId) {
     const childId = sessionIdOf(child);
-    if (!childId) return;
+    const owner = childOwners.get(childId);
+    if (!childId || owner?.qaSettleOff) return owner?.qaSettleOff ?? null;
     const finish = async () => {
       if (settledQa.has(childId)) return;
       const state = store.load(runId);
@@ -983,11 +1099,17 @@ export function createLand({
         }),
       });
     };
-    child.ctx?.on?.("session/event", async (_session, event) => {
+    const eventOff = child.ctx?.on?.("session/event", async (_session, event) => {
       if (event?.type !== "turn/end") return;
       if (isHookInterruption(event.data?.reason)) return;
       await finish();
     });
+    const off = typeof eventOff === "function" ? eventOff : () => {};
+    if (owner) {
+      owner.qaSettleOff = off;
+      owner.lifecycleOffs.push(off);
+    }
+    return off;
   }
 
   async function startQa(state) {
@@ -1050,8 +1172,62 @@ export function createLand({
     return next;
   }
 
-  async function settleAccepted({ sessionId, result, reason, postTool, action }) {
-    if (postTool && postToolSettlement(sessionId, result, reason, action)) return result;
+  async function applyPostResultTransition({ sessionId, runId, transition, result }) {
+    if (transition === "dispose") {
+      await disposeChild(sessionId, "tool result settled");
+      return;
+    }
+    if (transition === "start_qa") {
+      await disposeChild(sessionId, "implementer done tool result settled");
+      const current = store.load(runId);
+      if (!current || current.status !== "reviewing") return;
+      if (current.qaSession) {
+        if (result) result.qa = current.qaSession;
+        return;
+      }
+      try {
+        const reviewing = await startQa(current);
+        if (result) result.qa = reviewing.qaSession;
+      } catch (error) {
+        const latest = store.load(runId) ?? current;
+        const blockedState = store.save({
+          ...latest,
+          status: "blocked",
+          blockedReason: `qa child startup failed: ${error instanceof Error ? error.message : String(error)}`,
+          packet: latest.packet ? { ...latest.packet, mark: "fail" } : latest.packet,
+        });
+        await deliverRequiredPacket(blockedState, "blocked", sessionId, { directOnly: true });
+      }
+      return;
+    }
+    if (transition === "start_fixer") {
+      await disposeChild(sessionId, "qa look 1 tool result settled");
+      const current = store.load(runId);
+      if (!current || current.status !== "waiting_fix") return;
+      if (current.implementerSession) {
+        if (result) result.implementer = current.implementerSession;
+        return;
+      }
+      try {
+        const fixing = await startFixer(current, current.qaVerdict);
+        if (result) result.implementer = fixing.implementerSession;
+      } catch (error) {
+        const latest = store.load(runId) ?? current;
+        const blockedState = store.save({
+          ...latest,
+          status: "blocked",
+          blockedReason: `fixer child startup failed: ${error instanceof Error ? error.message : String(error)}`,
+          packet: latest.packet ? { ...latest.packet, mark: "fail" } : latest.packet,
+        });
+        await deliverRequiredPacket(blockedState, "blocked", sessionId, { directOnly: true });
+      }
+      return;
+    }
+    throw new Error(`unknown child settlement transition ${transition}`);
+  }
+
+  async function settleAccepted({ sessionId, result, reason, postTool, transition, action }) {
+    if (postTool && postToolSettlement(sessionId, result, reason, transition, action)) return result;
     await action();
     return result;
   }
@@ -1105,7 +1281,8 @@ export function createLand({
       result,
       reason: `${kind} result committed`,
       postTool,
-      action: () => disposeChild(fromId, `${kind} tool result settled`),
+      transition: "dispose",
+      action: () => applyPostResultTransition({ sessionId: fromId, runId: next.id, transition: "dispose", result }),
     });
   }
 
@@ -1175,28 +1352,18 @@ export function createLand({
         qaVerdict: null,
       });
       const result = { status: "ok", mark: "review", look: next.look, run: next.id, qa: "" };
-      const transition = async () => {
-        await disposeChild(fromId, "implementer done tool result settled");
-        try {
-          const reviewing = await startQa(store.load(next.id) ?? next);
-          result.qa = reviewing.qaSession;
-        } catch (error) {
-          const current = store.load(next.id) ?? next;
-          const blockedState = store.save({
-            ...current,
-            status: "blocked",
-            blockedReason: `qa child startup failed: ${error instanceof Error ? error.message : String(error)}`,
-            packet: current.packet ? { ...current.packet, mark: "fail" } : current.packet,
-          });
-          await deliverRequiredPacket(blockedState, "blocked", fromId, { directOnly: true });
-        }
-      };
       return settleAccepted({
         sessionId: fromId,
         result,
         reason: "implementer done result committed",
         postTool,
-        action: transition,
+        transition: "start_qa",
+        action: () => applyPostResultTransition({
+          sessionId: fromId,
+          runId: next.id,
+          transition: "start_qa",
+          result,
+        }),
       });
     } catch (error) {
       return { status: "refused", reason: error instanceof Error ? error.message : String(error) };
@@ -1295,28 +1462,18 @@ export function createLand({
           implementer: "",
           outcome: `qa look 1 rejected ${state.id}. one fresh implementer.`,
         };
-        const transition = async () => {
-          await disposeChild(sessionId, "qa look 1 tool result settled");
-          try {
-            const fixing = await startFixer(store.load(next.id) ?? next, enforced.verdict);
-            result.implementer = fixing.implementerSession;
-          } catch (error) {
-            const current = store.load(next.id) ?? next;
-            const blockedState = store.save({
-              ...current,
-              status: "blocked",
-              blockedReason: `fixer child startup failed: ${error instanceof Error ? error.message : String(error)}`,
-              packet: current.packet ? { ...current.packet, mark: "fail" } : current.packet,
-            });
-            await deliverRequiredPacket(blockedState, "blocked", sessionId, { directOnly: true });
-          }
-        };
         return settleAccepted({
           sessionId,
           result,
           reason: "qa look 1 result committed",
           postTool,
-          action: transition,
+          transition: "start_fixer",
+          action: () => applyPostResultTransition({
+            sessionId,
+            runId: next.id,
+            transition: "start_fixer",
+            result,
+          }),
         });
       }
       next = store.save({
@@ -1334,7 +1491,8 @@ export function createLand({
         result,
         reason: "qa look 2 result committed",
         postTool,
-        action: () => disposeChild(sessionId, "qa look 2 tool result settled"),
+        transition: "dispose",
+        action: () => applyPostResultTransition({ sessionId, runId: next.id, transition: "dispose", result }),
       });
     } catch (error) {
       return { status: "refused", reason: error instanceof Error ? error.message : String(error) };
@@ -1343,29 +1501,20 @@ export function createLand({
 
   async function dispose() {
     for (const handle of [...attached.values()]) handle.detach();
-    const pending = [];
-    for (const sessionId of [...childOwners.keys()]) {
-      const owner = childOwners.get(sessionId);
-      const blocked = blockOwnedWork(owner, `${owner?.role || "workflow"} child cancelled by plugin teardown`);
-      const state = blocked.state ?? store.load(owner?.runId);
-      let delivered = true;
-      if (state && (blocked.changed || state.reportPending)) {
-        const report = await deliverRequiredPacket(
-          state,
-          state.reportKind || (state.status === "landed" ? "landed" : "blocked"),
-          state.reportFromSession || sessionId,
-        );
-        delivered = report.delivered;
+    const owners = [...childOwners.values()];
+    // A transition that already observed its exact tool result is legitimate
+    // workflow work, not teardown. Let it finish before detaching so a
+    // replacement cannot reconstruct and duplicate it.
+    await Promise.allSettled(owners.flatMap((owner) => [...owner.activeTransitions]));
+    let detached = 0;
+    for (const owner of owners) {
+      while (owner.activeTransitions.size > 0) {
+        await Promise.allSettled([...owner.activeTransitions]);
       }
-      if (delivered) {
-        if (owner?.externalDisposed) forgetChildOwner(owner);
-        else await disposeChild(sessionId, "plugin teardown report delivered");
-      } else pending.push(sessionId);
+      if (childOwners.get(owner.sessionId) === owner && detachChildOwner(owner)) detached++;
     }
-    for (const sessionId of [...childTools.keys()]) {
-      if (!childOwners.has(sessionId)) clearChildTools(sessionId);
-    }
-    return { pending };
+    for (const sessionId of [...childTools.keys()]) clearChildTools(sessionId);
+    return { detached };
   }
 
   return Object.freeze({
@@ -1383,6 +1532,7 @@ export function createLand({
     attached: (sessionId) => attached.get(sessionId),
     run: (id) => store.load(id),
     bySession: (sessionId) => store.bySession(sessionId),
+    ownedChildren: () => [...childOwners.keys()],
     whenSettled: (sessionId) => settlementPromises.get(sessionId) ?? Promise.resolve(false),
     label: LAND_LABEL,
   });

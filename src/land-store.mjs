@@ -111,6 +111,9 @@ function normalize(raw) {
     reportPending: raw.reportPending === true,
     reportKind: optionalString(raw.reportKind),
     reportFromSession: optionalString(raw.reportFromSession),
+    settlementSession: optionalString(raw.settlementSession),
+    settlementCallId: optionalString(raw.settlementCallId),
+    settlementTransition: optionalString(raw.settlementTransition),
     createdAt: optionalString(raw.createdAt),
     updatedAt: optionalString(raw.updatedAt),
   };
@@ -187,6 +190,9 @@ export function createLandStore(dirPath) {
         reportPending: fields.reportPending,
         reportKind: fields.reportKind,
         reportFromSession: fields.reportFromSession,
+        settlementSession: fields.settlementSession,
+        settlementCallId: fields.settlementCallId,
+        settlementTransition: fields.settlementTransition,
         createdAt: fields.createdAt ?? now,
         updatedAt: fields.updatedAt ?? now,
       });
