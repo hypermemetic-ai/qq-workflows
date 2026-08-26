@@ -635,29 +635,58 @@ export function createLand({
     return pending;
   }
 
-  function postToolSettlement(sessionId, result, reason, transition, action) {
-    const owner = childOwners.get(sessionId);
-    if (!owner) return null;
+  function postToolSettlement(sessionId, result, reason, transition, action, submission) {
+    const owner = submission?.owner ?? childOwners.get(sessionId);
+    if (!owner || childOwners.get(sessionId) !== owner) return null;
     rememberSettlement(owner, transition);
     const waiting = Promise.withResolvers();
     const settlement = {
       settled: waiting.promise,
       arm({ callId, onFailure } = {}) {
-        if (typeof callId !== "string" || !callId) throw new Error("child settlement requires a tool call id");
-        if (owner.settlements.has(callId)) throw new Error(`child settlement already armed for ${callId}`);
-        rememberSettlement(owner, transition, callId);
-        addPendingSettlement(owner, {
-          callId,
-          reason,
-          action,
-          onFailure,
-          resolve: waiting.resolve,
-        });
+        try {
+          if (typeof callId !== "string" || !callId) throw new Error("child settlement requires a tool call id");
+          if (owner.settlements.has(callId)) throw new Error(`child settlement already armed for ${callId}`);
+          rememberSettlement(owner, transition, callId);
+          addPendingSettlement(owner, {
+            callId,
+            reason,
+            action,
+            onFailure,
+            resolve: waiting.resolve,
+          });
+        } finally {
+          submission?.release();
+        }
       },
     };
     settlementPromises.set(sessionId, waiting.promise);
     withChildSettlement(result, settlement);
+    submission?.hold();
     return settlement;
+  }
+
+  async function trackChildSubmission(sessionId, action) {
+    const owner = childOwners.get(sessionId);
+    if (!owner) return { status: "refused", reason: "workflow child is no longer owned" };
+    const waiting = Promise.withResolvers();
+    const submission = {
+      owner,
+      held: false,
+      released: false,
+      hold() { this.held = true; },
+      release() {
+        if (this.released) return;
+        this.released = true;
+        owner.activeSubmissions.delete(waiting.promise);
+        waiting.resolve();
+      },
+    };
+    owner.activeSubmissions.add(waiting.promise);
+    try {
+      return await action(submission);
+    } finally {
+      if (!submission.held) submission.release();
+    }
   }
 
   function retainChild(handle, { child = handle?.agent ?? handle, role, workflowRole, runId } = {}) {
@@ -690,6 +719,7 @@ export function createLand({
       settlements: new Map(),
       lifecycleOffs: [],
       qaSettleOff: null,
+      activeSubmissions: new Set(),
       activeTransitions: new Set(),
     };
     childOwners.set(sessionId, owner);
@@ -818,10 +848,32 @@ export function createLand({
     return Boolean(handle) || hadTools;
   }
 
+  async function blockRefusedMiniCompletion(sessionId, reason) {
+    const owner = childOwners.get(sessionId);
+    if (!owner) return false;
+    const blocked = blockOwnedWork(owner, `implementer completion refused: ${reason || "unknown reason"}`);
+    const state = blocked.state ?? store.load(owner.runId);
+    if (!state) return false;
+    if (!blocked.changed && !state.reportPending) return true;
+    const report = await deliverRequiredPacket(
+      state,
+      state.reportKind || "blocked",
+      state.reportFromSession || sessionId,
+    );
+    if (report.delivered) await disposeChild(sessionId, "refused Mini completion reported");
+    return true;
+  }
+
   function installDone(child, runId) {
     const sessionId = sessionIdOf(child);
     childTools.get(sessionId)?.();
-    const submit = (args) => done({ ...args, runId, postTool: true });
+    const submit = (args) => trackChildSubmission(sessionId, async (submission) => {
+      const result = await done({ ...args, runId, postTool: true, submission });
+      if (isMiniAgent(child) && result?.status === "refused") {
+        await blockRefusedMiniCompletion(sessionId, result.reason);
+      }
+      return result;
+    });
     const disposeSubmit = isMiniAgent(child)
       ? bindMiniSubmit(child, submit)
       : registerTools(child, [buildDoneTool({ submit })]);
@@ -838,7 +890,8 @@ export function createLand({
     childTools.get(sessionId)?.();
     const dispose = registerTools(child, [
       buildQaVerdictTool({
-        submit: (args) => submitVerdict({ ...args, runId, postTool: true }),
+        submit: (args) => trackChildSubmission(sessionId, (submission) =>
+          submitVerdict({ ...args, runId, postTool: true, submission })),
       }),
     ], { allow: QA_TOOL_ALLOWLIST });
     childTools.set(sessionId, dispose);
@@ -851,13 +904,14 @@ export function createLand({
     const cwd = info.cwd ?? child?.session?.header?.cwd;
     const brief = String(info.packet ?? info.brief ?? "");
     const architectSession = info.parent?.id ?? info.parentSession ?? "";
-    let git = { worktree: cwd || "", inspectError: "" };
+    let git;
     try {
-      git = { ...await inspectWorktree(run, cwd), inspectError: "" };
+      git = await inspectWorktree(run, cwd);
     } catch (error) {
-      git = {
-        worktree: cwd || "",
-        inspectError: error instanceof Error ? error.message : String(error),
+      return {
+        status: "refused",
+        reason: `adopt requires a git worktree: ${error instanceof Error ? error.message : String(error)}`,
+        owned: false,
       };
     }
     const runId = `land-${randomUUID().slice(0, 8)}`;
@@ -1226,13 +1280,16 @@ export function createLand({
     throw new Error(`unknown child settlement transition ${transition}`);
   }
 
-  async function settleAccepted({ sessionId, result, reason, postTool, transition, action }) {
-    if (postTool && postToolSettlement(sessionId, result, reason, transition, action)) return result;
+  async function settleAccepted({ sessionId, result, reason, postTool, transition, action, submission }) {
+    if (postTool) {
+      postToolSettlement(sessionId, result, reason, transition, action, submission);
+      return result;
+    }
     await action();
     return result;
   }
 
-  async function finishLand(state, fromId, { postTool = false } = {}) {
+  async function finishLand(state, fromId, { postTool = false, submission } = {}) {
     let next = store.save({ ...state, status: "landing" });
     let kind = "landed";
     try {
@@ -1283,6 +1340,7 @@ export function createLand({
       postTool,
       transition: "dispose",
       action: () => applyPostResultTransition({ sessionId: fromId, runId: next.id, transition: "dispose", result }),
+      submission,
     });
   }
 
@@ -1312,7 +1370,7 @@ export function createLand({
     return null;
   }
 
-  async function submitRef(state, { ref = "HEAD", fromId, postTool = false } = {}) {
+  async function submitRef(state, { ref = "HEAD", fromId, postTool = false, submission } = {}) {
     if (!state.worktree) return { status: "refused", reason: "done requires a worktree" };
     const blocked = notReady(state);
     if (blocked) return { status: "refused", reason: blocked };
@@ -1343,7 +1401,7 @@ export function createLand({
         packet,
         status: mark === "land" ? "landing" : "reviewing",
       });
-      if (mark === "land") return finishLand(next, fromId, { postTool });
+      if (mark === "land") return finishLand(next, fromId, { postTool, submission });
       next = store.save({
         ...next,
         look: look === 0 ? 1 : look,
@@ -1364,13 +1422,14 @@ export function createLand({
           transition: "start_qa",
           result,
         }),
+        submission,
       });
     } catch (error) {
       return { status: "refused", reason: error instanceof Error ? error.message : String(error) };
     }
   }
 
-  async function done({ agent, ref = "HEAD", runId, postTool = false } = {}) {
+  async function done({ agent, ref = "HEAD", runId, postTool = false, submission } = {}) {
     const sessionId = sessionIdOf(agent);
     const state = (runId ? store.load(runId) : null) ?? store.bySession(sessionId);
     if (!state) return { status: "refused", reason: "done has no land run for this session" };
@@ -1389,7 +1448,7 @@ export function createLand({
     } catch (error) {
       return { status: "refused", reason: error instanceof Error ? error.message : String(error) };
     }
-    return submitRef(state, { ref, fromId: sessionId, postTool });
+    return submitRef(state, { ref, fromId: sessionId, postTool, submission });
   }
 
   async function invoke({ agent, worktree, ref = "HEAD", brief } = {}) {
@@ -1420,7 +1479,7 @@ export function createLand({
     return submitRef(state, { ref, fromId: sessionId });
   }
 
-  async function submitVerdict({ agent, verdict, runId, postTool = false } = {}) {
+  async function submitVerdict({ agent, verdict, runId, postTool = false, submission } = {}) {
     const sessionId = sessionIdOf(agent);
     const state = (runId ? store.load(runId) : null) ?? store.bySession(sessionId);
     if (!state) return { status: "refused", reason: "qa_verdict has no land run for this session" };
@@ -1445,7 +1504,7 @@ export function createLand({
       });
       settledQa.add(sessionId);
       if (enforced.verdict.verdict === "pass") {
-        return finishLand(next, sessionId, { postTool });
+        return finishLand(next, sessionId, { postTool, submission });
       }
       if (state.look === 1) {
         next = store.save({
@@ -1474,6 +1533,7 @@ export function createLand({
             transition: "start_fixer",
             result,
           }),
+          submission,
         });
       }
       next = store.save({
@@ -1493,6 +1553,7 @@ export function createLand({
         postTool,
         transition: "dispose",
         action: () => applyPostResultTransition({ sessionId, runId: next.id, transition: "dispose", result }),
+        submission,
       });
     } catch (error) {
       return { status: "refused", reason: error instanceof Error ? error.message : String(error) };
@@ -1504,13 +1565,16 @@ export function createLand({
     let detached = 0;
     while (childOwners.size > 0) {
       const owners = [...childOwners.values()];
-      // A transition that already observed its exact tool result is legitimate
-      // workflow work, not teardown. Let it finish before detaching so a
-      // replacement cannot reconstruct and duplicate it. The transition can
-      // retain its successor, so re-read ownership after every awaited batch.
-      const transitions = owners.flatMap((owner) => [...owner.activeTransitions]);
-      if (transitions.length > 0) {
-        await Promise.allSettled(transitions);
+      // A child submission may still be doing asynchronous inspection before
+      // it can durably arm its exact tool-result settlement. A committed result
+      // transition is also legitimate workflow work, not teardown. Drain both
+      // to a fixed point before detaching: either can retain a successor owner.
+      const active = owners.flatMap((owner) => [
+        ...owner.activeSubmissions,
+        ...owner.activeTransitions,
+      ]);
+      if (active.length > 0) {
+        await Promise.allSettled(active);
         continue;
       }
       for (const owner of owners) {

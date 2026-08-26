@@ -50,6 +50,7 @@ export const OBSERVATION_TAIL_CHARS = 5_000;
 const UTF8_MAX_BYTES_PER_CP = 4;
 const FILE_SCAN_CHUNK = 64 * 1024;
 const MINI_SUBMIT = Symbol.for("qq.officialMiniSubmit");
+const MINI_COMPLETED = Symbol.for("qq.officialMiniCompleted");
 const MINI_WRAPPED_BASH = Symbol.for("qq.officialMiniWrappedBash");
 const MINI_MOUNT = Symbol.for("qq.officialMiniMount");
 const MOUNT_GENERATION = Object.freeze({});
@@ -117,6 +118,26 @@ function messageHasBash(event) {
 
 function markCompleted(agent) {
   if (agent && typeof agent === "object") completed.add(agent);
+  for (const key of submitKeys(agent)) {
+    try { key[MINI_COMPLETED] = true; } catch { /* WeakSet fallback */ }
+  }
+}
+
+function clearCompleted(agent) {
+  if (agent && typeof agent === "object") completed.delete(agent);
+  for (const key of submitKeys(agent)) {
+    try { key[MINI_COMPLETED] = undefined; } catch { /* WeakSet fallback */ }
+  }
+}
+
+function isCompleted(agent) {
+  if (completed.has(agent)) return true;
+  return submitKeys(agent).some((key) => key[MINI_COMPLETED] === true);
+}
+
+function concludeCompleted(exec) {
+  markCompleted(exec?.agent);
+  try { exec?.concludeTurn?.(); } catch { /* terminal completion remains marked */ }
 }
 
 function installFormatRecovery(agentCtx) {
@@ -129,7 +150,7 @@ function installFormatRecovery(agentCtx) {
     if (hadBash) consecutiveFormatErrors.set(session, 0);
   });
   const offStopping = agentCtx.on("agent/turn-stopping", ({ agent }) => {
-    if (!agent || completed.has(agent)) return;
+    if (!agent || isCompleted(agent)) return;
     const key = agent.session ?? agent;
     if (lastResponseHadBash.get(key) === true) return;
     const count = (consecutiveFormatErrors.get(key) ?? 0) + 1;
@@ -509,15 +530,25 @@ export function wrapMiniBash(base) {
     async execute(args, exec) {
       if (isMiniSweCompletionCommand(args?.command)) {
         const submit = submitFor(exec?.agent);
-        if (!submit) return syntheticResult("Submission unavailable: this child is not owned by Land.\n", 1);
-        const result = await submit({ agent: exec?.agent, ref: "HEAD" });
+        if (!submit) {
+          concludeCompleted(exec);
+          return syntheticResult("Submission unavailable: this child is not owned by Land.\n", 1);
+        }
+        let result;
+        try {
+          result = await submit({ agent: exec?.agent, ref: "HEAD" });
+        } catch (error) {
+          concludeCompleted(exec);
+          return syntheticResult(`Submission failed: ${error instanceof Error ? error.message : String(error)}\n`, 1);
+        }
         if (result?.status === "refused") {
+          concludeCompleted(exec);
           return syntheticResult(`Submission refused: ${result.reason || "unknown reason"}\n`, 1);
         }
         const success = syntheticResult("COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n", 0);
         markCompleted(exec?.agent);
         armChildSettlement(result, exec, {
-          onFailure: () => completed.delete(exec?.agent),
+          onFailure: () => clearCompleted(exec?.agent),
         });
         try { exec?.concludeTurn?.(); } catch { /* accepted result remains armed */ }
         return success;

@@ -8,7 +8,7 @@ import {
   decideCaseWriteGate,
   pluginUserMessage,
 } from "./tools.mjs";
-import { createDelegatedWorktree, repoRootFor, runCommand } from "./git.mjs";
+import { createDelegatedWorktree, runCommand } from "./git.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
 import { hideHarnessToolsOn } from "./hide-harness.mjs";
 import { MINI_KIND, miniSetup, renderMiniSweTask } from "./official-mini.mjs";
@@ -320,7 +320,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
     const packet = `${brief.trimEnd()}\n\n${returnAddress} Workflow completion is returned automatically; do not manually relay a duplicate report.`;
     const taskId = cases?.taskId?.(parent.id) ?? null;
     const childId = `session-${randomUUID()}`;
-    let targetCwd = repoRootFor(parent.header?.cwd);
+    let targetCwd = parent.header?.cwd;
     try {
       const prepared = await createDelegatedWorktree(run, {
         cwd: targetCwd,
@@ -331,9 +331,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
       targetCwd = prepared.worktree;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (!/not a git worktree/i.test(message)) {
-        return { status: "refused", reason: `delegate worktree: ${message}` };
-      }
+      return { status: "refused", reason: `delegate worktree: ${message}` };
     }
     const handsBinding = typeof hands === "function" ? hands() : hands;
     const talkingBinding = typeof talking === "function" ? talking() : talking;
