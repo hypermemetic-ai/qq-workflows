@@ -1,4 +1,4 @@
-// Talking architect tools: working-memory write, delegate, and optional rundown.
+// Talking architect tools: working-memory write and delegate.
 
 import { randomUUID } from "node:crypto";
 import { bodyOf, titleOf } from "./casefile.mjs";
@@ -10,34 +10,6 @@ function textBlock(text) {
 
 function refusal(reason) {
   return { status: "refused", reason };
-}
-
-function buildRundownTool(tasks) {
-  return {
-    name: "rundown",
-    description: "Report on the live documents. Cites spoken ids as an index to the originals.",
-    parameters: {},
-    output: {
-      schema: {
-        type: "object",
-        additionalProperties: true,
-        properties: {
-          status: { type: "string" },
-          report: { type: "string" },
-          reason: { type: "string" },
-        },
-      },
-      render: (_args, value) => [textBlock(value.status === "refused" ? `Rundown refused: ${value.reason}` : value.report || "(empty pile)")],
-    },
-    async execute() {
-      try {
-        if (typeof tasks?.rundown !== "function") return refusal("rundown requires qq-tasks");
-        return { status: "ok", report: await tasks.rundown() };
-      } catch (error) {
-        return refusal(error instanceof Error ? error.message : String(error));
-      }
-    },
-  };
 }
 
 function syncTask(cases, tasks, sessionId, text) {
@@ -128,7 +100,6 @@ export function buildArchitectTools({ delegate, tasks, cases, land } = {}) {
   }];
   if (typeof land === "function") tools.push(buildLandTool({ invoke: land }));
   if (cases && typeof cases.write === "function") tools.push(buildCaseWriteTool(cases, tasks));
-  if (typeof tasks?.rundown === "function") tools.push(buildRundownTool(tasks));
   return tools;
 }
 
