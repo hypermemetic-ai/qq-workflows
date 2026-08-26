@@ -10,6 +10,8 @@ import { randomUUID } from "node:crypto";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { open } from "node:fs/promises";
 
+import { armChildSettlement } from "./child-settlement.mjs";
+
 import {
   MINI_SWE_BASH_SCHEMA,
   MINI_SWE_COMPLETION_COMMAND,
@@ -512,9 +514,13 @@ export function wrapMiniBash(base) {
         if (result?.status === "refused") {
           return syntheticResult(`Submission refused: ${result.reason || "unknown reason"}\n`, 1);
         }
+        const success = syntheticResult("COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n", 0);
         markCompleted(exec?.agent);
         exec?.concludeTurn?.();
-        return syntheticResult("COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n", 0);
+        armChildSettlement(result, exec, {
+          onFailure: () => completed.delete(exec?.agent),
+        });
+        return success;
       }
       return base.execute({
         command: withPagerEnv(args?.command),

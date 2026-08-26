@@ -625,10 +625,8 @@ export function apply(ctx, config = {}) {
   }
 
   function syncMini(agent) {
-    if (!isMiniAgent(agent)) return false;
-    ensureMiniMounted(agent);
-    land.resumeImplementer(agent);
-    return true;
+    if (isMiniAgent(agent)) ensureMiniMounted(agent);
+    return land.resumeChild?.(agent) ?? false;
   }
 
   ctx.on("agent/created", ({ agent }) => {
@@ -637,8 +635,8 @@ export function apply(ctx, config = {}) {
     if (originOf(agent) === CHILD_ORIGIN) installHide(agent);
     syncSession(agent);
   });
-  ctx.on("agent/disposed", ({ agent }) => {
-    land.releaseChild?.(agent);
+  ctx.on("agent/disposed", async ({ agent }) => {
+    await land.releaseChild?.(agent);
     for (const workflow of workflows.values()) workflow.ensureDetached(agent);
     const sessionId = sessionIdOf(agent);
     unpinTalking(sessionId);

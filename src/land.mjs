@@ -24,6 +24,7 @@ import {
 import { createQaVerdict } from "../../bin/lib/qa-verdict.mjs";
 import { oneShot } from "../../core/src/ask.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
+import { withChildSettlement } from "./child-settlement.mjs";
 import {
   bindMiniSubmit,
   isMiniAgent,
@@ -261,6 +262,7 @@ export function createLand({
   const attached = new Map();
   const childTools = new Map();
   const childOwners = new Map();
+  const settlementPromises = new Map();
   const settledQa = new Set();
 
   function tasksOf() {
@@ -278,27 +280,66 @@ export function createLand({
     return routePacket(packet, { complete: hop, prompt: ROUTE_SYSTEM });
   }
 
-  async function sendPacket(state, kind, fromId) {
-    const relay = relayOf(ctx);
-    if (!state.architectSession) return true;
-    if (!relay || typeof relay.send !== "function") return false;
+  function sessionsOf() {
+    return ctx.get?.("sessions", false) ?? null;
+  }
+
+  async function directPacket(state, kind, fromId) {
+    const parent = agents?.get?.(state.architectSession);
+    if (!parent || typeof parent.steer !== "function") return false;
     const message = formatOutcome(state, kind);
     try {
-      await relay.send({
-        fromId: fromId || state.qaSession || state.implementerSession || attached.keys().next().value || state.id,
-        to: state.architectSession,
-        message,
-        delivery: "default",
+      parent.steer({
+        id: randomUUID(),
+        role: "user",
+        content: [{ type: "text", text: `From workflow child ${fromId || state.id}:\n\n${message}` }],
+        source: { kind: "plugin", plugin: "qq-workflows", form: "relay" },
       });
+      try { await sessionsOf()?.flush?.(parent.session); } catch { /* inbox splice is already durable */ }
       return true;
     } catch (error) {
-      logLine(
-        ctx,
-        "warn",
-        `qq-workflows: land packet was not delivered to ${state.architectSession}: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      logLine(ctx, "warn", `qq-workflows: direct land packet delivery failed for ${state.architectSession}: ${error instanceof Error ? error.message : String(error)}`);
       return false;
     }
+  }
+
+  async function sendPacket(state, kind, fromId, { directOnly = false } = {}) {
+    if (!state.architectSession) return true;
+    const relay = relayOf(ctx);
+    const sender = fromId || state.qaSession || state.implementerSession || attached.keys().next().value || state.id;
+    if (!directOnly && relay && typeof relay.send === "function") {
+      try {
+        await relay.send({
+          fromId: sender,
+          to: state.architectSession,
+          message: formatOutcome(state, kind),
+          delivery: "default",
+        });
+        return true;
+      } catch (error) {
+        logLine(ctx, "warn", `qq-workflows: relay packet delivery from ${sender} failed, trying live parent: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return directPacket(state, kind, sender);
+  }
+
+  async function deliverRequiredPacket(state, kind, fromId, options) {
+    let next = store.save({
+      ...state,
+      reportPending: Boolean(state.architectSession),
+      reportKind: state.architectSession ? kind : "",
+      reportFromSession: state.architectSession ? String(fromId || "") : "",
+    });
+    const delivered = await sendPacket(next, kind, fromId, options);
+    if (delivered) {
+      next = store.save({
+        ...next,
+        reportPending: false,
+        reportKind: "",
+        reportFromSession: "",
+      });
+    }
+    return { state: next, delivered };
   }
 
   function blockOwnedWork(owner, blockedReason) {
@@ -334,8 +375,8 @@ export function createLand({
       if (!owner || owner.runId !== runId || owner.disposePromise) return;
       const blocked = blockOwnedWork(owner, "implementer child was cancelled before done");
       if (!blocked.changed) return;
-      const reported = await sendPacket(blocked.state, "blocked", sessionId);
-      if (reported) await disposeChild(sessionId, "implementer cancellation reported");
+      const report = await deliverRequiredPacket(blocked.state, "blocked", sessionId);
+      if (report.delivered) await disposeChild(sessionId, "implementer cancellation reported");
     });
     return typeof off === "function" ? off : () => {};
   }
@@ -344,6 +385,143 @@ export function createLand({
     const disposeTools = childTools.get(sessionId);
     childTools.delete(sessionId);
     try { disposeTools?.(); } catch { /* child teardown is best effort */ }
+  }
+
+  function clearOwnerLifecycle(owner) {
+    for (const pending of owner?.settlements?.values?.() ?? []) {
+      if (!pending.failureNotified) {
+        try { pending.onFailure?.(); } catch { /* retry policy is best effort */ }
+      }
+      pending.resolve(false);
+    }
+    owner?.settlements?.clear?.();
+    for (const off of owner?.lifecycleOffs ?? []) {
+      try { off?.(); } catch { /* best effort */ }
+    }
+    if (owner) owner.lifecycleOffs = [];
+  }
+
+  function runArmedSettlement(owner, pending) {
+    if (pending.started || (!pending.resultCommitted && !pending.resultFailed) || !pending.idle) return;
+    pending.started = true;
+    owner.settlements.delete(pending.callId);
+    const promise = (async () => {
+      if (pending.resultFailed) {
+        let delivered = false;
+        try {
+          delivered = await pending.failureAction?.() === true;
+        } catch (error) {
+          logLine(ctx, "warn", `qq-workflows: failed tool-result recovery for ${owner.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        if (delivered) await disposeChild(owner.sessionId, "failed tool result reported");
+        pending.resolve(false);
+        return false;
+      }
+      try {
+        await pending.action();
+        pending.resolve(true);
+        return true;
+      } catch (error) {
+        logLine(ctx, "warn", `qq-workflows: post-result child settlement failed for ${owner.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+        pending.resolve(false);
+        return false;
+      }
+    })();
+    settlementPromises.set(owner.sessionId, promise);
+  }
+
+  function resultBlocksFor(message, callId) {
+    return (Array.isArray(message?.content) ? message.content : []).filter((block) =>
+      block?.type === "tool-result" && block.toolCallId === callId);
+  }
+
+  function resultCallId(message) {
+    const sourceCallId = message?.source?.kind === "tool" ? message.source.callId : undefined;
+    if (typeof sourceCallId === "string" && sourceCallId) return sourceCallId;
+    const block = (Array.isArray(message?.content) ? message.content : []).find((item) =>
+      item?.type === "tool-result" && typeof item.toolCallId === "string" && item.toolCallId);
+    return block?.toolCallId;
+  }
+
+  function failArmedSettlement(owner, pending) {
+    if (pending.started || pending.resultFailed) return;
+    pending.resultFailed = true;
+    if (!pending.failureNotified) {
+      pending.failureNotified = true;
+      try { pending.onFailure?.(); } catch { /* retry policy is best effort */ }
+    }
+    runArmedSettlement(owner, pending);
+  }
+
+  function installOwnerLifecycle(owner) {
+    const offs = [];
+    const eventOff = owner.child.ctx?.on?.("session/event", (_session, event) => {
+      if (event?.type !== "tool/result") return;
+      const message = event.data?.message;
+      const callId = resultCallId(message);
+      const pending = owner.settlements.get(callId);
+      if (!pending || pending.started) return;
+      const blocks = resultBlocksFor(message, callId);
+      if (blocks.length === 0) return;
+      if (blocks.some((block) => block.isError === true)) {
+        failArmedSettlement(owner, pending);
+        return;
+      }
+      pending.resultCommitted = true;
+      runArmedSettlement(owner, pending);
+    });
+    if (typeof eventOff === "function") offs.push(eventOff);
+    const statusOff = owner.child.ctx?.on?.("agent/status", ({ status } = {}) => {
+      if (status !== "idle") return;
+      for (const pending of owner.settlements.values()) {
+        pending.idle = true;
+        runArmedSettlement(owner, pending);
+      }
+    });
+    if (typeof statusOff === "function") offs.push(statusOff);
+    owner.lifecycleOffs = offs;
+  }
+
+  function postToolSettlement(sessionId, result, reason, action) {
+    const owner = childOwners.get(sessionId);
+    if (!owner) return null;
+    const waiting = Promise.withResolvers();
+    const settlement = {
+      settled: waiting.promise,
+      arm({ callId, onFailure } = {}) {
+        if (typeof callId !== "string" || !callId) throw new Error("child settlement requires a tool call id");
+        if (owner.settlements.has(callId)) throw new Error(`child settlement already armed for ${callId}`);
+        owner.settlements.set(callId, {
+          callId,
+          reason,
+          action,
+          onFailure,
+          failureAction: async () => {
+            const currentOwner = childOwners.get(sessionId);
+            if (!currentOwner) return true;
+            const blocked = blockOwnedWork(currentOwner, `${reason} failed before settlement`);
+            const state = blocked.state ?? store.load(currentOwner.runId);
+            if (!state) return true;
+            if (!blocked.changed && !state.reportPending) return true;
+            const report = await deliverRequiredPacket(
+              state,
+              state.reportKind || "blocked",
+              state.reportFromSession || sessionId,
+            );
+            return report.delivered;
+          },
+          resolve: waiting.resolve,
+          resultCommitted: false,
+          resultFailed: false,
+          failureNotified: false,
+          idle: owner.child.status === "idle",
+          started: false,
+        });
+      },
+    };
+    settlementPromises.set(sessionId, waiting.promise);
+    withChildSettlement(result, settlement);
+    return settlement;
   }
 
   function retainChild(handle, { child = handle?.agent ?? handle, role, runId } = {}) {
@@ -367,8 +545,12 @@ export function createLand({
       role: role || child?.session?.header?.landRole || "implementer",
       runId: runId || "",
       disposePromise: null,
+      externalDisposed: false,
+      settlements: new Map(),
+      lifecycleOffs: [],
     };
     childOwners.set(sessionId, owner);
+    installOwnerLifecycle(owner);
     try {
       Object.defineProperty(child, CHILD_AGENT_HANDLE, {
         value: handle,
@@ -386,12 +568,22 @@ export function createLand({
     } catch { /* non-extensible Agent */ }
   }
 
+  function forgetChildOwner(owner) {
+    if (!owner) return;
+    clearChildTools(owner.sessionId);
+    clearOwnerLifecycle(owner);
+    clearRetainedHandle(owner);
+    if (childOwners.get(owner.sessionId) === owner) childOwners.delete(owner.sessionId);
+    settledQa.delete(owner.sessionId);
+  }
+
   async function disposeChild(agentOrId, reason = "settled") {
     const sessionId = typeof agentOrId === "string" ? agentOrId : sessionIdOf(agentOrId);
     const owner = childOwners.get(sessionId);
     if (!owner) return false;
     if (!owner.disposePromise) {
       clearChildTools(sessionId);
+      clearOwnerLifecycle(owner);
       owner.disposePromise = (async () => {
         try {
           await owner.handle?.dispose?.();
@@ -411,15 +603,25 @@ export function createLand({
     return true;
   }
 
-  function releaseChild(agentOrId) {
+  async function releaseChild(agentOrId) {
     const sessionId = typeof agentOrId === "string" ? agentOrId : sessionIdOf(agentOrId);
     const owner = childOwners.get(sessionId);
     if (!owner) return false;
-    if (!owner.disposePromise) blockOwnedWork(owner, `${owner.role} child closed before completion`);
-    clearChildTools(sessionId);
-    clearRetainedHandle(owner);
-    childOwners.delete(sessionId);
-    settledQa.delete(sessionId);
+    if (!owner.disposePromise) {
+      owner.externalDisposed = true;
+      const blocked = blockOwnedWork(owner, `${owner.role} child closed before completion`);
+      const state = blocked.state ?? store.load(owner.runId);
+      if (state && (blocked.changed || state.reportPending)) {
+        const report = await deliverRequiredPacket(
+          state,
+          state.reportKind || (state.status === "landed" ? "landed" : "blocked"),
+          state.reportFromSession || sessionId,
+          { directOnly: true },
+        );
+        if (!report.delivered) return false;
+      }
+    }
+    forgetChildOwner(owner);
     return true;
   }
 
@@ -452,7 +654,7 @@ export function createLand({
   function installDone(child, runId) {
     const sessionId = sessionIdOf(child);
     childTools.get(sessionId)?.();
-    const submit = (args) => done({ ...args, runId });
+    const submit = (args) => done({ ...args, runId, postTool: true });
     const disposeSubmit = isMiniAgent(child)
       ? bindMiniSubmit(child, submit)
       : registerTools(child, [buildDoneTool({ submit })]);
@@ -469,7 +671,7 @@ export function createLand({
     childTools.get(sessionId)?.();
     const dispose = registerTools(child, [
       buildQaVerdictTool({
-        submit: (args) => submitVerdict({ ...args, runId }),
+        submit: (args) => submitVerdict({ ...args, runId, postTool: true }),
       }),
     ], { allow: QA_TOOL_ALLOWLIST });
     childTools.set(sessionId, dispose);
@@ -537,15 +739,43 @@ export function createLand({
     }
   }
 
-  function resumeImplementer(child) {
+  async function retryPendingReport(owner, state) {
+    const kind = state.reportKind || (state.status === "landed" ? "landed" : "blocked");
+    const report = await deliverRequiredPacket(state, kind, state.reportFromSession || owner.sessionId, { directOnly: true });
+    if (report.delivered) {
+      if (owner.externalDisposed) forgetChildOwner(owner);
+      else await disposeChild(owner.sessionId, "pending report delivered");
+    }
+    return report.delivered;
+  }
+
+  function resumeChild(child) {
     const sessionId = sessionIdOf(child);
-    if (!sessionId || !isMiniAgent(child)) return false;
+    if (!sessionId) return false;
     const state = store.bySession(sessionId);
-    if (!state || state.implementerSession !== sessionId) return false;
+    if (!state) return false;
     const retained = child?.[CHILD_AGENT_HANDLE];
-    if (retained) retainChild(retained, { child, role: "implementer", runId: state.id });
-    installDone(child, state.id);
+    if (!retained) return false;
+    const role = state.qaSession === sessionId ? "qa" : "implementer";
+    const owner = retainChild(retained, { child, role, runId: state.id });
+    if (state.reportPending) {
+      void retryPendingReport(owner, state);
+      return true;
+    }
+    if (role === "implementer" && isMiniAgent(child) && (state.status === "running" || state.status === "waiting_fix")) {
+      installDone(child, state.id);
+      return true;
+    }
+    if (role === "qa" && state.status === "reviewing") {
+      installQa(child, state.id);
+      watchQaSettle(child, state.id);
+      return true;
+    }
     return true;
+  }
+
+  function resumeImplementer(child) {
+    return isMiniAgent(child) && resumeChild(child);
   }
 
   async function spawnChild({ role, runId, cwd, parentSession, system, user, install }) {
@@ -632,6 +862,7 @@ export function createLand({
       await submitVerdict({
         agent: child,
         runId,
+        postTool: false,
         verdict: createQaVerdict({
           verdict: "fail",
           summary: "qa ended without a structured verdict",
@@ -705,47 +936,63 @@ export function createLand({
     return next;
   }
 
-  async function finishLand(state, fromId) {
+  async function settleAccepted({ sessionId, result, reason, postTool, action }) {
+    if (postTool && postToolSettlement(sessionId, result, reason, action)) return result;
+    await action();
+    return result;
+  }
+
+  async function finishLand(state, fromId, { postTool = false } = {}) {
     let next = store.save({ ...state, status: "landing" });
+    let kind = "landed";
     try {
       await landWorktree(run, next);
     } catch (error) {
-      const blocked = store.save({
+      kind = "blocked";
+      next = store.save({
         ...next,
         status: "blocked",
         blockedReason: error instanceof Error ? error.message : String(error),
         packet: next.packet ? { ...next.packet, mark: "fail" } : next.packet,
       });
-      const reported = await sendPacket(blocked, "blocked", fromId);
-      if (reported) await disposeChild(fromId, "blocked land result reported");
-      return { status: "ok", mark: "fail", outcome: formatOutcome(blocked, "blocked"), run: blocked.id };
     }
 
-    let archivedTaskId = "";
-    let archiveError = "";
-    if (next.taskId) {
-      try {
-        const service = tasksOf();
-        if (!service || typeof service.archive !== "function") {
-          throw new Error("qq-tasks is unavailable");
+    if (kind === "landed") {
+      let archivedTaskId = "";
+      let archiveError = "";
+      if (next.taskId) {
+        try {
+          const service = tasksOf();
+          if (!service || typeof service.archive !== "function") throw new Error("qq-tasks is unavailable");
+          archivedTaskId = String(await service.archive(next.taskId));
+        } catch (error) {
+          archiveError = error instanceof Error ? error.message : String(error);
+          logLine(ctx, "warn", `qq-workflows: landed ${next.id} but could not archive task ${next.taskId}: ${archiveError}`);
         }
-        archivedTaskId = String(await service.archive(next.taskId));
-      } catch (error) {
-        archiveError = error instanceof Error ? error.message : String(error);
-        logLine(ctx, "warn", `qq-workflows: landed ${next.id} but could not archive task ${next.taskId}: ${archiveError}`);
       }
+      next = store.save({
+        ...next,
+        status: "landed",
+        landedAt: new Date().toISOString(),
+        archivedTaskId,
+        archiveError,
+        packet: next.packet ? { ...next.packet, mark: "land" } : next.packet,
+      });
     }
-    next = store.save({
-      ...next,
-      status: "landed",
-      landedAt: new Date().toISOString(),
-      archivedTaskId,
-      archiveError,
-      packet: next.packet ? { ...next.packet, mark: "land" } : next.packet,
+
+    const report = await deliverRequiredPacket(next, kind, fromId);
+    next = report.state;
+    const result = kind === "landed"
+      ? { status: "ok", mark: "land", outcome: formatOutcome(next, kind), run: next.id }
+      : { status: "ok", mark: "fail", outcome: formatOutcome(next, kind), run: next.id };
+    if (!report.delivered) return result;
+    return settleAccepted({
+      sessionId: fromId,
+      result,
+      reason: `${kind} result committed`,
+      postTool,
+      action: () => disposeChild(fromId, `${kind} tool result settled`),
     });
-    const reported = await sendPacket(next, "landed", fromId);
-    if (reported) await disposeChild(fromId, "land result reported");
-    return { status: "ok", mark: "land", outcome: formatOutcome(next, "landed"), run: next.id };
   }
 
   function notReady(state) {
@@ -774,7 +1021,7 @@ export function createLand({
     return null;
   }
 
-  async function submitRef(state, { ref = "HEAD", fromId } = {}) {
+  async function submitRef(state, { ref = "HEAD", fromId, postTool = false } = {}) {
     if (!state.worktree) return { status: "refused", reason: "done requires a worktree" };
     const blocked = notReady(state);
     if (blocked) return { status: "refused", reason: blocked };
@@ -805,7 +1052,7 @@ export function createLand({
         packet,
         status: mark === "land" ? "landing" : "reviewing",
       });
-      if (mark === "land") return finishLand(next, fromId);
+      if (mark === "land") return finishLand(next, fromId, { postTool });
       next = store.save({
         ...next,
         look: look === 0 ? 1 : look,
@@ -813,31 +1060,36 @@ export function createLand({
         qaSession: "",
         qaVerdict: null,
       });
-      await disposeChild(fromId, "implementer done recorded");
-      try {
-        next = await startQa(next);
-      } catch (error) {
-        const blockedState = store.save({
-          ...next,
-          status: "blocked",
-          blockedReason: `qa child startup failed: ${error instanceof Error ? error.message : String(error)}`,
-          packet: next.packet ? { ...next.packet, mark: "fail" } : next.packet,
-        });
-        await sendPacket(blockedState, "blocked", fromId);
-        return {
-          status: "ok",
-          mark: "fail",
-          outcome: formatOutcome(blockedState, "blocked"),
-          run: blockedState.id,
-        };
-      }
-      return { status: "ok", mark: "review", look: next.look, run: next.id, qa: next.qaSession };
+      const result = { status: "ok", mark: "review", look: next.look, run: next.id, qa: "" };
+      const transition = async () => {
+        await disposeChild(fromId, "implementer done tool result settled");
+        try {
+          const reviewing = await startQa(store.load(next.id) ?? next);
+          result.qa = reviewing.qaSession;
+        } catch (error) {
+          const current = store.load(next.id) ?? next;
+          const blockedState = store.save({
+            ...current,
+            status: "blocked",
+            blockedReason: `qa child startup failed: ${error instanceof Error ? error.message : String(error)}`,
+            packet: current.packet ? { ...current.packet, mark: "fail" } : current.packet,
+          });
+          await deliverRequiredPacket(blockedState, "blocked", fromId, { directOnly: true });
+        }
+      };
+      return settleAccepted({
+        sessionId: fromId,
+        result,
+        reason: "implementer done result committed",
+        postTool,
+        action: transition,
+      });
     } catch (error) {
       return { status: "refused", reason: error instanceof Error ? error.message : String(error) };
     }
   }
 
-  async function done({ agent, ref = "HEAD", runId } = {}) {
+  async function done({ agent, ref = "HEAD", runId, postTool = false } = {}) {
     const sessionId = sessionIdOf(agent);
     const state = (runId ? store.load(runId) : null) ?? store.bySession(sessionId);
     if (!state) return { status: "refused", reason: "done has no land run for this session" };
@@ -852,7 +1104,7 @@ export function createLand({
     } catch (error) {
       return { status: "refused", reason: error instanceof Error ? error.message : String(error) };
     }
-    return submitRef(state, { ref, fromId: sessionId });
+    return submitRef(state, { ref, fromId: sessionId, postTool });
   }
 
   async function invoke({ agent, worktree, ref = "HEAD", brief } = {}) {
@@ -883,7 +1135,7 @@ export function createLand({
     return submitRef(state, { ref, fromId: sessionId });
   }
 
-  async function submitVerdict({ agent, verdict, runId } = {}) {
+  async function submitVerdict({ agent, verdict, runId, postTool = false } = {}) {
     const sessionId = sessionIdOf(agent);
     const state = (runId ? store.load(runId) : null) ?? store.bySession(sessionId);
     if (!state) return { status: "refused", reason: "qa_verdict has no land run for this session" };
@@ -908,42 +1160,46 @@ export function createLand({
       });
       settledQa.add(sessionId);
       if (enforced.verdict.verdict === "pass") {
-        return finishLand(next, sessionId);
+        return finishLand(next, sessionId, { postTool });
       }
       if (state.look === 1) {
         next = store.save({
           ...next,
           status: "waiting_fix",
           implementerSession: "",
-          qaSession: "",
+          qaSession: sessionId,
         });
-        await disposeChild(sessionId, "qa look 1 failure recorded");
-        try {
-          next = await startFixer(next, enforced.verdict);
-        } catch (error) {
-          const blockedState = store.save({
-            ...next,
-            status: "blocked",
-            blockedReason: `fixer child startup failed: ${error instanceof Error ? error.message : String(error)}`,
-            packet: next.packet ? { ...next.packet, mark: "fail" } : next.packet,
-          });
-          await sendPacket(blockedState, "blocked", sessionId);
-          return {
-            status: "ok",
-            verdict: "fail",
-            look: 1,
-            run: blockedState.id,
-            outcome: formatOutcome(blockedState, "blocked"),
-          };
-        }
-        return {
+        const result = {
           status: "ok",
           verdict: "fail",
           look: 1,
           run: next.id,
-          implementer: next.implementerSession,
+          implementer: "",
           outcome: `qa look 1 rejected ${state.id}. one fresh implementer.`,
         };
+        const transition = async () => {
+          await disposeChild(sessionId, "qa look 1 tool result settled");
+          try {
+            const fixing = await startFixer(store.load(next.id) ?? next, enforced.verdict);
+            result.implementer = fixing.implementerSession;
+          } catch (error) {
+            const current = store.load(next.id) ?? next;
+            const blockedState = store.save({
+              ...current,
+              status: "blocked",
+              blockedReason: `fixer child startup failed: ${error instanceof Error ? error.message : String(error)}`,
+              packet: current.packet ? { ...current.packet, mark: "fail" } : current.packet,
+            });
+            await deliverRequiredPacket(blockedState, "blocked", sessionId, { directOnly: true });
+          }
+        };
+        return settleAccepted({
+          sessionId,
+          result,
+          reason: "qa look 1 result committed",
+          postTool,
+          action: transition,
+        });
       }
       next = store.save({
         ...next,
@@ -951,9 +1207,17 @@ export function createLand({
         blockedReason: enforced.verdict.feedback || enforced.verdict.summary,
         packet: next.packet ? { ...next.packet, mark: "fail" } : next.packet,
       });
-      const reported = await sendPacket(next, "blocked", sessionId);
-      if (reported) await disposeChild(sessionId, "qa look 2 failure reported");
-      return { status: "ok", verdict: "fail", look: 2, outcome: formatOutcome(next, "blocked"), run: next.id };
+      const report = await deliverRequiredPacket(next, "blocked", sessionId);
+      next = report.state;
+      const result = { status: "ok", verdict: "fail", look: 2, outcome: formatOutcome(next, "blocked"), run: next.id };
+      if (!report.delivered) return result;
+      return settleAccepted({
+        sessionId,
+        result,
+        reason: "qa look 2 result committed",
+        postTool,
+        action: () => disposeChild(sessionId, "qa look 2 tool result settled"),
+      });
     } catch (error) {
       return { status: "refused", reason: error instanceof Error ? error.message : String(error) };
     }
@@ -961,13 +1225,29 @@ export function createLand({
 
   async function dispose() {
     for (const handle of [...attached.values()]) handle.detach();
+    const pending = [];
     for (const sessionId of [...childOwners.keys()]) {
       const owner = childOwners.get(sessionId);
       const blocked = blockOwnedWork(owner, `${owner?.role || "workflow"} child cancelled by plugin teardown`);
-      if (blocked.changed) await sendPacket(blocked.state, "blocked", sessionId);
-      await disposeChild(sessionId, "plugin teardown");
+      const state = blocked.state ?? store.load(owner?.runId);
+      let delivered = true;
+      if (state && (blocked.changed || state.reportPending)) {
+        const report = await deliverRequiredPacket(
+          state,
+          state.reportKind || (state.status === "landed" ? "landed" : "blocked"),
+          state.reportFromSession || sessionId,
+        );
+        delivered = report.delivered;
+      }
+      if (delivered) {
+        if (owner?.externalDisposed) forgetChildOwner(owner);
+        else await disposeChild(sessionId, "plugin teardown report delivered");
+      } else pending.push(sessionId);
     }
-    for (const sessionId of [...childTools.keys()]) clearChildTools(sessionId);
+    for (const sessionId of [...childTools.keys()]) {
+      if (!childOwners.has(sessionId)) clearChildTools(sessionId);
+    }
+    return { pending };
   }
 
   return Object.freeze({
@@ -976,6 +1256,7 @@ export function createLand({
     dispose,
     adoptImplementer,
     resumeImplementer,
+    resumeChild,
     releaseChild,
     done,
     invoke,
@@ -983,6 +1264,7 @@ export function createLand({
     attached: (sessionId) => attached.get(sessionId),
     run: (id) => store.load(id),
     bySession: (sessionId) => store.bySession(sessionId),
+    whenSettled: (sessionId) => settlementPromises.get(sessionId) ?? Promise.resolve(false),
     label: LAND_LABEL,
   });
 }

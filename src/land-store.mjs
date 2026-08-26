@@ -108,6 +108,9 @@ function normalize(raw) {
     blockedReason: optionalString(raw.blockedReason),
     landedAt: optionalString(raw.landedAt),
     inspectError: optionalString(raw.inspectError),
+    reportPending: raw.reportPending === true,
+    reportKind: optionalString(raw.reportKind),
+    reportFromSession: optionalString(raw.reportFromSession),
     createdAt: optionalString(raw.createdAt),
     updatedAt: optionalString(raw.updatedAt),
   };
@@ -181,6 +184,9 @@ export function createLandStore(dirPath) {
         blockedReason: fields.blockedReason,
         landedAt: fields.landedAt,
         inspectError: fields.inspectError,
+        reportPending: fields.reportPending,
+        reportKind: fields.reportKind,
+        reportFromSession: fields.reportFromSession,
         createdAt: fields.createdAt ?? now,
         updatedAt: fields.updatedAt ?? now,
       });

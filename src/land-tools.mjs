@@ -3,6 +3,7 @@
 // existing worktree; merge never registers as a user-facing workflow.
 
 import { createQaVerdict, validateQaVerdictInput } from "../../bin/lib/qa-verdict.mjs";
+import { armChildSettlement } from "./child-settlement.mjs";
 
 function textBlock(text) {
   return { type: "text", text };
@@ -53,7 +54,12 @@ export function buildDoneTool({ submit } = {}) {
     async execute(args, exec) {
       try {
         if (typeof submit !== "function") return refusal("done is unavailable");
-        return await submit({ agent: exec?.agent, ref: args?.ref || "HEAD" });
+        const result = await submit({ agent: exec?.agent, ref: args?.ref || "HEAD" });
+        if (result?.status !== "refused") {
+          exec?.concludeTurn?.();
+          armChildSettlement(result, exec);
+        }
+        return result;
       } catch (error) {
         return refusal(error instanceof Error ? error.message : String(error));
       }
@@ -166,7 +172,12 @@ export function buildQaVerdictTool({ submit } = {}) {
         };
         validateQaVerdictInput(input);
         const record = createQaVerdict(input);
-        return await submit({ agent: exec?.agent, verdict: record });
+        const result = await submit({ agent: exec?.agent, verdict: record });
+        if (result?.status !== "refused") {
+          exec?.concludeTurn?.();
+          armChildSettlement(result, exec);
+        }
+        return result;
       } catch (error) {
         return refusal(error instanceof Error ? error.message : String(error));
       }
