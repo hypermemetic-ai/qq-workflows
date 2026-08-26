@@ -26,7 +26,8 @@ export const LAND_STATUSES = Object.freeze([
 ]);
 
 const STATUS_SET = new Set(LAND_STATUSES);
-const DELEGATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const DELEGATION_ID = UUID_ID;
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const LAND_WORKFLOW_ROLES = Object.freeze(["implementer", "qa-look-1", "fixer", "qa-look-2"]);
 const WORKFLOW_ROLE_SET = new Set(LAND_WORKFLOW_ROLES);
@@ -132,6 +133,14 @@ function upgradeLegacy(raw) {
     );
     changed = true;
   }
+  if (!Object.hasOwn(next, "pendingPhase")) {
+    next.pendingPhase = null;
+    changed = true;
+  }
+  if (!Object.hasOwn(next, "reportEnvelopeId")) {
+    next.reportEnvelopeId = next.reportPending === true ? randomUUID() : "";
+    changed = true;
+  }
   return { raw: next, changed };
 }
 
@@ -149,6 +158,22 @@ function normalizeCurrent(raw, phaseEpoch) {
     throw new Error("qq-workflows: land run current pointer epoch is invalid");
   }
   return { sessionUuid, role, phaseEpoch };
+}
+
+function normalizePendingPhase(raw, phaseEpoch) {
+  if (raw == null) return null;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("qq-workflows: land run pending phase is malformed");
+  }
+  const sessionUuid = optionalString(raw.sessionUuid);
+  const role = optionalString(raw.role);
+  if (!SESSION_ID.test(sessionUuid) || !WORKFLOW_ROLE_SET.has(role)) {
+    throw new Error("qq-workflows: land run pending phase is malformed");
+  }
+  if (!Number.isSafeInteger(raw.phaseEpoch) || raw.phaseEpoch !== phaseEpoch + 1) {
+    throw new Error("qq-workflows: land run pending phase epoch is invalid");
+  }
+  return { sessionUuid, role, phaseEpoch: raw.phaseEpoch };
 }
 
 function normalize(raw) {
@@ -172,8 +197,22 @@ function normalize(raw) {
     throw new Error(`qq-workflows: land run ${raw.id} parent session is invalid`);
   }
   const current = normalizeCurrent(raw.current, raw.phaseEpoch);
-  if (TERMINAL_STATUSES.has(raw.status) && (current || raw.transitioning === true)) {
+  const pendingPhase = normalizePendingPhase(raw.pendingPhase, raw.phaseEpoch);
+  if (pendingPhase && raw.transitioning !== true) {
+    throw new Error(`qq-workflows: land run ${raw.id} has a pending phase outside a transition`);
+  }
+  if (pendingPhase && pendingPhase.sessionUuid === current?.sessionUuid) {
+    throw new Error(`qq-workflows: land run ${raw.id} pending phase repeats the current child`);
+  }
+  if (TERMINAL_STATUSES.has(raw.status) && (current || pendingPhase || raw.transitioning === true)) {
     throw new Error(`qq-workflows: terminal land run ${raw.id} has an active phase pointer`);
+  }
+  const reportEnvelopeId = optionalString(raw.reportEnvelopeId);
+  if (reportEnvelopeId && !UUID_ID.test(reportEnvelopeId)) {
+    throw new Error(`qq-workflows: land run ${raw.id} report envelope id is invalid`);
+  }
+  if (raw.reportPending === true && parentSessionUuid && !reportEnvelopeId) {
+    throw new Error(`qq-workflows: land run ${raw.id} pending report has no envelope id`);
   }
   return {
     schema: LAND_RUN_SCHEMA,
@@ -186,6 +225,7 @@ function normalize(raw) {
     phaseEpoch: raw.phaseEpoch,
     current,
     transitioning: raw.transitioning === true,
+    pendingPhase,
     architectSession: optionalString(raw.architectSession) || optionalString(raw.parentSessionUuid),
     taskId: optionalString(raw.taskId),
     archivedTaskId: optionalString(raw.archivedTaskId),
@@ -206,6 +246,7 @@ function normalize(raw) {
     landedAt: optionalString(raw.landedAt),
     inspectError: optionalString(raw.inspectError),
     reportPending: raw.reportPending === true,
+    reportEnvelopeId,
     reportKind: optionalString(raw.reportKind),
     reportFromSession: optionalString(raw.reportFromSession),
     settlementSession: optionalString(raw.settlementSession),
@@ -284,6 +325,7 @@ export function createLandStore(dirPath) {
         phaseEpoch: initialEpoch,
         current: initialCurrent,
         transitioning: fields.transitioning === true,
+        pendingPhase: fields.pendingPhase ?? null,
         architectSession: fields.architectSession || fields.parentSessionUuid,
         taskId: fields.taskId,
         archivedTaskId: fields.archivedTaskId,
@@ -304,6 +346,7 @@ export function createLandStore(dirPath) {
         landedAt: fields.landedAt,
         inspectError: fields.inspectError,
         reportPending: fields.reportPending,
+        reportEnvelopeId: fields.reportEnvelopeId,
         reportKind: fields.reportKind,
         reportFromSession: fields.reportFromSession,
         settlementSession: fields.settlementSession,
@@ -336,6 +379,9 @@ export function createLandStore(dirPath) {
       if (next.parentSessionUuid !== previous.parentSessionUuid) {
         throw new Error(`qq-workflows: land run ${next.id} parent session is immutable`);
       }
+      if (previous.reportEnvelopeId && next.reportEnvelopeId !== previous.reportEnvelopeId) {
+        throw new Error(`qq-workflows: land run ${next.id} report envelope id is immutable`);
+      }
       if (next.phaseEpoch < previous.phaseEpoch) {
         throw new Error(`qq-workflows: land run ${next.id} phase epoch cannot regress`);
       }
@@ -346,6 +392,22 @@ export function createLandStore(dirPath) {
       );
       if (pointerChanged && next.phaseEpoch <= previous.phaseEpoch) {
         throw new Error(`qq-workflows: land run ${next.id} phase pointer requires a newer epoch`);
+      }
+      if (previous.pendingPhase) {
+        const samePlan = next.pendingPhase
+          && next.pendingPhase.sessionUuid === previous.pendingPhase.sessionUuid
+          && next.pendingPhase.role === previous.pendingPhase.role
+          && next.pendingPhase.phaseEpoch === previous.pendingPhase.phaseEpoch;
+        if (next.pendingPhase && !samePlan) {
+          throw new Error(`qq-workflows: land run ${next.id} pending phase is immutable`);
+        }
+        const promoted = next.current
+          && next.current.sessionUuid === previous.pendingPhase.sessionUuid
+          && next.current.role === previous.pendingPhase.role
+          && next.current.phaseEpoch === previous.pendingPhase.phaseEpoch;
+        if (!next.pendingPhase && !promoted && !TERMINAL_STATUSES.has(next.status)) {
+          throw new Error(`qq-workflows: land run ${next.id} must promote its pending phase exactly`);
+        }
       }
       persist(next);
       return snapshot(next);
@@ -373,6 +435,7 @@ export function createLandStore(dirPath) {
           record.implementerSession === sessionId
           || record.originalImplementerSession === sessionId
           || record.qaSession === sessionId
+          || record.pendingPhase?.sessionUuid === sessionId
         ) {
           return record;
         }

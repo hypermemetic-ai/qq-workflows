@@ -168,21 +168,26 @@ function advancePhase(state, sessionUuid, role, fields = {}) {
   if (!SESSION_ID.test(sessionUuid) || !LAND_WORKFLOW_ROLES.has(role)) {
     throw new Error("cannot advance land run to an invalid workflow phase");
   }
-  if (state.current?.sessionUuid === sessionUuid && state.current?.role === role) {
-    return { ...state, ...fields, current: state.current, transitioning: false };
+  const pending = state.pendingPhase;
+  if (pending && (pending.sessionUuid !== sessionUuid || pending.role !== role)) {
+    throw new Error("cannot advance land run to a child other than its pending phase");
   }
-  const phaseEpoch = state.phaseEpoch + 1;
+  if (state.current?.sessionUuid === sessionUuid && state.current?.role === role) {
+    return { ...state, ...fields, current: state.current, transitioning: false, pendingPhase: null };
+  }
+  const phaseEpoch = pending?.phaseEpoch ?? (state.phaseEpoch + 1);
   return {
     ...state,
     ...fields,
     phaseEpoch,
     current: { sessionUuid, role, phaseEpoch },
     transitioning: false,
+    pendingPhase: null,
   };
 }
 
 function finishWorkflow(state, fields = {}) {
-  return { ...state, ...fields, current: null, transitioning: false };
+  return { ...state, ...fields, current: null, transitioning: false, pendingPhase: null };
 }
 
 function workflowRoleForState(state, sessionId, fallback = "implementer") {
@@ -204,6 +209,18 @@ function toolsService(holder) {
 
 function sessionIdOf(agent) {
   return agent?.session?.id ?? agent?.id ?? "";
+}
+
+function messageInserted(agent, messageId) {
+  if (!agent || typeof messageId !== "string" || !messageId) return false;
+  const pending = [
+    ...(agent.inbox?.nextTurn ?? []),
+    ...(agent.inbox?.nextStep ?? []),
+  ];
+  if (pending.some((message) => message?.id === messageId)) return true;
+  return (agent.session?.events ?? []).some((event) =>
+    event?.type === "user/message"
+    && (event.data?.id === messageId || event.data?.message?.id === messageId));
 }
 
 function parseChangedPaths(source) {
@@ -386,6 +403,73 @@ export function createLand({
     return settings?.get?.(role) ?? null;
   }
 
+  function planPhase(state, role) {
+    if (!LAND_WORKFLOW_ROLES.has(role)) throw new Error(`cannot plan invalid workflow role ${role}`);
+    const latest = store.load(state.id) ?? state;
+    if (!latest.transitioning) throw new Error(`land run ${state.id} is not transitioning`);
+    if (latest.pendingPhase) {
+      if (latest.pendingPhase.role !== role) {
+        throw new Error(`land run ${state.id} already plans ${latest.pendingPhase.role}`);
+      }
+      return latest;
+    }
+    return store.save({
+      ...latest,
+      pendingPhase: {
+        sessionUuid: `session-${randomUUID()}`,
+        role,
+        phaseEpoch: latest.phaseEpoch + 1,
+      },
+    });
+  }
+
+  function phaseFields(pending) {
+    if (pending.role === "fixer") {
+      return {
+        status: "waiting_fix",
+        implementerSession: pending.sessionUuid,
+        qaSession: "",
+      };
+    }
+    if (pending.role === "qa-look-1" || pending.role === "qa-look-2") {
+      return {
+        status: "reviewing",
+        qaSession: pending.sessionUuid,
+        qaVerdict: null,
+      };
+    }
+    throw new Error(`cannot promote unsupported pending workflow role ${pending.role}`);
+  }
+
+  function promotePendingPhase(state, expected = state.pendingPhase) {
+    if (!expected) throw new Error(`land run ${state.id} has no pending phase`);
+    const latest = store.load(state.id) ?? state;
+    if (latest.current?.sessionUuid === expected.sessionUuid
+      && latest.current.role === expected.role
+      && latest.current.phaseEpoch === expected.phaseEpoch) {
+      return latest;
+    }
+    const pending = latest.pendingPhase;
+    if (!pending || pending.sessionUuid !== expected.sessionUuid
+      || pending.role !== expected.role || pending.phaseEpoch !== expected.phaseEpoch) {
+      throw new Error(`land run ${state.id} pending phase changed before promotion`);
+    }
+    return store.save(advancePhase(latest, pending.sessionUuid, pending.role, {
+      ...phaseFields(pending),
+      settlementSession: "",
+      settlementCallId: "",
+      settlementTransition: "",
+    }));
+  }
+
+  function matchesPendingHeaders(child, state, pending) {
+    const header = child?.session?.header;
+    return header?.landRun === state.id
+      && header?.landDelegation === state.delegationId
+      && header?.landWorkflowRole === pending.role
+      && header?.landPhaseEpoch === pending.phaseEpoch;
+  }
+
   async function stamp(packet) {
     const hop = complete ?? (binding("router")
       ? async ({ system, user }) => oneShot(llm, binding("router"), { system, user })
@@ -401,10 +485,13 @@ export function createLand({
     const parentSessionUuid = state.parentSessionUuid || state.architectSession;
     const parent = agents?.get?.(parentSessionUuid);
     if (!parent || typeof parent.steer !== "function") return false;
+    const messageId = state.reportEnvelopeId;
+    if (!messageId) return false;
+    if (messageInserted(parent, messageId)) return true;
     const message = formatOutcome(state, kind);
     try {
       parent.steer({
-        id: randomUUID(),
+        id: messageId,
         role: "user",
         content: [{ type: "text", text: `${message}\n\nReported by physical workflow child ${fromId || state.id}.` }],
         source: { kind: "plugin", plugin: "qq-workflows", form: "relay" },
@@ -429,6 +516,7 @@ export function createLand({
           to: parentSessionUuid,
           message: formatOutcome(state, kind),
           delivery: "default",
+          messageId: state.reportEnvelopeId,
         });
         return true;
       } catch (error) {
@@ -440,9 +528,11 @@ export function createLand({
 
   async function deliverRequiredPacket(state, kind, fromId, options) {
     const parentSessionUuid = state.parentSessionUuid || state.architectSession;
+    const reportEnvelopeId = parentSessionUuid ? (state.reportEnvelopeId || randomUUID()) : state.reportEnvelopeId;
     let next = store.save({
       ...state,
       reportPending: Boolean(parentSessionUuid),
+      reportEnvelopeId,
       reportKind: parentSessionUuid ? kind : "",
       reportFromSession: parentSessionUuid ? String(fromId || "") : "",
     });
@@ -1042,17 +1132,36 @@ export function createLand({
   function resumeChild(child) {
     const sessionId = sessionIdOf(child);
     if (!sessionId) return false;
-    const state = store.bySession(sessionId);
+    let state = store.bySession(sessionId);
     if (!state) return false;
+    const pending = state.pendingPhase?.sessionUuid === sessionId ? state.pendingPhase : null;
     const recoverable = state.current?.sessionUuid === sessionId
       || state.settlementSession === sessionId
+      || pending
       || (state.reportPending && state.reportFromSession === sessionId);
     if (!recoverable) return false;
     const retained = child?.[CHILD_AGENT_HANDLE];
     if (!retained) return false;
+    let owner;
+    if (pending) {
+      if (!matchesPendingHeaders(child, state, pending)) return false;
+      const pendingRole = pending.role.startsWith("qa-") ? "qa" : "implementer";
+      owner = retainChild(retained, {
+        child,
+        role: pendingRole,
+        workflowRole: pending.role,
+        runId: state.id,
+      });
+      try {
+        state = promotePendingPhase(state, pending);
+      } catch (error) {
+        detachChildOwner(owner);
+        throw error;
+      }
+    }
     const role = state.qaSession === sessionId ? "qa" : "implementer";
     const workflowRole = workflowRoleForState(state, sessionId, child?.session?.header?.landWorkflowRole || role);
-    const owner = retainChild(retained, { child, role, workflowRole, runId: state.id });
+    owner ??= retainChild(retained, { child, role, workflowRole, runId: state.id });
     if (state.reportPending) {
       void retryPendingReport(owner, state);
       return true;
@@ -1074,7 +1183,7 @@ export function createLand({
     return isMiniAgent(child) && resumeChild(child);
   }
 
-  async function spawnChild({ role, workflowRole, runId, delegationId, phaseEpoch, cwd, parentSession, system, user, install }) {
+  async function spawnChild({ sessionUuid, role, workflowRole, runId, delegationId, phaseEpoch, cwd, parentSession, system, user, install }) {
     if (!agents || typeof agents.create !== "function") {
       throw new Error("land requires ctx.agents.create");
     }
@@ -1082,7 +1191,8 @@ export function createLand({
       binding: binding(role),
       env,
     });
-    const childId = `session-${randomUUID()}`;
+    if (!SESSION_ID.test(sessionUuid)) throw new Error("land child requires its preplanned session UUID");
+    const childId = sessionUuid;
     const mini = role === "implementer";
     const handle = adoptAgentHandle(await agents.create({
       sessionId: childId,
@@ -1206,52 +1316,58 @@ export function createLand({
       "Diff:",
       diff,
     ].join("\n");
+    const workflowRole = `qa-look-${state.look}`;
+    const planned = planPhase(state, workflowRole);
+    const pending = planned.pendingPhase;
     const spawned = await spawnChild({
+      sessionUuid: pending.sessionUuid,
       role: "qa",
-      workflowRole: `qa-look-${state.look}`,
-      runId: state.id,
-      delegationId: state.delegationId,
-      phaseEpoch: state.phaseEpoch + 1,
-      cwd: state.worktree,
+      workflowRole,
+      runId: planned.id,
+      delegationId: planned.delegationId,
+      phaseEpoch: pending.phaseEpoch,
+      cwd: planned.worktree,
       parentSession,
       system: QA_SYSTEM,
       user,
-      install: (next) => installQa(next, state.id),
+      install: (next) => installQa(next, planned.id),
     });
-    const qaSession = sessionIdOf(spawned.child);
-    const workflowRole = `qa-look-${state.look}`;
-    const next = store.save(advancePhase(state, qaSession, workflowRole, {
-      status: "reviewing",
-      qaSession,
-      qaVerdict: null,
-    }));
-    watchQaSettle(spawned.child, next.id);
-    await spawned.start();
-    return next;
+    try {
+      const next = promotePendingPhase(planned, pending);
+      watchQaSettle(spawned.child, next.id);
+      await spawned.start();
+      return next;
+    } catch (error) {
+      await disposeChild(pending.sessionUuid, "qa phase promotion rollback");
+      throw error;
+    }
   }
 
   async function startFixer(state, verdict) {
     const parentSession = state.parentSessionUuid || state.architectSession;
     const user = look1FixPrompt({ ...state, task: { id: state.id } }, verdict);
+    const planned = planPhase(state, "fixer");
+    const pending = planned.pendingPhase;
     const spawned = await spawnChild({
+      sessionUuid: pending.sessionUuid,
       role: "implementer",
-      workflowRole: "fixer",
-      runId: state.id,
-      delegationId: state.delegationId,
-      phaseEpoch: state.phaseEpoch + 1,
-      cwd: state.worktree,
+      workflowRole: pending.role,
+      runId: planned.id,
+      delegationId: planned.delegationId,
+      phaseEpoch: pending.phaseEpoch,
+      cwd: planned.worktree,
       parentSession,
       user,
-      install: (next) => installDone(next, state.id),
+      install: (next) => installDone(next, planned.id),
     });
-    const implementerSession = sessionIdOf(spawned.child);
-    const next = store.save(advancePhase(state, implementerSession, "fixer", {
-      status: "waiting_fix",
-      implementerSession,
-      qaSession: "",
-    }));
-    await spawned.start();
-    return next;
+    try {
+      const next = promotePendingPhase(planned, pending);
+      await spawned.start();
+      return next;
+    } catch (error) {
+      await disposeChild(pending.sessionUuid, "fixer phase promotion rollback");
+      throw error;
+    }
   }
 
   async function applyPostResultTransition({ sessionId, runId, transition, result }) {
