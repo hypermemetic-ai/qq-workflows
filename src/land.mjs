@@ -42,6 +42,7 @@ export const CHILD_ORIGIN = "subagent";
 export const ROUTE_PACKET_SCHEMA = "qq.route-packet/v1";
 
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CHILD_AGENT_HANDLE = Symbol.for("@hypermemetic-ai/qq-workflows/child-agent-handle");
 
 export const ROUTE_SYSTEM = [
   "You stamp a completion packet land or review.",
@@ -259,6 +260,7 @@ export function createLand({
 } = {}) {
   const attached = new Map();
   const childTools = new Map();
+  const childOwners = new Map();
   const settledQa = new Set();
 
   function tasksOf() {
@@ -278,7 +280,8 @@ export function createLand({
 
   async function sendPacket(state, kind, fromId) {
     const relay = relayOf(ctx);
-    if (!relay || typeof relay.send !== "function" || !state.architectSession) return false;
+    if (!state.architectSession) return true;
+    if (!relay || typeof relay.send !== "function") return false;
     const message = formatOutcome(state, kind);
     try {
       await relay.send({
@@ -296,6 +299,128 @@ export function createLand({
       );
       return false;
     }
+  }
+
+  function blockOwnedWork(owner, blockedReason) {
+    if (!owner?.runId) return { state: null, changed: false };
+    const state = store.load(owner.runId);
+    if (!state || state.status === "blocked" || state.status === "landed") {
+      return { state, changed: false };
+    }
+    const ownsCurrent = owner.role === "qa"
+      ? state.qaSession === owner.sessionId
+      : state.implementerSession === owner.sessionId;
+    if (!ownsCurrent) return { state, changed: false };
+    const blocked = store.save({
+      ...state,
+      status: "blocked",
+      blockedReason: String(blockedReason || `${owner.role} child closed`),
+      packet: state.packet ? { ...state.packet, mark: "fail" } : state.packet,
+    });
+    return { state: blocked, changed: true };
+  }
+
+  function isHookInterruption(reason) {
+    return reason?.kind === "aborted" && reason.reason?.kind === "hook";
+  }
+
+  function watchImplementerCancel(child, runId) {
+    const sessionId = sessionIdOf(child);
+    const off = child.ctx?.on?.("session/event", async (_session, event) => {
+      if (event?.type !== "turn/end") return;
+      const reason = event.data?.reason;
+      if (reason?.kind !== "aborted" || isHookInterruption(reason)) return;
+      const owner = childOwners.get(sessionId);
+      if (!owner || owner.runId !== runId || owner.disposePromise) return;
+      const blocked = blockOwnedWork(owner, "implementer child was cancelled before done");
+      if (!blocked.changed) return;
+      const reported = await sendPacket(blocked.state, "blocked", sessionId);
+      if (reported) await disposeChild(sessionId, "implementer cancellation reported");
+    });
+    return typeof off === "function" ? off : () => {};
+  }
+
+  function clearChildTools(sessionId) {
+    const disposeTools = childTools.get(sessionId);
+    childTools.delete(sessionId);
+    try { disposeTools?.(); } catch { /* child teardown is best effort */ }
+  }
+
+  function retainChild(handle, { child = handle?.agent ?? handle, role, runId } = {}) {
+    const sessionId = sessionIdOf(child);
+    if (!sessionId) throw new Error("child AgentHandle has no session");
+    if (handle?.agent && handle.agent !== child) {
+      throw new Error(`child AgentHandle does not own ${sessionId}`);
+    }
+    if (isLandCandidate(child) || child?.session?.header?.origin !== CHILD_ORIGIN) {
+      throw new Error("land refuses to own a parent or root AgentHandle");
+    }
+    const existing = childOwners.get(sessionId);
+    if (existing) {
+      if (existing.handle !== handle) throw new Error(`land already owns child ${sessionId}`);
+      return existing;
+    }
+    const owner = {
+      sessionId,
+      child,
+      handle,
+      role: role || child?.session?.header?.landRole || "implementer",
+      runId: runId || "",
+      disposePromise: null,
+    };
+    childOwners.set(sessionId, owner);
+    try {
+      Object.defineProperty(child, CHILD_AGENT_HANDLE, {
+        value: handle,
+        configurable: true,
+      });
+    } catch {
+      // The in-memory owner remains authoritative for this plugin lifetime.
+    }
+    return owner;
+  }
+
+  function clearRetainedHandle(owner) {
+    try {
+      if (owner?.child?.[CHILD_AGENT_HANDLE] === owner.handle) delete owner.child[CHILD_AGENT_HANDLE];
+    } catch { /* non-extensible Agent */ }
+  }
+
+  async function disposeChild(agentOrId, reason = "settled") {
+    const sessionId = typeof agentOrId === "string" ? agentOrId : sessionIdOf(agentOrId);
+    const owner = childOwners.get(sessionId);
+    if (!owner) return false;
+    if (!owner.disposePromise) {
+      clearChildTools(sessionId);
+      owner.disposePromise = (async () => {
+        try {
+          await owner.handle?.dispose?.();
+        } catch (error) {
+          logLine(
+            ctx,
+            "warn",
+            `qq-workflows: failed to dispose ${owner.role} child ${sessionId} (${reason}): ${error instanceof Error ? error.message : String(error)}`,
+          );
+        } finally {
+          clearRetainedHandle(owner);
+          if (childOwners.get(sessionId) === owner) childOwners.delete(sessionId);
+        }
+      })();
+    }
+    await owner.disposePromise;
+    return true;
+  }
+
+  function releaseChild(agentOrId) {
+    const sessionId = typeof agentOrId === "string" ? agentOrId : sessionIdOf(agentOrId);
+    const owner = childOwners.get(sessionId);
+    if (!owner) return false;
+    if (!owner.disposePromise) blockOwnedWork(owner, `${owner.role} child closed before completion`);
+    clearChildTools(sessionId);
+    clearRetainedHandle(owner);
+    childOwners.delete(sessionId);
+    settledQa.delete(sessionId);
+    return true;
   }
 
   function attach(agent) {
@@ -319,18 +444,22 @@ export function createLand({
     const sessionId = typeof agentOrId === "string" ? agentOrId : agentOrId?.session?.id ?? agentOrId?.id;
     const handle = attached.get(sessionId);
     handle?.detach();
-    childTools.get(sessionId)?.();
-    childTools.delete(sessionId);
-    return Boolean(handle) || childTools.has(sessionId);
+    const hadTools = childTools.has(sessionId);
+    clearChildTools(sessionId);
+    return Boolean(handle) || hadTools;
   }
 
   function installDone(child, runId) {
     const sessionId = sessionIdOf(child);
     childTools.get(sessionId)?.();
     const submit = (args) => done({ ...args, runId });
-    const dispose = isMiniAgent(child)
+    const disposeSubmit = isMiniAgent(child)
       ? bindMiniSubmit(child, submit)
       : registerTools(child, [buildDoneTool({ submit })]);
+    const disposeCancel = watchImplementerCancel(child, runId);
+    const dispose = () => {
+      try { disposeCancel(); } finally { disposeSubmit(); }
+    };
     childTools.set(sessionId, dispose);
     return dispose;
   }
@@ -349,7 +478,7 @@ export function createLand({
 
   async function adoptImplementer(child, info = {}) {
     const sessionId = sessionIdOf(child);
-    if (!sessionId) return { status: "refused", reason: "adopt requires a child session" };
+    if (!sessionId) return { status: "refused", reason: "adopt requires a child session", owned: false };
     const cwd = info.cwd ?? child?.session?.header?.cwd;
     const brief = String(info.packet ?? info.brief ?? "");
     const architectSession = info.parent?.id ?? info.parentSession ?? "";
@@ -363,8 +492,10 @@ export function createLand({
       };
     }
     const runId = `land-${randomUUID().slice(0, 8)}`;
+    let owner;
     let disposeBinding;
     try {
+      if (info.handle) owner = retainChild(info.handle, { child, role: "implementer", runId });
       disposeBinding = installDone(child, runId);
       const record = store.create({
         id: runId,
@@ -375,11 +506,34 @@ export function createLand({
         brief,
         ...git,
       });
-      return { status: "ok", run: record.id, child: sessionId };
+      return {
+        status: "ok",
+        run: record.id,
+        child: sessionId,
+        owned: Boolean(owner),
+        rollback: async (rollbackReason = "delegate startup failed") => {
+          const current = store.load(record.id);
+          if (current && current.status === "running") {
+            store.save({
+              ...current,
+              status: "blocked",
+              blockedReason: String(rollbackReason),
+            });
+          }
+          await disposeChild(sessionId, "adoption rollback");
+        },
+      };
     } catch (error) {
-      try { disposeBinding?.(); } catch { /* best effort rollback */ }
-      childTools.delete(sessionId);
-      throw error;
+      if (owner) await disposeChild(sessionId, "adoption rollback");
+      else {
+        try { disposeBinding?.(); } catch { /* best effort rollback */ }
+        childTools.delete(sessionId);
+      }
+      return {
+        status: "refused",
+        reason: error instanceof Error ? error.message : String(error),
+        owned: Boolean(owner),
+      };
     }
   }
 
@@ -388,11 +542,13 @@ export function createLand({
     if (!sessionId || !isMiniAgent(child)) return false;
     const state = store.bySession(sessionId);
     if (!state || state.implementerSession !== sessionId) return false;
+    const retained = child?.[CHILD_AGENT_HANDLE];
+    if (retained) retainChild(retained, { child, role: "implementer", runId: state.id });
     installDone(child, state.id);
     return true;
   }
 
-  async function spawnChild({ role, cwd, parentSession, system, user, install }) {
+  async function spawnChild({ role, runId, cwd, parentSession, system, user, install }) {
     if (!agents || typeof agents.create !== "function") {
       throw new Error("land requires ctx.agents.create");
     }
@@ -414,16 +570,40 @@ export function createLand({
       ...childCreateOptions(route, mini ? { setup: miniSetup } : {}),
     });
     const child = handle?.agent ?? handle;
-    install?.(child);
-    const seed = [system, user].filter(Boolean).join("\n\n");
-    const content = mini ? renderMiniSweTask(seed) : seed;
-    child.followup?.({
-      id: randomUUID(),
-      role: "user",
-      content: [{ type: "text", text: content }],
-      source: { kind: "plugin", plugin: "qq-workflows", form: "notice" },
-    });
-    return child;
+    let retained = false;
+    try {
+      retainChild(handle, { child, role, runId });
+      retained = true;
+      install?.(child);
+      const seed = [system, user].filter(Boolean).join("\n\n");
+      const content = mini ? renderMiniSweTask(seed) : seed;
+      let started = false;
+      return {
+        child,
+        async start() {
+          if (started) return;
+          started = true;
+          try {
+            if (typeof child.followup !== "function") throw new Error(`${role} child cannot accept its work packet`);
+            child.followup({
+              id: randomUUID(),
+              role: "user",
+              content: [{ type: "text", text: content }],
+              source: { kind: "plugin", plugin: "qq-workflows", form: "notice" },
+            });
+          } catch (error) {
+            await disposeChild(childId, `${role} startup rollback`);
+            throw error;
+          }
+        },
+      };
+    } catch (error) {
+      if (retained) await disposeChild(childId, `${role} startup rollback`);
+      else {
+        try { await handle?.dispose?.(); } catch { /* best effort create rollback */ }
+      }
+      throw error;
+    }
   }
 
   async function packetDiff(state) {
@@ -461,7 +641,9 @@ export function createLand({
       });
     };
     child.ctx?.on?.("session/event", async (_session, event) => {
-      if (event?.type === "turn/end") await finish();
+      if (event?.type !== "turn/end") return;
+      if (isHookInterruption(event.data?.reason)) return;
+      await finish();
     });
   }
 
@@ -480,42 +662,47 @@ export function createLand({
       "Diff:",
       diff,
     ].join("\n");
-    const child = await spawnChild({
+    const spawned = await spawnChild({
       role: "qa",
+      runId: state.id,
       cwd: state.worktree,
       parentSession,
       system: QA_SYSTEM,
       user,
       install: (next) => installQa(next, state.id),
     });
-    const qaSession = sessionIdOf(child);
+    const qaSession = sessionIdOf(spawned.child);
     const next = store.save({
       ...state,
       status: "reviewing",
       qaSession,
       qaVerdict: null,
     });
-    watchQaSettle(child, next.id);
+    watchQaSettle(spawned.child, next.id);
+    await spawned.start();
     return next;
   }
 
   async function startFixer(state, verdict) {
     const parentSession = [...attached.keys()][0] || state.architectSession;
     const user = look1FixPrompt({ ...state, task: { id: state.id } }, verdict);
-    const child = await spawnChild({
+    const spawned = await spawnChild({
       role: "implementer",
+      runId: state.id,
       cwd: state.worktree,
       parentSession,
       user,
       install: (next) => installDone(next, state.id),
     });
-    const implementerSession = sessionIdOf(child);
-    return store.save({
+    const implementerSession = sessionIdOf(spawned.child);
+    const next = store.save({
       ...state,
       status: "waiting_fix",
       implementerSession,
       qaSession: "",
     });
+    await spawned.start();
+    return next;
   }
 
   async function finishLand(state, fromId) {
@@ -529,7 +716,8 @@ export function createLand({
         blockedReason: error instanceof Error ? error.message : String(error),
         packet: next.packet ? { ...next.packet, mark: "fail" } : next.packet,
       });
-      await sendPacket(blocked, "blocked", fromId);
+      const reported = await sendPacket(blocked, "blocked", fromId);
+      if (reported) await disposeChild(fromId, "blocked land result reported");
       return { status: "ok", mark: "fail", outcome: formatOutcome(blocked, "blocked"), run: blocked.id };
     }
 
@@ -555,7 +743,8 @@ export function createLand({
       archiveError,
       packet: next.packet ? { ...next.packet, mark: "land" } : next.packet,
     });
-    await sendPacket(next, "landed", fromId);
+    const reported = await sendPacket(next, "landed", fromId);
+    if (reported) await disposeChild(fromId, "land result reported");
     return { status: "ok", mark: "land", outcome: formatOutcome(next, "landed"), run: next.id };
   }
 
@@ -617,8 +806,31 @@ export function createLand({
         status: mark === "land" ? "landing" : "reviewing",
       });
       if (mark === "land") return finishLand(next, fromId);
-      next = store.save({ ...next, look: look === 0 ? 1 : look, status: "reviewing" });
-      next = await startQa(next);
+      next = store.save({
+        ...next,
+        look: look === 0 ? 1 : look,
+        status: "reviewing",
+        qaSession: "",
+        qaVerdict: null,
+      });
+      await disposeChild(fromId, "implementer done recorded");
+      try {
+        next = await startQa(next);
+      } catch (error) {
+        const blockedState = store.save({
+          ...next,
+          status: "blocked",
+          blockedReason: `qa child startup failed: ${error instanceof Error ? error.message : String(error)}`,
+          packet: next.packet ? { ...next.packet, mark: "fail" } : next.packet,
+        });
+        await sendPacket(blockedState, "blocked", fromId);
+        return {
+          status: "ok",
+          mark: "fail",
+          outcome: formatOutcome(blockedState, "blocked"),
+          run: blockedState.id,
+        };
+      }
       return { status: "ok", mark: "review", look: next.look, run: next.id, qa: next.qaSession };
     } catch (error) {
       return { status: "refused", reason: error instanceof Error ? error.message : String(error) };
@@ -699,7 +911,31 @@ export function createLand({
         return finishLand(next, sessionId);
       }
       if (state.look === 1) {
-        next = await startFixer(next, enforced.verdict);
+        next = store.save({
+          ...next,
+          status: "waiting_fix",
+          implementerSession: "",
+          qaSession: "",
+        });
+        await disposeChild(sessionId, "qa look 1 failure recorded");
+        try {
+          next = await startFixer(next, enforced.verdict);
+        } catch (error) {
+          const blockedState = store.save({
+            ...next,
+            status: "blocked",
+            blockedReason: `fixer child startup failed: ${error instanceof Error ? error.message : String(error)}`,
+            packet: next.packet ? { ...next.packet, mark: "fail" } : next.packet,
+          });
+          await sendPacket(blockedState, "blocked", sessionId);
+          return {
+            status: "ok",
+            verdict: "fail",
+            look: 1,
+            run: blockedState.id,
+            outcome: formatOutcome(blockedState, "blocked"),
+          };
+        }
         return {
           status: "ok",
           verdict: "fail",
@@ -715,17 +951,23 @@ export function createLand({
         blockedReason: enforced.verdict.feedback || enforced.verdict.summary,
         packet: next.packet ? { ...next.packet, mark: "fail" } : next.packet,
       });
-      await sendPacket(next, "blocked", sessionId);
+      const reported = await sendPacket(next, "blocked", sessionId);
+      if (reported) await disposeChild(sessionId, "qa look 2 failure reported");
       return { status: "ok", verdict: "fail", look: 2, outcome: formatOutcome(next, "blocked"), run: next.id };
     } catch (error) {
       return { status: "refused", reason: error instanceof Error ? error.message : String(error) };
     }
   }
 
-  function dispose() {
+  async function dispose() {
     for (const handle of [...attached.values()]) handle.detach();
-    for (const disposeTools of [...childTools.values()]) disposeTools();
-    childTools.clear();
+    for (const sessionId of [...childOwners.keys()]) {
+      const owner = childOwners.get(sessionId);
+      const blocked = blockOwnedWork(owner, `${owner?.role || "workflow"} child cancelled by plugin teardown`);
+      if (blocked.changed) await sendPacket(blocked.state, "blocked", sessionId);
+      await disposeChild(sessionId, "plugin teardown");
+    }
+    for (const sessionId of [...childTools.keys()]) clearChildTools(sessionId);
   }
 
   return Object.freeze({
@@ -734,6 +976,7 @@ export function createLand({
     dispose,
     adoptImplementer,
     resumeImplementer,
+    releaseChild,
     done,
     invoke,
     submitVerdict,

@@ -22,6 +22,7 @@ export const ARCHITECT_PROMPT_NAME = "qq-workflows:architect";
 export const ARCHITECT_PROMPT = "You are the architect. Settle intent in working memory and delegate the work once the operator approves. They see the same working memory document.";
 
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CHILD_AGENT_HANDLE = Symbol.for("@hypermemetic-ai/qq-workflows/child-agent-handle");
 
 export function isArchitectCandidate(agent) {
   if (agent?.session?.header?.origin === CHILD_ORIGIN) return false;
@@ -89,7 +90,7 @@ function lastAssistantText(events) {
   return "";
 }
 
-function watchChildReturn({ ctx, relay, child, parentId }) {
+function watchChildReturn({ ctx, relay, child, parentId, onDelivered }) {
   const childId = child?.session?.id;
   if (!relay || typeof relay.send !== "function" || !childId || !parentId) return () => {};
   let sent = false;
@@ -100,6 +101,7 @@ function watchChildReturn({ ctx, relay, child, parentId }) {
     sent = true;
     try {
       await relay.send({ fromId: childId, to: parentId, message: text, delivery: "default" });
+      await onDelivered?.();
     } catch (error) {
       sent = false;
       logLine(ctx, "warn", `qq-workflows: delegate result was not delivered to ${parentId}: ${error instanceof Error ? error.message : String(error)}`);
@@ -113,7 +115,48 @@ function watchChildReturn({ ctx, relay, child, parentId }) {
 
 export function createArchitect({ ctx, cases, folder, agents, tasks, talking, hands, onInvokeChild, run = runCommand, env = process.env } = {}) {
   const attached = new Map();
+  const delegatedHandles = new Map();
   const tasksOf = () => (typeof tasks === "function" ? tasks() : tasks ?? null);
+
+  function retainDelegated(handle, child) {
+    const sessionId = child?.session?.id ?? child?.id;
+    if (!sessionId) throw new Error("delegate AgentHandle has no child session");
+    const record = { handle, child, disposePromise: null };
+    delegatedHandles.set(sessionId, record);
+    try {
+      Object.defineProperty(child, CHILD_AGENT_HANDLE, {
+        value: handle,
+        configurable: true,
+      });
+    } catch {
+      // The in-memory owner remains authoritative for this plugin lifetime.
+    }
+    return record;
+  }
+
+  async function disposeDelegated(agentOrId) {
+    const sessionId = typeof agentOrId === "string"
+      ? agentOrId
+      : agentOrId?.session?.id ?? agentOrId?.id;
+    const record = delegatedHandles.get(sessionId);
+    if (!record) return false;
+    if (!record.disposePromise) {
+      record.disposePromise = (async () => {
+        try {
+          await record.handle?.dispose?.();
+        } catch (error) {
+          logLine(ctx, "warn", `qq-workflows: failed to dispose delegated child ${sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+          try {
+            if (record.child?.[CHILD_AGENT_HANDLE] === record.handle) delete record.child[CHILD_AGENT_HANDLE];
+          } catch { /* non-extensible Agent */ }
+          if (delegatedHandles.get(sessionId) === record) delegatedHandles.delete(sessionId);
+        }
+      })();
+    }
+    await record.disposePromise;
+    return true;
+  }
 
   function attach(agent) {
     if (!isArchitectCandidate(agent)) return null;
@@ -309,12 +352,16 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
     });
     const child = created?.agent ?? created;
     hideHarnessToolsOn(child);
-    const refuseAdoption = async (reason) => {
+    const childSessionId = child.session?.id ?? childId;
+    retainDelegated(created, child);
+    const refuseAdoption = async (reason, { dispose = true } = {}) => {
       let cleanupError = "";
-      try {
-        await created?.dispose?.();
-      } catch (error) {
-        cleanupError = error instanceof Error ? error.message : String(error);
+      if (dispose) {
+        try {
+          await disposeDelegated(childSessionId);
+        } catch (error) {
+          cleanupError = error instanceof Error ? error.message : String(error);
+        }
       }
       return {
         status: "refused",
@@ -323,10 +370,11 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
           : `land adoption failed: ${reason}`,
       };
     };
+    let adoption;
     if (typeof onInvokeChild === "function") {
-      let adoption;
       try {
         adoption = await onInvokeChild(child, {
+          handle: created,
           packet,
           taskId,
           parent,
@@ -337,17 +385,33 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
         const detail = error instanceof Error ? error.message : String(error);
         return refuseAdoption(detail);
       }
+      if (adoption?.owned === true) delegatedHandles.delete(childSessionId);
       if (adoption?.status === "refused") {
-        return refuseAdoption(adoption.reason || "refused");
+        return refuseAdoption(adoption.reason || "refused", { dispose: adoption.owned !== true });
       }
     }
-    watchChildReturn({ ctx, relay, child, parentId: parent.id });
-    child.followup({
-      id: randomUUID(),
-      role: "user",
-      content: [{ type: "text", text: renderMiniSweTask(packet) }],
-      source: { kind: "plugin", plugin: "qq-workflows", form: "notice" },
+    watchChildReturn({
+      ctx,
+      relay,
+      child,
+      parentId: parent.id,
+      onDelivered: () => disposeDelegated(childSessionId),
     });
+    try {
+      child.followup({
+        id: randomUUID(),
+        role: "user",
+        content: [{ type: "text", text: renderMiniSweTask(packet) }],
+        source: { kind: "plugin", plugin: "qq-workflows", form: "notice" },
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      if (adoption?.owned === true && typeof adoption.rollback === "function") {
+        await adoption.rollback(detail);
+        return refuseAdoption(detail, { dispose: false });
+      }
+      return refuseAdoption(detail);
+    }
     cases?.consume?.(parent.id);
     const alias = typeof relay.alias === "function" ? relay.alias(child.session?.id ?? childId) : undefined;
     return {
@@ -358,8 +422,9 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
     };
   }
 
-  function dispose() {
+  async function dispose() {
     for (const handle of [...attached.values()]) handle.detach();
+    for (const sessionId of [...delegatedHandles.keys()]) await disposeDelegated(sessionId);
   }
 
   return Object.freeze({

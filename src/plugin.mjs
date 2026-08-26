@@ -109,9 +109,9 @@ function toolsService(holder) {
 }
 
 /**
- * DSH binds Agent create/resume lifecycle to the accessing fiber. Plugin HMR
- * unloads that fiber and would abort in-flight turns. Workflow children must
- * outlive a qq-workflows replacement, so create/resume through the host root.
+ * DSH binds Agent create/resume lifecycle to the accessing fiber. Create
+ * through the host root so qq-workflows owns teardown order: durable state and
+ * relay reports settle before the retained AgentHandle unregisters the child.
  */
 function hostAgents(ctx) {
   const host = ctx?.root && typeof ctx.root.get === "function" ? ctx.root : ctx;
@@ -638,6 +638,7 @@ export function apply(ctx, config = {}) {
     syncSession(agent);
   });
   ctx.on("agent/disposed", ({ agent }) => {
+    land.releaseChild?.(agent);
     for (const workflow of workflows.values()) workflow.ensureDetached(agent);
     const sessionId = sessionIdOf(agent);
     unpinTalking(sessionId);
@@ -678,14 +679,14 @@ export function apply(ctx, config = {}) {
     }
   }
 
-  ctx.effect(() => () => {
+  ctx.effect(() => async () => {
     if (typeof agents?.list === "function") {
       for (const agent of agents.list()) {
         for (const workflow of workflows.values()) workflow.ensureDetached(agent);
       }
     }
-    architect.dispose?.();
-    land.dispose?.();
+    await architect.dispose?.();
+    await land.dispose?.();
     for (const record of [...toolDisposers.values()]) record.dispose();
     for (const dispose of [...hideDisposers.values()]) dispose();
     hideDisposers.clear();
