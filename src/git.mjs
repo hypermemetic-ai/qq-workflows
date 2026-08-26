@@ -82,7 +82,16 @@ export async function inspectWorktree(run, cwd) {
   );
   const commonDir = common.stdout.trim();
   const gitDir = await realpath(commonDir.startsWith("/") ? commonDir : `${worktree}/${commonDir}`);
-  const mainRoot = await realpath(gitDir.endsWith(".git") ? dirname(gitDir) : gitDir);
+  let mainRoot = await realpath(gitDir.endsWith(".git") ? dirname(gitDir) : gitDir);
+  if (mainRoot === worktree) {
+    const origin = await run("git", ["remote", "get-url", "origin"], { cwd: worktree });
+    const originPath = origin?.stdout?.trim();
+    if (origin.code === 0 && originPath && existsSync(originPath)) {
+      try {
+        mainRoot = await realpath(originPath);
+      } catch {}
+    }
+  }
   const branch = await checked(
     run, "git", ["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: worktree }, "worktree HEAD is detached",
   );
@@ -119,12 +128,18 @@ export async function createDelegatedWorktree(run, { cwd, brief, id, env = proce
     worktree = worktreePathFor(git.mainRoot, slug, env);
   }
   mkdirSync(dirname(worktree), { recursive: true });
-  await checked(
-    run,
-    "git",
-    ["worktree", "add", "-b", branch, worktree, "HEAD"],
-    { cwd: git.worktree },
-    "git worktree add failed",
-  );
+  // Task-local capsule: clone with shared object alternates for fast, isolated repository
+  const clone = await run("git", ["clone", "--shared", "--no-checkout", git.mainRoot, worktree]);
+  if (clone?.code === 0) {
+    await checked(run, "git", ["checkout", "-b", branch, "HEAD"], { cwd: worktree }, "capsule checkout failed");
+  } else {
+    await checked(
+      run,
+      "git",
+      ["worktree", "add", "-b", branch, worktree, "HEAD"],
+      { cwd: git.worktree },
+      "git worktree add failed",
+    );
+  }
   return inspectWorktree(run, worktree);
 }

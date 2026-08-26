@@ -8,8 +8,9 @@
 // bound qq-task archives only after the merge/cleanup succeeds.
 
 import { randomUUID } from "node:crypto";
+import { existsSync, rmSync } from "node:fs";
 import { realpath } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { checked, inspectWorktree, reason, runCommand } from "./git.mjs";
 
 import {
@@ -209,6 +210,9 @@ export async function landWorktree(run, state) {
   if (generatedPaths.length) {
     throw new Error(`delegated proposal changes generated OpenWiki paths: ${generatedPaths.join(", ")}`);
   }
+  // Import branch/commit from task capsule if not already present on mainRoot
+  await run("git", ["fetch", worktree, `${state.branch}:${state.branch}`], { cwd: mainRoot });
+
   const merged = await run("git", ["merge-base", "--is-ancestor", state.ref, "HEAD"], { cwd: mainRoot });
   if (merged?.code !== 0 && merged?.code !== 1) {
     throw new Error(`cannot inspect whether proposal is already merged: ${reason(merged, "command failed")}`);
@@ -220,12 +224,19 @@ export async function landWorktree(run, state) {
     }
     await checked(run, "git", ["merge", "--no-ff", "--no-edit", state.ref], { cwd: mainRoot }, "merge failed");
   }
-  await checked(
-    run, "git", ["worktree", "remove", "--force", worktree], { cwd: mainRoot }, "worktree cleanup failed",
-  );
-  await checked(
-    run, "git", ["branch", "-d", state.branch], { cwd: mainRoot }, "merged but branch cleanup failed",
-  );
+  const isWorktree = existsSync(join(worktree, ".git")) && !existsSync(join(worktree, ".git", "HEAD"));
+  if (isWorktree) {
+    await checked(
+      run, "git", ["worktree", "remove", "--force", worktree], { cwd: mainRoot }, "worktree cleanup failed",
+    );
+  } else {
+    try {
+      rmSync(worktree, { recursive: true, force: true });
+    } catch {
+      await run("rm", ["-rf", worktree]);
+    }
+  }
+  await run("git", ["branch", "-D", state.branch], { cwd: mainRoot });
   return state;
 }
 
