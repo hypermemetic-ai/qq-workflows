@@ -313,10 +313,11 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
       return { status: "refused", reason: "delegate requires settled working memory" };
     }
     const parentAlias = typeof relay.alias === "function" ? relay.alias(parent.id) : undefined;
-    const returnAddress = parentAlias
-      ? `Return address: session ${parent.id} (alias ${parentAlias}).`
-      : `Return address: session ${parent.id}.`;
-    const packet = `${brief.trimEnd()}\n\n${returnAddress} Results are delivered through qq-relay default steer.`;
+    const aliasNotice = parentAlias
+      ? ` Alias ${parentAlias} is informational and ephemeral; never use it as relay identity.`
+      : "";
+    const returnAddress = `Authoritative parent session UUID: ${parent.id}.${aliasNotice}`;
+    const packet = `${brief.trimEnd()}\n\n${returnAddress} Workflow completion is returned automatically; do not manually relay a duplicate report.`;
     const taskId = cases?.taskId?.(parent.id) ?? null;
     const childId = `session-${randomUUID()}`;
     let targetCwd = repoRootFor(parent.header?.cwd);
@@ -392,18 +393,26 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
         return refuseAdoption(adoption.reason || "refused", { dispose: adoption.owned !== true });
       }
     }
-    watchChildReturn({
-      ctx,
-      relay,
-      child,
-      parentId: parent.id,
-      onDelivered: () => disposeDelegated(childSessionId),
-    });
+    // Land owns completion delivery and child disposal after adoption. Keeping
+    // the generic last-assistant-text watcher as well can duplicate or race the
+    // structured land report. Unowned delegates retain the generic fallback.
+    if (adoption?.owned !== true) {
+      watchChildReturn({
+        ctx,
+        relay,
+        child,
+        parentId: parent.id,
+        onDelivered: () => disposeDelegated(childSessionId),
+      });
+    }
+    const workflowPacket = adoption?.run
+      ? `${packet}\n\nWorkflow topology: land run ${adoption.run}; role implementer; child session ${childSessionId}; authoritative parent session ${parent.id}.`
+      : packet;
     try {
       child.followup({
         id: randomUUID(),
         role: "user",
-        content: [{ type: "text", text: renderMiniSweTask(packet) }],
+        content: [{ type: "text", text: renderMiniSweTask(workflowPacket) }],
         source: { kind: "plugin", plugin: "qq-workflows", form: "notice" },
       });
     } catch (error) {

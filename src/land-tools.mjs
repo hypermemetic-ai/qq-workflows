@@ -56,8 +56,8 @@ export function buildDoneTool({ submit } = {}) {
         if (typeof submit !== "function") return refusal("done is unavailable");
         const result = await submit({ agent: exec?.agent, ref: args?.ref || "HEAD" });
         if (result?.status !== "refused") {
-          exec?.concludeTurn?.();
           armChildSettlement(result, exec);
+          try { exec?.concludeTurn?.(); } catch { /* accepted result remains armed */ }
         }
         return result;
       } catch (error) {
@@ -174,8 +174,8 @@ export function buildQaVerdictTool({ submit } = {}) {
         const record = createQaVerdict(input);
         const result = await submit({ agent: exec?.agent, verdict: record });
         if (result?.status !== "refused") {
-          exec?.concludeTurn?.();
           armChildSettlement(result, exec);
+          try { exec?.concludeTurn?.(); } catch { /* accepted result remains armed */ }
         }
         return result;
       } catch (error) {

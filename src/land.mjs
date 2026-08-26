@@ -41,6 +41,9 @@ import {
 } from "./land-tools.mjs";
 
 export const LAND_LABEL = "workflows:land";
+export const LAND_RUN_LABEL_PREFIX = "workflows:land-run/";
+export const LAND_ROLE_LABEL_PREFIX = "workflows:land-role/";
+const LAND_WORKFLOW_ROLES = new Set(["implementer", "fixer", "qa-look-1", "qa-look-2"]);
 export const CHILD_ORIGIN = "subagent";
 export const ROUTE_PACKET_SCHEMA = "qq.route-packet/v1";
 
@@ -67,8 +70,9 @@ export const QA_SYSTEM = [
 
 /** A chair that may invoke land. Children never are. */
 export function isLandCandidate(agent) {
-  const origin = agent?.session?.header?.origin;
-  if (origin === CHILD_ORIGIN) return false;
+  const header = agent?.session?.header;
+  if (header?.origin === CHILD_ORIGIN) return false;
+  if (typeof header?.parentSession === "string" && header.parentSession.length > 0) return false;
   return SESSION_ID.test(agent?.session?.id ?? agent?.id ?? "");
 }
 
@@ -115,6 +119,55 @@ function clearLabel(ctx, sessionId) {
   }
 }
 
+function childWorkflowLabels(runId, workflowRole) {
+  const run = String(runId ?? "").toLowerCase();
+  if (!/^land-[a-z0-9-]{1,48}$/.test(run)) {
+    throw new Error("land child label requires a bounded land run id");
+  }
+  if (!LAND_WORKFLOW_ROLES.has(workflowRole)) {
+    throw new Error(`land child label has unknown role ${workflowRole}`);
+  }
+  return [`${LAND_RUN_LABEL_PREFIX}${run}`, `${LAND_ROLE_LABEL_PREFIX}${workflowRole}`];
+}
+
+function hangChildLabels(ctx, owner) {
+  const relay = relayOf(ctx);
+  if (!owner || !relay || typeof relay.hang !== "function") return false;
+  const labels = childWorkflowLabels(owner.runId, owner.workflowRole);
+  owner.workflowLabels ??= new Set();
+  let complete = true;
+  for (const label of labels) {
+    try {
+      relay.hang(owner.sessionId, label);
+      owner.workflowLabels.add(label);
+    } catch (error) {
+      complete = false;
+      logLine(ctx, "warn", `qq-workflows: failed to hang ${label} on ${owner.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return complete;
+}
+
+function clearChildLabels(ctx, owner) {
+  const relay = relayOf(ctx);
+  if (!owner || !relay || typeof relay.clear !== "function") return false;
+  let cleared = false;
+  for (const label of owner.workflowLabels ?? []) {
+    try { cleared = relay.clear(owner.sessionId, label) || cleared; } catch { /* best effort */ }
+  }
+  owner.workflowLabels?.clear?.();
+  return cleared;
+}
+
+function workflowRoleForState(state, sessionId, fallback = "implementer") {
+  if (state?.qaSession === sessionId) return `qa-look-${state.look === 2 ? 2 : 1}`;
+  if (state?.implementerSession === sessionId) {
+    return state.originalImplementerSession === sessionId ? "implementer" : "fixer";
+  }
+  if (LAND_WORKFLOW_ROLES.has(fallback)) return fallback;
+  return fallback === "qa" ? `qa-look-${state?.look === 2 ? 2 : 1}` : "implementer";
+}
+
 function toolsService(holder) {
   return holder?.tools
     ?? holder?.get?.("tools", false)
@@ -140,14 +193,32 @@ function appendVerdictFailure(verdict, feedback) {
 export function formatOutcome(state, kind) {
   const packet = state?.packet;
   const body = packet ? formatPacket(packet) : state?.brief ?? "";
+  const activeChild = state?.qaSession || state?.implementerSession || "";
+  const role = activeChild ? workflowRoleForState(state, activeChild) : "none";
+  const topology = [
+    `Land run: ${state?.id || "unknown"}`,
+    state?.architectSession ? `Parent session (authoritative UUID): ${state.architectSession}` : "",
+    activeChild ? `Workflow child session (stable UUID): ${activeChild}` : "",
+    `Workflow role: ${role}`,
+    Number.isSafeInteger(state?.look) ? `QA look: ${state.look}` : "",
+    state?.ref ? `Ref: ${state.ref}` : "",
+    state?.worktree ? `Worktree: ${state.worktree}` : "",
+  ].filter(Boolean).join("\n");
+  const verdict = state?.qaVerdict;
+  const verdictEvidence = verdict ? [
+    `Saved structured QA verdict (${verdict.verdict}):`,
+    `Summary: ${verdict.summary}`,
+    `Feedback: ${verdict.feedback || "(none)"}`,
+    `Tests modified: ${verdict.tests_modified === true ? "yes" : "no"}`,
+  ].join("\n") : "";
   if (kind === "landed") {
-    return [`Landed on ${state.baseBranch}.`, body].filter(Boolean).join("\n\n");
+    return [`Landed on ${state.baseBranch}.`, topology, verdictEvidence, body].filter(Boolean).join("\n\n");
   }
   if (kind === "blocked") {
     const why = state.blockedReason || "blocked";
-    return [`Blocked: ${why}`, body].filter(Boolean).join("\n\n");
+    return [`Blocked: ${why}`, topology, verdictEvidence, body].filter(Boolean).join("\n\n");
   }
-  return body;
+  return [topology, verdictEvidence, body].filter(Boolean).join("\n\n");
 }
 
 export async function enforceQaWorktree(run, state, verdict) {
@@ -536,7 +607,7 @@ export function createLand({
     return settlement;
   }
 
-  function retainChild(handle, { child = handle?.agent ?? handle, role, runId } = {}) {
+  function retainChild(handle, { child = handle?.agent ?? handle, role, workflowRole, runId } = {}) {
     const sessionId = sessionIdOf(child);
     if (!sessionId) throw new Error("child AgentHandle has no session");
     if (handle?.agent && handle.agent !== child) {
@@ -548,6 +619,9 @@ export function createLand({
     const existing = childOwners.get(sessionId);
     if (existing) {
       if (existing.handle !== handle) throw new Error(`land already owns child ${sessionId}`);
+      if (workflowRole) existing.workflowRole = workflowRole;
+      if (runId) existing.runId = runId;
+      hangChildLabels(ctx, existing);
       return existing;
     }
     const owner = {
@@ -555,13 +629,16 @@ export function createLand({
       child,
       handle,
       role: role || child?.session?.header?.landRole || "implementer",
-      runId: runId || "",
+      workflowRole: workflowRole || child?.session?.header?.landWorkflowRole || (role === "qa" ? "qa-look-1" : "implementer"),
+      runId: runId || child?.session?.header?.landRun || "",
+      workflowLabels: new Set(),
       disposePromise: null,
       externalDisposed: false,
       settlements: new Map(),
       lifecycleOffs: [],
     };
     childOwners.set(sessionId, owner);
+    hangChildLabels(ctx, owner);
     installOwnerLifecycle(owner);
     try {
       Object.defineProperty(child, CHILD_AGENT_HANDLE, {
@@ -584,6 +661,7 @@ export function createLand({
     if (!owner) return;
     clearChildTools(owner.sessionId);
     clearOwnerLifecycle(owner);
+    clearChildLabels(ctx, owner);
     clearRetainedHandle(owner);
     if (childOwners.get(owner.sessionId) === owner) childOwners.delete(owner.sessionId);
     settledQa.delete(owner.sessionId);
@@ -596,6 +674,7 @@ export function createLand({
     if (!owner.disposePromise) {
       clearChildTools(sessionId);
       clearOwnerLifecycle(owner);
+      clearChildLabels(ctx, owner);
       owner.disposePromise = (async () => {
         try {
           await owner.handle?.dispose?.();
@@ -654,6 +733,14 @@ export function createLand({
     return handle;
   }
 
+  function refreshLabels() {
+    let refreshed = 0;
+    for (const owner of childOwners.values()) {
+      if (hangChildLabels(ctx, owner)) refreshed++;
+    }
+    return refreshed;
+  }
+
   function detach(agentOrId) {
     const sessionId = typeof agentOrId === "string" ? agentOrId : agentOrId?.session?.id ?? agentOrId?.id;
     const handle = attached.get(sessionId);
@@ -709,8 +796,13 @@ export function createLand({
     let owner;
     let disposeBinding;
     try {
-      if (info.handle) owner = retainChild(info.handle, { child, role: "implementer", runId });
+      if (info.handle) owner = retainChild(info.handle, { child, role: "implementer", workflowRole: "implementer", runId });
       disposeBinding = installDone(child, runId);
+      try {
+        child.session.header.landRun = runId;
+        child.session.header.landRole = "implementer";
+        child.session.header.landWorkflowRole = "implementer";
+      } catch { /* durable store and labels remain authoritative */ }
       const record = store.create({
         id: runId,
         architectSession,
@@ -769,7 +861,8 @@ export function createLand({
     const retained = child?.[CHILD_AGENT_HANDLE];
     if (!retained) return false;
     const role = state.qaSession === sessionId ? "qa" : "implementer";
-    const owner = retainChild(retained, { child, role, runId: state.id });
+    const workflowRole = workflowRoleForState(state, sessionId, child?.session?.header?.landWorkflowRole || role);
+    const owner = retainChild(retained, { child, role, workflowRole, runId: state.id });
     if (state.reportPending) {
       void retryPendingReport(owner, state);
       return true;
@@ -790,7 +883,7 @@ export function createLand({
     return isMiniAgent(child) && resumeChild(child);
   }
 
-  async function spawnChild({ role, runId, cwd, parentSession, system, user, install }) {
+  async function spawnChild({ role, workflowRole, runId, cwd, parentSession, system, user, install }) {
     if (!agents || typeof agents.create !== "function") {
       throw new Error("land requires ctx.agents.create");
     }
@@ -807,6 +900,8 @@ export function createLand({
         parentSession,
         origin: CHILD_ORIGIN,
         landRole: role,
+        landWorkflowRole: workflowRole,
+        landRun: runId,
         ...(mini ? { kind: MINI_KIND, agentPreset: MINI_KIND } : {}),
       },
       ...childCreateOptions(route, mini ? { setup: miniSetup } : {}),
@@ -814,10 +909,15 @@ export function createLand({
     const child = handle?.agent ?? handle;
     let retained = false;
     try {
-      retainChild(handle, { child, role, runId });
+      retainChild(handle, { child, role, workflowRole, runId });
       retained = true;
       install?.(child);
-      const seed = [system, user].filter(Boolean).join("\n\n");
+      const identity = [
+        `Workflow topology: land run ${runId}; role ${workflowRole}; child session ${childId}.`,
+        `Authoritative parent session UUID: ${parentSession}. Session aliases are informational and ephemeral.`,
+        "Workflow completion is returned automatically; do not manually relay a duplicate report.",
+      ].join(" ");
+      const seed = [identity, system, user].filter(Boolean).join("\n\n");
       const content = mini ? renderMiniSweTask(seed) : seed;
       let started = false;
       return {
@@ -907,6 +1007,7 @@ export function createLand({
     ].join("\n");
     const spawned = await spawnChild({
       role: "qa",
+      workflowRole: `qa-look-${state.look}`,
       runId: state.id,
       cwd: state.worktree,
       parentSession,
@@ -931,6 +1032,7 @@ export function createLand({
     const user = look1FixPrompt({ ...state, task: { id: state.id } }, verdict);
     const spawned = await spawnChild({
       role: "implementer",
+      workflowRole: "fixer",
       runId: state.id,
       cwd: state.worktree,
       parentSession,
@@ -1105,6 +1207,10 @@ export function createLand({
     const sessionId = sessionIdOf(agent);
     const state = (runId ? store.load(runId) : null) ?? store.bySession(sessionId);
     if (!state) return { status: "refused", reason: "done has no land run for this session" };
+    const chair = state.architectSession ? agents?.get?.(state.architectSession) : null;
+    if (chair && !isLandCandidate(chair)) {
+      return { status: "refused", reason: "done requires a root chair parent" };
+    }
     if (state.implementerSession && state.implementerSession !== sessionId) {
       return { status: "refused", reason: "done requires the owned implementer session" };
     }
@@ -1270,6 +1376,7 @@ export function createLand({
     resumeImplementer,
     resumeChild,
     releaseChild,
+    refreshLabels,
     done,
     invoke,
     submitVerdict,

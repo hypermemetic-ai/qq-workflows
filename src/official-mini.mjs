@@ -516,10 +516,10 @@ export function wrapMiniBash(base) {
         }
         const success = syntheticResult("COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n", 0);
         markCompleted(exec?.agent);
-        exec?.concludeTurn?.();
         armChildSettlement(result, exec, {
           onFailure: () => completed.delete(exec?.agent),
         });
+        try { exec?.concludeTurn?.(); } catch { /* accepted result remains armed */ }
         return success;
       }
       return base.execute({

@@ -74,7 +74,7 @@ function buildCaseWriteTool(cases, tasks) {
 export function buildArchitectTools({ delegate, tasks, cases, land } = {}) {
   const tools = [{
     name: "delegate",
-    description: "Start one live child from working memory. Results return through qq-relay default steer.",
+    description: "Start one live child from working memory. The result exposes the authoritative stable child session UUID and an informational ephemeral alias. Workflow-owned results return automatically.",
     parameters: {},
     output: {
       schema: {
@@ -87,7 +87,9 @@ export function buildArchitectTools({ delegate, tasks, cases, land } = {}) {
           reason: { type: "string" },
         },
       },
-      render: (_args, value) => [textBlock(value.status === "refused" ? `Delegate refused: ${value.reason}` : `delegated ${value.alias || value.child}`)],
+      render: (_args, value) => [textBlock(value.status === "refused"
+        ? `Delegate refused: ${value.reason}`
+        : `delegated session ${value.child}${value.alias ? ` (alias ${value.alias}, ephemeral)` : ""}`)],
     },
     async execute(_args, exec) {
       try {

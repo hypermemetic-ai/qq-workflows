@@ -277,10 +277,10 @@ export function buildHandsPacket({ bundle, cwd, parentSession, parentAlias, env 
   lines.push("");
   lines.push(PACKET_CYCLE);
   if (parentSession) {
-    const address = parentAlias
-      ? `Return address: session ${parentSession} (alias ${parentAlias}).`
-      : `Return address: session ${parentSession}.`;
-    lines.push(`${address} Results are delivered through qq-relay default steer.`);
+    const aliasNotice = parentAlias
+      ? ` Alias ${parentAlias} is informational and ephemeral; never use it as relay identity.`
+      : "";
+    lines.push(`Authoritative parent session UUID: ${parentSession}.${aliasNotice} Workflow results are returned automatically; do not manually relay a duplicate report.`);
   }
   return lines.join("\n");
 }

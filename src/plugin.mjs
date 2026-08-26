@@ -589,6 +589,9 @@ export function apply(ctx, config = {}) {
       if (!sessionId || !label) continue;
       try { relay.hang(sessionId, label); } catch {}
     }
+    // Relay HMR replaces the in-memory label board without recreating live
+    // workflow children. Reproject their durable run/role topology as well.
+    land.refreshLabels?.();
   };
   if (typeof ctx.inject === "function") ctx.inject(["qq-relay"], syncRelayLabels);
 
