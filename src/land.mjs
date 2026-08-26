@@ -1501,17 +1501,21 @@ export function createLand({
 
   async function dispose() {
     for (const handle of [...attached.values()]) handle.detach();
-    const owners = [...childOwners.values()];
-    // A transition that already observed its exact tool result is legitimate
-    // workflow work, not teardown. Let it finish before detaching so a
-    // replacement cannot reconstruct and duplicate it.
-    await Promise.allSettled(owners.flatMap((owner) => [...owner.activeTransitions]));
     let detached = 0;
-    for (const owner of owners) {
-      while (owner.activeTransitions.size > 0) {
-        await Promise.allSettled([...owner.activeTransitions]);
+    while (childOwners.size > 0) {
+      const owners = [...childOwners.values()];
+      // A transition that already observed its exact tool result is legitimate
+      // workflow work, not teardown. Let it finish before detaching so a
+      // replacement cannot reconstruct and duplicate it. The transition can
+      // retain its successor, so re-read ownership after every awaited batch.
+      const transitions = owners.flatMap((owner) => [...owner.activeTransitions]);
+      if (transitions.length > 0) {
+        await Promise.allSettled(transitions);
+        continue;
       }
-      if (childOwners.get(owner.sessionId) === owner && detachChildOwner(owner)) detached++;
+      for (const owner of owners) {
+        if (childOwners.get(owner.sessionId) === owner && detachChildOwner(owner)) detached++;
+      }
     }
     for (const sessionId of [...childTools.keys()]) clearChildTools(sessionId);
     return { detached };
