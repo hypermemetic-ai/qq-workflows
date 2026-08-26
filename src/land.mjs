@@ -810,7 +810,7 @@ export function createLand({
         ...(mini ? { kind: MINI_KIND, agentPreset: MINI_KIND } : {}),
       },
       ...childCreateOptions(route, mini ? { setup: miniSetup } : {}),
-    });
+    }));
     const child = handle?.agent ?? handle;
     let retained = false;
     try {

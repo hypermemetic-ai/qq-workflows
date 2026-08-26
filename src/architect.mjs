@@ -27,6 +27,7 @@ const CHILD_AGENT_HANDLE = Symbol.for("@hypermemetic-ai/qq-workflows/child-agent
 
 export function isArchitectCandidate(agent) {
   if (agent?.session?.header?.origin === CHILD_ORIGIN) return false;
+  if (typeof agent?.session?.header?.parentSession === "string" && agent.session.header.parentSession.length > 0) return false;
   return SESSION_ID.test(agent?.session?.id ?? agent?.id ?? "");
 }
 
@@ -350,7 +351,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
         agentPreset: MINI_KIND,
       },
       ...childCreateOptions(route, { setup: miniSetup }),
-    });
+    }));
     const child = created?.agent ?? created;
     hideHarnessToolsOn(child);
     const childSessionId = child.session?.id ?? childId;

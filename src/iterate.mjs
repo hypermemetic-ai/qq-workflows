@@ -521,7 +521,7 @@ export function createIterate({
         model: handsBinding.model,
         ...(handsBinding.effort ? { reasoningEffort: handsBinding.effort } : {}),
       }),
-    });
+    }));
     const child = handle?.agent ?? handle;
     hideHarnessToolsOn(child);
     liveHands = { childId: child.session?.id ?? childId, bundle, queued: [] };
