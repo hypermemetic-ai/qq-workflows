@@ -135,11 +135,6 @@ function isCompleted(agent) {
   return submitKeys(agent).some((key) => key[MINI_COMPLETED] === true);
 }
 
-function concludeCompleted(exec) {
-  markCompleted(exec?.agent);
-  try { exec?.concludeTurn?.(); } catch { /* terminal completion remains marked */ }
-}
-
 function installFormatRecovery(agentCtx) {
   if (typeof agentCtx?.on !== "function") return () => {};
   const offEvent = agentCtx.on("session/event", (session, event) => {
@@ -530,19 +525,9 @@ export function wrapMiniBash(base) {
     async execute(args, exec) {
       if (isMiniSweCompletionCommand(args?.command)) {
         const submit = submitFor(exec?.agent);
-        if (!submit) {
-          concludeCompleted(exec);
-          return syntheticResult("Submission unavailable: this child is not owned by Land.\n", 1);
-        }
-        let result;
-        try {
-          result = await submit({ agent: exec?.agent, ref: "HEAD" });
-        } catch (error) {
-          concludeCompleted(exec);
-          return syntheticResult(`Submission failed: ${error instanceof Error ? error.message : String(error)}\n`, 1);
-        }
+        if (!submit) return syntheticResult("Submission unavailable: this child is not owned by Land.\n", 1);
+        const result = await submit({ agent: exec?.agent, ref: "HEAD" });
         if (result?.status === "refused") {
-          concludeCompleted(exec);
           return syntheticResult(`Submission refused: ${result.reason || "unknown reason"}\n`, 1);
         }
         const success = syntheticResult("COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n", 0);

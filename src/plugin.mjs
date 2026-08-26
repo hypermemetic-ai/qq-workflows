@@ -228,6 +228,8 @@ export function apply(ctx, config = {}) {
         ? buildArchitectTools({
             cases,
             delegate: (args) => architect.delegate(args),
+            workflowStatus: (args) => land.workflowStatus(args),
+            workflowSend: (args) => land.workflowSend(args),
             tasks,
             land: invokeLand,
           })

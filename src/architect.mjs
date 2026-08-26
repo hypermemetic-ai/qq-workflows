@@ -8,7 +8,7 @@ import {
   decideCaseWriteGate,
   pluginUserMessage,
 } from "./tools.mjs";
-import { createDelegatedWorktree, runCommand } from "./git.mjs";
+import { createDelegatedWorktree, repoRootFor, runCommand } from "./git.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
 import { hideHarnessToolsOn } from "./hide-harness.mjs";
 import { MINI_KIND, miniSetup, renderMiniSweTask } from "./official-mini.mjs";
@@ -312,15 +312,16 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
     if (!brief.trim() || brief.trim() === EMPTY_CASE.trim()) {
       return { status: "refused", reason: "delegate requires settled working memory" };
     }
+    const delegationId = randomUUID();
     const parentAlias = typeof relay.alias === "function" ? relay.alias(parent.id) : undefined;
     const aliasNotice = parentAlias
       ? ` Alias ${parentAlias} is informational and ephemeral; never use it as relay identity.`
       : "";
     const returnAddress = `Authoritative parent session UUID: ${parent.id}.${aliasNotice}`;
-    const packet = `${brief.trimEnd()}\n\n${returnAddress} Workflow completion is returned automatically; do not manually relay a duplicate report.`;
+    const packet = `Delegation ID (authoritative): ${delegationId}.\n${returnAddress} Workflow completion is returned automatically; do not manually relay a duplicate report.\n\n${brief.trimEnd()}`;
     const taskId = cases?.taskId?.(parent.id) ?? null;
     const childId = `session-${randomUUID()}`;
-    let targetCwd = parent.header?.cwd;
+    let targetCwd = repoRootFor(parent.header?.cwd);
     try {
       const prepared = await createDelegatedWorktree(run, {
         cwd: targetCwd,
@@ -331,7 +332,9 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
       targetCwd = prepared.worktree;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return { status: "refused", reason: `delegate worktree: ${message}` };
+      if (!/not a git worktree/i.test(message)) {
+        return { status: "refused", reason: `delegate worktree: ${message}` };
+      }
     }
     const handsBinding = typeof hands === "function" ? hands() : hands;
     const talkingBinding = typeof talking === "function" ? talking() : talking;
@@ -377,6 +380,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
         adoption = await onInvokeChild(child, {
           handle: created,
           packet,
+          delegationId,
           taskId,
           parent,
           parentSession: parent.id,
@@ -404,7 +408,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
       });
     }
     const workflowPacket = adoption?.run
-      ? `${packet}\n\nWorkflow topology: land run ${adoption.run}; role implementer; child session ${childSessionId}; authoritative parent session ${parent.id}.`
+      ? `${packet}\n\nDelegation ID (authoritative): ${adoption.delegationId || delegationId}. Land run: ${adoption.run}. Workflow phase: role ${adoption.role || "implementer"}; epoch ${adoption.phaseEpoch || 1}; child session ${childSessionId}.`
       : packet;
     try {
       child.followup({
@@ -425,8 +429,12 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
     const alias = typeof relay.alias === "function" ? relay.alias(child.session?.id ?? childId) : undefined;
     return {
       status: "ok",
+      delegationId: adoption?.delegationId || delegationId,
+      runId: adoption?.run || "",
       child: child.session?.id ?? childId,
       alias: alias ?? "",
+      role: adoption?.role || "implementer",
+      phaseEpoch: adoption?.phaseEpoch || 1,
       delivery: "default",
     };
   }

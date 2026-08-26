@@ -160,6 +160,31 @@ function clearChildLabels(ctx, owner) {
   return cleared;
 }
 
+function beginPhaseTransition(state, fields = {}) {
+  return { ...state, ...fields, transitioning: true };
+}
+
+function advancePhase(state, sessionUuid, role, fields = {}) {
+  if (!SESSION_ID.test(sessionUuid) || !LAND_WORKFLOW_ROLES.has(role)) {
+    throw new Error("cannot advance land run to an invalid workflow phase");
+  }
+  if (state.current?.sessionUuid === sessionUuid && state.current?.role === role) {
+    return { ...state, ...fields, current: state.current, transitioning: false };
+  }
+  const phaseEpoch = state.phaseEpoch + 1;
+  return {
+    ...state,
+    ...fields,
+    phaseEpoch,
+    current: { sessionUuid, role, phaseEpoch },
+    transitioning: false,
+  };
+}
+
+function finishWorkflow(state, fields = {}) {
+  return { ...state, ...fields, current: null, transitioning: false };
+}
+
 function workflowRoleForState(state, sessionId, fallback = "implementer") {
   if (state?.qaSession === sessionId) return `qa-look-${state.look === 2 ? 2 : 1}`;
   if (state?.implementerSession === sessionId) {
@@ -194,13 +219,17 @@ function appendVerdictFailure(verdict, feedback) {
 export function formatOutcome(state, kind) {
   const packet = state?.packet;
   const body = packet ? formatPacket(packet) : state?.brief ?? "";
-  const activeChild = state?.qaSession || state?.implementerSession || "";
-  const role = activeChild ? workflowRoleForState(state, activeChild) : "none";
+  // Terminal runs clear the routable pointer, but retain the last immutable
+  // phase UUID as diagnostics in lifecycle reports.
+  const activeChild = state?.current?.sessionUuid || state?.qaSession || state?.implementerSession || "";
+  const role = state?.current?.role || (activeChild ? workflowRoleForState(state, activeChild) : "none");
   const topology = [
+    `Delegation ID (authoritative): ${state?.delegationId || "unknown"}`,
     `Land run: ${state?.id || "unknown"}`,
-    state?.architectSession ? `Parent session (authoritative UUID): ${state.architectSession}` : "",
+    state?.parentSessionUuid ? `Parent session (authoritative UUID): ${state.parentSessionUuid}` : "",
     activeChild ? `Workflow child session (stable UUID): ${activeChild}` : "",
     `Workflow role: ${role}`,
+    Number.isSafeInteger(state?.phaseEpoch) ? `Phase epoch: ${state.phaseEpoch}` : "",
     Number.isSafeInteger(state?.look) ? `QA look: ${state.look}` : "",
     state?.ref ? `Ref: ${state.ref}` : "",
     state?.worktree ? `Worktree: ${state.worktree}` : "",
@@ -213,11 +242,11 @@ export function formatOutcome(state, kind) {
     `Tests modified: ${verdict.tests_modified === true ? "yes" : "no"}`,
   ].join("\n") : "";
   if (kind === "landed") {
-    return [`Landed on ${state.baseBranch}.`, topology, verdictEvidence, body].filter(Boolean).join("\n\n");
+    return [topology, `Landed on ${state.baseBranch}.`, verdictEvidence, body].filter(Boolean).join("\n\n");
   }
   if (kind === "blocked") {
     const why = state.blockedReason || "blocked";
-    return [`Blocked: ${why}`, topology, verdictEvidence, body].filter(Boolean).join("\n\n");
+    return [topology, `Blocked: ${why}`, verdictEvidence, body].filter(Boolean).join("\n\n");
   }
   return [topology, verdictEvidence, body].filter(Boolean).join("\n\n");
 }
@@ -369,33 +398,35 @@ export function createLand({
   }
 
   async function directPacket(state, kind, fromId) {
-    const parent = agents?.get?.(state.architectSession);
+    const parentSessionUuid = state.parentSessionUuid || state.architectSession;
+    const parent = agents?.get?.(parentSessionUuid);
     if (!parent || typeof parent.steer !== "function") return false;
     const message = formatOutcome(state, kind);
     try {
       parent.steer({
         id: randomUUID(),
         role: "user",
-        content: [{ type: "text", text: `From workflow child ${fromId || state.id}:\n\n${message}` }],
+        content: [{ type: "text", text: `${message}\n\nReported by physical workflow child ${fromId || state.id}.` }],
         source: { kind: "plugin", plugin: "qq-workflows", form: "relay" },
       });
       try { await sessionsOf()?.flush?.(parent.session); } catch { /* inbox splice is already durable */ }
       return true;
     } catch (error) {
-      logLine(ctx, "warn", `qq-workflows: direct land packet delivery failed for ${state.architectSession}: ${error instanceof Error ? error.message : String(error)}`);
+      logLine(ctx, "warn", `qq-workflows: direct land packet delivery failed for ${parentSessionUuid}: ${error instanceof Error ? error.message : String(error)}`);
       return false;
     }
   }
 
   async function sendPacket(state, kind, fromId, { directOnly = false } = {}) {
-    if (!state.architectSession) return true;
+    const parentSessionUuid = state.parentSessionUuid || state.architectSession;
+    if (!parentSessionUuid) return true;
     const relay = relayOf(ctx);
     const sender = fromId || state.qaSession || state.implementerSession || attached.keys().next().value || state.id;
     if (!directOnly && relay && typeof relay.send === "function") {
       try {
         await relay.send({
           fromId: sender,
-          to: state.architectSession,
+          to: parentSessionUuid,
           message: formatOutcome(state, kind),
           delivery: "default",
         });
@@ -408,11 +439,12 @@ export function createLand({
   }
 
   async function deliverRequiredPacket(state, kind, fromId, options) {
+    const parentSessionUuid = state.parentSessionUuid || state.architectSession;
     let next = store.save({
       ...state,
-      reportPending: Boolean(state.architectSession),
-      reportKind: state.architectSession ? kind : "",
-      reportFromSession: state.architectSession ? String(fromId || "") : "",
+      reportPending: Boolean(parentSessionUuid),
+      reportKind: parentSessionUuid ? kind : "",
+      reportFromSession: parentSessionUuid ? String(fromId || "") : "",
     });
     const delivered = await sendPacket(next, kind, fromId, options);
     if (delivered) {
@@ -436,12 +468,11 @@ export function createLand({
       ? state.qaSession === owner.sessionId
       : state.implementerSession === owner.sessionId;
     if (!ownsCurrent) return { state, changed: false };
-    const blocked = store.save({
-      ...state,
+    const blocked = store.save(finishWorkflow(state, {
       status: "blocked",
       blockedReason: String(blockedReason || `${owner.role} child closed`),
       packet: state.packet ? { ...state.packet, mark: "fail" } : state.packet,
-    });
+    }));
     return { state: blocked, changed: true };
   }
 
@@ -848,32 +879,11 @@ export function createLand({
     return Boolean(handle) || hadTools;
   }
 
-  async function blockRefusedMiniCompletion(sessionId, reason) {
-    const owner = childOwners.get(sessionId);
-    if (!owner) return false;
-    const blocked = blockOwnedWork(owner, `implementer completion refused: ${reason || "unknown reason"}`);
-    const state = blocked.state ?? store.load(owner.runId);
-    if (!state) return false;
-    if (!blocked.changed && !state.reportPending) return true;
-    const report = await deliverRequiredPacket(
-      state,
-      state.reportKind || "blocked",
-      state.reportFromSession || sessionId,
-    );
-    if (report.delivered) await disposeChild(sessionId, "refused Mini completion reported");
-    return true;
-  }
-
   function installDone(child, runId) {
     const sessionId = sessionIdOf(child);
     childTools.get(sessionId)?.();
-    const submit = (args) => trackChildSubmission(sessionId, async (submission) => {
-      const result = await done({ ...args, runId, postTool: true, submission });
-      if (isMiniAgent(child) && result?.status === "refused") {
-        await blockRefusedMiniCompletion(sessionId, result.reason);
-      }
-      return result;
-    });
+    const submit = (args) => trackChildSubmission(sessionId, (submission) =>
+      done({ ...args, runId, postTool: true, submission }));
     const disposeSubmit = isMiniAgent(child)
       ? bindMiniSubmit(child, submit)
       : registerTools(child, [buildDoneTool({ submit })]);
@@ -927,6 +937,8 @@ export function createLand({
       } catch { /* durable store and labels remain authoritative */ }
       const record = store.create({
         id: runId,
+        delegationId: info.delegationId,
+        parentSessionUuid: architectSession,
         architectSession,
         taskId: info.taskId,
         implementerSession: sessionId,
@@ -934,19 +946,25 @@ export function createLand({
         brief,
         ...git,
       });
+      try {
+        child.session.header.landDelegation = record.delegationId;
+        child.session.header.landPhaseEpoch = record.phaseEpoch;
+      } catch { /* durable store remains authoritative */ }
       return {
         status: "ok",
+        delegationId: record.delegationId,
         run: record.id,
         child: sessionId,
+        role: record.current.role,
+        phaseEpoch: record.phaseEpoch,
         owned: Boolean(owner),
         rollback: async (rollbackReason = "delegate startup failed") => {
           const current = store.load(record.id);
           if (current && current.status === "running") {
-            store.save({
-              ...current,
+            store.save(finishWorkflow(current, {
               status: "blocked",
               blockedReason: String(rollbackReason),
-            });
+            }));
           }
           await disposeChild(sessionId, "adoption rollback");
         },
@@ -1026,6 +1044,10 @@ export function createLand({
     if (!sessionId) return false;
     const state = store.bySession(sessionId);
     if (!state) return false;
+    const recoverable = state.current?.sessionUuid === sessionId
+      || state.settlementSession === sessionId
+      || (state.reportPending && state.reportFromSession === sessionId);
+    if (!recoverable) return false;
     const retained = child?.[CHILD_AGENT_HANDLE];
     if (!retained) return false;
     const role = state.qaSession === sessionId ? "qa" : "implementer";
@@ -1052,7 +1074,7 @@ export function createLand({
     return isMiniAgent(child) && resumeChild(child);
   }
 
-  async function spawnChild({ role, workflowRole, runId, cwd, parentSession, system, user, install }) {
+  async function spawnChild({ role, workflowRole, runId, delegationId, phaseEpoch, cwd, parentSession, system, user, install }) {
     if (!agents || typeof agents.create !== "function") {
       throw new Error("land requires ctx.agents.create");
     }
@@ -1071,6 +1093,8 @@ export function createLand({
         landRole: role,
         landWorkflowRole: workflowRole,
         landRun: runId,
+        landDelegation: delegationId,
+        landPhaseEpoch: phaseEpoch,
         ...(mini ? { kind: MINI_KIND, agentPreset: MINI_KIND } : {}),
       },
       ...childCreateOptions(route, mini ? { setup: miniSetup } : {}),
@@ -1082,7 +1106,8 @@ export function createLand({
       retained = true;
       install?.(child);
       const identity = [
-        `Workflow topology: land run ${runId}; role ${workflowRole}; child session ${childId}.`,
+        `Delegation ID (authoritative): ${delegationId}. Land run: ${runId}.`,
+        `Workflow phase: role ${workflowRole}; epoch ${phaseEpoch}; child session ${childId}.`,
         `Authoritative parent session UUID: ${parentSession}. Session aliases are informational and ephemeral.`,
         "Workflow completion is returned automatically; do not manually relay a duplicate report.",
       ].join(" ");
@@ -1167,7 +1192,7 @@ export function createLand({
   }
 
   async function startQa(state) {
-    const parentSession = [...attached.keys()][0] || state.architectSession;
+    const parentSession = state.parentSessionUuid || state.architectSession;
     const diff = await packetDiff(state);
     const user = [
       qaLookPrompt({
@@ -1185,6 +1210,8 @@ export function createLand({
       role: "qa",
       workflowRole: `qa-look-${state.look}`,
       runId: state.id,
+      delegationId: state.delegationId,
+      phaseEpoch: state.phaseEpoch + 1,
       cwd: state.worktree,
       parentSession,
       system: QA_SYSTEM,
@@ -1192,36 +1219,37 @@ export function createLand({
       install: (next) => installQa(next, state.id),
     });
     const qaSession = sessionIdOf(spawned.child);
-    const next = store.save({
-      ...state,
+    const workflowRole = `qa-look-${state.look}`;
+    const next = store.save(advancePhase(state, qaSession, workflowRole, {
       status: "reviewing",
       qaSession,
       qaVerdict: null,
-    });
+    }));
     watchQaSettle(spawned.child, next.id);
     await spawned.start();
     return next;
   }
 
   async function startFixer(state, verdict) {
-    const parentSession = [...attached.keys()][0] || state.architectSession;
+    const parentSession = state.parentSessionUuid || state.architectSession;
     const user = look1FixPrompt({ ...state, task: { id: state.id } }, verdict);
     const spawned = await spawnChild({
       role: "implementer",
       workflowRole: "fixer",
       runId: state.id,
+      delegationId: state.delegationId,
+      phaseEpoch: state.phaseEpoch + 1,
       cwd: state.worktree,
       parentSession,
       user,
       install: (next) => installDone(next, state.id),
     });
     const implementerSession = sessionIdOf(spawned.child);
-    const next = store.save({
-      ...state,
+    const next = store.save(advancePhase(state, implementerSession, "fixer", {
       status: "waiting_fix",
       implementerSession,
       qaSession: "",
-    });
+    }));
     await spawned.start();
     return next;
   }
@@ -1244,12 +1272,11 @@ export function createLand({
         if (result) result.qa = reviewing.qaSession;
       } catch (error) {
         const latest = store.load(runId) ?? current;
-        const blockedState = store.save({
-          ...latest,
+        const blockedState = store.save(finishWorkflow(latest, {
           status: "blocked",
           blockedReason: `qa child startup failed: ${error instanceof Error ? error.message : String(error)}`,
           packet: latest.packet ? { ...latest.packet, mark: "fail" } : latest.packet,
-        });
+        }));
         await deliverRequiredPacket(blockedState, "blocked", sessionId, { directOnly: true });
       }
       return;
@@ -1267,12 +1294,11 @@ export function createLand({
         if (result) result.implementer = fixing.implementerSession;
       } catch (error) {
         const latest = store.load(runId) ?? current;
-        const blockedState = store.save({
-          ...latest,
+        const blockedState = store.save(finishWorkflow(latest, {
           status: "blocked",
           blockedReason: `fixer child startup failed: ${error instanceof Error ? error.message : String(error)}`,
           packet: latest.packet ? { ...latest.packet, mark: "fail" } : latest.packet,
-        });
+        }));
         await deliverRequiredPacket(blockedState, "blocked", sessionId, { directOnly: true });
       }
       return;
@@ -1290,18 +1316,17 @@ export function createLand({
   }
 
   async function finishLand(state, fromId, { postTool = false, submission } = {}) {
-    let next = store.save({ ...state, status: "landing" });
+    let next = store.save(beginPhaseTransition(state, { status: "landing" }));
     let kind = "landed";
     try {
       await landWorktree(run, next);
     } catch (error) {
       kind = "blocked";
-      next = store.save({
-        ...next,
+      next = store.save(finishWorkflow(next, {
         status: "blocked",
         blockedReason: error instanceof Error ? error.message : String(error),
         packet: next.packet ? { ...next.packet, mark: "fail" } : next.packet,
-      });
+      }));
     }
 
     if (kind === "landed") {
@@ -1317,14 +1342,13 @@ export function createLand({
           logLine(ctx, "warn", `qq-workflows: landed ${next.id} but could not archive task ${next.taskId}: ${archiveError}`);
         }
       }
-      next = store.save({
-        ...next,
+      next = store.save(finishWorkflow(next, {
         status: "landed",
         landedAt: new Date().toISOString(),
         archivedTaskId,
         archiveError,
         packet: next.packet ? { ...next.packet, mark: "land" } : next.packet,
-      });
+      }));
     }
 
     const report = await deliverRequiredPacket(next, kind, fromId);
@@ -1394,21 +1418,19 @@ export function createLand({
       const packet = await compilePacket(run, { ...state, ref: sha }, { brief: state.brief, mark: null });
       const mark = await stamp(packet);
       packet.mark = mark;
-      let next = store.save({
-        ...state,
+      let next = store.save(beginPhaseTransition(state, {
         ref: sha,
         look,
         packet,
         status: mark === "land" ? "landing" : "reviewing",
-      });
+      }));
       if (mark === "land") return finishLand(next, fromId, { postTool, submission });
-      next = store.save({
-        ...next,
+      next = store.save(beginPhaseTransition(next, {
         look: look === 0 ? 1 : look,
         status: "reviewing",
         qaSession: "",
         qaVerdict: null,
-      });
+      }));
       const result = { status: "ok", mark: "review", look: next.look, run: next.id, qa: "" };
       return settleAccepted({
         sessionId: fromId,
@@ -1433,7 +1455,8 @@ export function createLand({
     const sessionId = sessionIdOf(agent);
     const state = (runId ? store.load(runId) : null) ?? store.bySession(sessionId);
     if (!state) return { status: "refused", reason: "done has no land run for this session" };
-    const chair = state.architectSession ? agents?.get?.(state.architectSession) : null;
+    const parentSessionUuid = state.parentSessionUuid || state.architectSession;
+    const chair = parentSessionUuid ? agents?.get?.(parentSessionUuid) : null;
     if (chair && !isLandCandidate(chair)) {
       return { status: "refused", reason: "done requires a root chair parent" };
     }
@@ -1468,6 +1491,7 @@ export function createLand({
     }
     const existing = runForWorktree(git.worktree);
     const state = existing ?? store.create({
+      parentSessionUuid: sessionId,
       architectSession: sessionId,
       implementerSession: sessionId,
       brief: String(brief ?? existing?.brief ?? ""),
@@ -1507,12 +1531,11 @@ export function createLand({
         return finishLand(next, sessionId, { postTool, submission });
       }
       if (state.look === 1) {
-        next = store.save({
-          ...next,
+        next = store.save(beginPhaseTransition(next, {
           status: "waiting_fix",
           implementerSession: "",
           qaSession: sessionId,
-        });
+        }));
         const result = {
           status: "ok",
           verdict: "fail",
@@ -1536,12 +1559,11 @@ export function createLand({
           submission,
         });
       }
-      next = store.save({
-        ...next,
+      next = store.save(finishWorkflow(next, {
         status: "blocked",
         blockedReason: enforced.verdict.feedback || enforced.verdict.summary,
         packet: next.packet ? { ...next.packet, mark: "fail" } : next.packet,
-      });
+      }));
       const report = await deliverRequiredPacket(next, "blocked", sessionId);
       next = report.state;
       const result = { status: "ok", verdict: "fail", look: 2, outcome: formatOutcome(next, "blocked"), run: next.id };
@@ -1557,6 +1579,92 @@ export function createLand({
       });
     } catch (error) {
       return { status: "refused", reason: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  function delegationRefusal(reason) {
+    return { status: "refused", reason };
+  }
+
+  function ownedDelegation(delegationId, parentSessionUuid) {
+    const state = store.byDelegation(delegationId);
+    if (!state) return { refusal: delegationRefusal("delegation was not found") };
+    if (state.parentSessionUuid && state.parentSessionUuid !== parentSessionUuid) {
+      return { refusal: delegationRefusal("delegation belongs to a different parent session") };
+    }
+    return { state };
+  }
+
+  function workflowStatus({ delegationId, parentSessionUuid } = {}) {
+    const found = ownedDelegation(delegationId, parentSessionUuid);
+    if (found.refusal) return found.refusal;
+    const state = found.state;
+    const sessionUuid = state.current?.sessionUuid || "";
+    const relay = relayOf(ctx);
+    return {
+      status: "ok",
+      delegationId: state.delegationId,
+      runId: state.id,
+      runStatus: state.status,
+      role: state.current?.role || "",
+      phaseEpoch: state.phaseEpoch,
+      sessionUuid,
+      alias: sessionUuid && typeof relay?.alias === "function" ? (relay.alias(sessionUuid) ?? "") : "",
+      transitioning: state.transitioning,
+      terminal: state.status === "landed" || state.status === "blocked",
+      ref: state.ref,
+      worktree: state.worktree,
+      parentSessionUuid: state.parentSessionUuid,
+    };
+  }
+
+  async function workflowSend({ delegationId, message, expectedRole, expectedEpoch, parentSessionUuid } = {}) {
+    const found = ownedDelegation(delegationId, parentSessionUuid);
+    if (found.refusal) return found.refusal;
+    const state = found.state;
+    if (state.status === "landed" || state.status === "blocked") {
+      return delegationRefusal(`delegation is terminal (${state.status})`);
+    }
+    if (state.transitioning) return delegationRefusal("delegation is transitioning between workflow phases");
+    const current = state.current;
+    if (!current) return delegationRefusal("delegation has no current workflow child");
+    if (expectedRole !== undefined && expectedRole !== current.role) {
+      return delegationRefusal(`stale workflow role: expected ${expectedRole}, current is ${current.role}`);
+    }
+    if (expectedEpoch !== undefined && expectedEpoch !== current.phaseEpoch) {
+      return delegationRefusal(`stale phase epoch: expected ${expectedEpoch}, current is ${current.phaseEpoch}`);
+    }
+    const owner = childOwners.get(current.sessionUuid);
+    const live = agents?.get?.(current.sessionUuid);
+    if (!owner || owner.runId !== state.id || owner.workflowRole !== current.role
+      || !live || sessionIdOf(live) !== current.sessionUuid) {
+      return delegationRefusal("current workflow child is not owned and live");
+    }
+    if (typeof message !== "string" || !message.trim()) {
+      return delegationRefusal("workflow_send requires a non-empty message");
+    }
+    const relay = relayOf(ctx);
+    if (!relay || typeof relay.send !== "function") return delegationRefusal("workflow_send requires qq-relay");
+    try {
+      const sent = await relay.send({
+        fromId: parentSessionUuid,
+        to: current.sessionUuid,
+        message: `Delegation ID (authoritative): ${state.delegationId}. Land run: ${state.id}.
+
+${message}`,
+        delivery: "default",
+      });
+      return {
+        ...sent,
+        delegationId: state.delegationId,
+        runId: state.id,
+        sessionUuid: current.sessionUuid,
+        alias: sent?.to_alias ?? (typeof relay.alias === "function" ? (relay.alias(current.sessionUuid) ?? "") : ""),
+        role: current.role,
+        phaseEpoch: current.phaseEpoch,
+      };
+    } catch (error) {
+      return delegationRefusal(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -1594,6 +1702,8 @@ export function createLand({
     resumeChild,
     releaseChild,
     refreshLabels,
+    workflowStatus,
+    workflowSend,
     done,
     invoke,
     submitVerdict,

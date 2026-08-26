@@ -71,10 +71,101 @@ function buildCaseWriteTool(cases, tasks) {
   };
 }
 
-export function buildArchitectTools({ delegate, tasks, cases, land } = {}) {
+
+const DELEGATION_PATTERN = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$";
+const WORKFLOW_ROLES = ["implementer", "qa-look-1", "fixer", "qa-look-2"];
+
+function buildWorkflowStatusTool(workflowStatus) {
+  return {
+    name: "workflow_status",
+    description: "Inspect one durable delegation by its full delegation UUID. Returns the Land run state and the exact current physical role session, epoch, ref, and worktree. Session aliases are display-only.",
+    parameters: {
+      delegationId: {
+        type: "string",
+        required: true,
+        pattern: DELEGATION_PATTERN,
+        description: "Full durable delegation UUID returned by delegate.",
+      },
+    },
+    output: {
+      schema: { type: "object", additionalProperties: true },
+      render: (_args, value) => {
+        if (value.status === "refused") return [textBlock(`Workflow status refused: ${value.reason}`)];
+        const current = value.sessionUuid
+          ? `current session ${value.sessionUuid}${value.alias ? ` (alias ${value.alias}, ephemeral)` : ""}; role ${value.role}; epoch ${value.phaseEpoch}`
+          : `no current session; epoch ${value.phaseEpoch}`;
+        return [textBlock(
+          `delegation ${value.delegationId}\nland run ${value.runId}; state ${value.runStatus}${value.transitioning ? "; transitioning" : ""}${value.terminal ? "; terminal" : ""}\n${current}\nref ${value.ref || "(none)"}\nworktree ${value.worktree || "(none)"}`,
+        )];
+      },
+    },
+    async execute(args, exec) {
+      try {
+        if (typeof workflowStatus !== "function") return refusal("workflow_status is unavailable");
+        return workflowStatus({
+          delegationId: args?.delegationId,
+          parentSessionUuid: exec?.agent?.session?.id,
+        });
+      } catch (error) {
+        return refusal(error instanceof Error ? error.message : String(error));
+      }
+    },
+  };
+}
+
+function buildWorkflowSendTool(workflowSend) {
+  return {
+    name: "workflow_send",
+    description: "Send one default-steer message to the exact current owned live child behind a durable delegation UUID. Refuses terminal, missing, transitioning, stale-role, stale-epoch, or non-live runs. Resolution never uses session aliases or labels.",
+    parameters: {
+      delegationId: {
+        type: "string",
+        required: true,
+        pattern: DELEGATION_PATTERN,
+        description: "Full durable delegation UUID returned by delegate.",
+      },
+      message: { type: "string", required: true, description: "Message for the current workflow child." },
+      expectedRole: {
+        type: "string",
+        enum: WORKFLOW_ROLES,
+        description: "Optional stale-send guard: require this current workflow role.",
+      },
+      expectedEpoch: {
+        type: "integer",
+        minimum: 1,
+        description: "Optional stale-send guard: require this current phase epoch.",
+      },
+    },
+    output: {
+      schema: { type: "object", additionalProperties: true },
+      render: (_args, value) => {
+        if (value.status === "refused") return [textBlock(`Workflow send refused: ${value.reason}`)];
+        return [textBlock(
+          `delegation ${value.delegationId}\nmessage sent to current session ${value.sessionUuid}${value.alias ? ` (alias ${value.alias}, ephemeral)` : ""}; role ${value.role}; epoch ${value.phaseEpoch}: ${value.message_id}`,
+        )];
+      },
+    },
+    async execute(args, exec) {
+      try {
+        if (typeof workflowSend !== "function") return refusal("workflow_send is unavailable");
+        return await workflowSend({
+          delegationId: args?.delegationId,
+          message: args?.message,
+          expectedRole: args?.expectedRole,
+          expectedEpoch: args?.expectedEpoch,
+          parentSessionUuid: exec?.agent?.session?.id,
+        });
+      } catch (error) {
+        return refusal(error instanceof Error ? error.message : String(error));
+      }
+    },
+  };
+}
+
+export function buildArchitectTools({ delegate, workflowStatus, workflowSend, tasks, cases, land } = {}) {
   const tools = [{
     name: "delegate",
-    description: "Start one live child from working memory. The result exposes the authoritative stable child session UUID and an informational ephemeral alias. Workflow-owned results return automatically.",
+    description: "Start one workflow from working memory. The result renders the authoritative durable delegation UUID first, followed by the current immutable physical session UUID, role, epoch, and informational ephemeral alias. Workflow-owned results return automatically.",
     parameters: {},
     output: {
       schema: {
@@ -82,14 +173,18 @@ export function buildArchitectTools({ delegate, tasks, cases, land } = {}) {
         additionalProperties: true,
         properties: {
           status: { type: "string" },
+          delegationId: { type: "string" },
+          runId: { type: "string" },
           child: { type: "string" },
           alias: { type: "string" },
+          role: { type: "string" },
+          phaseEpoch: { type: "integer" },
           reason: { type: "string" },
         },
       },
       render: (_args, value) => [textBlock(value.status === "refused"
         ? `Delegate refused: ${value.reason}`
-        : `delegated session ${value.child}${value.alias ? ` (alias ${value.alias}, ephemeral)` : ""}`)],
+        : `delegation ${value.delegationId}\ncurrent session ${value.child}${value.alias ? ` (alias ${value.alias}, ephemeral)` : ""}; role ${value.role}; epoch ${value.phaseEpoch}${value.runId ? `; land run ${value.runId}` : ""}`)],
     },
     async execute(_args, exec) {
       try {
@@ -100,6 +195,7 @@ export function buildArchitectTools({ delegate, tasks, cases, land } = {}) {
       }
     },
   }];
+  tools.push(buildWorkflowStatusTool(workflowStatus), buildWorkflowSendTool(workflowSend));
   if (typeof land === "function") tools.push(buildLandTool({ invoke: land }));
   if (cases && typeof cases.write === "function") tools.push(buildCaseWriteTool(cases, tasks));
   return tools;

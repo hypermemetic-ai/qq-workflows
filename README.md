@@ -3,18 +3,48 @@
 `qq-workflows` keeps architect delegation and Land completion on an explicit,
 durable Git-worktree boundary.
 
-- Architect delegation uses the parent session's exact cwd. It refuses a
-  projects root, non-Git directory, detached/invalid repository, or other
-  ambiguous target before creating an agent.
-- A valid delegation gets a fresh isolated worktree. Land adopts the child only
-  after that worktree passes inspection; failed inspection creates no run,
-  completion binding, tool, label, listener, or child owner.
+## Durable delegation identity
+
+Architect `delegate` creates one full delegation UUID before the initial child
+is started. That UUID remains the operator-facing workflow address through the
+implementer, QA look 1, fixer, QA look 2, and terminal landing or blocking.
+Each role still has its own immutable physical session UUID and event history.
+
+The durable Land record stores:
+
+- `delegationId` and its one-to-one Land `runId`;
+- the immutable `parentSessionUuid` used for automatic return;
+- a monotonic `phaseEpoch`; and
+- the routable `current` `{ sessionUuid, role, phaseEpoch }` plus a durable
+  `transitioning` guard.
+
+Old v1 Land records are upgraded in place on first load. Their generated
+`delegationId` is persisted atomically and reused thereafter.
+
+Architect sessions receive two façade tools:
+
+- `workflow_status(delegationId)` reports run state, role, epoch, current
+  physical UUID and ephemeral alias, ref, and worktree.
+- `workflow_send(delegationId, message, expectedRole?, expectedEpoch?)` sends by
+  the exact durable current UUID only. Missing, terminal, transitioning,
+  expectation-mismatched, non-live, non-owned, or foreign-parent runs refuse.
+
+`workflow_send` never resolves aliases or labels. The separate qq-relay
+`relay_send` tool remains strict direct-session UUID routing for diagnostics and
+emergency steering.
+
+## Completion and recovery
+
+- Architect delegation creates a fresh isolated worktree. Land adopts the child
+  after inspecting that worktree.
 - Plugin/HMR teardown detaches in-memory ownership without cancelling a live
   Land child. Reapply discovers the same AgentHandle, restores run/role labels
-  and completion ownership, and resumes an armed settlement exactly once.
+  and completion ownership, reconstructs the current pointer from durable run
+  state, and resumes an armed settlement exactly once.
 - Only the exact Mini completion command is a submission sentinel. Accepted
-  submissions settle after the exact durable tool result. Refused or impossible
-  submissions terminate safely; Land-owned refusals become reported blocked
-  handoffs instead of mandatory-Bash retry loops.
-- Real `agent/disposed` cancellation remains terminal and is reported as a
-  blocked handoff. HMR detachment must never impersonate cancellation.
+  submissions settle after the exact durable tool result.
+- Every child packet and lifecycle report names the delegation UUID and Land
+  run. Physical session UUIDs remain visible for diagnostics.
+- Real `agent/disposed` cancellation remains terminal and is reported exactly
+  once to the durable parent UUID. HMR detachment never impersonates
+  cancellation.
