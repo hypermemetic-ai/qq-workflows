@@ -24,6 +24,7 @@ import {
 } from "../../bin/lib/review.mjs";
 import { createQaVerdict } from "../../bin/lib/qa-verdict.mjs";
 import { oneShot } from "../../core/src/ask.mjs";
+import { adoptAgentHandle } from "../../core/src/session.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
 import { withChildSettlement } from "./child-settlement.mjs";
 import {
@@ -799,7 +800,7 @@ export function createLand({
     });
     const childId = `session-${randomUUID()}`;
     const mini = role === "implementer";
-    const handle = await agents.create({
+    const handle = adoptAgentHandle(await agents.create({
       sessionId: childId,
       meta: {
         cwd,

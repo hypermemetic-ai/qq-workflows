@@ -22,6 +22,7 @@ import { repoRootFor } from "./git.mjs";
 import { formatProjection, projectJournal } from "./journal.mjs";
 import { randomUUID } from "node:crypto";
 import { oneShot } from "../../core/src/ask.mjs";
+import { adoptAgentHandle } from "../../core/src/session.mjs";
 
 export const ITERATE_LABEL = "workflows:iterate";
 export const CHILD_ORIGIN = "subagent";
@@ -508,7 +509,7 @@ export function createIterate({
 
     const childId = `session-${randomUUID()}`;
     const handsBinding = settings?.get?.("hands");
-    const handle = await agents.create({
+    const handle = adoptAgentHandle(await agents.create({
       sessionId: childId,
       meta: {
         cwd: targetCwd,

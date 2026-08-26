@@ -15,6 +15,7 @@ import { MINI_KIND, miniSetup, renderMiniSweTask } from "./official-mini.mjs";
 import { CASE_CONTEXT_NAME, EMPTY_CASE } from "./casefile.mjs";
 import { guardContext, OVERFLOW_MESSAGE } from "./chop.mjs";
 import { markAssemble } from "./assemble-mark.mjs";
+import { adoptAgentHandle } from "../../core/src/session.mjs";
 
 export const ARCHITECT_LABEL = "workflows:architect";
 export const CHILD_ORIGIN = "subagent";
@@ -339,7 +340,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
       options: agent?.options,
       env,
     });
-    const created = await agents.create({
+    const created = adoptAgentHandle(await agents.create({
       sessionId: childId,
       meta: {
         cwd: targetCwd,
