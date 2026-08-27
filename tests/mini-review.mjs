@@ -185,6 +185,7 @@ const submitted = await tools[3].execute({ findings: [] }, {
   concludeTurn() { order.push("conclude"); },
 });
 assert.equal(submitted.status, "ok");
+assert.deepEqual(Reflect.ownKeys(submitted), ["status", "verdict"]);
 assert.deepEqual(order, ["arm", "conclude"]);
 const submittedAgain = await tools[3].execute({ findings: [] }, {
   agent: fakeAgent,

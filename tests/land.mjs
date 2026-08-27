@@ -413,6 +413,7 @@ try {
         concludeTurn() { order.push("conclude"); },
       });
       assert.equal(result.status, "ok");
+      assert.deepEqual(Reflect.ownKeys(result), ["status"], `${name} must return plain JSON without settlement symbols`);
       assert.deepEqual(order, ["arm", "conclude"], `${name} must arm before conclude`);
     }
     await verifyOrder("done", (submit) => buildDoneTool({ submit }), {});
@@ -650,7 +651,7 @@ try {
     current = status();
     assert.equal(current.role, "fixer");
     assert.equal(current.phaseEpoch, 3);
-    assert.equal(current.sessionUuid, fail1.implementer);
+    assert.equal(fail1.implementer, "", "tool output is the committed pre-settlement JSON value");
     const fixerId = current.sessionUuid;
     assert.equal((await send({ expectedRole: "fixer", expectedEpoch: 3 })).sessionUuid, fixerId);
     assert.match((await send({ expectedRole: "qa-look-1", expectedEpoch: 2 })).reason, /stale workflow role/);
@@ -927,6 +928,115 @@ try {
     assert.equal(existsSync(repo.worktree), false);
   }
 
+  // ---------------------------------------------------------------- saved QA pass lands despite an isError tool-result envelope
+  {
+    const repo = initRepo({ branch: "feat/pass-result-error" });
+    const baseHead = git(repo.main, ["rev-parse", "HEAD"]);
+    const ref = commitFile(
+      repo.worktree,
+      "core/src/session.mjs",
+      "export const passEnvelope = 1;\n",
+      "persist pass before result envelope",
+    );
+    const harness = createHarness({
+      complete: async () => "review",
+      worktree: repo.worktree,
+    });
+    const implementer = childAgent({ id: implementerId, cwd: repo.worktree, registered: [] });
+    await harness.land.adoptImplementer(implementer, {
+      packet: "land a saved pass even when the harness rejects its result envelope",
+      parentSession: architectId,
+      cwd: repo.worktree,
+    });
+    const submitted = await harness.land.done({ agent: implementer, ref: "HEAD" });
+    const qa = harness.children.get(submitted.qa);
+    const passed = await executeQaTool(harness.land, qa, {
+      verdict: "pass",
+      summary: "the saved review passed",
+      feedback: "",
+      tests_modified: false,
+    }, { isError: true, duplicateResults: 2 });
+
+    assert.equal(passed.status, "ok");
+    assert.equal(passed.verdict, "pass");
+    const landed = harness.land.run(submitted.run);
+    assert.equal(landed.status, "landed");
+    assert.equal(landed.qaVerdict.verdict, "pass");
+    assert.notEqual(git(repo.main, ["rev-parse", "HEAD"]), baseHead, "main advances");
+    git(repo.main, ["merge-base", "--is-ancestor", ref, "HEAD"]);
+    assert.equal(existsSync(repo.worktree), false, "landed worktree is cleaned");
+    assert.equal(harness.sent.length, 1, "duplicate result envelopes cannot duplicate settlement");
+    assert.match(harness.sent[0].message, /Landed on main/);
+    assert.doesNotMatch(harness.sent[0].message, /Blocked:|failed before settlement/);
+  }
+
+  // ---------------------------------------------------------------- remembered isError result still settles a persisted QA pass
+  {
+    const repo = initRepo({ branch: "feat/remember-pass-result-error" });
+    const ref = commitFile(
+      repo.worktree,
+      "core/src/session.mjs",
+      "export const rememberedPassEnvelope = 1;\n",
+      "remember pass result envelope",
+    );
+    const harness = createHarness({
+      complete: async () => "review",
+      worktree: repo.worktree,
+    });
+    const implementer = childAgent({ id: implementerId, cwd: repo.worktree, registered: [] });
+    const adopted = await harness.land.adoptImplementer(implementer, {
+      packet: "resume a saved pass from the exact remembered result",
+      parentSession: architectId,
+      cwd: repo.worktree,
+    });
+    const submitted = await harness.land.done({ agent: implementer, ref: "HEAD" });
+    const qa = harness.children.get(submitted.qa);
+    const callId = "remembered-pass-result-error";
+    const accepted = await qaTool(qa).execute({ findings: [] }, {
+      agent: qa.child,
+      callId,
+      concludeTurn() {
+        qa.child.status = "idle";
+        for (const listener of [...qa.listeners].filter((item) => item.type === "agent/status")) {
+          listener.fn({ status: "idle" });
+        }
+      },
+    });
+    assert.equal(accepted.verdict, "pass");
+    assert.equal(harness.land.run(adopted.run).settlementTransition, "finish_land");
+    await harness.land.dispose();
+    assert.equal(qa.live, true, "controller replacement preserves the unsettled reviewer");
+
+    const resultEvent = {
+      type: "tool/result",
+      data: { message: {
+        source: { kind: "tool", callId },
+        content: [{ type: "tool-result", toolCallId: callId, isError: true }],
+      } },
+    };
+    qa.child.session.events.push(resultEvent);
+    const landB = createLand({
+      ctx: harness.ctx,
+      store: harness.store,
+      settings: harness.settings,
+      agents: harness.agents,
+      complete: async () => "review",
+    });
+    const resumed = harness.agents.list()
+      .filter((agent) => pluginModule.internals.syncLiveLandChild(landB, agent));
+    assert.deepEqual(resumed.map((agent) => agent.session.id), [submitted.qa]);
+    await landB.whenSettled(submitted.qa);
+
+    const landed = landB.run(adopted.run);
+    assert.equal(landed.status, "landed");
+    assert.equal(landed.qaVerdict.verdict, "pass");
+    git(repo.main, ["merge-base", "--is-ancestor", ref, "HEAD"]);
+    assert.equal(existsSync(repo.worktree), false);
+    assert.equal(harness.sent.length, 1);
+    assert.match(harness.sent[0].message, /Landed on main/);
+    assert.doesNotMatch(harness.sent[0].message, /Blocked:|failed before settlement/);
+  }
+
   // ---------------------------------------------------------------- QA pass closes before a blocked merge and remains idempotent
   {
     const repo = initRepo({ branch: "feat/qa-pass-blocked-merge" });
@@ -1090,18 +1200,20 @@ try {
     assert.equal(created[1].meta.landRole, "implementer");
     assert.notEqual(created[1].sessionId, implementerId);
     assert.notEqual(created[1].sessionId, submitted.qa);
-    assert.equal(failed.implementer, created[1].sessionId);
+    assert.equal(failed.implementer, "", "tool output cannot be mutated after DSH snapshots it");
+    const fixerId = created[1].sessionId;
+    assert.equal(land.run(submitted.run).implementerSession, fixerId);
     assert.equal(created[1].meta.landWorkflowRole, "fixer");
     assert.deepEqual(disposed.filter((id) => id === submitted.qa), [submitted.qa]);
     assert.deepEqual(relay.labelsFor(submitted.qa), []);
-    assert.deepEqual(relay.labelsFor(failed.implementer), [
+    assert.deepEqual(relay.labelsFor(fixerId), [
       "workflows:land-role/fixer",
       `workflows:land-run/${submitted.run}`,
     ]);
-    const fixer = children.get(failed.implementer);
+    const fixer = children.get(fixerId);
     assert.equal(fixer.child.session.header.kind, MINI_KIND);
     assert.ok(!fixer.registered.some((tool) => tool.name === DONE_TOOL_NAME));
-    const fixerPacket = followups.find((row) => row.id === failed.implementer)?.message?.content?.[0]?.text ?? "";
+    const fixerPacket = followups.find((row) => row.id === fixerId)?.message?.content?.[0]?.text ?? "";
     assert.match(fixerPacket, /look 1 rejected/);
     assert.match(fixerPacket, /add a test for the session id/);
     assert.match(fixerPacket, /tighten session identity handling/);
@@ -1135,7 +1247,8 @@ try {
       feedback: "add the identity test",
       tests_modified: false,
     });
-    const fixer = children.get(fail1.implementer);
+    assert.equal(fail1.implementer, "");
+    const fixer = children.get(land.run(fail1.run).implementerSession);
     const look2 = await land.done({ agent: fixer.child, ref: "HEAD" });
     assert.equal(look2.status, "ok");
     assert.equal(look2.look, 2);
@@ -1200,7 +1313,8 @@ try {
     assert.equal(result.verdict, "fail");
     assert.match(result.outcome, /fresh implementer/);
     assert.equal(created.filter((row) => row.meta.landRole === "implementer").length, 1);
-    const run = land.bySession(result.implementer);
+    assert.equal(result.implementer, "");
+    const run = land.run(result.run);
     assert.match(run.qaVerdict.feedback, /production-code changes/);
     assert.equal(run.status, "waiting_fix");
     assert.equal(existsSync(repo.worktree), true);
@@ -1262,7 +1376,8 @@ try {
       feedback: "add the identity test",
       tests_modified: false,
     });
-    const fixer = children.get(fail1.implementer);
+    assert.equal(fail1.implementer, "");
+    const fixer = children.get(land.run(fail1.run).implementerSession);
     const look2 = await land.done({ agent: fixer.child, ref: "HEAD" });
     const qa2 = children.get(look2.qa);
     const listeners = qa2.listeners.filter((item) => item.type === "session/event");
@@ -1595,34 +1710,35 @@ try {
     assert.equal(submitted.mark, "review");
     assert.equal(implementerDisposals, 1, "settled submission, not HMR, disposes the implementer once");
     assert.equal(harness.created.length, 1, "one QA child starts after the exact done result");
-    assert.equal(submitted.qa, harness.created[0].sessionId);
+    assert.equal(submitted.qa, "", "tool output remains the pre-settlement JSON value");
+    const qaId = harness.created[0].sessionId;
     const duplicateDone = await landB.done({ agent: implementer, ref: "HEAD" });
     assert.equal(duplicateDone.status, "refused");
 
     // QA is also detached and resumed with exactly one verdict/listener set.
-    const qa = harness.children.get(submitted.qa);
+    const qa = harness.children.get(qaId);
     assert.ok(qa?.live);
     assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
     assertMiniReviewMounted(qa);
-    assert.equal(harness.restricted.filter((item) => item.id === submitted.qa && item.active).length, 1);
+    assert.equal(harness.restricted.filter((item) => item.id === qaId && item.active).length, 1);
     await landB.dispose();
     assert.equal(qa.live, true);
-    assert.equal(harness.disposed.includes(submitted.qa), false);
+    assert.equal(harness.disposed.includes(qaId), false);
     assertMiniReviewMounted(qa, { owned: false });
-    assert.equal(harness.restricted.filter((item) => item.id === submitted.qa && item.active).length, 1);
-    assert.deepEqual(harness.relay.labelsFor(submitted.qa), []);
+    assert.equal(harness.restricted.filter((item) => item.id === qaId && item.active).length, 1);
+    assert.deepEqual(harness.relay.labelsFor(qaId), []);
 
     const landC = controller();
     assert.equal(syncLive(landC), 1);
-    assert.deepEqual(landC.ownedChildren(), [submitted.qa]);
+    assert.deepEqual(landC.ownedChildren(), [qaId]);
     assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
     assertMiniReviewMounted(qa);
-    assert.equal(harness.restricted.filter((item) => item.id === submitted.qa && item.active).length, 1);
+    assert.equal(harness.restricted.filter((item) => item.id === qaId && item.active).length, 1);
     assert.equal(syncLive(landC), 1);
     assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
     assertMiniReviewMounted(qa);
-    assert.equal(harness.restricted.filter((item) => item.id === submitted.qa && item.active).length, 1);
-    assert.deepEqual(harness.relay.labelsFor(submitted.qa), [
+    assert.equal(harness.restricted.filter((item) => item.id === qaId && item.active).length, 1);
+    assert.deepEqual(harness.relay.labelsFor(qaId), [
       "workflows:land-role/qa-look-1",
       `workflows:land-run/${adopted.run}`,
     ]);
@@ -1651,7 +1767,7 @@ try {
     assert.equal(qaConcluded, 1);
     let pending = landC.run(adopted.run);
     assert.equal(pending.status, "waiting_fix");
-    assert.equal(pending.settlementSession, submitted.qa);
+    assert.equal(pending.settlementSession, qaId);
     assert.equal(pending.settlementCallId, qaCall);
     assert.equal(pending.settlementTransition, "start_fixer");
     assert.equal(harness.created.length, 1);
@@ -1668,7 +1784,7 @@ try {
 
     const landD = controller();
     assert.equal(syncLive(landD), 1);
-    assert.deepEqual(landD.ownedChildren(), [submitted.qa]);
+    assert.deepEqual(landD.ownedChildren(), [qaId]);
     assertMiniReviewMounted(qa, { owned: false });
     assertMiniReviewMounted(qa);
     const qaEvent = {
@@ -1682,7 +1798,7 @@ try {
     for (const listener of [...qa.listeners].filter((item) => item.type === "session/event")) {
       await listener.fn(qa.child.session, qaEvent);
     }
-    await landD.whenSettled(submitted.qa);
+    await landD.whenSettled(qaId);
     const fixing = landD.run(adopted.run);
     assert.equal(fixing.status, "waiting_fix");
     assert.ok(fixing.implementerSession);
@@ -1691,7 +1807,7 @@ try {
     assert.equal(fixing.settlementCallId, "");
     assert.equal(fixing.settlementTransition, "");
     assert.equal(harness.created.length, 2, "pending result starts exactly one fixer");
-    assert.deepEqual(harness.disposed.filter((id) => id === submitted.qa), [submitted.qa]);
+    assert.deepEqual(harness.disposed.filter((id) => id === qaId), [qaId]);
     assert.deepEqual(landD.ownedChildren(), [fixing.implementerSession]);
     for (const listener of [...qa.listeners].filter((item) => item.type === "session/event")) {
       await listener.fn(qa.child.session, qaEvent);
@@ -2110,13 +2226,14 @@ try {
     assert.equal(implementerDisposals, 1, "the committed transition disposes only its old implementer");
     assert.equal(implementerRecord.live, false);
     assert.equal(harness.created.length, 1, "the committed transition retains one QA successor");
-    assert.equal(submitted.qa, harness.created[0].sessionId);
-    const qa = harness.children.get(submitted.qa);
+    assert.equal(submitted.qa, "", "tool output remains the pre-settlement JSON value");
+    const qaId = harness.created[0].sessionId;
+    const qa = harness.children.get(qaId);
     assert.ok(qa?.live, "HMR preserves the successor AgentHandle");
     const reviewing = harness.land.run(adopted.run);
     assert.equal(reviewing.status, "reviewing");
     assert.equal(reviewing.ref, ref);
-    assert.equal(reviewing.qaSession, submitted.qa);
+    assert.equal(reviewing.qaSession, qaId);
     const qaIdentity = {
       run: reviewing.id,
       ref: reviewing.ref,
@@ -2130,8 +2247,8 @@ try {
     assert.deepEqual(listeners, []);
     assert.deepEqual(harness.relay.labelsFor(implementerId), []);
     assertMiniReviewMounted(qa, { owned: false });
-    assert.equal(harness.restricted.filter((item) => item.id === submitted.qa && item.active).length, 1);
-    assert.deepEqual(harness.relay.labelsFor(submitted.qa), []);
+    assert.equal(harness.restricted.filter((item) => item.id === qaId && item.active).length, 1);
+    assert.deepEqual(harness.relay.labelsFor(qaId), []);
     await Promise.resolve();
     await Promise.resolve();
     assert.deepEqual(harness.land.ownedChildren(), [], "controller A cannot retain after dispose returns");
@@ -2148,8 +2265,8 @@ try {
       .filter((agent) => pluginModule.internals.syncLiveLandChild(landB, agent)).length;
     assert.equal(syncLive(), 1, "controller B resumes the one live QA successor");
     assert.equal(syncLive(), 1, "repeat live sync reuses that exact owner");
-    assert.deepEqual(landB.ownedChildren(), [submitted.qa]);
-    const resumedQa = landB.bySession(submitted.qa);
+    assert.deepEqual(landB.ownedChildren(), [qaId]);
+    const resumedQa = landB.bySession(qaId);
     assert.deepEqual({
       run: resumedQa.id,
       ref: resumedQa.ref,
@@ -2160,8 +2277,8 @@ try {
     }, qaIdentity);
     assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
     assertMiniReviewMounted(qa);
-    assert.equal(harness.restricted.filter((item) => item.id === submitted.qa && item.active).length, 1);
-    assert.deepEqual(harness.relay.labelsFor(submitted.qa), [
+    assert.equal(harness.restricted.filter((item) => item.id === qaId && item.active).length, 1);
+    assert.deepEqual(harness.relay.labelsFor(qaId), [
       "workflows:land-role/qa-look-1",
       `workflows:land-run/${adopted.run}`,
     ]);
@@ -2553,6 +2670,59 @@ try {
     assert.equal(harness.sent[0].delivery, "direct");
     assert.match(harness.sent[0].message, /Blocked/);
     assert.match(harness.sent[0].message, /implementer child closed before completion/);
+  }
+
+  // ---------------------------------------------------------------- architect invoke lands the same blocked run when QA already passed
+  {
+    const repo = initRepo({ branch: "feat/invoke-blocked-pass" });
+    const ref = commitFile(
+      repo.worktree,
+      "core/src/session.mjs",
+      "export const recoveredPass = 1;\n",
+      "recover blocked pass",
+    );
+    const store = createLandStore(mkdtempSync(join(scratch, "blocked-pass-invoke-")));
+    const blocked = store.create({
+      status: "blocked",
+      look: 1,
+      parentSessionUuid: architectId,
+      architectSession: architectId,
+      phaseEpoch: 2,
+      current: null,
+      worktree: repo.worktree,
+      mainRoot: repo.main,
+      branch: repo.branch,
+      baseBranch: "main",
+      baseRef: repo.baseRef,
+      ref,
+      brief: "land the already-saved QA pass",
+      qaVerdict: {
+        verdict: "pass",
+        summary: "saved pass must remain landable",
+        feedback: "",
+        tests_modified: false,
+      },
+      blockedReason: "qa pass result committed failed before settlement",
+    });
+    const harness = createHarness({
+      complete: async () => assert.fail("blocked pass invoke must bypass a new route stamp"),
+      worktree: repo.worktree,
+      store,
+    });
+    const baseHead = git(repo.main, ["rev-parse", "HEAD"]);
+    const result = await harness.land.invoke({
+      agent: harness.parent,
+      worktree: repo.worktree,
+    });
+
+    assert.equal(result.status, "ok");
+    assert.equal(result.mark, "land");
+    assert.equal(result.run, blocked.id);
+    assert.equal(harness.land.run(blocked.id).status, "landed");
+    assert.deepEqual(store.list().map((record) => record.id), [blocked.id]);
+    assert.notEqual(git(repo.main, ["rev-parse", "HEAD"]), baseHead);
+    git(repo.main, ["merge-base", "--is-ancestor", ref, "HEAD"]);
+    assert.equal(existsSync(repo.worktree), false);
   }
 
   // ---------------------------------------------------------------- land merge failure packets architect and keeps the worktree

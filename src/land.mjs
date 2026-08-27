@@ -798,6 +798,11 @@ export function createLand({
     return block?.toolCallId;
   }
 
+  function errorEnvelopeCommitsPass(owner, pending) {
+    if (pending.transition !== "finish_land") return false;
+    return store.load(owner.runId)?.qaVerdict?.verdict === "pass";
+  }
+
   function failArmedSettlement(owner, pending) {
     if (pending.started || pending.resultFailed) return;
     pending.resultFailed = true;
@@ -818,7 +823,7 @@ export function createLand({
       if (!pending || pending.started) return;
       const blocks = resultBlocksFor(message, callId);
       if (blocks.length === 0) return;
-      if (blocks.some((block) => block.isError === true)) {
+      if (blocks.some((block) => block.isError === true) && !errorEnvelopeCommitsPass(owner, pending)) {
         failArmedSettlement(owner, pending);
         return;
       }
@@ -854,11 +859,12 @@ export function createLand({
     };
   }
 
-  function addPendingSettlement(owner, { callId, reason, action, onFailure, resolve }) {
+  function addPendingSettlement(owner, { callId, reason, transition, action, onFailure, resolve }) {
     if (owner.settlements.has(callId)) return owner.settlements.get(callId);
     const pending = {
       callId,
       reason,
+      transition,
       action,
       onFailure,
       failureAction: failureActionFor(owner, reason),
@@ -888,6 +894,7 @@ export function createLand({
           addPendingSettlement(owner, {
             callId,
             reason,
+            transition,
             action,
             onFailure,
             resolve: waiting.resolve,
@@ -1253,6 +1260,7 @@ export function createLand({
     const pending = addPendingSettlement(owner, {
       callId,
       reason,
+      transition: state.settlementTransition,
       action: () => applyPostResultTransition({
         sessionId: owner.sessionId,
         runId: owner.runId,
@@ -1261,7 +1269,7 @@ export function createLand({
       resolve: waiting.resolve,
     });
     const remembered = rememberedResult(owner.child, callId);
-    if (remembered?.failed) failArmedSettlement(owner, pending);
+    if (remembered?.failed && !errorEnvelopeCommitsPass(owner, pending)) failArmedSettlement(owner, pending);
     else if (remembered) {
       pending.resultCommitted = true;
       runArmedSettlement(owner, pending);
@@ -1557,7 +1565,8 @@ export function createLand({
     if (transition === "finish_land") {
       const current = store.load(runId);
       if (!current) return;
-      if (current.status === "landed" || current.status === "blocked") {
+      if (current.status === "landed"
+        || (current.status === "blocked" && current.qaVerdict?.verdict !== "pass")) {
         await disposeChild(sessionId, "qa pass already settled");
         return;
       }
@@ -1694,12 +1703,11 @@ export function createLand({
 
   function runForWorktree(path) {
     if (!path) return null;
-    for (const record of store.list()) {
-      if (record.worktree === path && (record.status === "running" || record.status === "waiting_fix")) {
-        return record;
-      }
-    }
-    return null;
+    const records = store.list().filter((record) => record.worktree === path);
+    const active = records.find((record) => record.status !== "landed" && record.status !== "blocked");
+    if (active) return active;
+    return records.find((record) =>
+      record.status === "blocked" && record.qaVerdict?.verdict === "pass") ?? null;
   }
 
   async function submitRef(state, { ref = "HEAD", fromId, postTool = false, submission } = {}) {
@@ -1802,15 +1810,16 @@ export function createLand({
       return { status: "refused", reason: "land refuses the primary checkout; use a branch worktree" };
     }
     const existing = runForWorktree(git.worktree);
-    const state = existing ?? store.create({
+    let state = existing ?? store.create({
       parentSessionUuid: sessionId,
       architectSession: sessionId,
       implementerSession: sessionId,
-      brief: String(brief ?? existing?.brief ?? ""),
+      brief: String(brief ?? ""),
       ...git,
     });
-    if (brief && existing) {
-      return submitRef(store.save({ ...state, brief: String(brief) }), { ref, fromId: sessionId });
+    if (brief && existing) state = store.save({ ...state, brief: String(brief) });
+    if (state.status === "blocked" && state.qaVerdict?.verdict === "pass") {
+      return finishLand(state, sessionId);
     }
     return submitRef(state, { ref, fromId: sessionId });
   }

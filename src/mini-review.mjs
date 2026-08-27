@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { armChildSettlement } from "./child-settlement.mjs";
+import { armChildSettlement, childToolOutput } from "./child-settlement.mjs";
 import { createQaVerdict } from "./qa-verdict.mjs";
 import {
   MINI_REVIEW_GLOB_SCHEMA,
@@ -236,7 +236,9 @@ export function buildMiniReviewTools() {
         if (result?.status !== "refused") {
           markCompleted(exec?.agent);
           armChildSettlement(result, exec, { onFailure: () => clearCompleted(exec?.agent) });
+          const output = childToolOutput(result);
           try { exec?.concludeTurn?.(); } catch { /* accepted result remains armed */ }
+          return output;
         }
         return result;
       } catch (error) {
