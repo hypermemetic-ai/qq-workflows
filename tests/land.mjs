@@ -989,6 +989,10 @@ try {
     const fixerPacket = followups.find((row) => row.id === failed.implementer)?.message?.content?.[0]?.text ?? "";
     assert.match(fixerPacket, /look 1 rejected/);
     assert.match(fixerPacket, /add a test for the session id/);
+    assert.match(fixerPacket, /tighten session identity handling/);
+    assert.match(fixerPacket, /Files:\ncore\/src\/session\.mjs \+1\/-0/);
+    assert.match(fixerPacket, /Pointers:\ncore\/src\/session\.mjs:1/);
+    assert.doesNotMatch(fixerPacket, /<diff>|<\/diff>|(?:^|\n)diff --git |(?:^|\n)\+export const/);
     const originalDone = await land.done({ agent: implementer, ref: "HEAD" });
     assert.equal(originalDone.status, "refused");
     assert.match(originalDone.reason, /owned implementer/);
@@ -1102,8 +1106,11 @@ try {
       cwd: repo.worktree,
     });
     const submitted = await land.done({ agent: implementer, ref: "HEAD" });
-    assert.ok(followups.some((row) => /<diff>[\s\S]*<\/diff>/.test(row.message?.content?.[0]?.text ?? "")));
-    assert.ok(followups.some((row) => /session\.mjs/.test(row.message?.content?.[0]?.text ?? "")));
+    const qaPacket = followups.find((row) => row.id === submitted.qa)?.message?.content?.[0]?.text ?? "";
+    assert.match(qaPacket, /tighten session identity handling/);
+    assert.match(qaPacket, /Files:\ncore\/src\/session\.mjs \+1\/-0/);
+    assert.match(qaPacket, /Pointers:\ncore\/src\/session\.mjs:1/);
+    assert.doesNotMatch(qaPacket, /<diff>|<\/diff>|(?:^|\n)diff --git |(?:^|\n)\+export const/);
     const qa = children.get(submitted.qa);
     const listeners = qa.listeners.filter((item) => item.type === "session/event");
     assert.ok(listeners.length > 0);
@@ -1905,19 +1912,19 @@ try {
     const gapReached = Promise.withResolvers();
     const releaseGap = Promise.withResolvers();
     let pauseAfterOldDisposal = false;
-    const gapRun = async (command, args, options) => {
-      if (pauseAfterOldDisposal && command === "git" && args?.[0] === "diff" && args?.includes("-U0")) {
+    const harness = createHarness({
+      complete: async () => "review",
+      worktree: repo.worktree,
+    });
+    const createChild = harness.agents.create;
+    harness.agents.create = async (options) => {
+      if (pauseAfterOldDisposal) {
         pauseAfterOldDisposal = false;
         gapReached.resolve();
         await releaseGap.promise;
       }
-      return runCommand(command, args, options);
+      return createChild(options);
     };
-    const harness = createHarness({
-      complete: async () => "review",
-      worktree: repo.worktree,
-      run: gapRun,
-    });
     const registered = [];
     const listeners = [];
     const implementer = childAgent({
@@ -2120,7 +2127,9 @@ try {
     assert.equal(pending.phaseEpoch, 2);
     assert.match(pending.messageId, /^[0-9a-f-]{36}$/);
     assert.match(pending.message, /^Please review this change:/);
-    assert.match(pending.message, /<diff>[\s\S]*<\/diff>/);
+    assert.match(pending.message, /Files:\ncore\/src\/session\.mjs \+1\/-0/);
+    assert.match(pending.message, /Pointers:\ncore\/src\/session\.mjs:1/);
+    assert.doesNotMatch(pending.message, /<diff>|<\/diff>|(?:^|\n)diff --git |(?:^|\n)\+export const/);
     assert.match(pending.message, /submit_review/);
     assert.equal(pending.messageDelivered, false);
     assert.equal(harness.created.length, 1);

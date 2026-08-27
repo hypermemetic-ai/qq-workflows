@@ -127,9 +127,16 @@ await assert.rejects(
 );
 
 assert.equal(MINI_REVIEW_SYSTEM_PROMPT, "You are a helpful assistant that can review code changes in a repository.");
-const rendered = renderMiniReviewTask({ task: "look 1 packet", diff: "+changed" });
-assert.ok(rendered.startsWith("Please review this change: look 1 packet\n\n<diff>\n+changed\n</diff>"));
-assert.match(rendered, /Start from the diff/);
+const rendered = renderMiniReviewTask({
+  task: "look 1 packet\n\nFiles:\nsrc/auth.py +1/-1\n\nPointers:\nsrc/auth.py:2",
+  diff: "diff --git a/src/auth.py b/src/auth.py\n+changed",
+});
+assert.ok(rendered.startsWith("Please review this change: look 1 packet"));
+assert.match(rendered, /Files:\nsrc\/auth\.py \+1\/-1/);
+assert.match(rendered, /Pointers:\nsrc\/auth\.py:2/);
+assert.doesNotMatch(rendered, /<diff>|diff --git|\+changed/);
+assert.match(rendered, /Start from the packet/);
+assert.match(rendered, /grep.*glob.*view/is);
 assert.ok(rendered.endsWith('- Finish with "submit_review".'));
 assert.deepEqual(MINI_REVIEW_TOOL_NAMES, ["grep", "glob", "view", "submit_review"]);
 for (const schema of [

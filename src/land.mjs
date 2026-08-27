@@ -417,7 +417,7 @@ export function createLand({
     return settings?.get?.(role) ?? null;
   }
 
-  function pendingPhaseMessage(state, pending, { system, user, task, diff } = {}) {
+  function pendingPhaseMessage(state, pending, { system, user, task } = {}) {
     const parentSession = state.parentSessionUuid || state.architectSession;
     const identity = [
       `Delegation ID (authoritative): ${state.delegationId}. Land run: ${state.id}.`,
@@ -425,9 +425,10 @@ export function createLand({
       `Authoritative parent session UUID: ${parentSession}. Session aliases are informational and ephemeral.`,
       "Workflow completion is returned automatically; do not manually relay a duplicate report.",
     ].join(" ");
-    const seed = [identity, system, task ?? user].filter(Boolean).join("\n\n");
+    const compiled = state.packet ? `Packet:\n${formatPacket(state.packet)}` : "";
+    const seed = [identity, system, task ?? user, compiled].filter(Boolean).join("\n\n");
     if (pending.role === "qa-look-1" || pending.role === "qa-look-2") {
-      return renderMiniReviewTask({ task: seed, diff: diff ?? "" });
+      return renderMiniReviewTask({ task: seed });
     }
     return pending.role === "fixer" ? renderMiniSweTask(seed) : seed;
   }
@@ -1440,18 +1441,6 @@ export function createLand({
     return Promise.allSettled(pending);
   }
 
-  async function packetDiff(state) {
-    const diff = await checked(
-      run,
-      "git",
-      ["diff", "--no-ext-diff", "--no-textconv", "-U0", "--no-color", `${state.baseRef}...${state.ref}`, "--"],
-      { cwd: state.worktree },
-      "cannot collect review diff",
-    );
-    const text = String(diff.stdout ?? "");
-    return (text.endsWith("\n") ? text.slice(0, -1) : text) || "(no diff)";
-  }
-
   function watchQaSettle(child, runId) {
     const childId = sessionIdOf(child);
     const owner = childOwners.get(childId);
@@ -1492,16 +1481,14 @@ export function createLand({
 
   async function startQa(state) {
     const parentSession = state.parentSessionUuid || state.architectSession;
-    const diff = await packetDiff(state);
     const prior = state.look === 2 ? state.blockedReason : "";
     const task = [
       state.look === 1 ? "Look 1." : "Look 2, the final look. There is no third look.",
       `Review ref ${state.ref} against base ${state.baseRef}.`,
-      `Packet brief:\n${formatPacket(state.packet)}`,
       prior ? `Prior look-1 rejection:\n${prior}` : "",
     ].filter(Boolean).join("\n\n");
     const workflowRole = `qa-look-${state.look}`;
-    const planned = planPhase(state, workflowRole, { task, diff });
+    const planned = planPhase(state, workflowRole, { task });
     const pending = planned.pendingPhase;
     const spawned = await spawnChild({
       sessionUuid: pending.sessionUuid,
