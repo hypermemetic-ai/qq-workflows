@@ -879,7 +879,7 @@ try {
   {
     const repo = initRepo({ branch: "feat/claimed-packet" });
     commitFile(repo.worktree, "core/src/session.mjs", "export const x = 1;\n", "session tweak");
-    const { land, created, children } = createHarness({
+    const { land, created, children, followups } = createHarness({
       complete: async () => "review",
       worktree: repo.worktree,
       claimFollowup: true,
@@ -893,11 +893,22 @@ try {
     const submitted = await land.done({ agent: implementer, ref: "HEAD" });
     assert.equal(submitted.status, "ok");
     assert.equal(submitted.mark, "review");
+    assert.equal(submitted.look, 1);
     assert.equal(created.length, 1);
-    assert.ok(children.get(submitted.qa));
+    const qa = children.get(submitted.qa);
+    assert.ok(qa);
+    const packet = followups.find((row) => row.id === submitted.qa)?.message;
+    assert.ok(packet?.id);
+    assert.deepEqual(qa.child.inbox.nextTurn, []);
+    assert.deepEqual(qa.child.inbox.nextStep, []);
+    assert.equal(qa.child.session.events.some((event) => event?.type === "user/message"), false);
+    assert.ok(qa.child.session.events.some((event) =>
+      event?.type === "agent/inbox/spliced"
+      && (event.data?.inserted ?? []).some((message) => message?.id === packet.id)));
     const run = land.bySession(submitted.qa);
     assert.equal(run.status, "reviewing");
-    assert.notEqual(run.blockedReason, "qa child startup failed: qa child did not retain its work packet");
+    assert.equal(run.look, 1);
+    assertMiniReviewMounted(qa);
   }
 
   // ---------------------------------------------------------------- look-1 fail starts a fresh implementer, not the original
