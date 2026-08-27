@@ -11,6 +11,24 @@ import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { open } from "node:fs/promises";
 
 import { armChildSettlement } from "./child-settlement.mjs";
+import {
+  OBSERVATION_HEAD_CHARS,
+  OBSERVATION_MAX_CHARS,
+  OBSERVATION_TAIL_CHARS,
+  codePointCount,
+  sliceCodePoints,
+  truncateObservation,
+  truncationMarker,
+} from "./observation.mjs";
+
+export {
+  OBSERVATION_HEAD_CHARS,
+  OBSERVATION_MAX_CHARS,
+  OBSERVATION_TAIL_CHARS,
+  codePointCount,
+  truncateObservation,
+  truncationMarker,
+};
 
 import {
   MINI_SWE_BASH_SCHEMA,
@@ -43,10 +61,6 @@ export const MINI_PERSONA_SECTION = "deployment:persona";
 export const MINI_PERSONA_ORDER = 0;
 export const MINI_PROMPT = MINI_SWE_SYSTEM_PROMPT;
 export const MINI_PAGER_EXPORT = "export PAGER=cat MANPAGER=cat GIT_PAGER=cat LESS=-R PIP_PROGRESS_BAR=off TQDM_DISABLE=1";
-export const OBSERVATION_MAX_CHARS = 10_000;
-export const OBSERVATION_HEAD_CHARS = 5_000;
-export const OBSERVATION_TAIL_CHARS = 5_000;
-
 const UTF8_MAX_BYTES_PER_CP = 4;
 const FILE_SCAN_CHUNK = 64 * 1024;
 const MINI_SUBMIT = Symbol.for("qq.officialMiniSubmit");
@@ -162,28 +176,6 @@ function installFormatRecovery(agentCtx) {
     try { offEvent?.(); } catch { /* best effort */ }
     try { offStopping?.(); } catch { /* best effort */ }
   };
-}
-
-export function codePointCount(value) {
-  let n = 0;
-  for (const _ of String(value ?? "")) n++;
-  return n;
-}
-
-function sliceCodePoints(text, start, end) {
-  return Array.from(String(text ?? "")).slice(start, end).join("");
-}
-
-/** Compatibility helper; official observations use JSON head/tail fields. */
-export function truncationMarker(omittedChars) {
-  return `\n[... environment output truncated: ${omittedChars} chars omitted ...]\n`;
-}
-
-export function truncateObservation(value) {
-  const text = String(value ?? "");
-  const chars = codePointCount(text);
-  if (chars < OBSERVATION_MAX_CHARS) return text;
-  return `${sliceCodePoints(text, 0, OBSERVATION_HEAD_CHARS)}${truncationMarker(chars - OBSERVATION_MAX_CHARS)}${sliceCodePoints(text, -OBSERVATION_TAIL_CHARS)}`;
 }
 
 export function withPagerEnv(command) {

@@ -22,6 +22,7 @@ import {
 } from "../src/mini-review-v2.mjs";
 import { RepoOracle } from "../src/repo-oracle.mjs";
 import { withChildSettlement } from "../src/child-settlement.mjs";
+import { truncateObservation } from "../src/observation.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "qq-mini-review."));
 const repo = join(root, "repo");
@@ -45,7 +46,7 @@ writeFileSync(join(repo, "src/auth.py"), "def authorize(user):\n    return False
 writeFileSync(join(repo, "src/delete.txt"), "anchor\nremove me\ntail\n");
 writeFileSync(join(repo, "src/delete-first.txt"), "only line\n");
 writeFileSync(join(repo, "src/long.txt"), `${Array.from({ length: 140 }, (_, i) => `line-${i + 1}`).join("\n")}\n`);
-writeFileSync(join(repo, "src/huge.txt"), `${"x".repeat(40_000)}\n`);
+writeFileSync(join(repo, "src/huge.txt"), `${"x".repeat(20_000)}\n`);
 writeFileSync(join(repo, "asset.bin"), Buffer.from([0, 1, 2, 3]));
 symlinkSync("src/auth.py", join(repo, "auth-link"));
 for (let i = 0; i < 105; i++) writeFileSync(join(repo, "many", `file-${String(i).padStart(3, "0")}.txt`), `needle ${i}\n`);
@@ -102,7 +103,13 @@ const globCap = await capOracle.glob({ pattern: "many/**" });
 assert.match(globCap, new RegExp(`PATHS 105`));
 assert.match(globCap, new RegExp(`TRUNCATED: showing ${MINI_REVIEW_GLOB_LIMIT} of 105 paths`));
 const hugeView = await capOracle.view({ path: "src/huge.txt", start_line: 1, end_line: 1 });
-assert.match(hugeView, /TRUNCATED/);
+const fullHugeView = [
+  "FILE src/huge.txt @ head",
+  "LINES 1-1 OF 1",
+  `1|${"x".repeat(20_000)}`,
+].join("\n");
+assert.equal(hugeView, truncateObservation(fullHugeView));
+assert.match(hugeView, /environment output truncated/);
 assert.ok(Buffer.byteLength(hugeView, "utf8") <= 32 * 1024);
 for (let i = 3; i < MINI_REVIEW_INSPECT_LIMIT; i++) await capOracle.glob({ pattern: "no-match" });
 assert.match(await capOracle.glob({ pattern: "**" }), /INSPECTION LIMIT REACHED.*submit_review/);

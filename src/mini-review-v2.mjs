@@ -8,7 +8,6 @@ export const MINI_REVIEW_GREP_LIMIT = 40;
 export const MINI_REVIEW_GLOB_LIMIT = 100;
 export const MINI_REVIEW_VIEW_LINE_LIMIT = 120;
 export const MINI_REVIEW_VIEW_BYTE_LIMIT = 32 * 1024;
-export const MINI_REVIEW_OBSERVATION_LIMIT = 10_000;
 export const MINI_REVIEW_INSPECT_LIMIT = 24;
 
 function deepFreeze(value) {
@@ -110,21 +109,4 @@ export function renderMiniReviewTask({ task } = {}) {
     "- It is correct to report zero findings.",
     '- Finish with "submit_review".',
   ].join("\n");
-}
-
-export function codePointCount(value) {
-  return Array.from(String(value ?? "")).length;
-}
-
-export function truncateMiniReviewObservation(value, limit = MINI_REVIEW_OBSERVATION_LIMIT) {
-  const text = String(value ?? "");
-  const points = Array.from(text);
-  if (points.length <= limit) return text;
-  const omitted = points.length - limit;
-  const marker = `\n[TRUNCATED: ${omitted} code points omitted]\n`;
-  const markerLength = codePointCount(marker);
-  const available = Math.max(0, limit - markerLength);
-  const head = Math.ceil(available / 2);
-  const tail = Math.floor(available / 2);
-  return `${points.slice(0, head).join("")}${marker}${tail ? points.slice(-tail).join("") : ""}`;
 }
