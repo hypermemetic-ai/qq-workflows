@@ -36,6 +36,7 @@ function systemInformation(info = {}) {
 }
 
 /** Render upstream mini.yaml's instance_template around qq's work packet. */
+// DSH overlays this reminder on the packet template; it is not an upstream mini.yaml change or byte-identical to v2.
 export function renderMiniSweTask(task, info) {
   const os = systemInformation(info);
   return [
@@ -52,7 +53,7 @@ export function renderMiniSweTask(task, info) {
     "3. Edit the source code to resolve the issue",
     "4. Verify your fix works by running your script again",
     "5. Test edge cases to ensure your fix is robust",
-    `6. Submit your changes and finish your work by issuing the following command: \`${MINI_SWE_COMPLETION_COMMAND}\`.`,
+    `6. Commit your changes, then submit and finish your work by issuing the following command: \`${MINI_SWE_COMPLETION_COMMAND}\`.`,
     "   Do not combine it with any other command. <important>After this command, you cannot continue working on this task.</important>",
     "",
     "## Command Execution Rules",
@@ -75,7 +76,7 @@ export function renderMiniSweTask(task, info) {
     "- Your response MUST include AT LEAST ONE bash tool call",
     "- Directory or environment variable changes are not persistent. Every action is executed in a new subshell.",
     "- However, you can prefix any action with `MY_ENV_VAR=MY_VALUE cd /path/to/working/dir && ...` or write/load environment variables from files",
-    `- Submit your changes and finish your work by issuing the following command: \`${MINI_SWE_COMPLETION_COMMAND}\`.`,
+    `- Commit your changes, then submit and finish your work by issuing the following command: \`${MINI_SWE_COMPLETION_COMMAND}\`.`,
     "  Do not combine it with any other command. <important>After this command, you cannot continue working on this task.</important>",
     "",
     "Example of a CORRECT response:",
