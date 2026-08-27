@@ -12,7 +12,7 @@ import { createDelegatedWorktree, repoRootFor, runCommand } from "./git.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
 import { hideHarnessToolsOn } from "./hide-harness.mjs";
 import { MINI_KIND, miniSetup, renderMiniSweTask } from "./official-mini.mjs";
-import { CASE_CONTEXT_NAME, EMPTY_CASE } from "./casefile.mjs";
+import { CASE_CONTEXT_NAME, CASE_VARIABLE_NAME, EMPTY_CASE, renderCaseContext } from "./casefile.mjs";
 import { guardContext, OVERFLOW_MESSAGE } from "./chop.mjs";
 import { markAssemble } from "./assemble-mark.mjs";
 import { adoptAgentHandle } from "./agent-handle.mjs";
@@ -185,14 +185,22 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
       const promptOff = prompt.context({ name: ARCHITECT_PROMPT_NAME, order: 10, text: () => ARCHITECT_PROMPT });
       if (typeof promptOff === "function") contextOffs.push(promptOff);
       if (!cases) return;
+      // Case prose is operator/model-authored and may contain DSH prompt groups.
+      // Inline body in context text is interpolated and aborts the turn; a
+      // registered variable is substituted without a second scan.
+      if (typeof prompt.variable !== "function") return;
+      const varOff = prompt.variable(
+        CASE_VARIABLE_NAME,
+        () => String(cases.load(sessionId)?.text ?? "").trim(),
+      );
+      if (typeof varOff === "function") contextOffs.push(varOff);
       const caseOff = prompt.context({
         name: CASE_CONTEXT_NAME,
         order: 20,
         text: () => {
           const body = String(cases.load(sessionId)?.text ?? "").trim();
-          if (!body) return "";
           const id = cases.taskId?.(sessionId);
-          return id ? `Working memory (${id}):\n\n${body}` : `Working memory:\n\n${body}`;
+          return renderCaseContext({ body, taskId: id });
         },
       });
       if (typeof caseOff === "function") contextOffs.push(caseOff);

@@ -31,6 +31,6 @@
     "src/"
   ],
   "scripts": {
-    "test": "node tests/git-geometry.mjs && node tests/land.mjs"
+    "test": "node tests/git-geometry.mjs && node tests/architect-case-context.mjs && node tests/land.mjs"
   }
 }
