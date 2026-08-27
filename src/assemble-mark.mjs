@@ -2,7 +2,7 @@
 // hook/result has no surfaceOp, so conversation stays identity.
 //
 // step/start → this mark = deriveMessages + claimed prompts + this waterfall.
-// data.ms = waterfall wall (chop/fold/projection + later agent/request listeners).
+// data.ms = waterfall wall (guard/fold/projection + later agent/request listeners).
 // mark → first delta = prepareCall + provider TTFT.
 
 export const ASSEMBLE_HOOK = "agent/request";

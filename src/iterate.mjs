@@ -14,7 +14,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { extname, join } from "node:path";
 import { pluginUserMessage } from "./tools.mjs";
-import { guardContext, OVERFLOW_MESSAGE } from "./chop.mjs";
+import { guardContext, OVERFLOW_MESSAGE } from "./fold.mjs";
 import { markAssemble } from "./assemble-mark.mjs";
 import { childCreateOptions } from "./child-model.mjs";
 import { hideHarnessToolsOn } from "./hide-harness.mjs";

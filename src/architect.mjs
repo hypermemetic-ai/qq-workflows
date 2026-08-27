@@ -1,4 +1,4 @@
-// Architect workflow: visible working memory, fold/chop, and delegate.
+// Architect workflow: visible working memory, two-pair fold, and delegate.
 // The document is both standing context and the child's complete work packet.
 
 import { randomUUID } from "node:crypto";
@@ -8,8 +8,9 @@ import { childCreateOptions, childRoute } from "./child-model.mjs";
 import { hideHarnessToolsOn } from "./hide-harness.mjs";
 import { MINI_KIND, miniSetup, renderMiniSweTask } from "./official-mini.mjs";
 import { CASE_CONTEXT_NAME, CASE_VARIABLE_NAME, EMPTY_CASE, renderCaseContext } from "./casefile.mjs";
-import { guardContext, OVERFLOW_MESSAGE } from "./chop.mjs";
+import { guardContext, OVERFLOW_MESSAGE } from "./fold.mjs";
 import { markAssemble } from "./assemble-mark.mjs";
+import { truncateObservationContent } from "./observation.mjs";
 import { adoptAgentHandle } from "./agent-handle.mjs";
 
 export const ARCHITECT_LABEL = "workflows:architect";
@@ -110,6 +111,18 @@ function watchChildReturn({ ctx, relay, child, parentId, onDelivered }) {
   return typeof off === "function" ? off : () => {};
 }
 
+export async function capArchitectToolObservation(_exec, result, next) {
+  const decision = await next();
+  if (decision?.kind === "block") {
+    const feedback = truncateObservationContent(decision.feedback);
+    return feedback === decision.feedback ? decision : { ...decision, feedback };
+  }
+  if (decision?.kind !== "accept" || Object.hasOwn(decision, "value")) return decision;
+  const content = decision.content ?? result?.content;
+  const capped = truncateObservationContent(content);
+  return capped === content ? decision : { ...decision, content: capped };
+}
+
 export function createArchitect({ ctx, cases, folder, agents, tasks, talking, hands, onInvokeChild, run = runCommand, env = process.env } = {}) {
   const attached = new Map();
   const delegatedHandles = new Map();
@@ -168,6 +181,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
     let disposeEvent;
     let disposeTurn;
     let disposeAssemble;
+    let disposeObservation;
     const contextOffs = [];
 
     function bindCaseContext(holder) {
@@ -203,6 +217,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
     else bindCaseContext(agent?.ctx ?? agent);
 
     try {
+      disposeObservation = agent.ctx?.on?.("tools/post-execute", capArchitectToolObservation, { prepend: true });
       disposeEvent = agent.ctx?.on?.("session/event", (_session, event) => {
         if (event?.type === "turn/end") lastTurn = event.data?.turn;
       });
@@ -266,6 +281,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
         disposeEvent?.();
         disposeTurn?.();
         disposeAssemble?.();
+        disposeObservation?.();
         while (contextOffs.length) {
           try { contextOffs.pop()?.(); } catch { /* lift */ }
         }

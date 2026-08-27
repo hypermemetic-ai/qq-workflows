@@ -3,7 +3,7 @@
 // The wrapper lists registered workflows and selects which one this chair
 // is running, if any. Architect, find, and base are selectable. Land is git
 // machinery: official Mini completion and the architect/base land tool.
-// Architect owns working memory, fold/chop, delegate, and role settings.
+// Architect owns working memory, two-pair fold, delegate, and role settings.
 // Session context and awaitable leave/transition live on service.workflows;
 // /workflows select and clear stay the command path.
 
@@ -20,6 +20,7 @@ import {
   toolsOf,
 } from "./hide-harness.mjs";
 import { runCommand } from "./git.mjs";
+import { capObservationTool } from "./observation.mjs";
 import { createLand } from "./land.mjs";
 import { createLandStore, defaultLandDir } from "./land-store.mjs";
 import { createJournalStore, defaultJournalDir } from "./journal.mjs";
@@ -216,6 +217,26 @@ export function apply(ctx, config = {}) {
     hideDisposers.delete(sessionId);
   }
 
+  function capVisibleArchitectTools(tools, agent) {
+    if (typeof tools?.schemas !== "function" || typeof tools?.get !== "function") return [];
+    let schemas;
+    try { schemas = tools.schemas(agent); } catch { return []; }
+    if (!Array.isArray(schemas)) return [];
+    const disposers = [];
+    for (const schema of schemas) {
+      try {
+        const definition = tools.get(schema?.name, agent);
+        const capped = capObservationTool(definition);
+        if (!capped || capped === definition) continue;
+        const dispose = tools.register(capped);
+        if (typeof dispose === "function") disposers.push(dispose);
+      } catch {
+        // A same-layer definition cannot be shadowed; the capture listener still caps it.
+      }
+    }
+    return disposers;
+  }
+
   function registerAgentTools(agent) {
     const sessionId = sessionIdOf(agent);
     const install = (toolCtx) => {
@@ -227,6 +248,7 @@ export function apply(ctx, config = {}) {
       if (selected === "architect") installHide(agent);
       const tasks = null;
       const invokeLand = (args) => land.invoke(args);
+      const inheritedCaps = selected === "architect" ? capVisibleArchitectTools(tools, agent) : [];
       const definitions = selected === "architect"
         ? buildArchitectTools({
             cases,
@@ -235,13 +257,19 @@ export function apply(ctx, config = {}) {
             workflowSend: (args) => land.workflowSend(args),
             tasks,
             land: invokeLand,
-          })
+          }).map(capObservationTool)
         : [buildLandTool({ invoke: invokeLand })];
-      const disposers = definitions.map((tool) => tools.register(tool));
+      const disposers = [...inheritedCaps];
+      try {
+        for (const tool of definitions) disposers.push(tools.register(tool));
+      } catch (error) {
+        for (const dispose of [...disposers].reverse()) dispose();
+        throw error;
+      }
       toolDisposers.set(sessionId, {
         owner: selected,
         dispose() {
-          for (const dispose of disposers) dispose();
+          for (const dispose of [...disposers].reverse()) dispose();
           toolDisposers.delete(sessionId);
         },
       });

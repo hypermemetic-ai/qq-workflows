@@ -1,14 +1,16 @@
 // Fold: decide after a turn, apply at the next request. Never mid-turn.
 //
-// Drop Old when Old >= ((1-h)/h) * Tail. Keep the current and previous
-// operator+architect pair. The short replacement points back to the visible
-// working-memory document instead of maintaining another standing store.
+// Keep the current and previous operator+architect pair and replace the whole
+// older span. The short replacement points back to the visible working-memory
+// document instead of maintaining another standing store.
 
 export const DEFAULT_H = 0.1;
 export const DEFAULT_Q = 256_000;
 export const GROK_Q = 200_000;
 export const MIN_PAIRS = 2;
 export const CHARS_PER_TOKEN = 4;
+export const FOLD_REPLACEMENT_TEXT = "Earlier conversation omitted. Working memory is authoritative.";
+export const OVERFLOW_MESSAGE = "qq-workflows: open tail cannot fit after pruning; fold refused.";
 
 const GROK_PROVIDERS = new Set(["xai-auth", "xai"]);
 
@@ -177,20 +179,15 @@ export function decideFold({
   const oldTokens = old.reduce((sum, pair) => sum + pair.tokens, 0);
   const talking = oldTokens + tailTokens;
   const ceiling = q ?? qualityCeiling(route);
-  const overQ = talking > ceiling;
-  const dropByH = shouldDropOld(oldTokens, tailTokens, h);
   if (tailTokens > ceiling) {
     return { action: "fail", reason: "tail-exceeds-q", oldTokens, tailTokens, talking, q: ceiling };
-  }
-  if (!overQ && !dropByH) {
-    return { action: "keep", reason: "within-budget", oldTokens, tailTokens, talking, q: ceiling };
   }
   // Drop the whole Old prefix as one span. Do not nibble.
   const dropFrom = old[0].startSeq;
   const dropTo = old.at(-1).endSeq;
   return {
     action: "drop",
-    reason: overQ ? "quality-ceiling" : "h",
+    reason: "two-turn",
     startSeq: dropFrom,
     endSeq: dropTo,
     oldTokens,
@@ -219,10 +216,40 @@ function surfaceRange(session, events, startSeq, endSeq) {
     }
   }
   if (startIdx < 0) return null;
-  // Chop stubs land in the hole with a later seq. DSH shadows by index
-  // between start and end, so provenance must include those inserts.
+  // Surface replacements can land in the span with a later seq. DSH shadows
+  // by index between start and end, so provenance includes those inserts.
   const seqs = nodes.slice(startIdx, endIdx + 1);
   return { start: seqs[0], end: seqs.at(-1), seqs };
+}
+
+export function talkingTokens(session, events, tokenMeter) {
+  const list = Array.isArray(events) ? events : [];
+  return surfaceNodes(session, list).reduce((sum, event) => {
+    if (event.type === "user/message" || event.type === "assistant/message" || event.type === "tool/result") {
+      return sum + estimateEventTokens(event, tokenMeter);
+    }
+    return sum;
+  }, 0);
+}
+
+/** Prune closed result middles first, then report whether talking exceeds Q. */
+export function guardContext({ ctx, session, route, tokenMeter, q } = {}) {
+  let pruneError = null;
+  const pruner = ctx?.get?.("toolResultPruner", false);
+  if (pruner && typeof pruner.pruneSession === "function") {
+    try { pruner.pruneSession(session); } catch (error) { pruneError = error; }
+  }
+  const meter = tokenMeter ?? ctx?.get?.("tokenMeter", false) ?? null;
+  const ceiling = q ?? qualityCeiling(route);
+  const talking = talkingTokens(session, session?.events ?? [], meter);
+  return {
+    action: "keep",
+    reason: talking > ceiling ? "overflow" : "within-budget",
+    q: ceiling,
+    talking,
+    pruneError,
+    overflow: talking > ceiling,
+  };
 }
 
 export function createFolder({ tokenMeter, h = DEFAULT_H, q, now } = {}) {
@@ -263,7 +290,7 @@ export function createFolder({ tokenMeter, h = DEFAULT_H, q, now } = {}) {
       pending.delete(sessionId);
       return { action: "skip", reason: "no-surface-range" };
     }
-    const text = `Conversation seq ${decision.startSeq}-${decision.endSeq} omitted. Working memory is authoritative.`;
+    const text = FOLD_REPLACEMENT_TEXT;
     const message = {
       id: `qq-workflows-fold-${sessionId}-${decision.startSeq}-${decision.endSeq}`,
       role: "user",

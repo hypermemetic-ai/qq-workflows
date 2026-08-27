@@ -11,6 +11,11 @@
 // launching the Python host or executing an untrusted submission sentinel.
 
 import { machine, release, type, version } from "node:os";
+import {
+  OBSERVATION_HEAD_CHARS,
+  OBSERVATION_MAX_CHARS,
+  OBSERVATION_TAIL_CHARS,
+} from "./observation.mjs";
 
 export const MINI_SWE_REPOSITORY = "https://github.com/SWE-agent/mini-swe-agent";
 export const MINI_SWE_SHA = "25941c89cfbc91eb40b3f8756348c91d9977d57e";
@@ -141,13 +146,13 @@ export function isMiniSweCompletionCommand(command) {
 export function renderMiniSweObservation({ output = "", returncode = 0, exception_info = "" } = {}) {
   const text = String(output ?? "");
   const points = Array.from(text);
-  const observation = points.length < 10_000
+  const observation = points.length < OBSERVATION_MAX_CHARS
     ? { returncode, output: text }
     : {
       returncode,
-      output_head: points.slice(0, 5_000).join(""),
-      output_tail: points.slice(-5_000).join(""),
-      elided_chars: points.length - 10_000,
+      output_head: points.slice(0, OBSERVATION_HEAD_CHARS).join(""),
+      output_tail: points.slice(-OBSERVATION_TAIL_CHARS).join(""),
+      elided_chars: points.length - OBSERVATION_MAX_CHARS,
       warning: "Output too long.",
     };
   if (exception_info) observation.exception_info = String(exception_info);

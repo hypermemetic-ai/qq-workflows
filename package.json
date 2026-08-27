@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/plugin.mjs",
     "./fold": "./src/fold.mjs",
+    "./observation": "./src/observation.mjs",
     "./tools": "./src/tools.mjs",
     "./architect": "./src/architect.mjs",
     "./mini": "./src/mini.mjs",
@@ -33,6 +34,6 @@
     "src/"
   ],
   "scripts": {
-    "test": "node tests/git-geometry.mjs && node tests/routing.mjs && node tests/architect-case-context.mjs && node tests/mini-review.mjs && node tests/land.mjs"
+    "test": "node tests/fold.mjs && node tests/observation.mjs && node tests/git-geometry.mjs && node tests/routing.mjs && node tests/architect-case-context.mjs && node tests/mini-review.mjs && node tests/land.mjs"
   }
 }

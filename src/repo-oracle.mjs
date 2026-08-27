@@ -7,8 +7,8 @@ import {
   MINI_REVIEW_INSPECT_LIMIT,
   MINI_REVIEW_VIEW_BYTE_LIMIT,
   MINI_REVIEW_VIEW_LINE_LIMIT,
-  truncateMiniReviewObservation,
 } from "./mini-review-v2.mjs";
+import { truncateObservation } from "./observation.mjs";
 
 const execFileAsync = promisify(execFile);
 const SHA = /^[0-9a-f]{40,64}$/i;
@@ -184,7 +184,7 @@ export class RepoOracle {
       });
     const truncated = rows.length > MINI_REVIEW_GREP_LIMIT;
     const visible = rows.slice(0, MINI_REVIEW_GREP_LIMIT);
-    return truncateMiniReviewObservation([
+    return truncateObservation([
       `MATCHES ${rows.length}`,
       ...visible,
       ...(truncated ? [`[TRUNCATED: showing ${MINI_REVIEW_GREP_LIMIT} of ${rows.length} matches]`] : []),
@@ -199,7 +199,7 @@ export class RepoOracle {
     if (result.code !== 0) throw new Error(String(result.stderr || "git ls-tree failed").trim());
     const paths = trimFinalEmptyLine(String(result.stdout).split("\n")).filter((path) => matcher.test(path));
     const truncated = paths.length > MINI_REVIEW_GLOB_LIMIT;
-    return truncateMiniReviewObservation([
+    return truncateObservation([
       `PATHS ${paths.length}`,
       ...paths.slice(0, MINI_REVIEW_GLOB_LIMIT),
       ...(truncated ? [`[TRUNCATED: showing ${MINI_REVIEW_GLOB_LIMIT} of ${paths.length} paths]`] : []),
@@ -247,7 +247,7 @@ export class RepoOracle {
       visible.pop();
       byteTruncated = true;
     }
-    return truncateMiniReviewObservation(observation);
+    return truncateObservation(observation);
   }
 
   async changedLines() {
