@@ -16,8 +16,18 @@ import {
 
 export const CASE_MAX_CHARS = 24_000;
 export const CASE_CONTEXT_NAME = "qq-workflows:case";
+/** DSH prompt variable for the case body. Substituted values are not re-scanned. */
+export const CASE_VARIABLE_NAME = "working_memory";
 
 export const EMPTY_CASE = "# Working memory\n";
+
+/** Context template. The body is {{working_memory}}, never inlined, so DSH will not interpolate case prose. */
+export function renderCaseContext({ body, taskId } = {}) {
+  const text = String(body ?? "").trim();
+  if (!text) return "";
+  const payload = `{{${CASE_VARIABLE_NAME}}}`;
+  return taskId ? `Working memory (${taskId}):\n\n${payload}` : `Working memory:\n\n${payload}`;
+}
 
 function requireAbsolute(path, label) {
   if (typeof path !== "string" || path.length === 0 || !isAbsolute(path)) {
