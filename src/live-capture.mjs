@@ -5,7 +5,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 
-const DESIGN_LOOP_URL = new URL("../../bin/lib/frontend-design-loop.mjs", import.meta.url);
+const DESIGN_LOOP_URL = new URL("./frontend-design-loop.mjs", import.meta.url);
 
 function execAgentBrowser(env, args) {
   return new Promise((resolveExec) => {

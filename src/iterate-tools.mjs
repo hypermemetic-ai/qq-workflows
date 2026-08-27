@@ -4,7 +4,7 @@
 import { formatProjection, projectJournal } from "./journal.mjs";
 import { repoRootFor } from "./iterate.mjs";
 
-const DESIGN_LOOP_URL = new URL("../../bin/lib/frontend-design-loop.mjs", import.meta.url);
+const DESIGN_LOOP_URL = new URL("./frontend-design-loop.mjs", import.meta.url);
 
 function textBlock(text) {
   return { type: "text", text };

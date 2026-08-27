@@ -149,7 +149,7 @@ export function apply(ctx, config = {}) {
     settings: landSettings,
     agents,
     llm,
-    tasks: () => ctx.get?.("qq-tasks", false) ?? null,
+    tasks: null,
     run: config.runCommand,
   });
   const architect = createArchitect({
@@ -157,7 +157,7 @@ export function apply(ctx, config = {}) {
     cases,
     folder,
     agents,
-    tasks: () => ctx.get?.("qq-tasks", false) ?? null,
+    tasks: null,
     talking: () => architectSettings.get("talking") ?? baseSettings.get("talking"),
     hands: () => architectSettings.get("hands"),
     run: config.runCommand ?? runCommand,
@@ -222,7 +222,7 @@ export function apply(ctx, config = {}) {
       const tools = toolsService(toolCtx) ?? toolsService(agent);
       if (!tools || typeof tools.register !== "function") return;
       if (selected === "architect") installHide(agent);
-      const tasks = ctx.get?.("qq-tasks", false) ?? null;
+      const tasks = null;
       const invokeLand = (args) => land.invoke(args);
       const definitions = selected === "architect"
         ? buildArchitectTools({

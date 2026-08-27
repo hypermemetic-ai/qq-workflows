@@ -1,18 +1,14 @@
-// Git semantics for workflow landings. Repo changes live on a linked
-// worktree + branch. The primary checkout stays on the base branch.
+// Git semantics for workflow landings. Delegated work happens in a self-contained
+// clone capsule; the primary repository stays on the base branch.
 
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 
 export const WORKTREES_DIR = ".qq-worktrees";
 
 export function repoRootFor(cwd) {
-  if (!cwd || typeof cwd !== "string") return cwd;
-  if (existsSync(join(cwd, "qq-ui"))) return cwd;
-  const parent = dirname(cwd);
-  if (existsSync(join(parent, "qq-ui"))) return parent;
   return cwd;
 }
 
@@ -128,18 +124,21 @@ export async function createDelegatedWorktree(run, { cwd, brief, id, env = proce
     worktree = worktreePathFor(git.mainRoot, slug, env);
   }
   mkdirSync(dirname(worktree), { recursive: true });
-  // Task-local capsule: clone with shared object alternates for fast, isolated repository
+  // Task-local capsule: clone with shared object alternates for speed while
+  // retaining an ordinary .git directory inside the writable capsule.
   const clone = await run("git", ["clone", "--shared", "--no-checkout", git.mainRoot, worktree]);
-  if (clone?.code === 0) {
-    await checked(run, "git", ["checkout", "-b", branch, "HEAD"], { cwd: worktree }, "capsule checkout failed");
-  } else {
-    await checked(
-      run,
-      "git",
-      ["worktree", "add", "-b", branch, worktree, "HEAD"],
-      { cwd: git.worktree },
-      "git worktree add failed",
-    );
+  if (clone?.code !== 0) {
+    rmSync(worktree, { recursive: true, force: true });
+    throw new Error(`delegation capsule clone failed: ${reason(clone, "git clone failed")}`);
   }
-  return inspectWorktree(run, worktree);
+  try {
+    await checked(run, "git", ["checkout", "-b", branch, "HEAD"], { cwd: worktree }, "capsule checkout failed");
+    if (!existsSync(join(worktree, ".git", "HEAD"))) {
+      throw new Error("delegation capsule clone did not create an internal .git directory");
+    }
+    return await inspectWorktree(run, worktree);
+  } catch (error) {
+    rmSync(worktree, { recursive: true, force: true });
+    throw error;
+  }
 }

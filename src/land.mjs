@@ -4,8 +4,8 @@
 // QA child, and packet the architect session through qq-relay default steer.
 //
 // This is not iterate's pixel reviewer. QA has tools and owns test-only
-// commits. Paint-only changes may land; control paths default to review. The
-// bound qq-task archives only after the merge/cleanup succeeds.
+// commits. Paint-only changes may land; control paths default to review. An optional
+// external task record archives only after the merge/cleanup succeeds.
 
 import { randomUUID } from "node:crypto";
 import { existsSync, rmSync } from "node:fs";
@@ -21,10 +21,10 @@ import {
   qaLookPrompt,
   routePacket,
   stampFromEvidence,
-} from "../../bin/lib/review.mjs";
-import { createQaVerdict } from "../../bin/lib/qa-verdict.mjs";
-import { oneShot } from "../../core/src/ask.mjs";
-import { AGENT_HANDLE, adoptAgentHandle } from "../../core/src/session.mjs";
+} from "./routing.mjs";
+import { createQaVerdict } from "./qa-verdict.mjs";
+import { oneShot } from "./ask.mjs";
+import { AGENT_HANDLE, adoptAgentHandle } from "./agent-handle.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
 import { withChildSettlement } from "./child-settlement.mjs";
 import {
@@ -1606,7 +1606,7 @@ export function createLand({
       if (next.taskId) {
         try {
           const service = tasksOf();
-          if (!service || typeof service.archive !== "function") throw new Error("qq-tasks is unavailable");
+          if (!service || typeof service.archive !== "function") throw new Error("task archive is unavailable");
           archivedTaskId = String(await service.archive(next.taskId));
         } catch (error) {
           archiveError = error instanceof Error ? error.message : String(error);

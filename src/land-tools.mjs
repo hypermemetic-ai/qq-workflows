@@ -2,7 +2,7 @@
 // the isolated QA child. The architect/base chair may call `land` to land an
 // existing worktree; merge never registers as a user-facing workflow.
 
-import { createQaVerdict, validateQaVerdictInput } from "../../bin/lib/qa-verdict.mjs";
+import { createQaVerdict, validateQaVerdictInput } from "./qa-verdict.mjs";
 import { armChildSettlement } from "./child-settlement.mjs";
 
 function textBlock(text) {

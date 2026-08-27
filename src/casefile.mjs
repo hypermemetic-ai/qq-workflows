@@ -45,7 +45,7 @@ export function titleOf(text) {
   return title || "Working memory";
 }
 
-/** Body after the first heading, for the qq-tasks ticket. */
+/** Body after the first heading, for an optional task ticket. */
 export function bodyOf(text) {
   const raw = String(text ?? "").replace(/\r\n/g, "\n");
   const heading = raw.match(/^#\s+.+?(?:\n|$)/);

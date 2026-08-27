@@ -21,8 +21,8 @@ import { hideHarnessToolsOn } from "./hide-harness.mjs";
 import { repoRootFor } from "./git.mjs";
 import { formatProjection, projectJournal } from "./journal.mjs";
 import { randomUUID } from "node:crypto";
-import { oneShot } from "../../core/src/ask.mjs";
-import { adoptAgentHandle } from "../../core/src/session.mjs";
+import { oneShot } from "./ask.mjs";
+import { adoptAgentHandle } from "./agent-handle.mjs";
 
 export const ITERATE_LABEL = "workflows:iterate";
 export const CHILD_ORIGIN = "subagent";

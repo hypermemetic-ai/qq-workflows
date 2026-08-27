@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Named workflows, architect, find, and base. Land is a git side effect, not a selectable workflow. qq expects the plugin and still runs if it is absent.",
+  "description": "Named DSH workflows, delegation capsules, QA, and host-owned landing. Core boots when this plugin is absent.",
   "main": "src/plugin.mjs",
   "exports": {
     ".": "./src/plugin.mjs",
@@ -23,9 +23,14 @@
     "./settings": "./src/settings.mjs",
     "./command": "./src/command.mjs",
     "./context": "./src/context.mjs",
-    "./transition": "./src/transition.mjs"
+    "./transition": "./src/transition.mjs",
+    "./routing": "./src/routing.mjs",
+    "./qa-verdict": "./src/qa-verdict.mjs"
   },
   "files": [
     "src/"
-  ]
+  ],
+  "scripts": {
+    "test": "node tests/git-geometry.mjs"
+  }
 }
