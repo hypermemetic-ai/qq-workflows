@@ -204,16 +204,29 @@ function sessionIdOf(agent) {
   return agent?.session?.id ?? agent?.id ?? "";
 }
 
+function messageHasId(message, messageId) {
+  return message?.id === messageId || message?.data?.id === messageId;
+}
+
 function messageInserted(agent, messageId) {
   if (!agent || typeof messageId !== "string" || !messageId) return false;
   const pending = [
     ...(agent.inbox?.nextTurn ?? []),
     ...(agent.inbox?.nextStep ?? []),
   ];
-  if (pending.some((message) => message?.id === messageId)) return true;
-  return (agent.session?.events ?? []).some((event) =>
-    event?.type === "user/message"
-    && (event.data?.id === messageId || event.data?.message?.id === messageId));
+  if (pending.some((message) => messageHasId(message, messageId))) return true;
+  // DSH followup splices into the inbox then wakes the driver. The driver
+  // claims that splice before it appends user/message, so a synchronous check
+  // must treat the durable inbox insertion as retention.
+  return (agent.session?.events ?? []).some((event) => {
+    if (event?.type === "user/message") {
+      return messageHasId(event.data, messageId) || messageHasId(event.data?.message, messageId);
+    }
+    if (event?.type === "agent/inbox/spliced") {
+      return (event.data?.inserted ?? []).some((message) => messageHasId(message, messageId));
+    }
+    return false;
+  });
 }
 
 function parseChangedPaths(source) {

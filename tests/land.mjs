@@ -91,7 +91,7 @@ function packet(brief, files) {
   };
 }
 
-function childAgent({ id, cwd, registered, restricted, followups, listeners, origin = CHILD_ORIGIN, onFollowup }) {
+function childAgent({ id, cwd, registered, restricted, followups, listeners, origin = CHILD_ORIGIN, onFollowup, claimFollowup = false }) {
   const inbox = { nextTurn: [], nextStep: [] };
   const sections = [];
   const toolService = {
@@ -129,11 +129,25 @@ function childAgent({ id, cwd, registered, restricted, followups, listeners, ori
     inbox,
     followup(message) {
       child.status = "running";
-      if (!inbox.nextTurn.some((candidate) => candidate?.id === message?.id)
-        && !child.session.events.some((event) => event?.type === "user/message"
-          && (event.data?.id === message?.id || event.data?.message?.id === message?.id))) {
-        inbox.nextTurn.push(message);
+      const already = inbox.nextTurn.some((candidate) => candidate?.id === message?.id)
+        || child.session.events.some((event) =>
+          (event?.type === "user/message" && (event.data?.id === message?.id || event.data?.message?.id === message?.id))
+          || (event?.type === "agent/inbox/spliced"
+            && (event.data?.inserted ?? []).some((candidate) => candidate?.id === message?.id)));
+      if (!already) {
+        child.session.events.push({
+          type: "agent/inbox/spliced",
+          data: { target: "next-turn", start: 0, inserted: [message] },
+        });
         followups?.push({ id, message });
+        if (claimFollowup) {
+          child.session.events.push({
+            type: "agent/inbox/spliced",
+            data: { target: "next-turn", start: 0, removedCount: 1, inserted: [] },
+          });
+        } else {
+          inbox.nextTurn.push(message);
+        }
       }
       onFollowup?.({ child, message });
     },
@@ -237,7 +251,7 @@ async function executeQaTool(land, record, args, { isError = false, duplicateRes
   return result;
 }
 
-function createHarness({ complete, worktree, tasks, parentHeader = {}, run, store: suppliedStore, onCreate, onChildFollowup, onHang } = {}) {
+function createHarness({ complete, worktree, tasks, parentHeader = {}, run, store: suppliedStore, onCreate, onChildFollowup, onHang, claimFollowup = false } = {}) {
   const sent = [];
   const created = [];
   const followups = [];
@@ -304,6 +318,7 @@ function createHarness({ complete, worktree, tasks, parentHeader = {}, run, stor
         followups,
         listeners,
         onFollowup: onChildFollowup,
+        claimFollowup,
       });
       Object.assign(child.session.header, {
         landRole: options.meta?.landRole,
@@ -858,6 +873,31 @@ try {
     assert.equal(sent.length, 1);
     assert.match(sent[0].message, /Landed on main/);
     assert.equal(existsSync(repo.worktree), false);
+  }
+
+  // ---------------------------------------------------------------- QA followup claimed before user/message still starts
+  {
+    const repo = initRepo({ branch: "feat/claimed-packet" });
+    commitFile(repo.worktree, "core/src/session.mjs", "export const x = 1;\n", "session tweak");
+    const { land, created, children } = createHarness({
+      complete: async () => "review",
+      worktree: repo.worktree,
+      claimFollowup: true,
+    });
+    const implementer = childAgent({ id: implementerId, cwd: repo.worktree, registered: [] });
+    await land.adoptImplementer(implementer, {
+      packet: "tighten session identity handling",
+      parentSession: architectId,
+      cwd: repo.worktree,
+    });
+    const submitted = await land.done({ agent: implementer, ref: "HEAD" });
+    assert.equal(submitted.status, "ok");
+    assert.equal(submitted.mark, "review");
+    assert.equal(created.length, 1);
+    assert.ok(children.get(submitted.qa));
+    const run = land.bySession(submitted.qa);
+    assert.equal(run.status, "reviewing");
+    assert.notEqual(run.blockedReason, "qa child startup failed: qa child did not retain its work packet");
   }
 
   // ---------------------------------------------------------------- look-1 fail starts a fresh implementer, not the original
