@@ -1,6 +1,7 @@
 // Hide DSH harness extras this chair does not use. Relay is the mailbox.
-// Delegate and go start children. Do not sermon the model: the tools are gone,
-// and architect/Mini do not receive AGENTS.md as a standing dump.
+// Delegate and go start children. Do not sermon the model: the tools are gone.
+// AGENTS.md is not a standing channel. Wiki index, working memory, and role
+// prompts remain.
 
 export const HIDDEN_HARNESS_TOOLS = Object.freeze([
   "subagent",
@@ -51,6 +52,15 @@ export function stripAgentInstructionMessages(messages) {
   if (!Array.isArray(messages)) return messages;
   const next = messages.filter((message) => !isAgentInstructionsMessage(message));
   return next.length === messages.length ? messages : next;
+}
+
+/** Strip the instructions dump injected by inner pre-step middleware. */
+export async function stripAgentInstructionsPreStep(_event, next) {
+  const decision = await next();
+  if (!decision || decision.kind === "reject") return decision;
+  const messages = stripAgentInstructionMessages(decision.messages);
+  if (messages === decision.messages) return decision;
+  return { ...decision, messages };
 }
 
 /** Restrict + guard. Returns a lift, or null when tools cannot hide. */

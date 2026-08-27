@@ -35,6 +35,6 @@
     "src/"
   ],
   "scripts": {
-    "test": "node tests/fold.mjs && node tests/observation.mjs && node tests/git-geometry.mjs && node tests/routing.mjs && node tests/architect-case-context.mjs && node tests/architect-wiki-index.mjs && node tests/mini-review.mjs && node tests/land.mjs"
+    "test": "node tests/fold.mjs && node tests/observation.mjs && node tests/hide-harness.mjs && node tests/git-geometry.mjs && node tests/routing.mjs && node tests/architect-case-context.mjs && node tests/architect-wiki-index.mjs && node tests/mini-review.mjs && node tests/land.mjs"
   }
 }

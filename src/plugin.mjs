@@ -15,7 +15,7 @@ import { ensureMiniMounted, isMiniAgent, MINI_SWE_MIGRATION } from "./official-m
 import { ensureMiniReviewMounted, isMiniReviewAgent } from "./mini-review.mjs";
 import {
   hideHarnessTools,
-  stripAgentInstructionMessages,
+  stripAgentInstructionsPreStep,
   stripHiddenHarnessTools,
   toolsOf,
 } from "./hide-harness.mjs";
@@ -179,17 +179,6 @@ export function apply(ctx, config = {}) {
   function shouldHideHarness(agent) {
     if (!agent) return false;
     if (originOf(agent) === CHILD_ORIGIN) return true;
-    const selected = selectedName(sessionIdOf(agent));
-    return selected === "architect";
-  }
-
-  // Architect standing context is role, bounded wiki index when present,
-  // working memory, and fold. DSH agent-instructions is not another channel.
-  // Minis also drop the dump; other children keep nested AGENTS.md.
-  function shouldHideInstructions(agent) {
-    if (!agent) return false;
-    if (isMiniAgent(agent) || isMiniReviewAgent(agent)) return true;
-    if (originOf(agent) === CHILD_ORIGIN) return false;
     const selected = selectedName(sessionIdOf(agent));
     return selected === "architect";
   }
@@ -692,15 +681,7 @@ export function apply(ctx, config = {}) {
   });
   // Prepend: agent-instructions injects after next(). Wrapping it is the
   // only way the dump does not re-enter the batch we just stripped.
-  ctx.on("agent/pre-step", async (event, next) => {
-    const decision = await next();
-    const agent = event?.agent ?? event?.scope;
-    if (!shouldHideInstructions(agent)) return decision;
-    if (!decision || decision.kind === "reject") return decision;
-    const messages = stripAgentInstructionMessages(decision.messages);
-    if (messages === decision.messages) return decision;
-    return { ...decision, messages };
-  }, { prepend: true });
+  ctx.on("agent/pre-step", stripAgentInstructionsPreStep, { prepend: true });
 
   if (typeof agents?.list === "function") {
     for (const agent of agents.list()) {
