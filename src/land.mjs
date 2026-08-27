@@ -24,7 +24,7 @@ import {
 } from "../../bin/lib/review.mjs";
 import { createQaVerdict } from "../../bin/lib/qa-verdict.mjs";
 import { oneShot } from "../../core/src/ask.mjs";
-import { adoptAgentHandle } from "../../core/src/session.mjs";
+import { AGENT_HANDLE, adoptAgentHandle } from "../../core/src/session.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
 import { withChildSettlement } from "./child-settlement.mjs";
 import {
@@ -394,6 +394,14 @@ export function createLand({
   const childOwners = new Map();
   const settlementPromises = new Map();
   const settledQa = new Set();
+  // These controller-level sets, unlike owner diagnostics, survive the gap in
+  // which a committed phase transition has disposed its old child but has not
+  // retained the intended successor yet.
+  const activeSubmissions = new Set();
+  const activeTransitions = new Set();
+  const pendingRecoveries = new Map();
+  let closing = false;
+  let disposePromise = null;
 
   function tasksOf() {
     return typeof tasks === "function" ? tasks() : tasks ?? null;
@@ -711,11 +719,23 @@ export function createLand({
     });
   }
 
+  function trackControllerTransition(promise, owner) {
+    activeTransitions.add(promise);
+    owner?.activeTransitions.add(promise);
+    void promise.finally(() => {
+      activeTransitions.delete(promise);
+      owner?.activeTransitions.delete(promise);
+    }).catch(() => {});
+    return promise;
+  }
+
   function runArmedSettlement(owner, pending) {
     if (pending.started || (!pending.resultCommitted && !pending.resultFailed) || !pending.idle) return;
     pending.started = true;
     owner.settlements.delete(pending.callId);
-    const promise = (async () => {
+    // Defer execution one microtask so the controller owns the transition
+    // promise before any action can dispose the old owner or trigger teardown.
+    const promise = Promise.resolve().then(async () => {
       if (pending.resultFailed) {
         let delivered = false;
         try {
@@ -738,9 +758,8 @@ export function createLand({
         pending.resolve(false);
         return false;
       }
-    })();
-    owner.activeTransitions.add(promise);
-    void promise.finally(() => owner.activeTransitions.delete(promise));
+    });
+    trackControllerTransition(promise, owner);
     settlementPromises.set(owner.sessionId, promise);
   }
 
@@ -863,6 +882,7 @@ export function createLand({
   }
 
   async function trackChildSubmission(sessionId, action) {
+    if (closing) return { status: "refused", reason: "workflow child is no longer owned because its controller is closing" };
     const owner = childOwners.get(sessionId);
     if (!owner) return { status: "refused", reason: "workflow child is no longer owned" };
     const waiting = Promise.withResolvers();
@@ -875,10 +895,12 @@ export function createLand({
         if (this.released) return;
         this.released = true;
         owner.activeSubmissions.delete(waiting.promise);
+        activeSubmissions.delete(waiting.promise);
         waiting.resolve();
       },
     };
     owner.activeSubmissions.add(waiting.promise);
+    activeSubmissions.add(waiting.promise);
     try {
       return await action(submission);
     } finally {
@@ -887,6 +909,11 @@ export function createLand({
   }
 
   function retainChild(handle, { child = handle?.agent ?? handle, role, workflowRole, runId } = {}) {
+    // Accepted controller transitions may finish while closing, but no caller
+    // can establish ownership after the controller has drained those promises.
+    if (closing && activeTransitions.size === 0) {
+      throw new Error("land workflow controller is closing");
+    }
     const sessionId = sessionIdOf(child);
     if (!sessionId) throw new Error("child AgentHandle has no session");
     if (handle?.agent && handle.agent !== child) {
@@ -1205,7 +1232,8 @@ export function createLand({
     return true;
   }
 
-  function resumeChild(child) {
+  function resumeChild(child, { allowClosing = false } = {}) {
+    if (closing && !allowClosing) return false;
     const sessionId = sessionIdOf(child);
     if (!sessionId) return false;
     let state = store.bySession(sessionId);
@@ -1216,7 +1244,7 @@ export function createLand({
       || pending
       || (state.reportPending && state.reportFromSession === sessionId);
     if (!recoverable) return false;
-    const retained = child?.[CHILD_AGENT_HANDLE];
+    const retained = child?.[CHILD_AGENT_HANDLE] ?? child?.[AGENT_HANDLE];
     if (!retained) return false;
     let owner;
     if (pending) {
@@ -1300,6 +1328,93 @@ export function createLand({
       }
       throw error;
     }
+  }
+
+  function liveAgent(sessionId) {
+    const direct = agents?.get?.(sessionId);
+    if (direct) return direct;
+    if (typeof agents?.list !== "function") return null;
+    return agents.list().find((agent) => sessionIdOf(agent) === sessionId) ?? null;
+  }
+
+  async function recoverPendingPhase(runId) {
+    let state = store.load(runId);
+    const pending = state?.pendingPhase;
+    if (!state || !pending || !state.transitioning) return false;
+    if (!pending.messageId || !pending.message) {
+      throw new Error(`land run ${runId} pending phase has no durable work packet`);
+    }
+
+    const owned = childOwners.get(pending.sessionUuid);
+    if (owned) {
+      if (owned.runId !== state.id || owned.workflowRole !== pending.role) {
+        throw new Error(`land run ${runId} intended child is owned by another phase`);
+      }
+      activatePendingChild(owned, state, pending);
+      return true;
+    }
+
+    // Same-process HMR leaves the AgentHandle capability on a live child. Use
+    // it instead of touching agents.create, including pending packet recovery.
+    let child = liveAgent(pending.sessionUuid);
+    if (child) {
+      return resumeChild(child, { allowClosing: true });
+    }
+
+    const role = pending.role.startsWith("qa-") ? "qa" : "implementer";
+    let spawned;
+    try {
+      spawned = await spawnChild({
+        sessionUuid: pending.sessionUuid,
+        role,
+        workflowRole: pending.role,
+        runId: state.id,
+        delegationId: state.delegationId,
+        phaseEpoch: pending.phaseEpoch,
+        cwd: state.worktree,
+        parentSession: state.parentSessionUuid || state.architectSession,
+      });
+    } catch (error) {
+      // A concurrent recovery can win the fixed-UUID create. Re-adopt that
+      // exact endpoint when its retained capability is visible; never choose a
+      // fresh UUID or issue a second create for this recovery attempt.
+      child = liveAgent(pending.sessionUuid);
+      if (child && resumeChild(child, { allowClosing: true })) return true;
+      throw error;
+    }
+
+    state = store.load(runId) ?? state;
+    if (state.current?.sessionUuid === pending.sessionUuid
+      && state.current.role === pending.role
+      && state.current.phaseEpoch === pending.phaseEpoch
+      && !state.pendingPhase) {
+      return true;
+    }
+    activatePendingChild(spawned.owner, state, pending);
+    return true;
+  }
+
+  function recoverPendingRun(runId) {
+    const existing = pendingRecoveries.get(runId);
+    if (existing) return existing;
+    if (closing) return Promise.resolve(false);
+    // Register before executing recovery so plugin teardown sees the promise
+    // even if apply and dispose occur in the same turn.
+    const promise = Promise.resolve().then(() => recoverPendingPhase(runId));
+    pendingRecoveries.set(runId, promise);
+    trackControllerTransition(promise);
+    void promise.finally(() => {
+      if (pendingRecoveries.get(runId) === promise) pendingRecoveries.delete(runId);
+    }).catch(() => {});
+    return promise;
+  }
+
+  async function recoverPendingPhases() {
+    if (closing) return [];
+    const pending = store.list()
+      .filter((state) => state.transitioning && state.pendingPhase)
+      .map((state) => recoverPendingRun(state.id));
+    return Promise.allSettled(pending);
   }
 
   async function packetDiff(state) {
@@ -1824,29 +1939,42 @@ ${message}`,
     }
   }
 
-  async function dispose() {
-    for (const handle of [...attached.values()]) handle.detach();
-    let detached = 0;
-    while (childOwners.size > 0) {
-      const owners = [...childOwners.values()];
-      // A child submission may still be doing asynchronous inspection before
-      // it can durably arm its exact tool-result settlement. A committed result
-      // transition is also legitimate workflow work, not teardown. Drain both
-      // to a fixed point before detaching: either can retain a successor owner.
-      const active = owners.flatMap((owner) => [
-        ...owner.activeSubmissions,
-        ...owner.activeTransitions,
-      ]);
-      if (active.length > 0) {
-        await Promise.allSettled(active);
-        continue;
+  function dispose() {
+    if (disposePromise) return disposePromise;
+    closing = true;
+    disposePromise = (async () => {
+      for (const handle of [...attached.values()]) handle.detach();
+      let detached = 0;
+
+      // Controller work is the teardown authority. In particular it remains
+      // visible after disposeChild has removed the old owner and before the
+      // accepted transition has retained its successor. Submissions are kept
+      // here as well so the pre-arm drain survives owner replacement.
+      while (activeSubmissions.size > 0 || activeTransitions.size > 0) {
+        await Promise.allSettled([...activeSubmissions, ...activeTransitions]);
       }
-      for (const owner of owners) {
-        if (childOwners.get(owner.sessionId) === owner && detachChildOwner(owner)) detached++;
+
+      // Once controller work is quiescent, drain and detach every owner to a
+      // fixed point. Owner sets remain useful diagnostics and cover work that
+      // was already local to an owner when closing began.
+      while (childOwners.size > 0) {
+        const owners = [...childOwners.values()];
+        const active = owners.flatMap((owner) => [
+          ...owner.activeSubmissions,
+          ...owner.activeTransitions,
+        ]);
+        if (active.length > 0) {
+          await Promise.allSettled(active);
+          continue;
+        }
+        for (const owner of owners) {
+          if (childOwners.get(owner.sessionId) === owner && detachChildOwner(owner)) detached++;
+        }
       }
-    }
-    for (const sessionId of [...childTools.keys()]) clearChildTools(sessionId);
-    return { detached };
+      for (const sessionId of [...childTools.keys()]) clearChildTools(sessionId);
+      return { detached };
+    })();
+    return disposePromise;
   }
 
   return Object.freeze({
@@ -1856,6 +1984,7 @@ ${message}`,
     adoptImplementer,
     resumeImplementer,
     resumeChild,
+    recoverPendingPhases,
     releaseChild,
     refreshLabels,
     workflowStatus,

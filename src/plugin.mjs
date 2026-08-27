@@ -685,6 +685,21 @@ export function apply(ctx, config = {}) {
       }
     }
   }
+  // A true process restart has no live Agent to drive syncMini. Recover every
+  // durable pending phase after adopting live handles; land.dispose owns and
+  // drains these per-run recovery promises if HMR starts immediately.
+  void land.recoverPendingPhases?.().then((results) => {
+    for (const result of results ?? []) {
+      if (result.status !== "rejected") continue;
+      ctx.logger?.warn?.(
+        `qq-workflows: pending land phase recovery failed: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+      );
+    }
+  }).catch((error) => {
+    ctx.logger?.warn?.(
+      `qq-workflows: pending land phase recovery failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
 
   ctx.effect(() => async () => {
     if (typeof agents?.list === "function") {
