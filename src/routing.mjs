@@ -29,22 +29,84 @@ export function parseNumstat(source) {
   return files;
 }
 
-export function parseDiffPointers(source, limit = PACKET_POINTER_LIMIT) {
+const POINTER_HEADER_LIMIT = 64 * 1024;
+
+function createDiffPointerCollector(limit = PACKET_POINTER_LIMIT) {
   const pointers = [];
   let path = "";
-  for (const line of String(source ?? "").split("\n")) {
-    const file = line.match(/^\+\+\+ (?:b\/)?(.+)$/);
+  let line = "";
+  let mode = "candidate";
+  let streamed = false;
+
+  function couldBePointerHeader(value) {
+    return "+++ ".startsWith(value) || value.startsWith("+++ ")
+      || "@@ ".startsWith(value) || value.startsWith("@@ ");
+  }
+
+  function consumeLine() {
+    if (mode === "discard") return;
+    const source = line.endsWith("\r") ? line.slice(0, -1) : line;
+    const file = source.match(/^\+\+\+ (?:b\/)?(.+)$/);
     if (file) {
       path = file[1] === "/dev/null" ? "" : file[1];
-      continue;
+      return;
     }
-    const hunk = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/);
-    if (!hunk || !path) continue;
+    const hunk = source.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/);
+    if (!hunk || !path) return;
     const context = hunk[2].trim();
     pointers.push(context ? `${path}:${hunk[1]} ${context}` : `${path}:${hunk[1]}`);
-    if (pointers.length >= limit) break;
   }
-  return pointers;
+
+  function append(segment) {
+    if (mode === "discard" || !segment) return;
+    const available = Math.max(0, POINTER_HEADER_LIMIT - line.length);
+    line += segment.slice(0, available);
+    if (!couldBePointerHeader(line)) {
+      line = "";
+      mode = "discard";
+    } else if (segment.length > available) {
+      // A pathological changed line must not become a replacement full-diff
+      // buffer. The metadata prefix remains sufficient for a hunk pointer.
+      mode = "truncated";
+    }
+  }
+
+  function resetLine() {
+    line = "";
+    mode = "candidate";
+  }
+
+  return {
+    get streamed() { return streamed; },
+    write(chunk, fromStream = false) {
+      if (fromStream) streamed = true;
+      const text = String(chunk ?? "");
+      let offset = 0;
+      while (offset < text.length && pointers.length < limit) {
+        const newline = text.indexOf("\n", offset);
+        if (newline === -1) {
+          append(text.slice(offset));
+          break;
+        }
+        append(text.slice(offset, newline));
+        consumeLine();
+        resetLine();
+        offset = newline + 1;
+      }
+      return pointers.length < limit;
+    },
+    finish() {
+      if (line && pointers.length < limit) consumeLine();
+      resetLine();
+      return pointers;
+    },
+  };
+}
+
+export function parseDiffPointers(source, limit = PACKET_POINTER_LIMIT) {
+  const collector = createDiffPointerCollector(limit);
+  collector.write(source);
+  return collector.finish();
 }
 
 function fileCounts(file) {
@@ -70,18 +132,25 @@ async function readBrief(state) {
 export async function compilePacket(run, state, options = {}) {
   const view = { ...state, ref: options.ref ?? state.ref };
   const files = (options.files ?? await packFor(run, view)).map(fileCounts);
+  const collector = createDiffPointerCollector();
   const unified = await checked(
     run,
     "git",
-    ["diff", "-U0", "--no-color", `${view.baseRef}...${view.ref}`],
-    { cwd: view.worktree },
+    ["diff", "-U0", "--no-color", `${view.baseRef}...${view.ref}`, "--"],
+    {
+      cwd: view.worktree,
+      onStdout(chunk) { return collector.write(chunk, true); },
+    },
     "cannot collect packet pointers",
   );
+  // Injected runners may not implement streaming. Preserve compatibility for
+  // their bounded stdout results without duplicating streamed data.
+  if (!collector.streamed) collector.write(unified.stdout);
   return {
     schema: ROUTE_PACKET_SCHEMA,
     brief: options.brief ?? await readBrief(view),
     files,
-    pointers: parseDiffPointers(unified.stdout),
+    pointers: collector.finish(),
     mark: options.mark ?? null,
   };
 }

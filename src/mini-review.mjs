@@ -255,16 +255,19 @@ function installTools(holder) {
     throw new Error("mini-review requires tools.register and tools.restrict");
   }
   const lifts = [];
-  for (const tool of buildMiniReviewTools()) {
-    const lift = tools.register(tool);
-    if (typeof lift === "function") lifts.push(lift);
-  }
-  const restrict = () => tools.restrict({ allow: [...MINI_REVIEW_TOOL_NAMES] });
+  // Empty allow inherits no DSH globals. Register the immutable Git-oracle
+  // implementations only after isolation, so live-workspace grep/glob cannot
+  // leak into a review look. Restriction failures intentionally abort setup.
+  const restrict = () => tools.restrict({ allow: [] });
   if (typeof holder.effect === "function") {
     const lift = holder.effect(restrict, "qq-workflows mini-review");
     if (typeof lift === "function") lifts.push(lift);
   } else {
     const lift = restrict();
+    if (typeof lift === "function") lifts.push(lift);
+  }
+  for (const tool of buildMiniReviewTools()) {
+    const lift = tools.register(tool);
     if (typeof lift === "function") lifts.push(lift);
   }
   return () => {

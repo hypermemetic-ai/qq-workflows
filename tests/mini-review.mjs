@@ -189,6 +189,7 @@ const mountedTools = [];
 const mountedSections = [];
 const mountedRestrictions = [];
 const mountedListeners = [];
+const mountOperations = [];
 let runtimeSuppressed = false;
 const mountCtx = {
   systemPrompt: {
@@ -200,10 +201,12 @@ const mountCtx = {
   },
   tools: {
     register(tool) {
+      mountOperations.push(`register:${tool.name}`);
       mountedTools.push(tool);
       return () => mountedTools.splice(mountedTools.indexOf(tool), 1);
     },
     restrict(spec) {
+      mountOperations.push("restrict");
       const record = { spec, active: true };
       mountedRestrictions.push(record);
       return () => { record.active = false; };
@@ -222,14 +225,46 @@ assert.equal(mountedSections.length, 1);
 assert.equal(mountedSections[0].complete, true);
 assert.equal(mountedSections[0].text, MINI_REVIEW_SYSTEM_PROMPT);
 assert.deepEqual(mountedTools.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
-assert.deepEqual(mountedRestrictions.filter((record) => record.active).map((record) => record.spec.allow), [MINI_REVIEW_TOOL_NAMES]);
+assert.deepEqual(mountedRestrictions.filter((record) => record.active).map((record) => record.spec.allow), [[]]);
+assert.deepEqual(mountOperations.slice(0, 5), [
+  "restrict",
+  "register:grep",
+  "register:glob",
+  "register:view",
+  "register:submit_review",
+]);
 assert.equal(mountedListeners.length, 2);
 assert.equal(miniReviewModuleForHmr.assembleMiniReviewPrompt(mountedSections, { runtimeSuppressed }), MINI_REVIEW_SYSTEM_PROMPT);
 const nextGeneration = await import(`../src/mini-review.mjs?hmr=${Date.now()}`);
 nextGeneration.miniReviewSetup(mountCtx);
 assert.equal(mountedSections.length, 1);
 assert.deepEqual(mountedTools.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
-assert.equal(mountedRestrictions.filter((record) => record.active).length, 1);
+assert.deepEqual(mountedRestrictions.filter((record) => record.active).map((record) => record.spec.allow), [[]]);
 assert.equal(mountedListeners.length, 2);
+
+// Restriction is mandatory and precedes every plugin registration.
+let registrationsAfterRestrictionFailure = 0;
+const failedRestrictionCtx = {
+  systemPrompt: {
+    section() { return () => {}; },
+    suppressRuntimeContext() {},
+  },
+  tools: {
+    restrict(spec) {
+      assert.deepEqual(spec, { allow: [] });
+      throw new Error("global catalog restriction failed");
+    },
+    register() {
+      registrationsAfterRestrictionFailure++;
+      return () => {};
+    },
+  },
+  effect(effect) { return effect(); },
+};
+assert.throws(
+  () => miniReviewModuleForHmr.miniReviewSetup(failedRestrictionCtx),
+  /global catalog restriction failed/,
+);
+assert.equal(registrationsAfterRestrictionFailure, 0);
 
 console.log("mini-review tests passed");
