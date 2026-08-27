@@ -2,7 +2,7 @@
 // chair may call `land` to land an
 // existing worktree; merge never registers as a user-facing workflow.
 
-import { armChildSettlement } from "./child-settlement.mjs";
+import { armChildSettlement, childToolOutput } from "./child-settlement.mjs";
 
 function textBlock(text) {
   return { type: "text", text };
@@ -48,7 +48,9 @@ export function buildDoneTool({ submit } = {}) {
         const result = await submit({ agent: exec?.agent, ref: args?.ref || "HEAD" });
         if (result?.status !== "refused") {
           armChildSettlement(result, exec);
+          const output = childToolOutput(result);
           try { exec?.concludeTurn?.(); } catch { /* accepted result remains armed */ }
+          return output;
         }
         return result;
       } catch (error) {

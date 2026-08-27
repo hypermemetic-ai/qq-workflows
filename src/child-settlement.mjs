@@ -26,3 +26,12 @@ export function armChildSettlement(value, exec, hooks = {}) {
 export function childSettlementOf(value) {
   return value?.[CHILD_SETTLEMENT] ?? null;
 }
+
+// Child-facing tools arm the private capability on an internal result, then
+// return this JSON-only copy. DSH validates every own key (including
+// non-enumerable symbols), so the capability-bearing object must never be the
+// tool output value.
+export function childToolOutput(value) {
+  if (value === undefined) return undefined;
+  return JSON.parse(JSON.stringify(value));
+}
