@@ -837,6 +837,35 @@ try {
     assert.match(git(repo.main, ["log", "-1", "--pretty=%s"]), /paint css|Merge/);
   }
 
+  // ---------------------------------------------------------------- done accepts a proposal whose unified diff exceeds 2 MB
+  {
+    const repo = initRepo({ branch: "feat/large-packet" });
+    commitFile(
+      repo.worktree,
+      "qq-ui/assets/large.css",
+      `${"x".repeat(2_100_000)}\n`,
+      "large generated stylesheet",
+    );
+    const { land, store } = createHarness({
+      complete: async () => "land",
+      worktree: repo.worktree,
+    });
+    const implementer = childAgent({ id: implementerId, cwd: repo.worktree, registered: [] });
+    const adopted = await land.adoptImplementer(implementer, {
+      packet: "paint css generated stylesheet",
+      parentSession: architectId,
+      cwd: repo.worktree,
+    });
+    const result = await land.done({ agent: implementer, ref: "HEAD" });
+    assert.equal(result.status, "ok");
+    assert.equal(result.mark, "land");
+    const settled = store.load(adopted.run);
+    assert.deepEqual(settled.packet.files, [
+      { path: "qq-ui/assets/large.css", added: 1, deleted: 0 },
+    ]);
+    assert.deepEqual(settled.packet.pointers, ["qq-ui/assets/large.css:1"]);
+  }
+
   // ---------------------------------------------------------------- control path → review → QA pass lands
   {
     const repo = initRepo({ branch: "feat/session" });
@@ -861,7 +890,10 @@ try {
     const qa = children.get(submitted.qa);
     assert.ok(qa);
     assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
-    assert.ok(restricted.some((row) => row.spec?.allow && JSON.stringify(row.spec.allow) === JSON.stringify(MINI_REVIEW_TOOL_NAMES)));
+    assert.deepEqual(
+      restricted.filter((row) => row.id === submitted.qa && row.active).map((row) => row.spec.allow),
+      [[]],
+    );
     const passed = await executeQaTool(land, qa, {
       verdict: "pass",
       summary: "session change is covered",

@@ -1,7 +1,7 @@
 // Git semantics for workflow landings. Delegated work happens in a self-contained
 // clone capsule; the primary repository stays on the base branch.
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
@@ -12,12 +12,97 @@ export function repoRootFor(cwd) {
   return cwd;
 }
 
+const COMMAND_MAX_BUFFER = 2_000_000;
+
+function runStreamingCommand(command, args, options) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    let stderrBytes = 0;
+    let stopped = false;
+    let timedOut = false;
+    let overflowed = false;
+    let streamError = null;
+    let spawnError = null;
+    const timeout = options.timeout ?? 30_000;
+    const timer = timeout > 0 ? setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, timeout) : null;
+    timer?.unref?.();
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      if (stopped || streamError) return;
+      try {
+        if (options.onStdout(chunk) === false) {
+          stopped = true;
+          child.kill();
+        }
+      } catch (error) {
+        streamError = error;
+        child.kill();
+      }
+    });
+    child.stderr.on("data", (chunk) => {
+      const bytes = Buffer.byteLength(chunk);
+      if (stderrBytes < COMMAND_MAX_BUFFER) {
+        const available = COMMAND_MAX_BUFFER - stderrBytes;
+        stderr += Buffer.from(chunk).subarray(0, available).toString("utf8");
+      }
+      stderrBytes += bytes;
+      if (stderrBytes > COMMAND_MAX_BUFFER && !overflowed) {
+        overflowed = true;
+        child.kill();
+      }
+    });
+    child.on("error", (error) => { spawnError = error; });
+    child.on("close", (code) => {
+      if (timer) clearTimeout(timer);
+      if (streamError) {
+        resolve({ code: 1, stdout: "", stderr: streamError instanceof Error ? streamError.message : String(streamError) });
+        return;
+      }
+      if (spawnError) {
+        resolve({
+          code: Number.isInteger(spawnError.code) ? spawnError.code : 1,
+          stdout: "",
+          stderr: stderr || spawnError.message,
+        });
+        return;
+      }
+      if (overflowed) {
+        resolve({ code: 1, stdout: "", stderr: stderr || "stderr exceeded maxBuffer" });
+        return;
+      }
+      if (timedOut) {
+        resolve({ code: 1, stdout: "", stderr: stderr || `command timed out after ${timeout}ms` });
+        return;
+      }
+      // A consumer that has enough evidence may stop a read-only command early.
+      if (stopped) {
+        resolve({ code: 0, stdout: "", stderr });
+        return;
+      }
+      resolve({ code: Number.isInteger(code) ? code : 1, stdout: "", stderr });
+    });
+  });
+}
+
 export function runCommand(command, args, options = {}) {
+  // Large, selectively consumed output must never enter execFile's aggregate
+  // stdout buffer. Other commands retain the existing bounded behavior.
+  if (typeof options.onStdout === "function") return runStreamingCommand(command, args, options);
   return new Promise((resolve) => {
     execFile(command, args, {
       cwd: options.cwd,
       encoding: "utf8",
-      maxBuffer: 2_000_000,
+      maxBuffer: COMMAND_MAX_BUFFER,
       timeout: options.timeout ?? 30_000,
       env: options.env,
     }, (error, stdout, stderr) => {
