@@ -25,7 +25,9 @@ const {
   ROUTE_PACKET_SCHEMA,
   isTestPath,
 } = reviewModule;
-const { createLand, LAND_LABEL, isLandCandidate, ROUTE_SYSTEM, runCommand } = landModule;
+const { createLand, LAND_LABEL, isLandCandidate, ROUTE_SYSTEM, runCommand, landWorktree } = landModule;
+const gitModule = await import(pathToFileURL(join(root, "src/git.mjs")));
+const { createDelegatedWorktree, LAND_GIT_IDENTITY } = gitModule;
 const { createLandStore, LAND_RUN_SCHEMA } = landStoreModule;
 const { buildDoneTool, DONE_TOOL_NAME } = landToolsModule;
 const { withChildSettlement } = childSettlementModule;
@@ -49,6 +51,23 @@ function gitEnv() {
     GIT_COMMITTER_EMAIL: "land@test",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: "/dev/null",
+  };
+}
+
+function isolatedLandGitEnv(overrides = {}) {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("GIT_AUTHOR_") || key.startsWith("GIT_COMMITTER_")
+      || key === "GIT_CONFIG_PARAMETERS" || /^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$/.test(key)) {
+      delete env[key];
+    }
+  }
+  delete env.EMAIL;
+  return {
+    ...env,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    ...overrides,
   };
 }
 
@@ -915,7 +934,7 @@ try {
     const mergeStarted = Promise.withResolvers();
     const releaseMerge = Promise.withResolvers();
     const identityRun = async (command, args, options) => {
-      if (command === "git" && args?.[0] === "merge") {
+      if (command === "git" && args?.includes("merge")) {
         mergeStarted.resolve();
         await releaseMerge.promise;
         return {
@@ -2563,6 +2582,68 @@ try {
     assert.match(sent[0].message, /Blocked/);
     assert.equal(existsSync(repo.worktree), true);
     assert.deepEqual(archived, []);
+  }
+
+  // ---------------------------------------------------------------- landWorktree merges when main has no committer identity
+  {
+    const isolated = isolatedLandGitEnv();
+    const run = (command, args, options = {}) => runCommand(command, args, { ...options, env: isolated });
+    const gitOk = async (cwd, args) => {
+      const result = await run("git", args, { cwd });
+      assert.equal(result.code, 0, result.stderr || result.stdout || `git ${args.join(" ")} failed`);
+      return result.stdout.replace(/\r?\n$/, "");
+    };
+    const seedCommit = async (cwd, message) => {
+      const seeded = isolatedLandGitEnv({
+        GIT_AUTHOR_NAME: "seed",
+        GIT_AUTHOR_EMAIL: "seed@test",
+        GIT_COMMITTER_NAME: "seed",
+        GIT_COMMITTER_EMAIL: "seed@test",
+      });
+      const result = await runCommand("git", ["commit", "-m", message], { cwd, env: seeded });
+      assert.equal(result.code, 0, result.stderr || result.stdout || "seed commit failed");
+    };
+
+    const rootDir = mkdtempSync(join(scratch, "anon-land-"));
+    const main = join(rootDir, "repo");
+    const capsules = join(rootDir, "capsules");
+    mkdirSync(main);
+    await gitOk(main, ["init", "-b", "main"]);
+    writeFileSync(join(main, "README.md"), "hello\n");
+    await gitOk(main, ["add", "README.md"]);
+    await seedCommit(main, "init");
+    const missingMain = await run("git", ["config", "--get", "user.name"], { cwd: main });
+    assert.equal(missingMain.code, 1);
+
+    const capsule = await createDelegatedWorktree(run, {
+      cwd: main,
+      brief: "anonymous land identity",
+      id: "session-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeee0001",
+      env: { QQ_WORKTREES_ROOT: capsules },
+    });
+    await gitOk(capsule.worktree, ["config", "--local", "user.name", "Capsule Bot"]);
+    await gitOk(capsule.worktree, ["config", "--local", "user.email", "capsule@test"]);
+    writeFileSync(join(capsule.worktree, "feature.txt"), "landed\n");
+    await gitOk(capsule.worktree, ["add", "feature.txt"]);
+    await gitOk(capsule.worktree, ["commit", "-m", "feature"]);
+    const ref = await gitOk(capsule.worktree, ["rev-parse", "HEAD"]);
+    const baseRef = await gitOk(main, ["rev-parse", "HEAD"]);
+    await landWorktree(run, {
+      mainRoot: main,
+      worktree: capsule.worktree,
+      branch: capsule.branch,
+      baseBranch: capsule.baseBranch,
+      baseRef,
+      ref,
+    });
+    const headed = await gitOk(main, ["log", "-1", "--format=%an <%ae> %s"]);
+    assert.equal(
+      headed,
+      `${LAND_GIT_IDENTITY.name} <${LAND_GIT_IDENTITY.email}> Merge commit '${ref}'`,
+    );
+    const stillMissing = await run("git", ["config", "--local", "--get", "user.name"], { cwd: main });
+    assert.equal(stillMissing.code, 1);
+    assert.equal(existsSync(capsule.worktree), false);
   }
 
   // ---------------------------------------------------------------- valid architect delegation isolates and completes its Land Mini

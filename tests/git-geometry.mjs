@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   createDelegatedWorktree,
+  LAND_GIT_IDENTITY,
+  gitIdentityArgs,
   repoRootFor,
   runCommand,
 } from "../src/git.mjs";
@@ -142,6 +144,12 @@ try {
   });
   await assertConfigMissing(localOnlyRun, anonymousCapsule.worktree, ["--local", "--get", "user.name"]);
   await assertConfigMissing(localOnlyRun, anonymousCapsule.worktree, ["--local", "--get", "user.email"]);
+
+  assert.deepEqual(gitIdentityArgs(), [
+    "-c", "user.name=qqp-bot",
+    "-c", "user.email=qqp-bot@aabbcdeffg.com",
+  ]);
+  assert.deepEqual(gitIdentityArgs(LAND_GIT_IDENTITY), gitIdentityArgs());
 
   const commands = [];
   const refuseClone = async (command, args, options) => {

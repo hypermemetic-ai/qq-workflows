@@ -11,7 +11,13 @@ import { randomUUID } from "node:crypto";
 import { existsSync, rmSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { checked, inspectWorktree, reason, runCommand } from "./git.mjs";
+import {
+  checked,
+  gitIdentityArgs,
+  inspectWorktree,
+  reason,
+  runCommand,
+} from "./git.mjs";
 
 import {
   compilePacket,
@@ -347,7 +353,13 @@ export async function landWorktree(run, state) {
     if (tree?.code !== 0 && !String(tree?.stderr ?? "").includes("unknown option")) {
       throw new Error(`proposal no longer merges cleanly: ${reason(tree, "command failed")}`);
     }
-    await checked(run, "git", ["merge", "--no-ff", "--no-edit", state.ref], { cwd: mainRoot }, "merge failed");
+    await checked(
+      run,
+      "git",
+      [...gitIdentityArgs(), "merge", "--no-ff", "--no-edit", state.ref],
+      { cwd: mainRoot },
+      "merge failed",
+    );
   }
   const isWorktree = existsSync(join(worktree, ".git")) && !existsSync(join(worktree, ".git", "HEAD"));
   if (isWorktree) {

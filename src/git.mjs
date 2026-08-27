@@ -126,18 +126,36 @@ export async function checked(run, command, args, options, label) {
   return result;
 }
 
+export const LAND_GIT_IDENTITY = Object.freeze({
+  name: "qqp-bot",
+  email: "qqp-bot@aabbcdeffg.com",
+});
+
+async function gitConfigValue(run, cwd, key, local = false) {
+  const args = local ? ["config", "--local", "--get", key] : ["config", "--get", key];
+  const configured = await run("git", args, { cwd });
+  if (configured?.code === 1) return "";
+  if (configured?.code !== 0) {
+    throw new Error(`cannot read Git ${key}: ${reason(configured, "git config failed")}`);
+  }
+  return configured.stdout.replace(/\r?\n$/, "");
+}
+
 async function stampGitIdentity(run, source, capsule) {
   for (const key of ["user.name", "user.email"]) {
-    const configured = await run("git", ["config", "--get", key], { cwd: source });
-    if (configured?.code === 1) continue;
-    if (configured?.code !== 0) {
-      throw new Error(`cannot read source Git ${key}: ${reason(configured, "git config failed")}`);
-    }
-    const value = configured.stdout.replace(/\r?\n$/, "");
+    const value = await gitConfigValue(run, source, key);
+    if (!value) continue;
     await checked(
       run, "git", ["config", "--local", key, value], { cwd: capsule }, `cannot stamp capsule Git ${key}`,
     );
   }
+}
+
+export function gitIdentityArgs(identity = LAND_GIT_IDENTITY) {
+  const name = String(identity?.name ?? "").trim();
+  const email = String(identity?.email ?? "").trim();
+  if (!name || !email) throw new Error("git identity requires name and email");
+  return ["-c", `user.name=${name}`, "-c", `user.email=${email}`];
 }
 
 export function slugFor(brief, id = "") {
