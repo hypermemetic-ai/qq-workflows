@@ -3,8 +3,8 @@
 // worktree. Both paths stamp land or review, run the land worker or an isolated
 // QA child, and packet the architect session through qq-relay default steer.
 //
-// This is not iterate's pixel reviewer. QA has tools and owns test-only
-// commits. Paint-only changes may land; control paths default to review. An optional
+// This is not iterate's pixel reviewer. QA is a read-only Mini-review look.
+// Paint-only changes may land; control paths default to review. An optional
 // external task record archives only after the merge/cleanup succeeds.
 
 import { randomUUID } from "node:crypto";
@@ -18,11 +18,11 @@ import {
   formatPacket,
   isTestPath,
   look1FixPrompt,
-  qaLookPrompt,
   routePacket,
   stampFromEvidence,
 } from "./routing.mjs";
 import { createQaVerdict } from "./qa-verdict.mjs";
+import { RepoOracle } from "./repo-oracle.mjs";
 import { oneShot } from "./ask.mjs";
 import { AGENT_HANDLE, adoptAgentHandle } from "./agent-handle.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
@@ -34,11 +34,14 @@ import {
   miniSetup,
   renderMiniSweTask,
 } from "./official-mini.mjs";
+import { buildDoneTool } from "./land-tools.mjs";
 import {
-  buildDoneTool,
-  buildQaVerdictTool,
-  QA_TOOL_ALLOWLIST,
-} from "./land-tools.mjs";
+  bindMiniReviewSubmit,
+  ensureMiniReviewMounted,
+  MINI_REVIEW_KIND,
+  miniReviewSetup,
+  renderMiniReviewTask,
+} from "./mini-review.mjs";
 
 export const LAND_LABEL = "workflows:land";
 export const LAND_RUN_LABEL_PREFIX = "workflows:land-run/";
@@ -58,16 +61,6 @@ export const ROUTE_SYSTEM = [
   "Control paths or words involving session, store, identity, review, land, run, handoff, or relay route to review even when the diff is small.",
   "The land fast path is paint — copy, comments, color, or stylesheet-only changes — not a line-count threshold.",
 ].join("\n");
-
-export const QA_SYSTEM = [
-  "You are the isolated QA chair.",
-  "Inspect the worktree and run the narrow checks that prove the brief.",
-  "On both looks, you own the tests and may commit test-only changes.",
-  "Never edit or commit production code.",
-  "Reject bad or excess tests, bloat, and over-engineering.",
-  "End by calling qa_verdict exactly once.",
-  "A pass requires a clean worktree; any test changes must already be committed.",
-].join(" ");
 
 /** A chair that may invoke land. Children never are. */
 export function isLandCandidate(agent) {
@@ -211,16 +204,29 @@ function sessionIdOf(agent) {
   return agent?.session?.id ?? agent?.id ?? "";
 }
 
+function messageHasId(message, messageId) {
+  return message?.id === messageId || message?.data?.id === messageId;
+}
+
 function messageInserted(agent, messageId) {
   if (!agent || typeof messageId !== "string" || !messageId) return false;
   const pending = [
     ...(agent.inbox?.nextTurn ?? []),
     ...(agent.inbox?.nextStep ?? []),
   ];
-  if (pending.some((message) => message?.id === messageId)) return true;
-  return (agent.session?.events ?? []).some((event) =>
-    event?.type === "user/message"
-    && (event.data?.id === messageId || event.data?.message?.id === messageId));
+  if (pending.some((message) => messageHasId(message, messageId))) return true;
+  // DSH followup splices into the inbox then wakes the driver. The driver
+  // claims that splice before it appends user/message, so a synchronous check
+  // must treat the durable inbox insertion as retention.
+  return (agent.session?.events ?? []).some((event) => {
+    if (event?.type === "user/message") {
+      return messageHasId(event.data, messageId) || messageHasId(event.data?.message, messageId);
+    }
+    if (event?.type === "agent/inbox/spliced") {
+      return (event.data?.inserted ?? []).some((message) => messageHasId(message, messageId));
+    }
+    return false;
+  });
 }
 
 function parseChangedPaths(source) {
@@ -411,7 +417,7 @@ export function createLand({
     return settings?.get?.(role) ?? null;
   }
 
-  function pendingPhaseMessage(state, pending, { system, user } = {}) {
+  function pendingPhaseMessage(state, pending, { system, user, task, diff } = {}) {
     const parentSession = state.parentSessionUuid || state.architectSession;
     const identity = [
       `Delegation ID (authoritative): ${state.delegationId}. Land run: ${state.id}.`,
@@ -419,7 +425,10 @@ export function createLand({
       `Authoritative parent session UUID: ${parentSession}. Session aliases are informational and ephemeral.`,
       "Workflow completion is returned automatically; do not manually relay a duplicate report.",
     ].join(" ");
-    const seed = [identity, system, user].filter(Boolean).join("\n\n");
+    const seed = [identity, system, task ?? user].filter(Boolean).join("\n\n");
+    if (pending.role === "qa-look-1" || pending.role === "qa-look-2") {
+      return renderMiniReviewTask({ task: seed, diff: diff ?? "" });
+    }
     return pending.role === "fixer" ? renderMiniSweTask(seed) : seed;
   }
 
@@ -1091,12 +1100,22 @@ export function createLand({
   function installQa(child, runId) {
     const sessionId = sessionIdOf(child);
     childTools.get(sessionId)?.();
-    const dispose = registerTools(child, [
-      buildQaVerdictTool({
-        submit: (args) => trackChildSubmission(sessionId, (submission) =>
-          submitVerdict({ ...args, runId, postTool: true, submission })),
-      }),
-    ], { allow: QA_TOOL_ALLOWLIST });
+    const state = store.load(runId);
+    if (!state) throw new Error(`cannot install mini-review for missing land run ${runId}`);
+    ensureMiniReviewMounted(child);
+    const capsuleGitDir = join(state.worktree, ".git");
+    const oracle = new RepoOracle(state.baseRef, state.ref, {
+      // Delegated shared clones keep proposal objects in their internal .git.
+      // Linked-worktree callers use the common main object database instead.
+      gitDir: existsSync(join(capsuleGitDir, "HEAD"))
+        ? capsuleGitDir
+        : join(state.mainRoot, ".git"),
+    });
+    const dispose = bindMiniReviewSubmit(child, {
+      oracle,
+      submit: (args) => trackChildSubmission(sessionId, (submission) =>
+        submitVerdict({ ...args, runId, postTool: true, submission })),
+    });
     childTools.set(sessionId, dispose);
     return dispose;
   }
@@ -1300,6 +1319,7 @@ export function createLand({
     if (!SESSION_ID.test(sessionUuid)) throw new Error("land child requires its preplanned session UUID");
     const childId = sessionUuid;
     const mini = role === "implementer";
+    const miniReview = role === "qa";
     const handle = adoptAgentHandle(await agents.create({
       sessionId: childId,
       meta: {
@@ -1312,8 +1332,11 @@ export function createLand({
         landDelegation: delegationId,
         landPhaseEpoch: phaseEpoch,
         ...(mini ? { kind: MINI_KIND, agentPreset: MINI_KIND } : {}),
+        ...(miniReview ? { kind: MINI_REVIEW_KIND, agentPreset: MINI_REVIEW_KIND } : {}),
       },
-      ...childCreateOptions(route, mini ? { setup: miniSetup } : {}),
+      ...childCreateOptions(route, mini
+        ? { setup: miniSetup }
+        : miniReview ? { setup: miniReviewSetup } : {}),
     }));
     const child = handle?.agent ?? handle;
     let retained = false;
@@ -1418,14 +1441,15 @@ export function createLand({
   }
 
   async function packetDiff(state) {
-    const diff = await run(
+    const diff = await checked(
+      run,
       "git",
-      ["diff", "-U0", "--no-color", `${state.baseRef}...${state.ref}`],
+      ["diff", "--no-ext-diff", "--no-textconv", "-U0", "--no-color", `${state.baseRef}...${state.ref}`, "--"],
       { cwd: state.worktree },
+      "cannot collect review diff",
     );
-    const text = String(diff?.stdout ?? "").trim();
-    if (!text) return "(no diff)";
-    return text.length > 24_000 ? `${text.slice(0, 24_000)}\n…(truncated)` : text;
+    const text = String(diff.stdout ?? "");
+    return (text.endsWith("\n") ? text.slice(0, -1) : text) || "(no diff)";
   }
 
   function watchQaSettle(child, runId) {
@@ -1469,20 +1493,15 @@ export function createLand({
   async function startQa(state) {
     const parentSession = state.parentSessionUuid || state.architectSession;
     const diff = await packetDiff(state);
-    const user = [
-      qaLookPrompt({
-        ...state,
-        ticketPath: "(packet brief)",
-        task: { id: state.id },
-      }),
-      "",
-      formatPacket(state.packet),
-      "",
-      "Diff:",
-      diff,
-    ].join("\n");
+    const prior = state.look === 2 ? state.blockedReason : "";
+    const task = [
+      state.look === 1 ? "Look 1." : "Look 2, the final look. There is no third look.",
+      `Review ref ${state.ref} against base ${state.baseRef}.`,
+      `Packet brief:\n${formatPacket(state.packet)}`,
+      prior ? `Prior look-1 rejection:\n${prior}` : "",
+    ].filter(Boolean).join("\n\n");
     const workflowRole = `qa-look-${state.look}`;
-    const planned = planPhase(state, workflowRole, { system: QA_SYSTEM, user });
+    const planned = planPhase(state, workflowRole, { task, diff });
     const pending = planned.pendingPhase;
     const spawned = await spawnChild({
       sessionUuid: pending.sessionUuid,
@@ -1687,6 +1706,9 @@ export function createLand({
       }
       const look = state.status === "waiting_fix" ? 2 : state.look;
       const packet = await compilePacket(run, { ...state, ref: sha }, { brief: state.brief, mark: null });
+      const priorLook1Rejection = state.status === "waiting_fix" && state.qaVerdict
+        ? state.qaVerdict.feedback || state.qaVerdict.summary
+        : "";
       const mark = await stamp(packet);
       packet.mark = mark;
       let next = store.save(beginPhaseTransition(state, {
@@ -1701,6 +1723,7 @@ export function createLand({
         status: "reviewing",
         qaSession: "",
         qaVerdict: null,
+        ...(priorLook1Rejection ? { blockedReason: priorLook1Rejection } : {}),
       }));
       const result = { status: "ok", mark: "review", look: next.look, run: next.id, qa: "" };
       return settleAccepted({
@@ -1777,12 +1800,12 @@ export function createLand({
   async function submitVerdict({ agent, verdict, runId, postTool = false, submission } = {}) {
     const sessionId = sessionIdOf(agent);
     const state = (runId ? store.load(runId) : null) ?? store.bySession(sessionId);
-    if (!state) return { status: "refused", reason: "qa_verdict has no land run for this session" };
+    if (!state) return { status: "refused", reason: "submit_review has no land run for this session" };
     if (state.status !== "reviewing") {
       return { status: "refused", reason: `handoff is ${state.status}, not ready for qa` };
     }
     if (state.qaSession && state.qaSession !== sessionId) {
-      return { status: "refused", reason: "qa_verdict requires the owned QA session" };
+      return { status: "refused", reason: "submit_review requires the owned QA session" };
     }
     if (state.qaVerdict) return { status: "refused", reason: "qa verdict was already submitted" };
     if (state.look !== 1 && state.look !== 2) {
@@ -2009,5 +2032,4 @@ export const internals = Object.freeze({
   runCommand,
   stampFromEvidence,
   ROUTE_SYSTEM,
-  QA_SYSTEM,
 });

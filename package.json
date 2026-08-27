@@ -25,12 +25,14 @@
     "./context": "./src/context.mjs",
     "./transition": "./src/transition.mjs",
     "./routing": "./src/routing.mjs",
-    "./qa-verdict": "./src/qa-verdict.mjs"
+    "./qa-verdict": "./src/qa-verdict.mjs",
+    "./mini-review": "./src/mini-review.mjs",
+    "./repo-oracle": "./src/repo-oracle.mjs"
   },
   "files": [
     "src/"
   ],
   "scripts": {
-    "test": "node tests/git-geometry.mjs && node tests/architect-case-context.mjs && node tests/land.mjs"
+    "test": "node tests/git-geometry.mjs && node tests/architect-case-context.mjs && node tests/mini-review.mjs && node tests/land.mjs"
   }
 }
