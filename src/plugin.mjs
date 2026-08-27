@@ -153,6 +153,7 @@ export function apply(ctx, config = {}) {
     llm,
     tasks: null,
     run: config.runCommand,
+    github: config.github,
   });
   const architect = createArchitect({
     ctx,

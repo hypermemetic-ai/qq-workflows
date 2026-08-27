@@ -13,9 +13,7 @@ import { realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   checked,
-  gitIdentityArgs,
   inspectWorktree,
-  reason,
   runCommand,
 } from "./git.mjs";
 
@@ -315,7 +313,43 @@ export async function enforceQaWorktree(run, state, verdict) {
   return { verdict, testOnlyCommit, qaHead };
 }
 
-export async function landWorktree(run, state) {
+/** GitHub PR operations used by Land. Kept behind the injected command runner so
+ * tests can exercise the complete publish sequence without network access. */
+export function createGitHubClient(run = runCommand) {
+  return Object.freeze({
+    async openPullRequest({ mainRoot, baseBranch, headBranch, title, body = "" }) {
+      const pullRequestTitle = String(title ?? "").trim() || headBranch;
+      const opened = await checked(
+        run,
+        "gh",
+        [
+          "pr", "create",
+          "--base", baseBranch,
+          "--head", headBranch,
+          "--title", pullRequestTitle,
+          "--body", String(body ?? ""),
+        ],
+        { cwd: mainRoot },
+        "pull request creation failed",
+      );
+      const pullRequest = String(opened.stdout ?? "").trim().split(/\r?\n/).at(-1)?.trim() ?? "";
+      if (!pullRequest) throw new Error("pull request creation failed: GitHub did not return a pull request URL");
+      return pullRequest;
+    },
+
+    async mergePullRequest({ mainRoot, pullRequest, headRef }) {
+      await checked(
+        run,
+        "gh",
+        ["pr", "merge", pullRequest, "--merge", "--match-head-commit", headRef],
+        { cwd: mainRoot },
+        "pull request merge failed",
+      );
+    },
+  });
+}
+
+export async function landWorktree(run, state, { github = createGitHubClient(run) } = {}) {
   const mainRoot = await realpath(state.mainRoot);
   const worktree = await realpath(state.worktree);
   if (mainRoot === worktree) throw new Error("land refuses to merge from the main checkout");
@@ -341,26 +375,89 @@ export async function landWorktree(run, state) {
   if (generatedPaths.length) {
     throw new Error(`delegated proposal changes generated OpenWiki paths: ${generatedPaths.join(", ")}`);
   }
-  // Import branch/commit from task capsule if not already present on mainRoot
-  await run("git", ["fetch", worktree, `${state.branch}:${state.branch}`], { cwd: mainRoot });
+  const proposalSubject = await checked(
+    run,
+    "git",
+    ["show", "-s", "--format=%s", state.ref],
+    { cwd: worktree },
+    "cannot read proposal title",
+  );
 
-  const merged = await run("git", ["merge-base", "--is-ancestor", state.ref, "HEAD"], { cwd: mainRoot });
-  if (merged?.code !== 0 && merged?.code !== 1) {
-    throw new Error(`cannot inspect whether proposal is already merged: ${reason(merged, "command failed")}`);
+  // Import the reviewed commit from the capsule, but never merge it into local
+  // main. origin/main is the source of truth and only GitHub may create the
+  // merge commit.
+  await checked(
+    run,
+    "git",
+    ["fetch", worktree, state.branch],
+    { cwd: mainRoot },
+    "cannot import proposal branch",
+  );
+  await checked(
+    run,
+    "git",
+    ["push", "origin", `${state.ref}:refs/heads/${state.branch}`],
+    { cwd: mainRoot },
+    "proposal push failed",
+  );
+  const pullRequest = String(await github.openPullRequest({
+    mainRoot,
+    baseBranch: state.baseBranch,
+    headBranch: state.branch,
+    headRef: state.ref,
+    title: proposalSubject.stdout.trim() || state.branch,
+    body: `Automated Land proposal for ${state.ref}.`,
+  }) ?? "").trim();
+  if (!pullRequest) throw new Error("pull request creation failed: GitHub did not return a pull request identifier");
+  await github.mergePullRequest({
+    mainRoot,
+    pullRequest,
+    baseBranch: state.baseBranch,
+    headBranch: state.branch,
+    headRef: state.ref,
+  });
+  await checked(
+    run,
+    "git",
+    ["fetch", "origin", state.baseBranch],
+    { cwd: mainRoot },
+    "origin fetch after pull request merge failed",
+  );
+  await checked(
+    run,
+    "git",
+    ["merge-base", "--is-ancestor", state.ref, `origin/${state.baseBranch}`],
+    { cwd: mainRoot },
+    "pull request merge is not present on origin",
+  );
+  await checked(
+    run,
+    "git",
+    ["merge", "--ff-only", `origin/${state.baseBranch}`],
+    { cwd: mainRoot },
+    "local main fast-forward failed",
+  );
+
+  const localHead = await checked(
+    run,
+    "git",
+    ["rev-parse", "--verify", "HEAD"],
+    { cwd: mainRoot },
+    "cannot verify local main after fast-forward",
+  );
+  const originHead = await checked(
+    run,
+    "git",
+    ["rev-parse", "--verify", `origin/${state.baseBranch}`],
+    { cwd: mainRoot },
+    "cannot verify origin main after fast-forward",
+  );
+  if (localHead.stdout.trim() !== originHead.stdout.trim()) {
+    throw new Error("local main does not match origin/main after fast-forward");
   }
-  if (merged.code === 1) {
-    const tree = await run("git", ["merge-tree", "--write-tree", "HEAD", state.ref], { cwd: mainRoot });
-    if (tree?.code !== 0 && !String(tree?.stderr ?? "").includes("unknown option")) {
-      throw new Error(`proposal no longer merges cleanly: ${reason(tree, "command failed")}`);
-    }
-    await checked(
-      run,
-      "git",
-      [...gitIdentityArgs(), "merge", "--no-ff", "--no-edit", state.ref],
-      { cwd: mainRoot },
-      "merge failed",
-    );
-  }
+
+  // No cleanup is allowed until publication and the local fast-forward have
+  // both succeeded. A failed publish remains inspectable and retryable.
   const isWorktree = existsSync(join(worktree, ".git")) && !existsSync(join(worktree, ".git", "HEAD"));
   if (isWorktree) {
     await checked(
@@ -404,6 +501,7 @@ export function createLand({
   tasks,
   llm,
   run = runCommand,
+  github = createGitHubClient(run),
   complete,
   env = process.env,
 } = {}) {
@@ -1636,7 +1734,7 @@ export function createLand({
     let next = store.save(beginPhaseTransition(state, { status: "landing" }));
     let kind = "landed";
     try {
-      await landWorktree(run, next);
+      await landWorktree(run, next, { github });
     } catch (error) {
       kind = "blocked";
       next = store.save(finishWorkflow(next, {

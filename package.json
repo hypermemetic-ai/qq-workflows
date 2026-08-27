@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Named DSH workflows, delegation capsules, QA, and host-owned landing. Core boots when this plugin is absent.",
+  "description": "Named DSH workflows, delegation capsules, QA, and GitHub PR landing. Core boots when this plugin is absent.",
   "main": "src/plugin.mjs",
   "exports": {
     ".": "./src/plugin.mjs",

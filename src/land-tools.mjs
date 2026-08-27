@@ -1,6 +1,6 @@
 // Land-path tools. `done` sits on the implementer child. The architect/base
-// chair may call `land` to land an
-// existing worktree; merge never registers as a user-facing workflow.
+// chair may call `land` to publish an existing worktree; GitHub PR publication
+// never registers as a user-facing workflow.
 
 import { armChildSettlement, childToolOutput } from "./child-settlement.mjs";
 
@@ -63,7 +63,7 @@ export function buildDoneTool({ submit } = {}) {
 export function buildLandTool({ invoke } = {}) {
   return {
     name: LAND_TOOL_NAME,
-    description: "Land a git worktree onto the base branch. Implementer done already does this; call this from the architect or base chair to land an existing worktree.",
+    description: "Publish a git worktree through a merge-commit PR to origin/main, then fast-forward local main. Implementer done already does this; call from the architect or base chair for an existing worktree.",
     parameters: {
       worktree: {
         type: "string",
