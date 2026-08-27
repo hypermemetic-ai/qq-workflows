@@ -2,12 +2,7 @@
 // The document is both standing context and the child's complete work packet.
 
 import { randomUUID } from "node:crypto";
-import {
-  CASE_WRITE_GATE_LIMIT,
-  CASE_WRITE_GATE_TEXT,
-  decideCaseWriteGate,
-  pluginUserMessage,
-} from "./tools.mjs";
+import { pluginUserMessage } from "./tools.mjs";
 import { createDelegatedWorktree, repoRootFor, runCommand } from "./git.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
 import { hideHarnessToolsOn } from "./hide-harness.mjs";
@@ -20,7 +15,7 @@ import { adoptAgentHandle } from "./agent-handle.mjs";
 export const ARCHITECT_LABEL = "workflows:architect";
 export const CHILD_ORIGIN = "subagent";
 export const ARCHITECT_PROMPT_NAME = "qq-workflows:architect";
-export const ARCHITECT_PROMPT = "You are the architect. Settle intent in working memory and delegate the work once the operator approves. They see the same working memory document.";
+export const ARCHITECT_PROMPT = "You are the architect. Use the current turn, last turn, and standing plan document to maintain a concise operator-visible work order. Edit it freely, get operator approval, then delegate; delegation sends that approved plan document without automatically attaching files or research dumps.";
 
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CHILD_AGENT_HANDLE = Symbol.for("@hypermemetic-ai/qq-workflows/child-agent-handle");
@@ -170,7 +165,6 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
     hangLabel(ctx, sessionId);
 
     let lastTurn;
-    let gateStreak = 0;
     let disposeEvent;
     let disposeTurn;
     let disposeAssemble;
@@ -218,22 +212,6 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
           folder?.decide?.(sessionId, { events: session.events, session, route: agent.options });
         } catch {
           // Fold decisions never block the talking loop.
-        }
-        try {
-          const decision = decideCaseWriteGate(session.events, {
-            turn: event.data?.turn,
-            reason: event.data?.reason,
-          });
-          if (decision.action !== "hold") {
-            gateStreak = 0;
-            return;
-          }
-          gateStreak += 1;
-          if (gateStreak > CASE_WRITE_GATE_LIMIT) return;
-          if (typeof agent.followup !== "function") return;
-          agent.followup(pluginUserMessage(CASE_WRITE_GATE_TEXT, "notice"));
-        } catch {
-          // Write-close followup never blocks the talking loop.
         }
       });
       disposeAssemble = agent.ctx?.on?.("agent/request", async (payload, next) => {

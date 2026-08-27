@@ -1,7 +1,7 @@
 // Architect working memory: one markdown file per DSH session.
 // One durable pointer binds fresh sessions to the sole unconsumed qq-task;
 // dispatch clears the pointer while land keeps the task live until merge.
-// The operator sees this document. The talking model rewrites it in place.
+// The operator sees this document. The talking model edits it in place.
 
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";

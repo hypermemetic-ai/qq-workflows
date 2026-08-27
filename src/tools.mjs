@@ -32,12 +32,45 @@ function syncTask(cases, tasks, sessionId, text) {
   return id;
 }
 
+function editCaseText(args, current) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    throw new Error("case_write requires a full rewrite or patch");
+  }
+  const hasText = Object.hasOwn(args, "text");
+  const hasPatch = Object.hasOwn(args, "old_string")
+    || Object.hasOwn(args, "new_string")
+    || Object.hasOwn(args, "replace_all");
+  if (hasText) {
+    if (hasPatch) throw new Error("case_write accepts either text or a patch, not both");
+    if (typeof args.text !== "string") throw new Error("case_write requires text to be a string");
+    return args.text;
+  }
+  if (typeof args.old_string !== "string" || typeof args.new_string !== "string") {
+    throw new Error("case_write patch requires old_string and new_string");
+  }
+  if (!args.old_string) throw new Error("case_write patch requires a non-empty old_string");
+  if (args.replace_all !== undefined && typeof args.replace_all !== "boolean") {
+    throw new Error("case_write replace_all must be a boolean");
+  }
+  const source = String(current ?? "");
+  const first = source.indexOf(args.old_string);
+  if (first < 0) throw new Error("case_write old_string was not found");
+  if (args.replace_all === true) return source.split(args.old_string).join(args.new_string);
+  if (source.indexOf(args.old_string, first + 1) >= 0) {
+    throw new Error("case_write old_string is not unique; set replace_all to true to replace every match");
+  }
+  return source.slice(0, first) + args.new_string + source.slice(first + args.old_string.length);
+}
+
 function buildCaseWriteTool(cases, tasks) {
   return {
     name: "case_write",
-    description: "Replace working memory for this session and end the turn. Send the whole small markdown document, not a patch.",
+    description: "Edit the plan document without ending the turn. Fully rewrite it with text, or patch a unique old_string to new_string (optionally replace_all).",
     parameters: {
-      text: { type: "string", description: "Full markdown of working memory." },
+      text: { type: "string", description: "Complete markdown plan for a full rewrite. Mutually exclusive with patch fields." },
+      old_string: { type: "string", description: "Exact text to replace in the persisted plan." },
+      new_string: { type: "string", description: "Replacement text for old_string." },
+      replace_all: { type: "boolean", description: "Replace every match instead of requiring old_string to be unique." },
     },
     output: {
       schema: {
@@ -59,10 +92,9 @@ function buildCaseWriteTool(cases, tasks) {
       try {
         const sessionId = exec?.agent?.session?.id;
         if (!sessionId) return refusal("case_write requires a live session");
-        if (typeof args?.text !== "string") return refusal("case_write requires text");
-        const written = cases.write(sessionId, args.text);
+        const current = cases.load?.(sessionId)?.text ?? "";
+        const written = cases.write(sessionId, editCaseText(args, current));
         const id = syncTask(cases, tasks, sessionId, written.text);
-        try { exec?.concludeTurn?.(); } catch { /* write already committed */ }
         return { status: "ok", title: titleOf(written.text), ...(id ? { id } : {}) };
       } catch (error) {
         return refusal(error instanceof Error ? error.message : String(error));
@@ -210,42 +242,4 @@ export function pluginUserMessage(text, form = "notice") {
   };
 }
 
-export const CASE_WRITE_GATE_TEXT = "Call case_write to end the turn.";
-export const CASE_WRITE_GATE_LIMIT = 8;
-
-function reasonKind(reason) {
-  return reason && typeof reason === "object" ? reason.kind : reason;
-}
-
-export function isExceptionalTurn(reason) {
-  const kind = reasonKind(reason);
-  return kind === "aborted" || kind === "interrupted";
-}
-
-function sliceTurn(events, turn) {
-  const list = Array.isArray(events) ? events : [];
-  let start = -1;
-  let end = list.length;
-  for (let i = 0; i < list.length; i += 1) {
-    const event = list[i];
-    const eventTurn = event?.data?.turn;
-    if (event?.type === "turn/start" && (turn === undefined || eventTurn === turn)) start = i;
-    if (event?.type === "turn/end" && (turn === undefined || eventTurn === turn) && start >= 0) {
-      end = i + 1;
-      if (turn !== undefined) break;
-    }
-  }
-  if (start >= 0) return list.slice(start, end);
-  if (Number.isSafeInteger(turn)) return list.filter((event) => event?.data?.turn === turn);
-  return list;
-}
-
-export function decideCaseWriteGate(events, { turn, reason } = {}) {
-  if (isExceptionalTurn(reason)) return { action: "pass", reason: "aborted" };
-  const slice = sliceTurn(events, turn);
-  const wrote = slice.some((event) => event?.type === "tool/call" && event.data?.name === "case_write");
-  if (wrote) return { action: "pass", reason: "wrote" };
-  return { action: "hold", reason: "no-write" };
-}
-
-export const internals = Object.freeze({ textBlock, refusal, reasonKind, sliceTurn });
+export const internals = Object.freeze({ textBlock, refusal, editCaseText });

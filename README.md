@@ -55,10 +55,12 @@ emergency steering.
 ## Mini-review Land QA
 
 Land review looks use the read-only `mini-review` preset. The reviewer starts
-from the complete unified diff and can retrieve focused evidence from the
-immutable base and head Git objects with only `grep`, `glob`, and bounded
-`view`. It finishes with `submit_review`; zero findings passes, while any
-finding starts the one allowed fixer after look 1 or blocks after look 2.
+from the architect's approved plan plus bounded changed-file counts and up to
+eight hunk pointers. It retrieves focused evidence from the immutable base and
+head Git objects with only `grep`, `glob`, and bounded `view`; unified diffs and
+file bodies are not inlined into the packet. It finishes with `submit_review`;
+zero findings passes, while any finding starts the one allowed fixer after look
+1 or blocks after look 2.
 
 The reviewer cannot run commands, read the working tree, edit files, commit, or
 access arbitrary revisions. Land still rejects a dirty QA worktree or a QA
