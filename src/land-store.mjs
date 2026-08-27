@@ -1,7 +1,7 @@
 // Land-run store: one JSON file per land run, beside DSH_HOME.
 //
 // Mode 0600, atomic write, restart-safe. Indexed by run id and by the live
-// implementer/QA session so `done` and `qa_verdict` can find the handoff.
+// implementer/QA session so internal completion handlers can find the handoff.
 
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";

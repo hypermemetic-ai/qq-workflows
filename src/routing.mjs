@@ -138,15 +138,8 @@ export async function routePacket(packet, options = {}) {
   }
 }
 
-export function qaLookPrompt(state) {
-  const ticketPath = state.ticketPath ?? state.gatePath ?? state.briefPath;
-  return state.look === 1
-    ? `Look 1. Review ref ${state.ref} against the outbound ticket at ${ticketPath}. Base is ${state.baseRef}. You own test quality: you may edit tests and commit test-only changes. Never edit or commit production code. Reject bad or excess tests, bloat, and over-engineering.`
-    : `Look 2, the final look. Review updated ref ${state.ref} against the same outbound ticket at ${ticketPath} and your prior rejection. You still own test quality: you may edit tests and commit test-only changes, but never edit or commit production code. There is no third look.`;
-}
-
 export function look1FixPrompt(state, verdict) {
-  return `qa look 1 rejected ${state.task?.id ?? state.id}. ${verdict.feedback || verdict.summary}${verdict.tests_modified ? " qa rewrote tests; inspect those changes." : ""} Fix once, commit the result, then call done again with ref HEAD.`;
+  return `qa look 1 rejected ${state.task?.id ?? state.id}. ${verdict.feedback || verdict.summary} Fix once, commit the result, then call done again with ref HEAD.`;
 }
 
 export function isTestPath(path) {

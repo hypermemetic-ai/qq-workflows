@@ -12,6 +12,7 @@ import { DEFAULT_H, createFolder } from "./fold.mjs";
 import { buildArchitectTools } from "./tools.mjs";
 import { CHILD_ORIGIN, createArchitect, isArchitectCandidate } from "./architect.mjs";
 import { ensureMiniMounted, isMiniAgent, MINI_SWE_MIGRATION } from "./official-mini.mjs";
+import { ensureMiniReviewMounted, isMiniReviewAgent } from "./mini-review.mjs";
 import {
   hideHarnessTools,
   stripAgentInstructionMessages,
@@ -122,6 +123,7 @@ function hostAgents(ctx) {
 
 function syncLiveLandChild(land, agent) {
   if (isMiniAgent(agent)) ensureMiniMounted(agent);
+  if (isMiniReviewAgent(agent)) ensureMiniReviewMounted(agent);
   return land?.resumeChild?.(agent) ?? false;
 }
 
@@ -184,7 +186,7 @@ export function apply(ctx, config = {}) {
   // other children keep nested AGENTS.md.
   function shouldHideInstructions(agent) {
     if (!agent) return false;
-    if (isMiniAgent(agent)) return true;
+    if (isMiniAgent(agent) || isMiniReviewAgent(agent)) return true;
     if (originOf(agent) === CHILD_ORIGIN) return false;
     const selected = selectedName(sessionIdOf(agent));
     return selected === "architect";

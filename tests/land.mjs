@@ -16,6 +16,7 @@ const architectModule = await import(pathToFileURL(join(root, "src/architect.mjs
 const toolsModule = await import(pathToFileURL(join(root, "src/tools.mjs")));
 const pluginModule = await import(pathToFileURL(join(root, "src/plugin.mjs")));
 const officialMiniModule = await import(pathToFileURL(join(root, "src/official-mini.mjs")));
+const miniReviewModule = await import(pathToFileURL(join(root, "src/mini-review.mjs")));
 
 const {
   stampFromEvidence,
@@ -24,13 +25,14 @@ const {
   ROUTE_PACKET_SCHEMA,
   isTestPath,
 } = reviewModule;
-const { createLand, LAND_LABEL, isLandCandidate, ROUTE_SYSTEM, QA_SYSTEM, runCommand } = landModule;
+const { createLand, LAND_LABEL, isLandCandidate, ROUTE_SYSTEM, runCommand } = landModule;
 const { createLandStore, LAND_RUN_SCHEMA } = landStoreModule;
-const { buildDoneTool, buildQaVerdictTool, QA_TOOL_ALLOWLIST, DONE_TOOL_NAME, QA_VERDICT_TOOL_NAME } = landToolsModule;
+const { buildDoneTool, DONE_TOOL_NAME } = landToolsModule;
 const { withChildSettlement } = childSettlementModule;
 const { createArchitect, CHILD_ORIGIN } = architectModule;
 const { buildArchitectTools } = toolsModule;
 const { MINI_KIND, MINI_SWE_COMPLETION_COMMAND, wrapMiniBash } = officialMiniModule;
+const { MINI_REVIEW_KIND, MINI_REVIEW_TOOL_NAMES } = miniReviewModule;
 
 const scratch = mkdtempSync(join(tmpdir(), "qq-land."));
 const sessionId = (marker) =>
@@ -91,6 +93,32 @@ function packet(brief, files) {
 
 function childAgent({ id, cwd, registered, restricted, followups, listeners, origin = CHILD_ORIGIN, onFollowup }) {
   const inbox = { nextTurn: [], nextStep: [] };
+  const sections = [];
+  const toolService = {
+    register(definition) {
+      registered?.push(definition);
+      return () => {
+        const at = registered?.indexOf(definition) ?? -1;
+        if (at >= 0) registered.splice(at, 1);
+      };
+    },
+    restrict(spec) {
+      const record = { id, spec, active: true };
+      restricted?.push(record);
+      return () => { record.active = false; };
+    },
+    get(name) { return registered?.find((tool) => tool.name === name); },
+  };
+  const systemPrompt = {
+    section(section) {
+      sections.push(section);
+      return () => {
+        const at = sections.indexOf(section);
+        if (at >= 0) sections.splice(at, 1);
+      };
+    },
+    suppressRuntimeContext() {},
+  };
   const child = {
     status: "idle",
     session: {
@@ -110,6 +138,8 @@ function childAgent({ id, cwd, registered, restricted, followups, listeners, ori
       onFollowup?.({ child, message });
     },
     ctx: {
+      tools: toolService,
+      systemPrompt,
       on(type, fn) {
         const record = { type, fn };
         listeners?.push(record);
@@ -119,22 +149,8 @@ function childAgent({ id, cwd, registered, restricted, followups, listeners, ori
         };
       },
       get(name) {
-        if (name === "tools") {
-          return {
-            register(definition) {
-              registered?.push(definition);
-              return () => {
-                const at = registered?.indexOf(definition) ?? -1;
-                if (at >= 0) registered.splice(at, 1);
-              };
-            },
-            restrict(spec) {
-              const record = { id, spec, active: true };
-              restricted?.push(record);
-              return () => { record.active = false; };
-            },
-          };
-        }
+        if (name === "tools") return toolService;
+        if (name === "systemPrompt") return systemPrompt;
         return undefined;
       },
     },
@@ -142,12 +158,54 @@ function childAgent({ id, cwd, registered, restricted, followups, listeners, ori
   return child;
 }
 
+function qaTool(record) {
+  return record.registered.find((tool) => tool.name === "submit_review");
+}
+
+function legacyReviewArgs(land, record, args) {
+  if (Array.isArray(args?.findings)) return args;
+  if (args?.verdict === "pass") return { findings: [] };
+  const state = land.bySession(record.child.session.id);
+  const diff = git(record.child.session.header.cwd, ["diff", "-U0", "--no-color", `${state.baseRef}...${state.ref}`, "--"]);
+  let path = "";
+  let headLine = 0;
+  let fallback;
+  for (const row of diff.split("\n")) {
+    const file = row.match(/^\+\+\+ (?:b\/)?(.*)$/);
+    if (file) {
+      path = file[1] === "/dev/null" ? "" : file[1];
+      continue;
+    }
+    const hunk = row.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
+    if (hunk) {
+      headLine = Number(hunk[1]);
+      if (path && Number(hunk[2]) === 0) fallback ??= { path, line: headLine };
+      continue;
+    }
+    if (row.startsWith("+") && !row.startsWith("+++") && path) {
+      fallback = { path, line: headLine };
+      break;
+    }
+    if (row.startsWith(" ")) headLine++;
+  }
+  assert.ok(fallback, "QA failure fixture needs a changed HEAD line");
+  return { findings: [{ ...fallback, body: args?.feedback || args?.summary || "concrete defect" }] };
+}
+
+function assertMiniReviewMounted(record, { owned = true } = {}) {
+  assert.deepEqual(record.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
+  const types = record.listeners.map((item) => item.type);
+  assert.ok(types.includes("agent/turn-stopping"), "mini-review format recovery remains mounted");
+  assert.ok(types.includes("session/event"), "mini-review observes assistant tool calls");
+  if (owned) assert.ok(types.includes("agent/status"), "Land owns the live reviewer lifecycle");
+}
+
 let qaCallSequence = 0;
 
-async function executeQaTool(land, record, args, { isError = false, duplicateResults = 0, tool = record.registered[0] } = {}) {
+async function executeQaTool(land, record, args, { isError = false, duplicateResults = 0, tool = qaTool(record) } = {}) {
   const callId = `qa-call-${++qaCallSequence}`;
   let concluded = 0;
-  const result = await tool.execute(args, {
+  const result = await tool.execute(legacyReviewArgs(land, record, args), {
     agent: record.child,
     callId,
     concludeTurn() {
@@ -253,7 +311,10 @@ function createHarness({ complete, worktree, tasks, parentHeader = {}, run, stor
         landRun: options.meta?.landRun,
         landDelegation: options.meta?.landDelegation,
         landPhaseEpoch: options.meta?.landPhaseEpoch,
+        kind: options.meta?.kind,
+        agentPreset: options.meta?.agentPreset,
       });
+      if (options.meta?.kind === MINI_REVIEW_KIND) options.setup?.(child.ctx);
       const record = { child, registered, options, listeners, live: true };
       children.set(options.sessionId, record);
       return {
@@ -294,7 +355,6 @@ try {
   assert.equal(LAND_LABEL, "workflows:land");
   assert.equal(LAND_RUN_SCHEMA, "qq.land-run/v1");
   assert.match(ROUTE_SYSTEM, /exactly land or review/);
-  assert.match(QA_SYSTEM, /qa_verdict exactly once/);
   assert.equal(isLandCandidate({ session: { id: architectId, header: {} } }), true);
   assert.equal(isLandCandidate({ session: { id: implementerId, header: { origin: CHILD_ORIGIN } } }), false);
   assert.equal(isLandCandidate({ session: { id: implementerId, header: { parentSession: architectId } } }), false);
@@ -302,7 +362,7 @@ try {
     buildArchitectTools({}).map((tool) => tool.name).sort(),
     ["delegate", "workflow_send", "workflow_status"],
   );
-  assert.ok(!buildArchitectTools({}).some((tool) => ["done", "qa_verdict", "land"].includes(tool.name)));
+  assert.ok(!buildArchitectTools({}).some((tool) => ["done", "qa_verdict", "submit_review", "land"].includes(tool.name)));
   assert.equal(isTestPath("tests/test-qq-land.mjs"), true);
   assert.equal(isTestPath("core/src/session.mjs"), false);
 
@@ -322,9 +382,6 @@ try {
       assert.deepEqual(order, ["arm", "conclude"], `${name} must arm before conclude`);
     }
     await verifyOrder("done", (submit) => buildDoneTool({ submit }), {});
-    await verifyOrder("qa_verdict", (submit) => buildQaVerdictTool({ submit }), {
-      verdict: "fail", summary: "ordering proof", feedback: "exact", tests_modified: false,
-    });
   }
 
   // ---------------------------------------------------------------- route stamp land vs review
@@ -788,8 +845,8 @@ try {
     assert.equal(created[0].meta.landRole, "qa");
     const qa = children.get(submitted.qa);
     assert.ok(qa);
-    assert.deepEqual(qa.registered.map((tool) => tool.name), [QA_VERDICT_TOOL_NAME]);
-    assert.ok(restricted.some((row) => row.spec?.allow && QA_TOOL_ALLOWLIST.every((name) => row.spec.allow.includes(name))));
+    assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
+    assert.ok(restricted.some((row) => row.spec?.allow && JSON.stringify(row.spec.allow) === JSON.stringify(MINI_REVIEW_TOOL_NAMES)));
     const passed = await executeQaTool(land, qa, {
       verdict: "pass",
       summary: "session change is covered",
@@ -844,7 +901,8 @@ try {
       `workflows:land-run/${submitted.run}`,
     ]);
     const fixer = children.get(failed.implementer);
-    assert.ok(fixer.registered.some((tool) => tool.name === DONE_TOOL_NAME));
+    assert.equal(fixer.child.session.header.kind, MINI_KIND);
+    assert.ok(!fixer.registered.some((tool) => tool.name === DONE_TOOL_NAME));
     const fixerPacket = followups.find((row) => row.id === failed.implementer)?.message?.content?.[0]?.text ?? "";
     assert.match(fixerPacket, /look 1 rejected/);
     assert.match(fixerPacket, /add a test for the session id/);
@@ -857,7 +915,7 @@ try {
   {
     const repo = initRepo({ branch: "feat/final" });
     commitFile(repo.worktree, "core/src/session.mjs", "export const x = 1;\n", "session tweak");
-    const { land, sent, created, children } = createHarness({
+    const { land, sent, created, children, followups } = createHarness({
       complete: async () => "review",
       worktree: repo.worktree,
     });
@@ -880,7 +938,11 @@ try {
     assert.equal(look2.status, "ok");
     assert.equal(look2.look, 2);
     const qa2 = children.get(look2.qa);
-    const qa2Tool = qa2.registered[0];
+    const look2Packet = followups.find((row) => row.id === look2.qa)?.message?.content?.[0]?.text ?? "";
+    assert.match(look2Packet, /Look 2, the final look/);
+    assert.match(look2Packet, /Prior look-1 rejection:/);
+    assert.match(look2Packet, /add the identity test/);
+    const qa2Tool = qaTool(qa2);
     const fail2 = await executeQaTool(land, qa2, {
       verdict: "fail",
       summary: "still missing proof",
@@ -909,7 +971,7 @@ try {
     assert.equal(again.status, "refused");
   }
 
-  // ---------------------------------------------------------------- QA cannot commit production paths
+  // ---------------------------------------------------------------- defense in depth: production commit during QA still fails the look
   {
     const repo = initRepo({ branch: "feat/qa-prod" });
     commitFile(repo.worktree, "core/src/session.mjs", "export const x = 1;\n", "session tweak");
@@ -957,7 +1019,7 @@ try {
       cwd: repo.worktree,
     });
     const submitted = await land.done({ agent: implementer, ref: "HEAD" });
-    assert.ok(followups.some((row) => /Diff:/.test(row.message?.content?.[0]?.text ?? "")));
+    assert.ok(followups.some((row) => /<diff>[\s\S]*<\/diff>/.test(row.message?.content?.[0]?.text ?? "")));
     assert.ok(followups.some((row) => /session\.mjs/.test(row.message?.content?.[0]?.text ?? "")));
     const qa = children.get(submitted.qa);
     const listeners = qa.listeners.filter((item) => item.type === "session/event");
@@ -1037,8 +1099,8 @@ try {
     assert.equal(run.status, "blocked");
     assert.equal(run.ref, ref);
     assert.equal(run.look, 1);
-    assert.equal(run.qaVerdict.summary, "captured identity regression");
-    assert.equal(run.qaVerdict.feedback, "captured UUID must refuse after alias reassignment");
+    assert.equal(run.qaVerdict.summary, "captured UUID must refuse after alias reassignment");
+    assert.equal(run.qaVerdict.feedback, "core/src/session.mjs:1: captured UUID must refuse after alias reassignment");
     assert.equal(created.length, 1, "a failed result must not silently spawn a fixer");
     assert.deepEqual(disposed.filter((id) => id === submitted.qa), [submitted.qa]);
     assert.deepEqual(relay.labelsFor(submitted.qa), []);
@@ -1048,8 +1110,8 @@ try {
       "Workflow role: qa-look-1",
       "QA look: 1",
       `Ref: ${ref}`,
-      "Summary: captured identity regression",
-      "Feedback: captured UUID must refuse after alias reassignment",
+      "Summary: captured UUID must refuse after alias reassignment",
+      "Feedback: core/src/session.mjs:1: captured UUID must refuse after alias reassignment",
     ]) assert.match(sent[0].message, new RegExp(evidence.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
 
@@ -1335,26 +1397,25 @@ try {
     // QA is also detached and resumed with exactly one verdict/listener set.
     const qa = harness.children.get(submitted.qa);
     assert.ok(qa?.live);
-    assert.deepEqual(qa.registered.map((tool) => tool.name), [QA_VERDICT_TOOL_NAME]);
-    assert.deepEqual(qa.listeners.map((item) => item.type).sort(), ["agent/status", "session/event", "session/event"]);
+    assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
+    assertMiniReviewMounted(qa);
     assert.equal(harness.restricted.filter((item) => item.id === submitted.qa && item.active).length, 1);
     await landB.dispose();
     assert.equal(qa.live, true);
     assert.equal(harness.disposed.includes(submitted.qa), false);
-    assert.deepEqual(qa.registered, []);
-    assert.deepEqual(qa.listeners, []);
-    assert.equal(harness.restricted.filter((item) => item.id === submitted.qa && item.active).length, 0);
+    assertMiniReviewMounted(qa, { owned: false });
+    assert.equal(harness.restricted.filter((item) => item.id === submitted.qa && item.active).length, 1);
     assert.deepEqual(harness.relay.labelsFor(submitted.qa), []);
 
     const landC = controller();
     assert.equal(syncLive(landC), 1);
     assert.deepEqual(landC.ownedChildren(), [submitted.qa]);
-    assert.deepEqual(qa.registered.map((tool) => tool.name), [QA_VERDICT_TOOL_NAME]);
-    assert.deepEqual(qa.listeners.map((item) => item.type).sort(), ["agent/status", "session/event", "session/event"]);
+    assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
+    assertMiniReviewMounted(qa);
     assert.equal(harness.restricted.filter((item) => item.id === submitted.qa && item.active).length, 1);
     assert.equal(syncLive(landC), 1);
-    assert.deepEqual(qa.registered.map((tool) => tool.name), [QA_VERDICT_TOOL_NAME]);
-    assert.deepEqual(qa.listeners.map((item) => item.type).sort(), ["agent/status", "session/event", "session/event"]);
+    assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
+    assertMiniReviewMounted(qa);
     assert.equal(harness.restricted.filter((item) => item.id === submitted.qa && item.active).length, 1);
     assert.deepEqual(harness.relay.labelsFor(submitted.qa), [
       "workflows:land-role/qa-look-1",
@@ -1365,12 +1426,12 @@ try {
     const qaCall = "hmr-qa-pending";
     qa.child.status = "running";
     let qaConcluded = 0;
-    const qaResult = await qa.registered[0].execute({
+    const qaResult = await qaTool(qa).execute(legacyReviewArgs(landC, qa, {
       verdict: "fail",
       summary: "pending HMR proof",
       feedback: "resume the exact pending settlement",
       tests_modified: false,
-    }, {
+    }), {
       agent: qa.child,
       callId: qaCall,
       concludeTurn() {
@@ -1395,17 +1456,16 @@ try {
     pending = landC.run(adopted.run);
     assert.equal(qa.live, true);
     assert.equal(pending.status, "waiting_fix", "HMR must not route pending settlement through generic failure");
-    assert.equal(pending.qaVerdict.summary, "pending HMR proof");
+    assert.equal(pending.qaVerdict.summary, "resume the exact pending settlement");
     assert.equal(harness.created.length, 1);
     assert.equal(harness.sent.length, 0);
-    assert.deepEqual(qa.registered, []);
-    assert.deepEqual(qa.listeners, []);
+    assertMiniReviewMounted(qa, { owned: false });
 
     const landD = controller();
     assert.equal(syncLive(landD), 1);
     assert.deepEqual(landD.ownedChildren(), [submitted.qa]);
-    assert.deepEqual(qa.registered, [], "an accepted verdict cannot be submitted twice after HMR");
-    assert.deepEqual(qa.listeners.map((item) => item.type).sort(), ["agent/status", "session/event"]);
+    assertMiniReviewMounted(qa, { owned: false });
+    assertMiniReviewMounted(qa);
     const qaEvent = {
       type: "tool/result",
       data: { message: {
@@ -1421,7 +1481,7 @@ try {
     const fixing = landD.run(adopted.run);
     assert.equal(fixing.status, "waiting_fix");
     assert.ok(fixing.implementerSession);
-    assert.equal(fixing.qaVerdict.summary, "pending HMR proof");
+    assert.equal(fixing.qaVerdict.summary, "resume the exact pending settlement");
     assert.equal(fixing.settlementSession, "");
     assert.equal(fixing.settlementCallId, "");
     assert.equal(fixing.settlementTransition, "");
@@ -1592,7 +1652,7 @@ try {
     assert.equal(implementerDisposals, 1);
     const qa = harness.children.get(reviewing.qaSession);
     assert.ok(qa?.live);
-    assert.deepEqual(qa.registered.map((tool) => tool.name), [QA_VERDICT_TOOL_NAME]);
+    assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
     assert.deepEqual(landB.ownedChildren(), [reviewing.qaSession]);
     for (const listener of [...listeners].filter((item) => item.type === "session/event")) {
       await listener.fn(implementer.session, doneEvent);
@@ -1601,7 +1661,7 @@ try {
     await landB.dispose();
   }
 
-  // ---------------------------------------------------------------- HMR teardown drains qa_verdict before its durable settlement is armed
+  // ---------------------------------------------------------------- HMR teardown drains submit_review before its durable settlement is armed
   {
     const repo = initRepo({ branch: "feat/hmr-pre-arm-verdict" });
     const ref = commitFile(repo.worktree, "core/src/session.mjs", "export const verdictRace = 1;\n", "pre-arm verdict race");
@@ -1642,17 +1702,17 @@ try {
     assert.equal(submitted.qa, harness.created[0].sessionId);
     const qa = harness.children.get(submitted.qa);
     assert.ok(qa?.live);
-    const oldVerdict = qa.registered[0];
+    const oldVerdict = qaTool(qa);
     const qaCall = "hmr-pre-arm-verdict";
     qa.child.status = "running";
     let concluded = 0;
     pauseVerdict = true;
-    const submitting = oldVerdict.execute({
+    const submitting = oldVerdict.execute(legacyReviewArgs(harness.land, qa, {
       verdict: "fail",
       summary: "deferred verdict survives HMR",
       feedback: "resume one exact fixer transition",
       tests_modified: false,
-    }, {
+    }), {
       agent: qa.child,
       callId: qaCall,
       concludeTurn() {
@@ -1669,7 +1729,7 @@ try {
     let aReturned = false;
     void disposingA.then(() => { aReturned = true; });
     await Promise.resolve();
-    assert.equal(aReturned, false, "controller A waits for qa_verdict to arm its durable settlement");
+    assert.equal(aReturned, false, "controller A waits for submit_review to arm its durable settlement");
     assert.deepEqual(harness.land.ownedChildren(), [submitted.qa]);
     releaseEnforcement.resolve();
     const [verdictResult, disposedA] = await Promise.all([submitting, disposingA]);
@@ -1681,9 +1741,8 @@ try {
     assert.equal(disposedA.detached, 1);
     assert.equal(qa.live, true, "pre-arm HMR must preserve the live QA handle");
     assert.deepEqual(harness.land.ownedChildren(), []);
-    assert.deepEqual(qa.registered, []);
-    assert.deepEqual(qa.listeners, []);
-    assert.equal(harness.restricted.filter((item) => item.id === submitted.qa && item.active).length, 0);
+    assertMiniReviewMounted(qa, { owned: false });
+    assert.equal(harness.restricted.filter((item) => item.id === submitted.qa && item.active).length, 1);
     assert.deepEqual(harness.relay.labelsFor(submitted.qa), []);
     assert.equal(harness.created.length, 1, "controller A cannot start a fixer before the exact result");
     const pending = harness.land.run(adopted.run);
@@ -1691,23 +1750,23 @@ try {
     assert.equal(pending.id, adopted.run);
     assert.equal(pending.ref, ref);
     assert.equal(pending.qaSession, submitted.qa);
-    assert.equal(pending.qaVerdict.summary, "deferred verdict survives HMR");
+    assert.equal(pending.qaVerdict.summary, "resume one exact fixer transition");
     assert.equal(pending.settlementSession, submitted.qa);
     assert.equal(pending.settlementCallId, qaCall);
     assert.equal(pending.settlementTransition, "start_fixer");
 
-    const stale = await oldVerdict.execute({
+    const stale = await oldVerdict.execute(legacyReviewArgs(harness.land, qa, {
       verdict: "fail",
       summary: "stale verdict",
       feedback: "must refuse",
       tests_modified: false,
-    }, {
+    }), {
       agent: qa.child,
       callId: "hmr-pre-arm-verdict-stale",
       concludeTurn() { assert.fail("detached controller must not conclude a stale verdict"); },
     });
     assert.equal(stale.status, "refused");
-    assert.match(stale.reason, /no longer owned/);
+    assert.match(stale.reason, /submit_review is unavailable/);
     assert.equal(harness.created.length, 1, "controller A cannot spawn a fixer after dispose returns");
 
     const landB = createLand({
@@ -1723,9 +1782,9 @@ try {
     assert.equal(syncLive(), 1);
     assert.equal(syncLive(), 1);
     assert.deepEqual(landB.ownedChildren(), [submitted.qa]);
-    assert.deepEqual(qa.registered, [], "an accepted verdict cannot be registered a second time");
-    assert.deepEqual(qa.listeners.map((item) => item.type).sort(), ["agent/status", "session/event"]);
-    assert.equal(harness.restricted.filter((item) => item.id === submitted.qa && item.active).length, 0);
+    assertMiniReviewMounted(qa, { owned: false });
+    assertMiniReviewMounted(qa);
+    assert.equal(harness.restricted.filter((item) => item.id === submitted.qa && item.active).length, 1);
     assert.deepEqual(harness.relay.labelsFor(submitted.qa), [
       "workflows:land-role/qa-look-1",
       `workflows:land-run/${adopted.run}`,
@@ -1746,7 +1805,7 @@ try {
     const fixing = landB.run(adopted.run);
     assert.equal(fixing.status, "waiting_fix");
     assert.ok(fixing.implementerSession);
-    assert.equal(fixing.qaVerdict.summary, "deferred verdict survives HMR");
+    assert.equal(fixing.qaVerdict.summary, "resume one exact fixer transition");
     assert.equal(harness.created.length, 2, "controller B starts one fixer from the exact result");
     assert.deepEqual(landB.ownedChildren(), [fixing.implementerSession]);
     for (const listener of [...qa.listeners].filter((item) => item.type === "session/event")) {
@@ -1764,7 +1823,7 @@ try {
     const releaseGap = Promise.withResolvers();
     let pauseAfterOldDisposal = false;
     const gapRun = async (command, args, options) => {
-      if (pauseAfterOldDisposal && command === "git" && args?.[0] === "diff" && args?.[1] === "-U0") {
+      if (pauseAfterOldDisposal && command === "git" && args?.[0] === "diff" && args?.includes("-U0")) {
         pauseAfterOldDisposal = false;
         gapReached.resolve();
         await releaseGap.promise;
@@ -1865,9 +1924,8 @@ try {
     assert.deepEqual(registered, []);
     assert.deepEqual(listeners, []);
     assert.deepEqual(harness.relay.labelsFor(implementerId), []);
-    assert.deepEqual(qa.registered, []);
-    assert.deepEqual(qa.listeners, []);
-    assert.equal(harness.restricted.filter((item) => item.id === submitted.qa && item.active).length, 0);
+    assertMiniReviewMounted(qa, { owned: false });
+    assert.equal(harness.restricted.filter((item) => item.id === submitted.qa && item.active).length, 1);
     assert.deepEqual(harness.relay.labelsFor(submitted.qa), []);
     await Promise.resolve();
     await Promise.resolve();
@@ -1895,8 +1953,8 @@ try {
       landRun: qa.child.session.header.landRun,
       role: qa.child.session.header.landWorkflowRole,
     }, qaIdentity);
-    assert.deepEqual(qa.registered.map((tool) => tool.name), [QA_VERDICT_TOOL_NAME]);
-    assert.deepEqual(qa.listeners.map((item) => item.type).sort(), ["agent/status", "session/event", "session/event"]);
+    assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
+    assertMiniReviewMounted(qa);
     assert.equal(harness.restricted.filter((item) => item.id === submitted.qa && item.active).length, 1);
     assert.deepEqual(harness.relay.labelsFor(submitted.qa), [
       "workflows:land-role/qa-look-1",
@@ -1978,7 +2036,9 @@ try {
     assert.equal(pending.role, "qa-look-1");
     assert.equal(pending.phaseEpoch, 2);
     assert.match(pending.messageId, /^[0-9a-f-]{36}$/);
-    assert.match(pending.message, /isolated QA chair/);
+    assert.match(pending.message, /^Please review this change:/);
+    assert.match(pending.message, /<diff>[\s\S]*<\/diff>/);
+    assert.match(pending.message, /submit_review/);
     assert.equal(pending.messageDelivered, false);
     assert.equal(harness.created.length, 1);
     assert.equal(implementerRecord.live, false);
@@ -1987,8 +2047,7 @@ try {
     assert.deepEqual(qa.child.inbox.nextTurn, [], "the interrupted child genuinely has no work packet");
     assert.equal(harness.followups.length, 0, "controller A stopped before followup");
     assert.deepEqual(harness.land.ownedChildren(), []);
-    assert.deepEqual(qa.registered, []);
-    assert.deepEqual(qa.listeners, []);
+    assertMiniReviewMounted(qa, { owned: false });
     assert.deepEqual(harness.relay.labelsFor(pending.sessionUuid), []);
 
     const landB = createLand({
@@ -2028,8 +2087,8 @@ try {
     assert.equal(qa.child.inbox.nextTurn[0].id, pending.messageId);
     assert.equal(qa.child.inbox.nextTurn[0].content[0].text, pending.message);
     assert.deepEqual(landB.ownedChildren(), [pending.sessionUuid]);
-    assert.deepEqual(qa.registered.map((tool) => tool.name), [QA_VERDICT_TOOL_NAME]);
-    assert.deepEqual(qa.listeners.map((item) => item.type).sort(), ["agent/status", "session/event", "session/event"]);
+    assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
+    assertMiniReviewMounted(qa);
     assert.equal(harness.restricted.filter((item) => item.id === pending.sessionUuid && item.active).length, 1);
     assert.deepEqual(harness.relay.labelsFor(pending.sessionUuid), [
       "workflows:land-role/qa-look-1",
@@ -2130,8 +2189,8 @@ try {
     assert.equal(recovered.settlementCallId, "");
     assert.equal(recovered.settlementTransition, "");
     assert.deepEqual(harness.land.ownedChildren(), [intendedQa]);
-    assert.deepEqual(qa.registered.map((tool) => tool.name), [QA_VERDICT_TOOL_NAME]);
-    assert.deepEqual(qa.listeners.map((item) => item.type).sort(), ["agent/status", "session/event", "session/event"]);
+    assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
+    assertMiniReviewMounted(qa);
     assert.equal(harness.restricted.filter((item) => item.id === intendedQa && item.active).length, 1);
     assert.deepEqual(harness.relay.labelsFor(intendedQa), [
       "workflows:land-role/qa-look-1",
@@ -2146,8 +2205,7 @@ try {
     await harness.land.dispose();
     assert.deepEqual(harness.land.ownedChildren(), []);
     assert.ok(qa.live, "controller disposal preserves the recovered endpoint for HMR");
-    assert.deepEqual(qa.registered, []);
-    assert.deepEqual(qa.listeners, []);
+    assertMiniReviewMounted(qa, { owned: false });
     assert.deepEqual(harness.relay.labelsFor(intendedQa), []);
     const workflowHandle = Symbol.for("@hypermemetic-ai/qq-workflows/child-agent-handle");
     const coreHandle = Symbol.for("@hypermemetic-ai/qq/agent-handle");
@@ -2171,8 +2229,8 @@ try {
     assert.equal(harness.followups.length, 1);
     assert.equal(harness.agents.list().filter((agent) => agent.session?.id === intendedQa).length, 1);
     assert.deepEqual(landB.ownedChildren(), [intendedQa]);
-    assert.deepEqual(qa.registered.map((tool) => tool.name), [QA_VERDICT_TOOL_NAME]);
-    assert.deepEqual(qa.listeners.map((item) => item.type).sort(), ["agent/status", "session/event", "session/event"]);
+    assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
+    assertMiniReviewMounted(qa);
     assert.equal(harness.restricted.filter((item) => item.id === intendedQa && item.active).length, 1);
     assert.deepEqual(harness.relay.labelsFor(intendedQa), [
       "workflows:land-role/qa-look-1",
@@ -2253,7 +2311,7 @@ try {
     assert.equal(harness.followups.length, 1, "recovery observes the stable ID and does not insert twice");
     assert.equal(qa.child.inbox.nextTurn.length, 1);
     assert.equal(qa.child.inbox.nextTurn[0].id, pending.messageId);
-    assert.deepEqual(qa.registered.map((tool) => tool.name), [QA_VERDICT_TOOL_NAME]);
+    assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
     await landB.dispose();
   }
 
