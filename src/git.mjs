@@ -41,6 +41,20 @@ export async function checked(run, command, args, options, label) {
   return result;
 }
 
+async function stampGitIdentity(run, source, capsule) {
+  for (const key of ["user.name", "user.email"]) {
+    const configured = await run("git", ["config", "--get", key], { cwd: source });
+    if (configured?.code === 1) continue;
+    if (configured?.code !== 0) {
+      throw new Error(`cannot read source Git ${key}: ${reason(configured, "git config failed")}`);
+    }
+    const value = configured.stdout.replace(/\r?\n$/, "");
+    await checked(
+      run, "git", ["config", "--local", key, value], { cwd: capsule }, `cannot stamp capsule Git ${key}`,
+    );
+  }
+}
+
 export function slugFor(brief, id = "") {
   const line = String(brief ?? "").trim().split("\n")[0].replace(/^#+\s*/, "");
   const base = line
@@ -136,6 +150,7 @@ export async function createDelegatedWorktree(run, { cwd, brief, id, env = proce
     if (!existsSync(join(worktree, ".git", "HEAD"))) {
       throw new Error("delegation capsule clone did not create an internal .git directory");
     }
+    await stampGitIdentity(run, git.worktree, worktree);
     return await inspectWorktree(run, worktree);
   } catch (error) {
     rmSync(worktree, { recursive: true, force: true });
