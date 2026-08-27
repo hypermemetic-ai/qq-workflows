@@ -183,9 +183,9 @@ export function apply(ctx, config = {}) {
     return selected === "architect";
   }
 
-  // Architect standing context is role, working memory, and fold. DSH
-  // agent-instructions is not a fifth channel. Minis also drop the dump;
-  // other children keep nested AGENTS.md.
+  // Architect standing context is role, bounded wiki index when present,
+  // working memory, and fold. DSH agent-instructions is not another channel.
+  // Minis also drop the dump; other children keep nested AGENTS.md.
   function shouldHideInstructions(agent) {
     if (!agent) return false;
     if (isMiniAgent(agent) || isMiniReviewAgent(agent)) return true;

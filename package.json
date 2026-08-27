@@ -19,6 +19,7 @@
     "./land-tools": "./src/land-tools.mjs",
     "./journal": "./src/journal.mjs",
     "./wiki": "./src/wiki.mjs",
+    "./wiki-index": "./src/wiki-index.mjs",
     "./iterate-tools": "./src/iterate-tools.mjs",
     "./selection": "./src/selection.mjs",
     "./settings": "./src/settings.mjs",
@@ -34,6 +35,6 @@
     "src/"
   ],
   "scripts": {
-    "test": "node tests/fold.mjs && node tests/observation.mjs && node tests/git-geometry.mjs && node tests/routing.mjs && node tests/architect-case-context.mjs && node tests/mini-review.mjs && node tests/land.mjs"
+    "test": "node tests/fold.mjs && node tests/observation.mjs && node tests/git-geometry.mjs && node tests/routing.mjs && node tests/architect-case-context.mjs && node tests/architect-wiki-index.mjs && node tests/mini-review.mjs && node tests/land.mjs"
   }
 }
