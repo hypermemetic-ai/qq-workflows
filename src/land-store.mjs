@@ -173,7 +173,23 @@ function normalizePendingPhase(raw, phaseEpoch) {
   if (!Number.isSafeInteger(raw.phaseEpoch) || raw.phaseEpoch !== phaseEpoch + 1) {
     throw new Error("qq-workflows: land run pending phase epoch is invalid");
   }
-  return { sessionUuid, role, phaseEpoch: raw.phaseEpoch };
+  const messageId = optionalString(raw.messageId);
+  const message = optionalString(raw.message);
+  if ((messageId || message) && (!UUID_ID.test(messageId) || !message)) {
+    throw new Error("qq-workflows: land run pending phase packet is malformed");
+  }
+  const messageDelivered = raw.messageDelivered === true;
+  if (messageDelivered && (!messageId || !message)) {
+    throw new Error("qq-workflows: land run pending phase delivered packet is missing");
+  }
+  return {
+    sessionUuid,
+    role,
+    phaseEpoch: raw.phaseEpoch,
+    messageId,
+    message,
+    messageDelivered,
+  };
 }
 
 function normalize(raw) {
@@ -397,14 +413,22 @@ export function createLandStore(dirPath) {
         const samePlan = next.pendingPhase
           && next.pendingPhase.sessionUuid === previous.pendingPhase.sessionUuid
           && next.pendingPhase.role === previous.pendingPhase.role
-          && next.pendingPhase.phaseEpoch === previous.pendingPhase.phaseEpoch;
+          && next.pendingPhase.phaseEpoch === previous.pendingPhase.phaseEpoch
+          && next.pendingPhase.messageId === previous.pendingPhase.messageId
+          && next.pendingPhase.message === previous.pendingPhase.message;
         if (next.pendingPhase && !samePlan) {
           throw new Error(`qq-workflows: land run ${next.id} pending phase is immutable`);
+        }
+        if (previous.pendingPhase.messageDelivered && next.pendingPhase && !next.pendingPhase.messageDelivered) {
+          throw new Error(`qq-workflows: land run ${next.id} pending phase delivery cannot be retracted`);
         }
         const promoted = next.current
           && next.current.sessionUuid === previous.pendingPhase.sessionUuid
           && next.current.role === previous.pendingPhase.role
           && next.current.phaseEpoch === previous.pendingPhase.phaseEpoch;
+        if (promoted && !previous.pendingPhase.messageDelivered) {
+          throw new Error(`qq-workflows: land run ${next.id} cannot promote an unseeded pending phase`);
+        }
         if (!next.pendingPhase && !promoted && !TERMINAL_STATUSES.has(next.status)) {
           throw new Error(`qq-workflows: land run ${next.id} must promote its pending phase exactly`);
         }

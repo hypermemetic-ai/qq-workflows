@@ -14,9 +14,11 @@ The durable Land record stores:
 
 - `delegationId` and its one-to-one Land `runId`;
 - the immutable `parentSessionUuid` used for automatic return;
-- a monotonic `phaseEpoch`; and
+- a monotonic `phaseEpoch`;
 - the routable `current` `{ sessionUuid, role, phaseEpoch }` plus a durable
-  `transitioning` guard.
+  `transitioning` guard; and
+- a pending successor packet whose physical UUID, role, epoch, message ID, and
+  exact content are persisted before child creation.
 
 Old v1 Land records are upgraded in place on first load. Their generated
 `delegationId` is persisted atomically and reused thereafter.
@@ -38,9 +40,10 @@ emergency steering.
 - Architect delegation creates a fresh isolated worktree. Land adopts the child
   after inspecting that worktree.
 - Plugin/HMR teardown detaches in-memory ownership without cancelling a live
-  Land child. Reapply discovers the same AgentHandle, restores run/role labels
-  and completion ownership, reconstructs the current pointer from durable run
-  state, and resumes an armed settlement exactly once.
+  Land child. Reapply discovers the same AgentHandle, inserts any missing
+  pending packet by its stable message ID, durably acknowledges delivery before
+  pointer promotion, restores run/role labels and completion ownership, and
+  resumes an armed settlement exactly once.
 - Only the exact Mini completion command is a submission sentinel. Accepted
   submissions settle after the exact durable tool result.
 - Every child packet and lifecycle report names the delegation UUID and Land
