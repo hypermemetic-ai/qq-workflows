@@ -1,7 +1,7 @@
 # qq-workflows
 
-`qq-workflows` keeps architect delegation and Land completion on an explicit,
-durable Git-worktree boundary.
+`qq-workflows` keeps architect delegation and Land completion on explicit,
+durable Git-worktree and GitHub pull-request boundaries.
 
 ## Durable delegation identity
 
@@ -51,6 +51,25 @@ emergency steering.
 - Real `agent/disposed` cancellation remains terminal and is reported exactly
   once to the durable parent UUID. HMR detachment never impersonates
   cancellation.
+
+## Publishing and landing
+
+`origin/main` is the source of truth for a completed Land. After routing and QA
+accept a clean, committed proposal, Land:
+
+1. rechecks the clean local `main` checkout, clean delegated worktree, and the
+   OpenWiki generated-path guard;
+2. pushes the exact reviewed proposal commit to its branch on `origin`;
+3. opens a GitHub pull request with base `main` and that proposal branch as its
+   head;
+4. merges the pull request with a merge commit (never squash or rebase);
+5. fetches `origin/main` and advances local `main` with `--ff-only`; and
+6. only then removes the delegated capsule/worktree and local proposal branch.
+
+Land never pushes local `main` and never creates a local merge commit. A push,
+pull-request creation, pull-request merge, fetch, or fast-forward failure makes
+the run blocked and retains the capsule for diagnosis or retry. In particular,
+a publish failure cannot silently report a local-only landing.
 
 ## Mini-review Land QA
 

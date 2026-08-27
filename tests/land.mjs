@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = new URL("..", import.meta.url).pathname;
 const reviewModule = await import(pathToFileURL(join(root, "src/routing.mjs")));
@@ -25,7 +25,7 @@ const {
   ROUTE_PACKET_SCHEMA,
   isTestPath,
 } = reviewModule;
-const { createLand, LAND_LABEL, isLandCandidate, ROUTE_SYSTEM, runCommand, landWorktree } = landModule;
+const { createLand, createGitHubClient, LAND_LABEL, isLandCandidate, ROUTE_SYSTEM, runCommand, landWorktree } = landModule;
 const gitModule = await import(pathToFileURL(join(root, "src/git.mjs")));
 const { createDelegatedWorktree, LAND_GIT_IDENTITY } = gitModule;
 const { createLandStore, LAND_RUN_SCHEMA } = landStoreModule;
@@ -75,6 +75,15 @@ function git(cwd, args) {
   return execFileSync("git", args, { cwd, encoding: "utf8", env: gitEnv() }).trim();
 }
 
+function addOrigin(main, rootDir) {
+  const origin = join(rootDir, "origin.git");
+  mkdirSync(origin);
+  git(origin, ["init", "--bare", "--initial-branch=main"]);
+  git(main, ["remote", "add", "origin", pathToFileURL(origin).href]);
+  git(main, ["push", "-q", "-u", "origin", "main"]);
+  return origin;
+}
+
 function initRepo({ branch = "feat/change" } = {}) {
   const rootDir = mkdtempSync(join(scratch, "git-"));
   const main = join(rootDir, "repo");
@@ -87,8 +96,61 @@ function initRepo({ branch = "feat/change" } = {}) {
   writeFileSync(join(main, "README.md"), "hello\n");
   git(main, ["add", "README.md"]);
   git(main, ["commit", "-m", "init"]);
+  const origin = addOrigin(main, rootDir);
   git(main, ["worktree", "add", "-q", "-b", branch, worktree]);
-  return { rootDir, main, worktree, branch, baseRef: git(main, ["rev-parse", "HEAD"]) };
+  return { rootDir, main, origin, worktree, branch, baseRef: git(main, ["rev-parse", "HEAD"]) };
+}
+
+let pullRequestSequence = 0;
+
+function localOriginPath(mainRoot) {
+  const remote = git(mainRoot, ["remote", "get-url", "origin"]);
+  return remote.startsWith("file:") ? fileURLToPath(remote) : remote;
+}
+
+/** Local, bare-repository GitHub stand-in. It verifies that Land pushed the
+ * reviewed SHA, then creates the merge commit only in origin. */
+function createGitHubMock({ fail = "", trace = [] } = {}) {
+  const calls = [];
+  return {
+    calls,
+    async openPullRequest(request) {
+      trace.push("pr-open");
+      calls.push({ operation: "open", ...request });
+      if (fail === "open") throw new Error("mock pull request creation failed");
+      const origin = localOriginPath(request.mainRoot);
+      assert.equal(
+        git(origin, ["rev-parse", `refs/heads/${request.headBranch}`]),
+        request.headRef,
+        "GitHub sees the exact reviewed proposal SHA",
+      );
+      const number = ++pullRequestSequence;
+      return `https://github.test/hypermemetic-ai/qq-workflows/pull/${number}`;
+    },
+    async mergePullRequest(request) {
+      trace.push("pr-merge");
+      calls.push({ operation: "merge", ...request });
+      if (fail === "merge") throw new Error("mock pull request merge failed");
+      const origin = localOriginPath(request.mainRoot);
+      const serverRoot = mkdtempSync(join(scratch, "github-server-"));
+      const server = join(serverRoot, "checkout");
+      try {
+        git(serverRoot, ["clone", "-q", origin, server]);
+        git(server, ["config", "user.name", LAND_GIT_IDENTITY.name]);
+        git(server, ["config", "user.email", LAND_GIT_IDENTITY.email]);
+        assert.equal(git(server, ["rev-parse", `origin/${request.headBranch}`]), request.headRef);
+        const number = request.pullRequest.split("/").at(-1);
+        execFileSync("git", [
+          "merge", "--no-ff", "--no-edit",
+          "-m", `Merge pull request #${number} from hypermemetic-ai/${request.headBranch}`,
+          request.headRef,
+        ], { cwd: server, encoding: "utf8", env: isolatedLandGitEnv() });
+        git(server, ["push", "-q", "origin", `HEAD:refs/heads/${request.baseBranch}`]);
+      } finally {
+        rmSync(serverRoot, { recursive: true, force: true });
+      }
+    },
+  };
 }
 
 function commitFile(worktree, relative, contents, message) {
@@ -270,7 +332,7 @@ async function executeQaTool(land, record, args, { isError = false, duplicateRes
   return result;
 }
 
-function createHarness({ complete, worktree, tasks, parentHeader = {}, run, store: suppliedStore, onCreate, onChildFollowup, onHang, claimFollowup = false } = {}) {
+function createHarness({ complete, worktree, tasks, parentHeader = {}, run, github = createGitHubMock(), store: suppliedStore, onCreate, onChildFollowup, onHang, claimFollowup = false } = {}) {
   const sent = [];
   const created = [];
   const followups = [];
@@ -378,9 +440,10 @@ function createHarness({ complete, worktree, tasks, parentHeader = {}, run, stor
     complete,
     agents: agentService,
     run,
+    github,
   });
   return {
-    land, store, sent, created, followups, restricted, children, disposed, parent,
+    land, github, store, sent, created, followups, restricted, children, disposed, parent,
     hung, cleared, relay, ctx: harnessCtx, settings: harnessSettings, agents: agentService,
   };
 }
@@ -399,6 +462,46 @@ try {
   assert.ok(!buildArchitectTools({}).some((tool) => ["done", "qa_verdict", "submit_review", "land"].includes(tool.name)));
   assert.equal(isTestPath("tests/test-qq-land.mjs"), true);
   assert.equal(isTestPath("core/src/session.mjs"), false);
+
+  // GitHub CLI calls are explicit and noninteractive; merge strategy is never
+  // inferred from repository defaults.
+  {
+    const calls = [];
+    const cliRun = async (command, args, options) => {
+      calls.push({ command, args, options });
+      return { code: 0, stdout: args[1] === "create" ? "https://github.test/o/r/pull/7\n" : "", stderr: "" };
+    };
+    const github = createGitHubClient(cliRun);
+    const pullRequest = await github.openPullRequest({
+      mainRoot: "/repo",
+      baseBranch: "main",
+      headBranch: "feat/publish",
+      title: "Publish through a PR",
+      body: "PR body",
+    });
+    await github.mergePullRequest({ mainRoot: "/repo", pullRequest, headRef: "abc123" });
+    assert.equal(pullRequest, "https://github.test/o/r/pull/7");
+    assert.deepEqual(calls.map(({ command, args, options }) => ({ command, args, cwd: options.cwd })), [
+      {
+        command: "gh",
+        args: [
+          "pr", "create",
+          "--base", "main",
+          "--head", "feat/publish",
+          "--title", "Publish through a PR",
+          "--body", "PR body",
+        ],
+        cwd: "/repo",
+      },
+      {
+        command: "gh",
+        args: ["pr", "merge", pullRequest, "--merge", "--match-head-commit", "abc123"],
+        cwd: "/repo",
+      },
+    ]);
+    assert.equal(calls[1].args.includes("--squash"), false);
+    assert.equal(calls[1].args.includes("--rebase"), false);
+  }
 
   // Child settlement must be armed before conclude can synchronously emit idle.
   {
@@ -767,6 +870,7 @@ try {
       store: crashStore,
       settings: harness.settings,
       agents: harness.agents,
+      github: harness.github,
       complete: async () => "land",
     });
     assert.equal(pluginModule.internals.syncLiveLandChild(landB, implementer), true);
@@ -855,6 +959,37 @@ try {
     assert.equal(run.archivedTaskId, "280");
     assert.deepEqual(archived, ["280"]);
     assert.match(git(repo.main, ["log", "-1", "--pretty=%s"]), /paint css|Merge/);
+  }
+
+  // ---------------------------------------------------------------- publish failure blocks and retains the capsule
+  {
+    const repo = initRepo({ branch: "feat/pr-merge-failure" });
+    const ref = commitFile(repo.worktree, "qq-ui/assets/failure.css", "body{color:orange}\n", "paint failure");
+    const github = createGitHubMock({ fail: "merge" });
+    const harness = createHarness({
+      complete: async () => "land",
+      worktree: repo.worktree,
+      github,
+    });
+    const implementer = childAgent({ id: implementerId, cwd: repo.worktree, registered: [] });
+    const adopted = await harness.land.adoptImplementer(implementer, {
+      packet: "tweak the failure color",
+      parentSession: architectId,
+      cwd: repo.worktree,
+    });
+    const result = await harness.land.done({ agent: implementer, ref: "HEAD" });
+    const blocked = harness.land.run(adopted.run);
+    assert.equal(result.status, "ok");
+    assert.match(result.outcome, /Blocked/);
+    assert.equal(blocked.status, "blocked");
+    assert.match(blocked.blockedReason, /mock pull request merge failed/);
+    assert.deepEqual(github.calls.map((call) => call.operation), ["open", "merge"]);
+    assert.equal(git(repo.origin, ["rev-parse", `refs/heads/${repo.branch}`]), ref);
+    assert.equal(git(repo.main, ["rev-parse", "HEAD"]), repo.baseRef, "Land never merged local main");
+    assert.equal(git(repo.origin, ["rev-parse", "main"]), repo.baseRef);
+    assert.equal(existsSync(repo.worktree), true, "failed publish remains retryable");
+    assert.equal(harness.sent.length, 1);
+    assert.match(harness.sent[0].message, /Blocked: mock pull request merge failed/);
   }
 
   // ---------------------------------------------------------------- done accepts a proposal whose unified diff exceeds 2 MB
@@ -1020,6 +1155,7 @@ try {
       store: harness.store,
       settings: harness.settings,
       agents: harness.agents,
+      github: harness.github,
       complete: async () => "review",
     });
     const resumed = harness.agents.list()
@@ -1498,6 +1634,7 @@ try {
       store: harness.store,
       settings: harness.settings,
       agents: harness.agents,
+      github: harness.github,
       complete: async () => "review",
     });
     const syncLive = () => harness.agents.list()
@@ -1635,6 +1772,7 @@ try {
       store: harness.store,
       settings: harness.settings,
       agents: harness.agents,
+      github: harness.github,
       complete: async () => "review",
     });
     const syncLive = (land) => harness.agents.list()
@@ -1938,6 +2076,7 @@ try {
       store: harness.store,
       settings: harness.settings,
       agents: harness.agents,
+      github: harness.github,
       complete: async () => "review",
       run: deferredRun,
     });
@@ -2095,6 +2234,7 @@ try {
       store: harness.store,
       settings: harness.settings,
       agents: harness.agents,
+      github: harness.github,
       complete: async () => "review",
       run: deferredRun,
     });
@@ -2259,6 +2399,7 @@ try {
       store: harness.store,
       settings: harness.settings,
       agents: harness.agents,
+      github: harness.github,
       complete: async () => "review",
     });
     const syncLive = () => harness.agents.list()
@@ -2379,6 +2520,7 @@ try {
       store: harness.store,
       settings: harness.settings,
       agents: harness.agents,
+      github: harness.github,
       complete: async () => "review",
     });
     const beforeActivation = await landB.workflowSend({
@@ -2542,6 +2684,7 @@ try {
       store,
       settings: harness.settings,
       agents: harness.agents,
+      github: harness.github,
       complete: async () => "review",
     });
     const syncLive = () => harness.agents.list()
@@ -2622,6 +2765,7 @@ try {
       store: harness.store,
       settings: harness.settings,
       agents: harness.agents,
+      github: harness.github,
       complete: async () => "review",
     });
     assert.equal(pluginModule.internals.syncLiveLandChild(landB, qa.child), true);
@@ -2754,7 +2898,99 @@ try {
     assert.deepEqual(archived, []);
   }
 
-  // ---------------------------------------------------------------- landWorktree merges when main has no committer identity
+  // ---------------------------------------------------------------- OpenWiki paths block before publication
+  {
+    const repo = initRepo({ branch: "feat/openwiki-guard" });
+    const ref = commitFile(repo.worktree, "openwiki/generated.md", "generated\n", "generated OpenWiki path");
+    const github = createGitHubMock();
+    const commands = [];
+    const run = async (command, args, options) => {
+      commands.push([command, ...args]);
+      return runCommand(command, args, options);
+    };
+    await assert.rejects(
+      landWorktree(run, { ...repo, mainRoot: repo.main, baseBranch: "main", ref }, { github }),
+      /generated OpenWiki paths: openwiki\/generated\.md/,
+    );
+    assert.equal(commands.some((parts) => parts[0] === "git" && parts[1] === "push"), false);
+    assert.deepEqual(github.calls, []);
+    assert.equal(git(repo.main, ["rev-parse", "main"]), repo.baseRef);
+    assert.equal(git(repo.origin, ["rev-parse", "main"]), repo.baseRef);
+    assert.equal(existsSync(repo.worktree), true);
+  }
+
+  // ---------------------------------------------------------------- Land publishes through GitHub before fast-forward and cleanup
+  {
+    const repo = initRepo({ branch: "feat/publish-order" });
+    const ref = commitFile(repo.worktree, "publish.txt", "published\n", "publish through PR");
+    const trace = [];
+    const run = async (command, args, options) => {
+      if (command === "git" && args[0] === "push") trace.push("proposal-push");
+      if (command === "git" && args[0] === "fetch" && args[1] === "origin") trace.push("origin-fetch");
+      if (command === "git" && args[0] === "merge" && args[1] === "--ff-only") trace.push("main-ff-only");
+      return runCommand(command, args, options);
+    };
+    const github = createGitHubMock({ trace });
+    await landWorktree(run, { ...repo, mainRoot: repo.main, baseBranch: "main", ref }, { github });
+    assert.deepEqual(trace, ["proposal-push", "pr-open", "pr-merge", "origin-fetch", "main-ff-only"]);
+    assert.deepEqual(github.calls.map((call) => call.operation), ["open", "merge"]);
+    const localMain = git(repo.main, ["rev-parse", "main"]);
+    assert.equal(localMain, git(repo.origin, ["rev-parse", "main"]));
+    assert.equal(git(repo.origin, ["rev-parse", `refs/heads/${repo.branch}`]), ref);
+    assert.equal(git(repo.main, ["rev-list", "--parents", "-n", "1", "main"]).split(" ").length, 3);
+    assert.equal(existsSync(repo.worktree), false);
+  }
+
+  // Every publication boundary fails closed: main never advances locally and
+  // the worktree remains available for diagnosis/retry.
+  for (const failure of ["push", "open", "merge", "fetch", "ff"]) {
+    const repo = initRepo({ branch: `feat/fail-${failure}` });
+    const ref = commitFile(repo.worktree, `${failure}.txt`, `${failure}\n`, `fail ${failure}`);
+    const github = createGitHubMock({ fail: failure });
+    const commands = [];
+    const run = async (command, args, options) => {
+      commands.push([command, ...args]);
+      if (failure === "push" && command === "git" && args[0] === "push") {
+        return { code: 1, stdout: "", stderr: "mock push failed" };
+      }
+      if (failure === "fetch" && command === "git" && args[0] === "fetch" && args[1] === "origin") {
+        return { code: 1, stdout: "", stderr: "mock origin fetch failed" };
+      }
+      if (failure === "ff" && command === "git" && args[0] === "merge" && args[1] === "--ff-only") {
+        return { code: 1, stdout: "", stderr: "mock ff-only failed" };
+      }
+      return runCommand(command, args, options);
+    };
+    const expected = {
+      push: /proposal push failed: mock push failed/,
+      open: /mock pull request creation failed/,
+      merge: /mock pull request merge failed/,
+      fetch: /origin fetch after pull request merge failed: mock origin fetch failed/,
+      ff: /local main fast-forward failed: mock ff-only failed/,
+    }[failure];
+    await assert.rejects(
+      landWorktree(run, { ...repo, mainRoot: repo.main, baseBranch: "main", ref }, { github }),
+      expected,
+    );
+    const localMain = git(repo.main, ["rev-parse", "main"]);
+    const originMain = git(repo.origin, ["rev-parse", "main"]);
+    assert.equal(localMain, repo.baseRef, `${failure}: local main did not move`);
+    git(repo.origin, ["merge-base", "--is-ancestor", localMain, originMain]);
+    assert.equal(existsSync(repo.worktree), true, `${failure}: capsule is retained`);
+    assert.equal(
+      commands.some((parts) => parts[0] === "git" && parts[1] === "push"
+        && parts.some((part) => part === "main" || part.endsWith(":refs/heads/main"))),
+      false,
+      `${failure}: Land never pushes local main`,
+    );
+    assert.equal(
+      commands.some((parts) => parts[0] === "git" && parts[1] === "merge" && parts.includes("--no-ff")),
+      false,
+      `${failure}: Land never creates a local merge commit`,
+    );
+  }
+
+  // ---------------------------------------------------------------- landWorktree publishes when main has no committer identity
   {
     const isolated = isolatedLandGitEnv();
     const run = (command, args, options = {}) => runCommand(command, args, { ...options, env: isolated });
@@ -2782,6 +3018,11 @@ try {
     writeFileSync(join(main, "README.md"), "hello\n");
     await gitOk(main, ["add", "README.md"]);
     await seedCommit(main, "init");
+    const origin = join(rootDir, "origin.git");
+    mkdirSync(origin);
+    await gitOk(origin, ["init", "--bare", "--initial-branch=main"]);
+    await gitOk(main, ["remote", "add", "origin", pathToFileURL(origin).href]);
+    await gitOk(main, ["push", "-q", "-u", "origin", "main"]);
     const missingMain = await run("git", ["config", "--get", "user.name"], { cwd: main });
     assert.equal(missingMain.code, 1);
 
@@ -2805,12 +3046,13 @@ try {
       baseBranch: capsule.baseBranch,
       baseRef,
       ref,
-    });
+    }, { github: createGitHubMock() });
     const headed = await gitOk(main, ["log", "-1", "--format=%an <%ae> %s"]);
-    assert.equal(
+    assert.match(
       headed,
-      `${LAND_GIT_IDENTITY.name} <${LAND_GIT_IDENTITY.email}> Merge commit '${ref}'`,
+      new RegExp(`^${LAND_GIT_IDENTITY.name} <${LAND_GIT_IDENTITY.email}> Merge pull request #[0-9]+ from hypermemetic-ai/`),
     );
+    assert.equal((await gitOk(main, ["rev-list", "--parents", "-n", "1", "HEAD"])).split(" ").length, 3);
     const stillMissing = await run("git", ["config", "--local", "--get", "user.name"], { cwd: main });
     assert.equal(stillMissing.code, 1);
     assert.equal(existsSync(capsule.worktree), false);
@@ -2834,6 +3076,7 @@ try {
       store,
       complete: async () => "land",
       tasks: { archive: async (id) => id },
+      github: createGitHubMock(),
     });
     const created = [];
     let child;
@@ -2907,7 +3150,7 @@ try {
     assert.equal(completion.exitCode, 0);
     assert.equal(concluded, 1);
     let landed = land.run(adopted.id);
-    assert.equal(landed.status, "landed");
+    assert.equal(landed.status, "landed", landed.blockedReason);
     assert.equal(landed.settlementSession, child.session.id);
     assert.equal(landed.settlementCallId, callId);
     assert.equal(landed.settlementTransition, "dispose");
