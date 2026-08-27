@@ -52,7 +52,7 @@ export const ROUTE_PACKET_SCHEMA = "qq.route-packet/v1";
 
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CHILD_AGENT_HANDLE = Symbol.for("@hypermemetic-ai/qq-workflows/child-agent-handle");
-const SETTLEMENT_TRANSITIONS = new Set(["dispose", "start_qa", "start_fixer"]);
+const SETTLEMENT_TRANSITIONS = new Set(["dispose", "finish_land", "start_qa", "start_fixer"]);
 
 export const ROUTE_SYSTEM = [
   "You stamp a completion packet land or review.",
@@ -1115,6 +1115,10 @@ export function createLand({
       oracle,
       submit: (args) => trackChildSubmission(sessionId, (submission) =>
         submitVerdict({ ...args, runId, postTool: true, submission })),
+      isCompleted: () => {
+        const current = store.load(runId);
+        return current?.qaSession === sessionId && Boolean(current.qaVerdict);
+      },
     });
     childTools.set(sessionId, dispose);
     return dispose;
@@ -1230,7 +1234,9 @@ export function createLand({
       ? "implementer done result committed"
       : state.settlementTransition === "start_fixer"
         ? "qa look 1 result committed"
-        : "terminal child result committed";
+        : state.settlementTransition === "finish_land"
+          ? "qa pass result committed"
+          : "terminal child result committed";
     const pending = addPendingSettlement(owner, {
       callId,
       reason,
@@ -1549,6 +1555,19 @@ export function createLand({
       await disposeChild(sessionId, "tool result settled");
       return;
     }
+    if (transition === "finish_land") {
+      const current = store.load(runId);
+      if (!current) return;
+      if (current.status === "landed" || current.status === "blocked") {
+        await disposeChild(sessionId, "qa pass already settled");
+        return;
+      }
+      if (current.qaSession !== sessionId || current.qaVerdict?.verdict !== "pass") {
+        throw new Error("qa pass settlement has no owning pass verdict");
+      }
+      await finishLand(current, sessionId);
+      return;
+    }
     if (transition === "start_qa") {
       await disposeChild(sessionId, "implementer done tool result settled");
       const current = store.load(runId);
@@ -1801,13 +1820,22 @@ export function createLand({
     const sessionId = sessionIdOf(agent);
     const state = (runId ? store.load(runId) : null) ?? store.bySession(sessionId);
     if (!state) return { status: "refused", reason: "submit_review has no land run for this session" };
+    if (!sessionId || state.qaSession !== sessionId) {
+      return { status: "refused", reason: "submit_review requires the owned QA session" };
+    }
+    if (state.qaVerdict) {
+      return {
+        status: "ok",
+        verdict: state.qaVerdict.verdict,
+        look: state.look,
+        run: state.id,
+        alreadySubmitted: true,
+        outcome: `qa look ${state.look} verdict was already submitted.`,
+      };
+    }
     if (state.status !== "reviewing") {
       return { status: "refused", reason: `handoff is ${state.status}, not ready for qa` };
     }
-    if (state.qaSession && state.qaSession !== sessionId) {
-      return { status: "refused", reason: "submit_review requires the owned QA session" };
-    }
-    if (state.qaVerdict) return { status: "refused", reason: "qa verdict was already submitted" };
     if (state.look !== 1 && state.look !== 2) {
       return { status: "refused", reason: "handoff is not ready for qa" };
     }
@@ -1822,7 +1850,27 @@ export function createLand({
       });
       settledQa.add(sessionId);
       if (enforced.verdict.verdict === "pass") {
-        return finishLand(next, sessionId, { postTool, submission });
+        const result = {
+          status: "ok",
+          verdict: "pass",
+          look: state.look,
+          run: next.id,
+          outcome: `qa look ${state.look} accepted ${state.id}. landing after the review result settles.`,
+        };
+        return settleAccepted({
+          sessionId,
+          result,
+          reason: "qa pass result committed",
+          postTool,
+          transition: "finish_land",
+          action: () => applyPostResultTransition({
+            sessionId,
+            runId: next.id,
+            transition: "finish_land",
+            result,
+          }),
+          submission,
+        });
       }
       if (state.look === 1) {
         next = store.save(beginPhaseTransition(next, {

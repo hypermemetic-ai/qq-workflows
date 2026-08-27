@@ -54,7 +54,11 @@ export function isMiniReviewAgent(agent) {
 export function bindMiniReviewSubmit(agent, oracleOrBinding, maybeSubmit) {
   if (!agent) throw new Error("mini-review binding requires an agent");
   const binding = typeof oracleOrBinding === "object" && oracleOrBinding?.oracle
-    ? { oracle: oracleOrBinding.oracle, submit: oracleOrBinding.submit }
+    ? {
+        oracle: oracleOrBinding.oracle,
+        submit: oracleOrBinding.submit,
+        isCompleted: oracleOrBinding.isCompleted,
+      }
     : { oracle: oracleOrBinding, submit: maybeSubmit };
   if (!binding.oracle || typeof binding.submit !== "function") {
     throw new Error("mini-review binding requires an oracle and submit function");
@@ -101,6 +105,19 @@ function isCompleted(agent) {
   return keysOf(agent).some((key) => key[MINI_REVIEW_COMPLETED] === true);
 }
 
+function bindingIsCompleted(binding, agent) {
+  if (typeof binding?.isCompleted !== "function") return false;
+  try {
+    return binding.isCompleted(agent) === true;
+  } catch {
+    return false;
+  }
+}
+
+function hasPersistedVerdict(agent) {
+  return bindingIsCompleted(bindingFor(agent), agent);
+}
+
 function messageHasReviewTool(event) {
   if (event?.type !== "assistant/message") return undefined;
   const content = event?.data?.message?.content ?? event?.message?.content;
@@ -118,7 +135,7 @@ function installFormatRecovery(agentCtx) {
     if (hadTool) consecutiveFormatErrors.set(session, 0);
   });
   const offStopping = agentCtx.on("agent/turn-stopping", ({ agent }) => {
-    if (!agent || isCompleted(agent)) return;
+    if (!agent || isCompleted(agent) || hasPersistedVerdict(agent)) return;
     const key = agent.session ?? agent;
     if (lastResponseHadTool.get(key) === true) return;
     const count = (consecutiveFormatErrors.get(key) ?? 0) + 1;
@@ -210,8 +227,11 @@ export function buildMiniReviewTools() {
           || Object.keys(args).length !== 1 || !Object.hasOwn(args, "findings")) {
           throw new Error("submit_review requires only the findings field");
         }
-        const findings = await binding.oracle.validateFindings(args.findings);
-        const verdict = createQaVerdict(reviewFindingsToVerdictInput(findings));
+        let verdict;
+        if (!bindingIsCompleted(binding, exec?.agent)) {
+          const findings = await binding.oracle.validateFindings(args.findings);
+          verdict = createQaVerdict(reviewFindingsToVerdictInput(findings));
+        }
         const result = await binding.submit({ agent: exec?.agent, verdict });
         if (result?.status !== "refused") {
           markCompleted(exec?.agent);

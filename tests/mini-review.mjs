@@ -160,11 +160,16 @@ assert.ok(tools.slice(0, 3).every((tool) => tool.isConcurrencySafe() === true));
 assert.equal(tools[3].isConcurrencySafe(), false);
 const fakeAgent = { session: { id: "session-review", header: { kind: "mini-review" } }, ctx: {} };
 const order = [];
+let submitCount = 0;
 bindMiniReviewSubmit(fakeAgent, {
   oracle: { validateFindings: async (value) => value },
   submit: async ({ verdict }) => {
     assert.equal(verdict.verdict, "pass");
-    return withChildSettlement({ status: "ok", verdict: "pass" }, { arm() { order.push("arm"); } });
+    submitCount++;
+    if (submitCount === 1) {
+      return withChildSettlement({ status: "ok", verdict: "pass" }, { arm() { order.push("arm"); } });
+    }
+    return { status: "ok", verdict: "pass", alreadySubmitted: true };
   },
 });
 const submitted = await tools[3].execute({ findings: [] }, {
@@ -174,6 +179,32 @@ const submitted = await tools[3].execute({ findings: [] }, {
 });
 assert.equal(submitted.status, "ok");
 assert.deepEqual(order, ["arm", "conclude"]);
+const submittedAgain = await tools[3].execute({ findings: [] }, {
+  agent: fakeAgent,
+  callId: "review-submit-again",
+  concludeTurn() { order.push("conclude-again"); },
+});
+assert.equal(submittedAgain.status, "ok");
+assert.equal(submittedAgain.alreadySubmitted, true);
+assert.deepEqual(order, ["arm", "conclude", "conclude-again"]);
+
+const persistedAgent = { session: { id: "session-persisted-review", header: { kind: "mini-review" } }, ctx: {} };
+let persistedConcluded = 0;
+bindMiniReviewSubmit(persistedAgent, {
+  oracle: { validateFindings: async () => assert.fail("idempotent closer must not revalidate findings") },
+  isCompleted: () => true,
+  submit: async ({ verdict }) => {
+    assert.equal(verdict, undefined);
+    return { status: "ok", verdict: "pass", alreadySubmitted: true };
+  },
+});
+const persistedSubmit = await buildMiniReviewTools().at(-1).execute({ findings: [] }, {
+  agent: persistedAgent,
+  concludeTurn() { persistedConcluded++; },
+});
+assert.equal(persistedSubmit.status, "ok");
+assert.equal(persistedSubmit.alreadySubmitted, true);
+assert.equal(persistedConcluded, 1);
 
 const invalidAgent = { session: { id: "session-invalid-review", header: { kind: "mini-review" } }, ctx: {} };
 bindMiniReviewSubmit(invalidAgent, {
@@ -235,6 +266,17 @@ assert.deepEqual(mountOperations.slice(0, 5), [
 ]);
 assert.equal(mountedListeners.length, 2);
 assert.equal(miniReviewModuleForHmr.assembleMiniReviewPrompt(mountedSections, { runtimeSuppressed }), MINI_REVIEW_SYSTEM_PROMPT);
+const durablyCompletedAgent = {
+  session: { id: "session-durable-review", header: { kind: "mini-review" } },
+  ctx: mountCtx,
+  steer() { assert.fail("format recovery must not steer after a verdict is durably persisted"); },
+};
+bindMiniReviewSubmit(durablyCompletedAgent, {
+  oracle: { validateFindings: async (value) => value },
+  submit: async () => ({ status: "ok", verdict: "pass" }),
+  isCompleted: () => true,
+});
+mountedListeners.find((item) => item.type === "agent/turn-stopping").fn({ agent: durablyCompletedAgent });
 const nextGeneration = await import(`../src/mini-review.mjs?hmr=${Date.now()}`);
 nextGeneration.miniReviewSetup(mountCtx);
 assert.equal(mountedSections.length, 1);

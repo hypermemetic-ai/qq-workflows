@@ -901,10 +901,106 @@ try {
       tests_modified: false,
     });
     assert.equal(passed.status, "ok");
-    assert.equal(passed.mark, "land");
+    assert.equal(passed.verdict, "pass");
+    assert.equal(land.run(submitted.run).status, "landed");
     assert.equal(sent.length, 1);
     assert.match(sent[0].message, /Landed on main/);
     assert.equal(existsSync(repo.worktree), false);
+  }
+
+  // ---------------------------------------------------------------- QA pass closes before a blocked merge and remains idempotent
+  {
+    const repo = initRepo({ branch: "feat/qa-pass-blocked-merge" });
+    commitFile(repo.worktree, "core/src/session.mjs", "export const closer = 1;\n", "closer lifecycle");
+    const mergeStarted = Promise.withResolvers();
+    const releaseMerge = Promise.withResolvers();
+    const identityRun = async (command, args, options) => {
+      if (command === "git" && args?.[0] === "merge") {
+        mergeStarted.resolve();
+        await releaseMerge.promise;
+        return {
+          code: 128,
+          stdout: "",
+          stderr: "Author identity unknown\n\n*** Please tell me who you are.\n",
+        };
+      }
+      return runCommand(command, args, options);
+    };
+    const harness = createHarness({
+      complete: async () => "review",
+      worktree: repo.worktree,
+      run: identityRun,
+    });
+    const implementer = childAgent({ id: implementerId, cwd: repo.worktree, registered: [] });
+    await harness.land.adoptImplementer(implementer, {
+      packet: "close QA before attempting the host merge",
+      parentSession: architectId,
+      cwd: repo.worktree,
+    });
+    const submitted = await harness.land.done({ agent: implementer, ref: "HEAD" });
+    const qa = harness.children.get(submitted.qa);
+    const tool = qaTool(qa);
+    const firstCallId = "qa-pass-before-blocked-merge";
+    let concluded = 0;
+    const executing = tool.execute({ findings: [] }, {
+      agent: qa.child,
+      callId: firstCallId,
+      concludeTurn() { concluded++; },
+    });
+    const firstPhase = await Promise.race([
+      executing.then(() => "returned"),
+      mergeStarted.promise.then(() => "merge-started"),
+    ]);
+    if (firstPhase === "merge-started") releaseMerge.resolve();
+    const result = await executing;
+    assert.equal(firstPhase, "returned", "submit_review execute must not await or start the merge");
+    assert.equal(result.status, "ok");
+    assert.equal(result.verdict, "pass");
+    assert.equal(concluded, 1);
+    assert.equal(harness.land.run(submitted.run).qaVerdict.verdict, "pass");
+    let formatSteers = 0;
+    qa.child.steer = () => { formatSteers++; };
+    for (const listener of qa.listeners.filter((item) => item.type === "agent/turn-stopping")) {
+      listener.fn({ agent: qa.child });
+    }
+    assert.equal(formatSteers, 0, "persisted verdict must not trigger another mini-review turn");
+
+    let concludedAgain = 0;
+    const again = await tool.execute({ findings: [] }, {
+      agent: qa.child,
+      callId: "qa-pass-idempotent-close",
+      concludeTurn() { concludedAgain++; },
+    });
+    assert.equal(again.status, "ok");
+    assert.equal(again.verdict, "pass");
+    assert.equal(again.alreadySubmitted, true);
+    assert.equal(concludedAgain, 1);
+
+    const resultEvent = {
+      type: "tool/result",
+      data: { message: {
+        source: { kind: "tool", callId: firstCallId },
+        content: [{ type: "tool-result", toolCallId: firstCallId, isError: false }],
+      } },
+    };
+    qa.child.session.events.push(resultEvent);
+    for (const listener of [...qa.listeners].filter((item) => item.type === "session/event")) {
+      await listener.fn(qa.child.session, resultEvent);
+    }
+    for (const listener of [...qa.listeners].filter((item) => item.type === "agent/status")) {
+      listener.fn({ status: "idle" });
+    }
+    await mergeStarted.promise;
+    releaseMerge.resolve();
+    await harness.land.whenSettled(qa.child.session.id);
+
+    const blocked = harness.land.run(submitted.run);
+    assert.equal(blocked.status, "blocked");
+    assert.match(blocked.blockedReason, /Author identity unknown/);
+    assert.equal(blocked.qaVerdict.verdict, "pass");
+    assert.equal(harness.sent.length, 1);
+    assert.match(harness.sent[0].message, /Blocked/);
+    assert.match(harness.sent[0].message, /Author identity unknown/);
   }
 
   // ---------------------------------------------------------------- QA followup claimed before user/message still starts
