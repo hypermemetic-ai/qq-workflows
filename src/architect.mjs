@@ -12,6 +12,7 @@ import { guardContext, OVERFLOW_MESSAGE } from "./fold.mjs";
 import { markAssemble } from "./assemble-mark.mjs";
 import { truncateObservationContent } from "./observation.mjs";
 import { adoptAgentHandle } from "./agent-handle.mjs";
+import { loadWikiIndexContext } from "./wiki-index.mjs";
 
 export const ARCHITECT_LABEL = "workflows:architect";
 export const CHILD_ORIGIN = "subagent";
@@ -123,7 +124,7 @@ export async function capArchitectToolObservation(_exec, result, next) {
   return capped === content ? decision : { ...decision, content: capped };
 }
 
-export function createArchitect({ ctx, cases, folder, agents, tasks, talking, hands, onInvokeChild, run = runCommand, env = process.env } = {}) {
+export function createArchitect({ ctx, cases, folder, agents, tasks, talking, hands, onInvokeChild, loadIndex, run = runCommand, env = process.env } = {}) {
   const attached = new Map();
   const delegatedHandles = new Map();
   const tasksOf = () => (typeof tasks === "function" ? tasks() : tasks ?? null);
@@ -183,8 +184,9 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
     let disposeAssemble;
     let disposeObservation;
     const contextOffs = [];
+    const reportedWikiErrors = new Set();
 
-    function bindCaseContext(holder) {
+    function bindArchitectContext(holder) {
       const prompt = systemPromptOf(holder) ?? systemPromptOf(agent);
       if (typeof prompt?.context !== "function") return;
       while (contextOffs.length) {
@@ -192,6 +194,21 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
       }
       const promptOff = prompt.context({ name: ARCHITECT_PROMPT_NAME, order: 10, text: () => ARCHITECT_PROMPT });
       if (typeof promptOff === "function") contextOffs.push(promptOff);
+
+      const wiki = loadWikiIndexContext({ ctx, cwd: session.header?.cwd, loadIndex });
+      if (wiki.error) {
+        const detail = wiki.error instanceof Error ? wiki.error.message : String(wiki.error);
+        if (!reportedWikiErrors.has(detail)) {
+          reportedWikiErrors.add(detail);
+          const message = `qq-workflows: wiki index was not injected (${detail}).`;
+          logLine(ctx, "warn", message);
+          failVisibly(session, message);
+        }
+      } else if (wiki.context) {
+        const wikiOff = prompt.context(wiki.context);
+        if (typeof wikiOff === "function") contextOffs.push(wikiOff);
+      }
+
       if (!cases) return;
       // Case prose is operator/model-authored and may contain DSH prompt groups.
       // Inline body in context text is interpolated and aborts the turn; a
@@ -213,8 +230,8 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
       });
       if (typeof caseOff === "function") contextOffs.push(caseOff);
     }
-    if (typeof agent?.ctx?.inject === "function") agent.ctx.inject(["systemPrompt"], bindCaseContext);
-    else bindCaseContext(agent?.ctx ?? agent);
+    if (typeof agent?.ctx?.inject === "function") agent.ctx.inject(["systemPrompt"], bindArchitectContext);
+    else bindArchitectContext(agent?.ctx ?? agent);
 
     try {
       disposeObservation = agent.ctx?.on?.("tools/post-execute", capArchitectToolObservation, { prepend: true });
