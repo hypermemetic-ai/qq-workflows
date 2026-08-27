@@ -147,7 +147,7 @@ try {
 
   assert.deepEqual(gitIdentityArgs(), [
     "-c", "user.name=qqp-bot",
-    "-c", "user.email=qqp-bot@aabbcdeffg.com",
+    "-c", "user.email=qqp-bot@users.noreply.github.com",
   ]);
   assert.deepEqual(gitIdentityArgs(LAND_GIT_IDENTITY), gitIdentityArgs());
 

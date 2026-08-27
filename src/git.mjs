@@ -128,7 +128,7 @@ export async function checked(run, command, args, options, label) {
 
 export const LAND_GIT_IDENTITY = Object.freeze({
   name: "qqp-bot",
-  email: "qqp-bot@aabbcdeffg.com",
+  email: "qqp-bot@users.noreply.github.com",
 });
 
 async function gitConfigValue(run, cwd, key, local = false) {
