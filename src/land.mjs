@@ -368,7 +368,7 @@ export async function landWorktree(run, state, { github = createGitHubClient(run
   );
   if (worktreeStatus.stdout.trim()) throw new Error("delegated worktree has uncommitted residue");
   const proposalDiff = await checked(
-    run, "git", ["diff", "--name-only", "--no-renames", "-z", `${state.baseRef}...${state.ref}`, "--"],
+    run, "git", ["diff", "--name-only", "--no-renames", "--diff-filter=d", "-z", `${state.baseRef}...${state.ref}`, "--"],
     { cwd: worktree }, "cannot inspect proposal paths",
   );
   const generatedPaths = parseChangedPaths(proposalDiff.stdout).filter((path) => path === "openwiki" || path.startsWith("openwiki/"));

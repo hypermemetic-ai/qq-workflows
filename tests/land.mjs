@@ -84,7 +84,7 @@ function addOrigin(main, rootDir) {
   return origin;
 }
 
-function initRepo({ branch = "feat/change" } = {}) {
+function initRepo({ branch = "feat/change", baseFiles = {} } = {}) {
   const rootDir = mkdtempSync(join(scratch, "git-"));
   const main = join(rootDir, "repo");
   const worktree = join(rootDir, "wt");
@@ -94,7 +94,12 @@ function initRepo({ branch = "feat/change" } = {}) {
   git(main, ["config", "user.email", "land@test"]);
   git(main, ["config", "commit.gpgsign", "false"]);
   writeFileSync(join(main, "README.md"), "hello\n");
-  git(main, ["add", "README.md"]);
+  for (const [relative, contents] of Object.entries(baseFiles)) {
+    const path = join(main, relative);
+    mkdirSync(join(path, ".."), { recursive: true });
+    writeFileSync(path, contents);
+  }
+  git(main, ["add", "."]);
   git(main, ["commit", "-m", "init"]);
   const origin = addOrigin(main, rootDir);
   git(main, ["worktree", "add", "-q", "-b", branch, worktree]);
@@ -2917,6 +2922,67 @@ try {
     assert.equal(git(repo.main, ["rev-parse", "main"]), repo.baseRef);
     assert.equal(git(repo.origin, ["rev-parse", "main"]), repo.baseRef);
     assert.equal(existsSync(repo.worktree), true);
+  }
+
+  // ---------------------------------------------------------------- pure OpenWiki deletions publish normally
+  {
+    const repo = initRepo({
+      branch: "feat/openwiki-retirement",
+      baseFiles: {
+        "openwiki/generated.md": "generated\n",
+        "openwiki/nested/page.md": "nested generated page\n",
+      },
+    });
+    rmSync(join(repo.worktree, "openwiki"), { recursive: true });
+    writeFileSync(join(repo.worktree, "retirement.md"), "OpenWiki retired\n");
+    git(repo.worktree, ["add", "-A", "."]);
+    git(repo.worktree, ["commit", "-m", "retire generated OpenWiki tree"]);
+    const ref = git(repo.worktree, ["rev-parse", "HEAD"]);
+    const trace = [];
+    const run = async (command, args, options) => {
+      if (command === "git" && args[0] === "push") trace.push("proposal-push");
+      return runCommand(command, args, options);
+    };
+    const github = createGitHubMock({ trace });
+
+    await landWorktree(run, { ...repo, mainRoot: repo.main, baseBranch: "main", ref }, { github });
+
+    assert.deepEqual(trace, ["proposal-push", "pr-open", "pr-merge"]);
+    assert.deepEqual(github.calls.map((call) => call.operation), ["open", "merge"]);
+    assert.equal(git(repo.main, ["ls-tree", "-r", "--name-only", "main", "--", "openwiki"]), "");
+    assert.equal(git(repo.origin, ["rev-parse", `refs/heads/${repo.branch}`]), ref);
+  }
+
+  // ---------------------------------------------------------------- mixed OpenWiki deletion and edit blocks before publication
+  {
+    const repo = initRepo({
+      branch: "feat/openwiki-mixed",
+      baseFiles: {
+        "openwiki/deleted.md": "delete me\n",
+        "openwiki/edited.md": "generated\n",
+      },
+    });
+    rmSync(join(repo.worktree, "openwiki/deleted.md"));
+    writeFileSync(join(repo.worktree, "openwiki/edited.md"), "hand edit\n");
+    writeFileSync(join(repo.worktree, "feature.txt"), "unrelated change\n");
+    git(repo.worktree, ["add", "-A", "."]);
+    git(repo.worktree, ["commit", "-m", "mixed OpenWiki changes"]);
+    const ref = git(repo.worktree, ["rev-parse", "HEAD"]);
+    const github = createGitHubMock();
+    const commands = [];
+    const run = async (command, args, options) => {
+      commands.push([command, ...args]);
+      return runCommand(command, args, options);
+    };
+
+    await assert.rejects(
+      landWorktree(run, { ...repo, mainRoot: repo.main, baseBranch: "main", ref }, { github }),
+      /generated OpenWiki paths: openwiki\/edited\.md/,
+    );
+    assert.equal(commands.some((parts) => parts[0] === "git" && parts[1] === "push"), false);
+    assert.deepEqual(github.calls, []);
+    assert.equal(git(repo.main, ["rev-parse", "main"]), repo.baseRef);
+    assert.equal(git(repo.origin, ["rev-parse", "main"]), repo.baseRef);
   }
 
   // ---------------------------------------------------------------- Land publishes through GitHub before fast-forward and cleanup
