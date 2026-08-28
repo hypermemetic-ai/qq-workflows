@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,13 +15,12 @@ import {
   reviewFindingsToVerdictInput,
 } from "../src/mini-review.mjs";
 import {
-  MINI_REVIEW_GLOB_LIMIT,
-  MINI_REVIEW_GREP_LIMIT,
-  MINI_REVIEW_VIEW_LINE_LIMIT,
-} from "../src/mini-review-v2.mjs";
+  MINI_PAGER_EXPORT,
+  MINI_SWE_COMPLETION_COMMAND,
+  OBSERVATION_MAX_CHARS,
+} from "../src/official-mini.mjs";
 import { RepoOracle } from "../src/repo-oracle.mjs";
 import { withChildSettlement } from "../src/child-settlement.mjs";
-import { truncateObservation } from "../src/observation.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "qq-mini-review."));
 const repo = join(root, "repo");
@@ -40,15 +39,9 @@ git("init", "-b", "main");
 git("config", "user.name", "mini-review-test");
 git("config", "user.email", "mini-review@test");
 mkdirSync(join(repo, "src"));
-mkdirSync(join(repo, "many"));
 writeFileSync(join(repo, "src/auth.py"), "def authorize(user):\n    return False\nunchanged = True\n");
 writeFileSync(join(repo, "src/delete.txt"), "anchor\nremove me\ntail\n");
 writeFileSync(join(repo, "src/delete-first.txt"), "only line\n");
-writeFileSync(join(repo, "src/long.txt"), `${Array.from({ length: 140 }, (_, i) => `line-${i + 1}`).join("\n")}\n`);
-writeFileSync(join(repo, "src/huge.txt"), `${"x".repeat(20_000)}\n`);
-writeFileSync(join(repo, "asset.bin"), Buffer.from([0, 1, 2, 3]));
-symlinkSync("src/auth.py", join(repo, "auth-link"));
-for (let i = 0; i < 105; i++) writeFileSync(join(repo, "many", `file-${String(i).padStart(3, "0")}.txt`), `needle ${i}\n`);
 git("add", ".");
 git("commit", "-m", "base");
 const base = git("rev-parse", "HEAD");
@@ -60,71 +53,20 @@ git("add", ".");
 git("commit", "-m", "head");
 const head = git("rev-parse", "HEAD");
 
+// RepoOracle is only the two-SHA changed-line validator used by submit_review.
 const oracle = new RepoOracle(base, head, { gitDir: join(repo, ".git") });
 assert.equal(Object.isFrozen(oracle), true);
 assert.throws(() => { oracle.headSha = base; }, /only a getter|read only|Cannot set/);
+assert.equal(oracle.baseSha, base);
 assert.equal(oracle.headSha, head);
-assert.equal(await oracle.grep({ query: "is_admin" }), "MATCHES 1\nsrc/auth.py:2|    return user.is_admin");
-assert.equal(await oracle.grep({ query: "is_admin", side: "base" }), "MATCHES 0");
-assert.equal(await oracle.grep({ query: "return False", side: "base", path: "src" }), "MATCHES 1\nsrc/auth.py:2|    return False");
-assert.equal(await oracle.glob({ pattern: "**/*.py" }), "PATHS 1\nsrc/auth.py");
-assert.equal(await oracle.glob({ pattern: "head-*.txt", side: "head" }), "PATHS 1\nhead-only.txt");
-assert.equal(await oracle.glob({ pattern: "head-*.txt", side: "base" }), "PATHS 0");
-assert.match(await oracle.view({ path: "src/auth.py", start_line: 2, end_line: 3 }), /^FILE src\/auth\.py @ head\nLINES 2-3 OF 3\n2\|    return user\.is_admin\n3\|unchanged = True$/);
-assert.match(await oracle.view({ path: "src/auth.py", start_line: 2, end_line: 2, side: "base" }), /2\|    return False/);
+assert.equal(oracle.gitDir, join(repo, ".git"));
+assert.throws(() => new RepoOracle("HEAD", head, { gitDir: join(repo, ".git") }), /full base and head commit SHAs/);
+assert.throws(() => new RepoOracle(base, head), /capsule git directory/);
+assert.equal(typeof oracle.grep, "undefined");
+assert.equal(typeof oracle.glob, "undefined");
+assert.equal(typeof oracle.view, "undefined");
 
-// Shared-clone proposal objects exist only in the capsule Git directory.
-const capsule = join(root, "capsule");
-execFileSync("git", ["clone", "--shared", repo, capsule], { env, encoding: "utf8", stdio: "pipe" });
-const capsuleGit = (...args) => execFileSync("git", args, { cwd: capsule, env, encoding: "utf8" }).trim();
-const capsuleBase = capsuleGit("rev-parse", "HEAD");
-writeFileSync(join(capsule, "capsule-only.txt"), "proposal object\n");
-capsuleGit("add", "capsule-only.txt");
-capsuleGit("commit", "-m", "capsule proposal");
-const capsuleHead = capsuleGit("rev-parse", "HEAD");
-const capsuleOracle = new RepoOracle(capsuleBase, capsuleHead, { gitDir: join(capsule, ".git") });
-assert.equal(await capsuleOracle.grep({ query: "proposal object" }), "MATCHES 1\ncapsule-only.txt:1|proposal object");
-
-await assert.rejects(oracle.view({ path: "../secret", start_line: 1, end_line: 1 }), /must not contain \.\./);
-await assert.rejects(oracle.glob({ pattern: "/tmp/**" }), /repository-relative/);
-await assert.rejects(oracle.grep({ query: "x", path: "src\\auth.py" }), /use \/ separators/);
-await assert.rejects(oracle.view({ path: "src/auth.py" }), /requires integer start_line and end_line/);
-assert.match(await oracle.view({ path: "missing.txt", start_line: 1, end_line: 1 }), /^ERROR path not found/);
-assert.match(await oracle.view({ path: "asset.bin", start_line: 1, end_line: 1 }), /^BINARY /);
-assert.match(await oracle.view({ path: "auth-link", start_line: 1, end_line: 1 }), /^SYMLINK .*not followed/);
-assert.match(await oracle.view({ path: "src/long.txt", start_line: 1, end_line: 140 }), new RegExp(`LINES 1-${MINI_REVIEW_VIEW_LINE_LIMIT} OF 140`));
-
-const capOracle = new RepoOracle(base, head, { gitDir: join(repo, ".git") });
-const grepCap = await capOracle.grep({ query: "needle" });
-assert.match(grepCap, new RegExp(`MATCHES 105`));
-assert.match(grepCap, new RegExp(`TRUNCATED: showing ${MINI_REVIEW_GREP_LIMIT} of 105 matches`));
-const globCap = await capOracle.glob({ pattern: "many/**" });
-assert.match(globCap, new RegExp(`PATHS 105`));
-assert.match(globCap, new RegExp(`TRUNCATED: showing ${MINI_REVIEW_GLOB_LIMIT} of 105 paths`));
-const hugeView = await capOracle.view({ path: "src/huge.txt", start_line: 1, end_line: 1 });
-const fullHugeView = [
-  "FILE src/huge.txt @ head",
-  "LINES 1-1 OF 1",
-  `1|${"x".repeat(20_000)}`,
-].join("\n");
-assert.equal(hugeView, truncateObservation(fullHugeView));
-assert.match(hugeView, /environment output truncated/);
-assert.ok(Buffer.byteLength(hugeView, "utf8") <= 32 * 1024);
-const unboundedOracle = new RepoOracle(base, head, { gitDir: join(repo, ".git") });
-for (let i = 0; i < 27; i++) {
-  if (i % 3 === 0) {
-    assert.equal(await unboundedOracle.grep({ query: "is_admin" }), "MATCHES 1\nsrc/auth.py:2|    return user.is_admin");
-  } else if (i % 3 === 1) {
-    assert.equal(await unboundedOracle.glob({ pattern: "**/*.py" }), "PATHS 1\nsrc/auth.py");
-  } else {
-    assert.match(await unboundedOracle.view({ path: "src/auth.py", start_line: 2, end_line: 2 }), /2\|    return user\.is_admin/);
-  }
-}
-assert.equal(await unboundedOracle.grep({ query: "is_admin" }), "MATCHES 1\nsrc/auth.py:2|    return user.is_admin");
-assert.equal(await unboundedOracle.glob({ pattern: "**/*.py" }), "PATHS 1\nsrc/auth.py");
-assert.match(await unboundedOracle.view({ path: "src/auth.py", start_line: 2, end_line: 2 }), /2\|    return user\.is_admin/);
-
-const findings = await new RepoOracle(base, head, { gitDir: join(repo, ".git") }).validateFindings([
+const findings = await oracle.validateFindings([
   { path: "src/auth.py", line: 2, body: "Non-admin users can now authorize when is_admin is truthy." },
   { path: "src/delete.txt", line: 1, body: "Deleting the second record joins incompatible entries at the anchor." },
   { path: "src/delete-first.txt", line: 0, body: "Deleting the only line leaves the required record empty." },
@@ -142,29 +84,42 @@ await assert.rejects(
   ]),
   /path is not in the diff/,
 );
+await assert.rejects(
+  new RepoOracle(base, head, { gitDir: join(repo, ".git") }).validateFindings([
+    { path: "../src/auth.py", line: 2, body: "escape" },
+  ]),
+  /must not contain \.\./,
+);
 
 assert.equal(MINI_REVIEW_SYSTEM_PROMPT, "You are a helpful assistant that can review code changes in a repository.");
 const rendered = renderMiniReviewTask({
-  task: "look 1 packet\n\nFiles:\nsrc/auth.py +1/-1\n\nPointers:\nsrc/auth.py:2",
+  task: `look 1 packet\n\nBase: ${base}\nHead: ${head}\n\nFiles:\nsrc/auth.py +1/-1\n\nPointers:\nsrc/auth.py:2`,
   diff: "diff --git a/src/auth.py b/src/auth.py\n+changed",
 });
 assert.ok(rendered.startsWith("Please review this change: look 1 packet"));
 assert.match(rendered, /Files:\nsrc\/auth\.py \+1\/-1/);
 assert.match(rendered, /Pointers:\nsrc\/auth\.py:2/);
 assert.doesNotMatch(rendered, /<diff>|diff --git|\+changed/);
-assert.match(rendered, /Start from the packet/);
-assert.match(rendered, /grep.*glob.*view/is);
+assert.match(rendered, /starting point/);
+for (const command of ["git diff", "git show", "git grep", "rg", "sed -n"]) assert.match(rendered, new RegExp(command));
+assert.match(rendered, /Do not edit files, commit, or otherwise change the worktree/);
+assert.match(rendered, /Do not run the Mini completion command/);
+assert.match(rendered, /Every response must call bash or submit_review/);
+assert.doesNotMatch(rendered, /sed -i|COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT/);
 assert.ok(rendered.endsWith('- Finish with "submit_review".'));
-assert.deepEqual(MINI_REVIEW_TOOL_NAMES, ["grep", "glob", "view", "submit_review"]);
-for (const schema of [
-  miniReviewModuleForHmr.MINI_REVIEW_GREP_SCHEMA,
-  miniReviewModuleForHmr.MINI_REVIEW_GLOB_SCHEMA,
-  miniReviewModuleForHmr.MINI_REVIEW_VIEW_SCHEMA,
-  miniReviewModuleForHmr.MINI_REVIEW_SUBMIT_SCHEMA,
-]) {
-  assert.equal(Object.isFrozen(schema), true);
-  assert.equal(Object.isFrozen(schema.parameters), true);
-}
+assert.deepEqual(MINI_REVIEW_TOOL_NAMES, ["bash", "submit_review"]);
+for (const removed of [
+  "MINI_REVIEW_GREP_SCHEMA",
+  "MINI_REVIEW_GLOB_SCHEMA",
+  "MINI_REVIEW_VIEW_SCHEMA",
+  "MINI_REVIEW_GREP_LIMIT",
+  "MINI_REVIEW_GLOB_LIMIT",
+  "MINI_REVIEW_VIEW_LINE_LIMIT",
+  "MINI_REVIEW_VIEW_BYTE_LIMIT",
+]) assert.equal(miniReviewModuleForHmr[removed], undefined);
+assert.equal(Object.isFrozen(miniReviewModuleForHmr.MINI_REVIEW_SUBMIT_SCHEMA), true);
+assert.equal(Object.isFrozen(miniReviewModuleForHmr.MINI_REVIEW_SUBMIT_SCHEMA.parameters), true);
+
 assert.deepEqual(reviewFindingsToVerdictInput([]), {
   verdict: "pass",
   summary: "no defects introduced by this change",
@@ -178,10 +133,10 @@ assert.equal(mapped.summary, findings[0].body);
 assert.equal(mapped.feedback, findings.map((finding) => `${finding.path}:${finding.line}: ${finding.body}`).join("\n\n"));
 assert.equal(reviewFindingsToVerdictInput([{ ...findings[0], body: "z".repeat(300) }]).summary.length, 240);
 
+// The plugin owns only typed completion. Bash is the wrapped host catalog tool.
 const tools = buildMiniReviewTools();
-assert.deepEqual(tools.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
-assert.ok(tools.slice(0, 3).every((tool) => tool.isConcurrencySafe() === true));
-assert.equal(tools[3].isConcurrencySafe(), false);
+assert.deepEqual(tools.map((tool) => tool.name), ["submit_review"]);
+assert.equal(tools[0].isConcurrencySafe(), false);
 const fakeAgent = { session: { id: "session-review", header: { kind: "mini-review" } }, ctx: {} };
 const order = [];
 let submitCount = 0;
@@ -196,7 +151,7 @@ bindMiniReviewSubmit(fakeAgent, {
     return { status: "ok", verdict: "pass", alreadySubmitted: true };
   },
 });
-const submitted = await tools[3].execute({ findings: [] }, {
+const submitted = await tools[0].execute({ findings: [] }, {
   agent: fakeAgent,
   callId: "review-submit",
   concludeTurn() { order.push("conclude"); },
@@ -204,7 +159,7 @@ const submitted = await tools[3].execute({ findings: [] }, {
 assert.equal(submitted.status, "ok");
 assert.deepEqual(Reflect.ownKeys(submitted), ["status", "verdict"]);
 assert.deepEqual(order, ["arm", "conclude"]);
-const submittedAgain = await tools[3].execute({ findings: [] }, {
+const submittedAgain = await tools[0].execute({ findings: [] }, {
   agent: fakeAgent,
   callId: "review-submit-again",
   concludeTurn() { order.push("conclude-again"); },
@@ -223,7 +178,7 @@ bindMiniReviewSubmit(persistedAgent, {
     return { status: "ok", verdict: "pass", alreadySubmitted: true };
   },
 });
-const persistedSubmit = await buildMiniReviewTools().at(-1).execute({ findings: [] }, {
+const persistedSubmit = await buildMiniReviewTools()[0].execute({ findings: [] }, {
   agent: persistedAgent,
   concludeTurn() { persistedConcluded++; },
 });
@@ -236,9 +191,13 @@ bindMiniReviewSubmit(invalidAgent, {
   oracle: { validateFindings: async () => assert.fail("unknown submit fields must refuse before validation") },
   submit: async () => assert.fail("unknown submit fields must not settle"),
 });
-const invalidSubmit = await buildMiniReviewTools().at(-1).execute({ findings: [], extra: true }, { agent: invalidAgent });
+const invalidSubmit = await buildMiniReviewTools()[0].execute({ findings: [], extra: true }, { agent: invalidAgent });
 assert.equal(invalidSubmit.status, "refused");
 assert.match(invalidSubmit.reason, /only the findings field/);
+assert.throws(
+  () => bindMiniReviewSubmit({ session: {} }, { submit() {} }),
+  /requires an oracle and submit function/,
+);
 
 // A new module generation replaces, rather than stacks on, a live mount.
 const mountedTools = [];
@@ -246,6 +205,26 @@ const mountedSections = [];
 const mountedRestrictions = [];
 const mountedListeners = [];
 const mountOperations = [];
+const hostCalls = [];
+const hostBash = {
+  name: "bash",
+  description: "Host bash",
+  parameters: { type: "object", properties: { command: { type: "string" } } },
+  async execute(args) {
+    hostCalls.push(args);
+    const text = args.command.includes("long-output") ? "x".repeat(OBSERVATION_MAX_CHARS + 2_000) : "host bash ran\n";
+    return {
+      kind: "foreground",
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      aborted: false,
+      timeoutMs: 0,
+      stdout: { text, truncated: false },
+      stderr: { text: "", truncated: false },
+    };
+  },
+};
 let runtimeSuppressed = false;
 const mountCtx = {
   systemPrompt: {
@@ -256,10 +235,17 @@ const mountCtx = {
     suppressRuntimeContext() { runtimeSuppressed = true; },
   },
   tools: {
+    get(name) {
+      if (name !== "bash") return undefined;
+      return [...mountedTools].reverse().find((tool) => tool.name === name) ?? hostBash;
+    },
     register(tool) {
       mountOperations.push(`register:${tool.name}`);
       mountedTools.push(tool);
-      return () => mountedTools.splice(mountedTools.indexOf(tool), 1);
+      return () => {
+        const index = mountedTools.indexOf(tool);
+        if (index >= 0) mountedTools.splice(index, 1);
+      };
     },
     restrict(spec) {
       mountOperations.push("restrict");
@@ -281,16 +267,41 @@ assert.equal(mountedSections.length, 1);
 assert.equal(mountedSections[0].complete, true);
 assert.equal(mountedSections[0].text, MINI_REVIEW_SYSTEM_PROMPT);
 assert.deepEqual(mountedTools.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
-assert.deepEqual(mountedRestrictions.filter((record) => record.active).map((record) => record.spec.allow), [[]]);
-assert.deepEqual(mountOperations.slice(0, 5), [
-  "restrict",
-  "register:grep",
-  "register:glob",
-  "register:view",
-  "register:submit_review",
-]);
+assert.deepEqual(mountedRestrictions.filter((record) => record.active).map((record) => record.spec.allow), [["bash"]]);
+assert.deepEqual(mountOperations.slice(0, 3), ["restrict", "register:bash", "register:submit_review"]);
+assert.equal(mountedTools[0].isConcurrencySafe(), false);
 assert.equal(mountedListeners.length, 2);
 assert.equal(miniReviewModuleForHmr.assembleMiniReviewPrompt(mountedSections, { runtimeSuppressed }), MINI_REVIEW_SYSTEM_PROMPT);
+
+const bashResult = await mountedTools[0].execute({ command: "long-output" }, {});
+assert.equal(hostCalls.length, 1);
+assert.equal(hostCalls[0].description, "Execute Mini SWE bash command");
+assert.equal(hostCalls[0].command, `${MINI_PAGER_EXPORT}; long-output`);
+const observation = JSON.parse(mountedTools[0].finalizeContent({}, bashResult)[0].text);
+assert.equal(observation.returncode, 0);
+assert.equal(observation.output_head.length, 5_000);
+assert.equal(observation.output_tail.length, 5_000);
+assert.equal(observation.elided_chars, 2_000);
+assert.equal(observation.warning, "Output too long.");
+
+// Review bash deliberately bypasses Mini implementation completion interception.
+const sentinelResult = await mountedTools[0].execute({ command: MINI_SWE_COMPLETION_COMMAND }, {});
+assert.equal(sentinelResult.exitCode, 0);
+assert.equal(hostCalls.length, 2);
+assert.equal(hostCalls[1].command, `${MINI_PAGER_EXPORT}; ${MINI_SWE_COMPLETION_COMMAND}`);
+
+const steers = [];
+const formatAgent = {
+  session: { id: "session-format-review", header: { kind: "mini-review" } },
+  ctx: mountCtx,
+  steer(message) { steers.push(message); },
+};
+mountedListeners.find((item) => item.type === "agent/turn-stopping").fn({ agent: formatAgent });
+assert.equal(steers.length, 1);
+const steerText = steers[0].content[0].text;
+assert.match(steerText, /bash or submit_review/);
+assert.doesNotMatch(steerText, /\b(?:grep|glob|view)\b|COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT/);
+
 const durablyCompletedAgent = {
   session: { id: "session-durable-review", header: { kind: "mini-review" } },
   ctx: mountCtx,
@@ -306,8 +317,22 @@ const nextGeneration = await import(`../src/mini-review.mjs?hmr=${Date.now()}`);
 nextGeneration.miniReviewSetup(mountCtx);
 assert.equal(mountedSections.length, 1);
 assert.deepEqual(mountedTools.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
-assert.deepEqual(mountedRestrictions.filter((record) => record.active).map((record) => record.spec.allow), [[]]);
+assert.deepEqual(mountedRestrictions.filter((record) => record.active).map((record) => record.spec.allow), [["bash"]]);
 assert.equal(mountedListeners.length, 2);
+
+// A host bash is mandatory.
+const missingBashCtx = {
+  systemPrompt: {
+    section() { return () => {}; },
+    suppressRuntimeContext() {},
+  },
+  tools: {
+    get() { return undefined; },
+    restrict() { return () => {}; },
+    register() { return () => {}; },
+  },
+};
+assert.throws(() => miniReviewModuleForHmr.miniReviewSetup(missingBashCtx), /requires a bash tool to wrap/);
 
 // Restriction is mandatory and precedes every plugin registration.
 let registrationsAfterRestrictionFailure = 0;
@@ -317,8 +342,9 @@ const failedRestrictionCtx = {
     suppressRuntimeContext() {},
   },
   tools: {
+    get(name) { return name === "bash" ? hostBash : undefined; },
     restrict(spec) {
-      assert.deepEqual(spec, { allow: [] });
+      assert.deepEqual(spec, { allow: ["bash"] });
       throw new Error("global catalog restriction failed");
     },
     register() {

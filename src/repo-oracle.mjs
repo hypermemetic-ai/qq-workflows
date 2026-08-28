@@ -1,22 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import {
-  MINI_REVIEW_GLOB_LIMIT,
-  MINI_REVIEW_GREP_LIMIT,
-  MINI_REVIEW_VIEW_BYTE_LIMIT,
-  MINI_REVIEW_VIEW_LINE_LIMIT,
-} from "./mini-review-v2.mjs";
-import { truncateObservation } from "./observation.mjs";
-
 const execFileAsync = promisify(execFile);
 const SHA = /^[0-9a-f]{40,64}$/i;
-
-function sideOf(value) {
-  const side = value ?? "head";
-  if (side !== "head" && side !== "base") throw new Error('side must be "head" or "base"');
-  return side;
-}
 
 export function validateRepoPath(value, { label = "path" } = {}) {
   if (typeof value !== "string" || value.length === 0) throw new Error(`${label} must be a non-empty repository-relative path`);
@@ -25,32 +11,6 @@ export function validateRepoPath(value, { label = "path" } = {}) {
   if (value.includes("\\")) throw new Error(`${label} must use / separators`);
   if (value.split("/").some((part) => part === "..")) throw new Error(`${label} must not contain ..`);
   return value;
-}
-
-function globRegex(pattern) {
-  validateRepoPath(pattern, { label: "pattern" });
-  let source = "^";
-  for (let i = 0; i < pattern.length; i++) {
-    const char = pattern[i];
-    if (char === "*") {
-      if (pattern[i + 1] === "*") {
-        i++;
-        if (pattern[i + 1] === "/") {
-          i++;
-          source += "(?:.*/)?";
-        } else {
-          source += ".*";
-        }
-      } else {
-        source += "[^/]*";
-      }
-    } else if (char === "?") {
-      source += "[^/]";
-    } else {
-      source += char.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
-    }
-  }
-  return new RegExp(`${source}$`);
 }
 
 function trimFinalEmptyLine(lines) {
@@ -150,92 +110,6 @@ export class RepoOracle {
         stderr: error?.stderr ?? error?.message ?? "git command failed",
       };
     }
-  }
-
-  #revision(side) {
-    return sideOf(side) === "head" ? this.#headSha : this.#baseSha;
-  }
-
-  async grep({ query, path, side } = {}) {
-    if (typeof query !== "string" || query.length === 0) throw new Error("query must be a non-empty string");
-    if (query.includes("\0")) throw new Error("query must not contain NUL");
-    const revision = this.#revision(side);
-    const args = ["grep", "-F", "-n", "-I", "-e", query, revision, "--"];
-    if (path !== undefined) args.push(`:(literal)${validateRepoPath(path)}`);
-    const result = await this.#command(args);
-    if (result.code === 1 && !String(result.stdout).length) return "MATCHES 0";
-    if (result.code !== 0) throw new Error(String(result.stderr || "git grep failed").trim());
-    const prefix = `${revision}:`;
-    const rows = trimFinalEmptyLine(String(result.stdout).split("\n"))
-      .map((row) => row.startsWith(prefix) ? row.slice(prefix.length) : row)
-      .map((row) => {
-        const match = row.match(/^(.*):(\d+):(.*)$/);
-        return match ? `${match[1]}:${match[2]}|${match[3]}` : row;
-      });
-    const truncated = rows.length > MINI_REVIEW_GREP_LIMIT;
-    const visible = rows.slice(0, MINI_REVIEW_GREP_LIMIT);
-    return truncateObservation([
-      `MATCHES ${rows.length}`,
-      ...visible,
-      ...(truncated ? [`[TRUNCATED: showing ${MINI_REVIEW_GREP_LIMIT} of ${rows.length} matches]`] : []),
-    ].join("\n"));
-  }
-
-  async glob({ pattern, side } = {}) {
-    const matcher = globRegex(pattern);
-    const revision = this.#revision(side);
-    const result = await this.#command(["ls-tree", "-r", "--name-only", revision]);
-    if (result.code !== 0) throw new Error(String(result.stderr || "git ls-tree failed").trim());
-    const paths = trimFinalEmptyLine(String(result.stdout).split("\n")).filter((path) => matcher.test(path));
-    const truncated = paths.length > MINI_REVIEW_GLOB_LIMIT;
-    return truncateObservation([
-      `PATHS ${paths.length}`,
-      ...paths.slice(0, MINI_REVIEW_GLOB_LIMIT),
-      ...(truncated ? [`[TRUNCATED: showing ${MINI_REVIEW_GLOB_LIMIT} of ${paths.length} paths]`] : []),
-    ].join("\n"));
-  }
-
-  async view({ path, start_line: startLine, end_line: endLine, side } = {}) {
-    const safePath = validateRepoPath(path);
-    if (!Number.isInteger(startLine) || !Number.isInteger(endLine)) {
-      throw new Error("view requires integer start_line and end_line bounds");
-    }
-    if (startLine < 1 || endLine < startLine) throw new Error("view bounds must be positive and end_line must not precede start_line");
-    const selectedSide = sideOf(side);
-    const revision = this.#revision(selectedSide);
-    const tree = await this.#command(["ls-tree", revision, "--", `:(literal)${safePath}`]);
-    if (tree.code !== 0) throw new Error(String(tree.stderr || "git ls-tree failed").trim());
-    const entry = String(tree.stdout).split("\n").find((row) => row.endsWith(`\t${safePath}`));
-    if (!entry) return `ERROR path not found: ${safePath} @ ${selectedSide}`;
-    const meta = entry.match(/^(\d+)\s+(\S+)\s+([0-9a-f]+)\t/);
-    if (!meta || meta[2] !== "blob") return `ERROR path is not a file: ${safePath} @ ${selectedSide}`;
-    if (meta[1] === "120000") return `SYMLINK ${safePath} @ ${selectedSide} (not followed)`;
-    const blob = await this.#command(["cat-file", "blob", meta[3]], { encoding: null, maxBuffer: 64 * 1024 * 1024 });
-    if (blob.code !== 0) throw new Error(Buffer.isBuffer(blob.stderr) ? blob.stderr.toString("utf8").trim() : String(blob.stderr).trim());
-    const bytes = Buffer.isBuffer(blob.stdout) ? blob.stdout : Buffer.from(blob.stdout ?? "");
-    if (bytes.includes(0)) return `BINARY ${safePath} @ ${selectedSide} (content not shown)`;
-    const lines = trimFinalEmptyLine(bytes.toString("utf8").split("\n"));
-    const total = lines.length;
-    if (startLine > total) return `ERROR start_line ${startLine} is past end of ${safePath} (${total} lines)`;
-    const requestedEnd = Math.min(endLine, total);
-    const cappedEnd = Math.min(requestedEnd, startLine + MINI_REVIEW_VIEW_LINE_LIMIT - 1);
-    const visible = lines.slice(startLine - 1, cappedEnd).map((line, offset) => `${startLine + offset}|${line}`);
-    let byteTruncated = false;
-    let observation = "";
-    while (true) {
-      const actualEnd = visible.length ? startLine + visible.length - 1 : startLine - 1;
-      const truncated = cappedEnd < requestedEnd || byteTruncated;
-      observation = [
-        `FILE ${safePath} @ ${selectedSide}`,
-        `LINES ${startLine}-${actualEnd} OF ${total}`,
-        ...visible,
-        ...(truncated ? [`[TRUNCATED: requested lines ${startLine}-${requestedEnd}]`] : []),
-      ].join("\n");
-      if (Buffer.byteLength(observation, "utf8") <= MINI_REVIEW_VIEW_BYTE_LIMIT || visible.length === 0) break;
-      visible.pop();
-      byteTruncated = true;
-    }
-    return truncateObservation(observation);
   }
 
   async changedLines() {

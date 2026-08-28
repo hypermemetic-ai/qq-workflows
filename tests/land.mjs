@@ -180,6 +180,21 @@ function packet(brief, files) {
 function childAgent({ id, cwd, registered, restricted, followups, listeners, origin = CHILD_ORIGIN, onFollowup, claimFollowup = false }) {
   const inbox = { nextTurn: [], nextStep: [] };
   const sections = [];
+  const hostBash = {
+    name: "bash",
+    async execute() {
+      return {
+        kind: "foreground",
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        aborted: false,
+        timeoutMs: 0,
+        stdout: { text: "", truncated: false },
+        stderr: { text: "", truncated: false },
+      };
+    },
+  };
   const toolService = {
     register(definition) {
       registered?.push(definition);
@@ -193,7 +208,10 @@ function childAgent({ id, cwd, registered, restricted, followups, listeners, ori
       restricted?.push(record);
       return () => { record.active = false; };
     },
-    get(name) { return registered?.find((tool) => tool.name === name); },
+    get(name) {
+      return [...(registered ?? [])].reverse().find((tool) => tool.name === name)
+        ?? (name === "bash" ? hostBash : undefined);
+    },
   };
   const systemPrompt = {
     section(section) {
@@ -294,6 +312,9 @@ function legacyReviewArgs(land, record, args) {
 
 function assertMiniReviewMounted(record, { owned = true } = {}) {
   assert.deepEqual(record.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
+  assert.equal(record.registered[0].name, "bash");
+  assert.equal(record.registered[0].isConcurrencySafe(), false);
+  assert.deepEqual(Object.keys(record.registered[0].parameters.properties), ["command"]);
   const types = record.listeners.map((item) => item.type);
   assert.ok(types.includes("agent/turn-stopping"), "mini-review format recovery remains mounted");
   assert.ok(types.includes("session/event"), "mini-review observes assistant tool calls");
@@ -1052,7 +1073,7 @@ try {
     assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
     assert.deepEqual(
       restricted.filter((row) => row.id === submitted.qa && row.active).map((row) => row.spec.allow),
-      [[]],
+      [["bash"]],
     );
     const passed = await executeQaTool(land, qa, {
       verdict: "pass",

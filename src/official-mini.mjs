@@ -497,7 +497,7 @@ function syntheticResult(output, exitCode) {
   };
 }
 
-export function wrapMiniBash(base) {
+export function wrapMiniBash(base, { interceptCompletion = true } = {}) {
   if (!base || typeof base.execute !== "function") throw new Error("mini requires a bash tool to wrap");
   const output = base.output ? {
     ...base.output,
@@ -515,7 +515,7 @@ export function wrapMiniBash(base) {
     isConcurrencySafe() { return false; },
     ...(output ? { output } : {}),
     async execute(args, exec) {
-      if (isMiniSweCompletionCommand(args?.command)) {
+      if (interceptCompletion && isMiniSweCompletionCommand(args?.command)) {
         const submit = submitFor(exec?.agent);
         if (!submit) return syntheticResult("Submission unavailable: this child is not owned by Land.\n", 1);
         const result = await submit({ agent: exec?.agent, ref: "HEAD" });
