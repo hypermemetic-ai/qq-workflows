@@ -15,8 +15,10 @@ import { ensureMiniMounted, isMiniAgent, MINI_SWE_MIGRATION } from "./official-m
 import { ensureMiniReviewMounted, isMiniReviewAgent } from "./mini-review.mjs";
 import {
   hideHarnessTools,
+  restrictArchitectTools,
   stripAgentInstructionsPreStep,
   stripHiddenHarnessTools,
+  stripUnlistedArchitectTools,
   toolsOf,
 } from "./hide-harness.mjs";
 import { runCommand } from "./git.mjs";
@@ -176,27 +178,26 @@ export function apply(ctx, config = {}) {
     return agent?.session?.header?.origin;
   }
 
-  function shouldHideHarness(agent) {
-    if (!agent) return false;
-    if (originOf(agent) === CHILD_ORIGIN) return true;
-    const selected = selectedName(sessionIdOf(agent));
-    return selected === "architect";
-  }
-
-  function installHide(agent) {
+  function installHide(agent, resolvedTools) {
     const sessionId = sessionIdOf(agent);
     if (!sessionId || hideDisposers.has(sessionId)) return;
     const install = (toolCtx) => {
       if (hideDisposers.has(sessionId)) return;
-      const tools = toolsOf(toolCtx) ?? toolsService(agent);
-      const dispose = hideHarnessTools(tools);
+      const tools = resolvedTools ?? toolsOf(toolCtx) ?? toolsService(agent);
+      const restrict = originOf(agent) === CHILD_ORIGIN
+        ? hideHarnessTools
+        : selectedName(sessionId) === "architect"
+          ? restrictArchitectTools
+          : null;
+      const dispose = restrict?.(tools);
       if (!dispose) return;
       hideDisposers.set(sessionId, () => {
         dispose();
         hideDisposers.delete(sessionId);
       });
     };
-    if (typeof agent?.ctx?.inject === "function") agent.ctx.inject(["tools"], install);
+    if (resolvedTools) install(null);
+    else if (typeof agent?.ctx?.inject === "function") agent.ctx.inject(["tools"], install);
     else install(agent?.ctx);
   }
 
@@ -234,7 +235,7 @@ export function apply(ctx, config = {}) {
       if (selected !== "architect" && selected !== "base") return;
       const tools = toolsService(toolCtx) ?? toolsService(agent);
       if (!tools || typeof tools.register !== "function") return;
-      if (selected === "architect") installHide(agent);
+      if (selected === "architect") installHide(agent, tools);
       const tasks = null;
       const invokeLand = (args) => land.invoke(args);
       const inheritedCaps = selected === "architect" ? capVisibleArchitectTools(tools, agent) : [];
@@ -674,8 +675,14 @@ export function apply(ctx, config = {}) {
   ctx.on("system-prompt/assemble", async (_assembly, context, next) => {
     const agent = context?.agent ?? context?.scope;
     const result = await next();
-    if (!shouldHideHarness(agent)) return result;
-    const tools = stripHiddenHarnessTools(result?.tools);
+    let tools;
+    if (originOf(agent) === CHILD_ORIGIN) {
+      tools = stripHiddenHarnessTools(result?.tools);
+    } else if (selectedName(sessionIdOf(agent)) === "architect") {
+      tools = stripUnlistedArchitectTools(result?.tools);
+    } else {
+      return result;
+    }
     if (tools === result?.tools) return result;
     return { ...result, tools };
   });
