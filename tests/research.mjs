@@ -21,14 +21,27 @@ function childContext() {
   const restrictions = [];
   const sections = [];
   const listeners = [];
+  const hostBashCommands = [];
   const baseBash = {
     name: "bash",
     description: "bash",
     parameters: { command: { type: "string" } },
-    async execute() { throw new Error("fixture native bash was not expected"); },
+    async execute(args) {
+      hostBashCommands.push(args?.command);
+      return {
+        kind: "foreground",
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        aborted: false,
+        timeoutMs: 0,
+        stdout: { text: "host bash fixture", truncated: false },
+        stderr: { text: "", truncated: false },
+      };
+    },
   };
   const ctx = {
-    registered, restrictions, sections, listeners,
+    registered, restrictions, sections, listeners, hostBashCommands,
     systemPrompt: {
       section(value) { sections.push(value); return () => {}; },
       suppressRuntimeContext() {},
@@ -62,11 +75,20 @@ const agents = {
     return handle;
   },
 };
+let coreRootLookups = 0;
 const ctx = {
   get(name) {
     if (name === "qq-relay") return {
       async send(message) { sent.push(message); return { status: "sent" }; },
     };
+    if (name === "qq-core") return {
+      gitRootForDelegate(cwd) {
+        coreRootLookups++;
+        assert.equal(cwd, repo);
+        return repo;
+      },
+    };
+    if (name === "qq") throw new Error("research must prefer the qq-core handle");
     return null;
   },
 };
@@ -79,6 +101,7 @@ const provider = {
 const research = createResearch({ ctx, store, agents, parentDir, webProvider: provider, env: {} });
 const started = await research.invoke({ agent: parent, question: "What does the fixture show?" });
 assert.equal(started.status, "ok", started.reason);
+assert.equal(coreRootLookups, 1);
 assert.equal(children.length, 1);
 assert.equal(children[0].session.header.kind, "mini-research");
 assert.deepEqual(children[0].ctx.restrictions.find((spec) => spec.allow), { allow: ["bash"] });
@@ -100,6 +123,10 @@ assert.deepEqual(review.ctx.registered.map((tool) => tool.name), ["bash", "submi
 const reviewBash = review.ctx.registered.find((tool) => tool.name === "bash");
 assert.equal(reviewBash.isConcurrencySafe(), false);
 assert.deepEqual(Object.keys(reviewBash.parameters.properties), ["command"]);
+const ordinaryBash = await reviewBash.execute({ command: "web-search 'not intercepted'" }, { agent: review });
+assert.equal(ordinaryBash.exitCode, 0);
+assert.equal(review.ctx.hostBashCommands.length, 1);
+assert.match(review.ctx.hostBashCommands[0], /; web-search 'not intercepted'$/);
 assert.match(review.ctx.sections.find((section) => section.name === "deployment:persona").text, /ordinary bash/);
 assert.match(review.followups[0].content[0].text, /Use ordinary bash in this capsule/);
 const submit = review.ctx.registered.find((tool) => tool.name === "submit_review");

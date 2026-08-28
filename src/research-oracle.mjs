@@ -1,15 +1,15 @@
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import {
-  MINI_REVIEW_GLOB_LIMIT,
-  MINI_REVIEW_GREP_LIMIT,
-  MINI_REVIEW_VIEW_BYTE_LIMIT,
-  MINI_REVIEW_VIEW_LINE_LIMIT,
-} from "./mini-review-v2.mjs";
 import { truncateObservation } from "./observation.mjs";
 
 export const RESEARCH_ORACLE_ROOTS = Object.freeze(["question.md", "answer.md", "evidence", "repo"]);
+export const RESEARCH_ORACLE_GREP_LIMIT = 40;
+export const RESEARCH_ORACLE_GLOB_LIMIT = 100;
+export const RESEARCH_ORACLE_VIEW_LINE_LIMIT = 120;
+export const RESEARCH_ORACLE_VIEW_BYTE_LIMIT = 32 * 1024;
+export const RESEARCH_ORACLE_ENUMERATION_LIMIT = 10_000;
+export const RESEARCH_ORACLE_SKIP_DIRS = Object.freeze([".git", "node_modules"]);
 
 function validatePath(value, { allowEmpty = false, label = "path" } = {}) {
   if (typeof value !== "string" || (!allowEmpty && !value)) throw new Error(`${label} must be a capsule-relative path`);
@@ -45,6 +45,27 @@ function globRegex(pattern) {
   return new RegExp(`${source}$`);
 }
 
+function globWalkRoots(pattern) {
+  const wild = pattern.search(/[*?]/);
+  if (wild === -1) {
+    if (RESEARCH_ORACLE_ROOTS.some((root) => pattern === root || pattern.startsWith(`${root}/`))) return [pattern];
+    return RESEARCH_ORACLE_ROOTS;
+  }
+  const prefix = pattern.slice(0, wild);
+  const dir = prefix.endsWith("/")
+    ? prefix.slice(0, -1)
+    : prefix.includes("/")
+      ? prefix.slice(0, prefix.lastIndexOf("/"))
+      : "";
+  if (dir && RESEARCH_ORACLE_ROOTS.some((root) => dir === root || dir.startsWith(`${root}/`))) return [dir];
+  return RESEARCH_ORACLE_ROOTS;
+}
+
+function skipDir(relativePath, name) {
+  return RESEARCH_ORACLE_SKIP_DIRS.includes(name)
+    && (relativePath === "repo" || relativePath.startsWith("repo/"));
+}
+
 function trimFinalEmpty(lines) {
   if (lines.at(-1) === "") lines.pop();
   return lines;
@@ -53,6 +74,17 @@ function trimFinalEmpty(lines) {
 function boundedLines(text, limit) {
   const lines = trimFinalEmpty(String(text ?? "").split("\n"));
   return lines.slice(0, limit);
+}
+
+function walkState(overrides = {}) {
+  return {
+    truncated: false,
+    visited: 0,
+    visitLimit: RESEARCH_ORACLE_ENUMERATION_LIMIT,
+    matchLimit: RESEARCH_ORACLE_ENUMERATION_LIMIT,
+    accept: null,
+    ...overrides,
+  };
 }
 
 export class ResearchOracle {
@@ -88,36 +120,55 @@ export class ResearchOracle {
     return { safe, actual, info };
   }
 
-  async #walk(relativePath, output) {
+  async #walk(relativePath, output, state) {
+    if (state.truncated || output.length >= state.matchLimit || state.visited >= state.visitLimit) {
+      state.truncated = true;
+      return state;
+    }
     const resolved = await this.#resolve(relativePath);
-    if (resolved.info.isFile()) { output.push(relativePath); return; }
-    if (!resolved.info.isDirectory()) return;
+    if (resolved.info.isFile()) {
+      state.visited++;
+      if (!state.accept || state.accept(relativePath)) output.push(relativePath);
+      return state;
+    }
+    if (!resolved.info.isDirectory()) return state;
     const entries = await readdir(resolved.actual, { withFileTypes: true });
     entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
-      if (entry.name === ".git" && (relativePath === "repo" || relativePath.startsWith("repo/"))) continue;
+      if (skipDir(relativePath, entry.name)) continue;
       const child = `${relativePath}/${entry.name}`;
       if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) await this.#walk(child, output);
-      else if (entry.isFile()) output.push(child);
-      if (output.length > 10_000) throw new Error("capsule path enumeration limit exceeded");
+      if (entry.isDirectory()) await this.#walk(child, output, state);
+      else if (entry.isFile()) {
+        state.visited++;
+        if (!state.accept || state.accept(child)) output.push(child);
+      }
+      if (output.length >= state.matchLimit || state.visited >= state.visitLimit) {
+        state.truncated = true;
+        return state;
+      }
+      if (state.truncated) return state;
     }
+    return state;
   }
 
   async glob({ pattern } = {}) {
     const regex = globRegex(pattern);
-    const paths = [];
-    for (const root of RESEARCH_ORACLE_ROOTS) {
-      try { await this.#walk(root, paths); } catch (error) {
+    const matches = [];
+    const state = walkState({
+      accept: (path) => regex.test(path),
+      matchLimit: RESEARCH_ORACLE_GLOB_LIMIT,
+    });
+    for (const root of globWalkRoots(pattern)) {
+      try { await this.#walk(root, matches, state); } catch (error) {
         if (!/path not found/.test(error?.message ?? "")) throw error;
       }
+      if (state.truncated) break;
     }
-    const matches = paths.filter((path) => regex.test(path));
-    const selected = matches.slice(0, MINI_REVIEW_GLOB_LIMIT);
     return truncateObservation([
-      `MATCHES ${selected.length}${matches.length > selected.length ? ` OF ${matches.length}` : ""}`,
-      ...selected,
-      ...(matches.length > selected.length ? ["[TRUNCATED]"] : []),
+      `MATCHES ${matches.length}`,
+      ...matches,
+      ...(state.truncated ? ["[TRUNCATED]"] : []),
     ].join("\n"));
   }
 
@@ -125,21 +176,27 @@ export class ResearchOracle {
     if (typeof query !== "string" || !query) throw new Error("grep query must be a non-empty literal string");
     if (query.includes("\0")) throw new Error("grep query must not contain NUL");
     const roots = [];
+    const state = walkState();
     if (path) {
       const safe = validatePath(path);
       const resolved = await this.#resolve(safe);
       if (resolved.info.isFile()) roots.push(safe);
-      else await this.#walk(safe, roots);
+      else await this.#walk(safe, roots, state);
     } else {
       for (const root of RESEARCH_ORACLE_ROOTS) {
-        try { await this.#walk(root, roots); } catch (error) {
+        try { await this.#walk(root, roots, state); } catch (error) {
           if (!/path not found/.test(error?.message ?? "")) throw error;
         }
+        if (state.truncated) break;
       }
     }
     const matches = [];
     let total = 0;
     for (const file of roots) {
+      if (matches.length >= RESEARCH_ORACLE_GREP_LIMIT) {
+        state.truncated = true;
+        break;
+      }
       let bytes;
       try { bytes = await readFile((await this.#resolve(file, { mustBeFile: true })).actual); } catch { continue; }
       if (bytes.includes(0) || bytes.length > 4 * 1024 * 1024) continue;
@@ -147,13 +204,17 @@ export class ResearchOracle {
       for (let index = 0; index < lines.length; index++) {
         if (!lines[index].includes(query)) continue;
         total++;
-        if (matches.length < MINI_REVIEW_GREP_LIMIT) matches.push(`${file}:${index + 1}:${lines[index]}`);
+        if (matches.length < RESEARCH_ORACLE_GREP_LIMIT) matches.push(`${file}:${index + 1}:${lines[index]}`);
+        else {
+          state.truncated = true;
+          break;
+        }
       }
     }
     return truncateObservation([
       `MATCHES ${matches.length}${total > matches.length ? ` OF ${total}` : ""}`,
       ...matches,
-      ...(total > matches.length ? ["[TRUNCATED]"] : []),
+      ...(total > matches.length || state.truncated ? ["[TRUNCATED]"] : []),
     ].join("\n"));
   }
 
@@ -168,7 +229,7 @@ export class ResearchOracle {
     const lines = trimFinalEmpty(bytes.toString("utf8").split("\n"));
     if (startLine > lines.length) return `ERROR start_line ${startLine} is past end of ${safe} (${lines.length} lines)`;
     const requestedEnd = Math.min(endLine, lines.length);
-    const cappedEnd = Math.min(requestedEnd, startLine + MINI_REVIEW_VIEW_LINE_LIMIT - 1);
+    const cappedEnd = Math.min(requestedEnd, startLine + RESEARCH_ORACLE_VIEW_LINE_LIMIT - 1);
     const visible = lines.slice(startLine - 1, cappedEnd).map((line, offset) => `${startLine + offset}|${line}`);
     let byteTruncated = false;
     let observation;
@@ -181,7 +242,7 @@ export class ResearchOracle {
         ...visible,
         ...(truncated ? [`[TRUNCATED: requested lines ${startLine}-${requestedEnd}]`] : []),
       ].join("\n");
-      if (Buffer.byteLength(observation, "utf8") <= MINI_REVIEW_VIEW_BYTE_LIMIT || visible.length === 0) break;
+      if (Buffer.byteLength(observation, "utf8") <= RESEARCH_ORACLE_VIEW_BYTE_LIMIT || visible.length === 0) break;
       visible.pop();
       byteTruncated = true;
     }
