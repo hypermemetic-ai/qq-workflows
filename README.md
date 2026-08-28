@@ -1,7 +1,9 @@
 # qq-workflows
 
-`qq-workflows` keeps architect delegation and Land completion on explicit,
-durable Git-worktree and GitHub pull-request boundaries.
+`qq-workflows` provides three focused child agents: `mini-coder` for Land
+implementation and fixes, `mini-review` for Land QA and research-answer review,
+and `mini-research` for evidence-backed questions. Land completion stays on
+explicit, durable Git-worktree and GitHub pull-request boundaries.
 
 ## Durable delegation identity
 
@@ -24,7 +26,8 @@ Old v1 Land records are upgraded in place on first load. Their generated
 `delegationId` is persisted atomically and reused thereafter.
 
 Architect inherits only the decided research/mailbox tools; its plugin tools are
-`case_write`, `delegate`, `workflow_status`, `workflow_send`, and `land`; new
+`case_write`, `delegate`, `research`, `workflow_status`, `workflow_send`, and
+`land`; new
 harness tools do not appear.
 
 Architect sessions receive two façade tools:
@@ -48,7 +51,7 @@ emergency steering.
   pending packet by its stable message ID, durably acknowledges delivery before
   pointer promotion, restores run/role labels and completion ownership, and
   resumes an armed settlement exactly once.
-- Only the exact Mini completion command is a submission sentinel. Accepted
+- Only the exact `mini-coder` completion command is a submission sentinel. Accepted
   submissions settle after the exact durable tool result.
 - Every child packet and lifecycle report names the delegation UUID and Land
   run. Physical session UUIDs remain visible for diagnostics.
@@ -75,7 +78,7 @@ pull-request creation, pull-request merge, fetch, or fast-forward failure makes
 the run blocked and retains the capsule for diagnosis or retry. In particular,
 a publish failure cannot silently report a local-only landing.
 
-## Mini-review Land QA
+## mini-review Land QA
 
 Land review looks use the read-only `mini-review` preset. The reviewer starts
 from the architect's approved plan plus bounded changed-file counts and up to
@@ -88,3 +91,20 @@ zero findings passes, while any finding starts the one allowed fixer after look
 The reviewer cannot run commands, read the working tree, edit files, commit, or
 access arbitrary revisions. Land still rejects a dirty QA worktree or a QA
 production commit as defense in depth.
+
+## Mini-RA research
+
+Architect `research` sends the approved working-memory question to one
+`mini-research` child in a private capsule outside the project Git tree. The
+child has only `bash`; standalone host commands discover web/session leads and
+materialize bounded, provenance-tagged snapshots under `evidence/`, while
+`repo/` remains a symlink to native project files. Search leads are not evidence
+until fetched, and submission requires `answer.md` with only acquired `W###` or
+`S###` refs and resolving `repo/` paths.
+
+An accepted answer receives one fresh-context `mini-review` pass over the
+question, answer, manifest, snapshots, and repository. The reviewer has only
+bounded `grep`, `glob`, `view`, and `submit_review`, cannot retrieve new
+evidence, and may report zero findings. The answer path, citation check, and
+review findings return once to the architect; research never enters Land,
+creates a worktree, or opens a pull request.

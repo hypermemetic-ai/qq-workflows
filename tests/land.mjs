@@ -462,7 +462,7 @@ try {
   assert.equal(isLandCandidate({ session: { id: implementerId, header: { parentSession: architectId } } }), false);
   assert.deepEqual(
     buildArchitectTools({}).map((tool) => tool.name).sort(),
-    ["delegate", "workflow_send", "workflow_status"],
+    ["delegate", "research", "workflow_send", "workflow_status"],
   );
   assert.ok(!buildArchitectTools({}).some((tool) => ["done", "qa_verdict", "submit_review", "land"].includes(tool.name)));
   assert.equal(isTestPath("tests/test-qq-land.mjs"), true);

@@ -17,7 +17,7 @@ import { loadWikiIndexContext } from "./wiki-index.mjs";
 export const ARCHITECT_LABEL = "workflows:architect";
 export const CHILD_ORIGIN = "subagent";
 export const ARCHITECT_PROMPT_NAME = "qq-workflows:architect";
-export const ARCHITECT_PROMPT = "You are the architect. Use the current turn, last turn, and standing plan document to maintain a concise operator-visible work order. Edit it freely, get operator approval, then delegate; delegation sends that approved plan document without automatically attaching files or research dumps.";
+export const ARCHITECT_PROMPT = "You are the architect. Use the current turn, last turn, and standing plan document to maintain a concise operator-visible work order. Edit it freely and get operator approval. Use delegate for implementation work and research for evidence-backed questions; either action sends the approved plan document as its complete packet.";
 
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CHILD_AGENT_HANDLE = Symbol.for("@hypermemetic-ai/qq-workflows/child-agent-handle");
@@ -124,7 +124,7 @@ export async function capArchitectToolObservation(_exec, result, next) {
   return capped === content ? decision : { ...decision, content: capped };
 }
 
-export function createArchitect({ ctx, cases, folder, agents, tasks, talking, hands, onInvokeChild, loadIndex, run = runCommand, env = process.env } = {}) {
+export function createArchitect({ ctx, cases, folder, agents, tasks, talking, hands, onInvokeChild, onResearch, loadIndex, run = runCommand, env = process.env } = {}) {
   const attached = new Map();
   const delegatedHandles = new Map();
   const tasksOf = () => (typeof tasks === "function" ? tasks() : tasks ?? null);
@@ -474,6 +474,21 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
     };
   }
 
+  async function research({ agent } = {}) {
+    const parent = agent?.session;
+    if (!parent?.id || !isArchitectCandidate(agent) || !attached.has(parent.id)) {
+      return { status: "refused", reason: "research requires a live architect session" };
+    }
+    if (typeof onResearch !== "function") return { status: "refused", reason: "research is unavailable" };
+    const question = String(cases?.load?.(parent.id)?.text ?? "");
+    if (!question.trim() || question.trim() === EMPTY_CASE.trim()) {
+      return { status: "refused", reason: "research requires settled working memory" };
+    }
+    const result = await onResearch({ agent, question: question.trimEnd() });
+    if (result?.status === "ok") cases?.consume?.(parent.id);
+    return result;
+  }
+
   async function dispose() {
     for (const handle of [...attached.values()]) handle.detach();
     for (const sessionId of [...delegatedHandles.keys()]) await disposeDelegated(sessionId);
@@ -484,6 +499,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
     detach,
     dispose,
     delegate,
+    research,
     attached: (sessionId) => attached.get(sessionId),
     label: ARCHITECT_LABEL,
   });

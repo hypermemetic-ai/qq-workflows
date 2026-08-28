@@ -2,8 +2,8 @@
 //
 // The wrapper lists registered workflows and selects which one this chair
 // is running, if any. Architect, find, and base are selectable. Land is git
-// machinery: official Mini completion and the architect/base land tool.
-// Architect owns working memory, two-pair fold, delegate, and role settings.
+// machinery: mini-coder completion and the architect/base land tool.
+// Architect owns working memory, two-pair fold, delegate/research, and role settings.
 // Session context and awaitable leave/transition live on service.workflows;
 // /workflows select and clear stay the command path.
 
@@ -25,6 +25,9 @@ import { runCommand } from "./git.mjs";
 import { capObservationTool } from "./observation.mjs";
 import { createLand } from "./land.mjs";
 import { createLandStore, defaultLandDir } from "./land-store.mjs";
+import { createResearch } from "./research.mjs";
+import { createResearchStore } from "./research-store.mjs";
+import { defaultResearchDir } from "./research-evidence.mjs";
 import { createJournalStore, defaultJournalDir } from "./journal.mjs";
 import { createWikiStore, defaultWikiDir } from "./wiki.mjs";
 import { createSelectionStore, defaultSelectionDir } from "./selection.mjs";
@@ -139,6 +142,8 @@ export function apply(ctx, config = {}) {
   const journal = createJournalStore(defaultJournalDir(process.env, config));
   const wiki = createWikiStore(defaultWikiDir(process.env, config));
   const landStore = createLandStore(defaultLandDir(process.env, config));
+  const researchDir = defaultResearchDir(process.env, config);
+  const researchStore = createResearchStore(researchDir);
   const llm = ctx.get("llm", false);
   const tokenMeter = ctx.get("tokenMeter", false);
   const agents = hostAgents(ctx);
@@ -158,6 +163,19 @@ export function apply(ctx, config = {}) {
     run: config.runCommand,
     github: config.github,
   });
+  const research = createResearch({
+    ctx,
+    store: researchStore,
+    agents,
+    parentDir: researchDir,
+    sessionQuery: config.sessionQuery ?? (() => ctx.get?.("sessionQuery", false)),
+    hands: () => architectSettings.get("hands"),
+    talking: () => architectSettings.get("talking") ?? baseSettings.get("talking"),
+    qa: () => landSettings.get("qa"),
+    env: config.env ?? process.env,
+    webProvider: config.webProvider,
+    fetch: config.fetch,
+  });
   const architect = createArchitect({
     ctx,
     cases,
@@ -168,6 +186,7 @@ export function apply(ctx, config = {}) {
     hands: () => architectSettings.get("hands"),
     run: config.runCommand ?? runCommand,
     onInvokeChild: (child, info) => land.adoptImplementer(child, info),
+    onResearch: (args) => research.invoke(args),
   });
 
   const workflows = new Map();
@@ -243,6 +262,7 @@ export function apply(ctx, config = {}) {
         ? buildArchitectTools({
             cases,
             delegate: (args) => architect.delegate(args),
+            research: (args) => architect.research(args),
             workflowStatus: (args) => land.workflowStatus(args),
             workflowSend: (args) => land.workflowSend(args),
             tasks,
@@ -535,6 +555,7 @@ export function apply(ctx, config = {}) {
       };
     },
     land,
+    research,
     journal,
     wiki,
     selection,
@@ -618,8 +639,10 @@ export function apply(ctx, config = {}) {
       try { relay.hang(sessionId, label); } catch {}
     }
     // Relay HMR replaces the in-memory label board without recreating live
-    // workflow children. Reproject their durable run/role topology as well.
+    // workflow children. Reproject their durable run/role topology and retry
+    // any terminal research report that could not be delivered earlier.
     land.refreshLabels?.();
+    void research.recoverReports?.();
   };
   if (typeof ctx.inject === "function") ctx.inject(["qq-relay"], syncRelayLabels);
 
@@ -656,7 +679,8 @@ export function apply(ctx, config = {}) {
   }
 
   function syncMini(agent) {
-    return syncLiveLandChild(land, agent);
+    const researchChild = research.resumeChild?.(agent) ?? false;
+    return syncLiveLandChild(land, agent) || researchChild;
   }
 
   ctx.on("agent/created", ({ agent }) => {
@@ -666,6 +690,7 @@ export function apply(ctx, config = {}) {
     syncSession(agent);
   });
   ctx.on("agent/disposed", async ({ agent }) => {
+    await research.releaseChild?.(agent);
     await land.releaseChild?.(agent);
     for (const workflow of workflows.values()) workflow.ensureDetached(agent);
     const sessionId = sessionIdOf(agent);
@@ -707,6 +732,7 @@ export function apply(ctx, config = {}) {
   // A true process restart has no live Agent to drive syncMini. Recover every
   // durable pending phase after adopting live handles; land.dispose owns and
   // drains these per-run recovery promises if HMR starts immediately.
+  void research.recoverReports?.();
   void land.recoverPendingPhases?.().then((results) => {
     for (const result of results ?? []) {
       if (result.status !== "rejected") continue;
@@ -727,6 +753,7 @@ export function apply(ctx, config = {}) {
       }
     }
     await architect.dispose?.();
+    research.dispose?.();
     await land.dispose?.();
     for (const record of [...toolDisposers.values()]) record.dispose();
     for (const dispose of [...hideDisposers.values()]) dispose();
