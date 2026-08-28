@@ -2,14 +2,12 @@ import { randomUUID } from "node:crypto";
 
 import { armChildSettlement, childToolOutput } from "./child-settlement.mjs";
 import { createQaVerdict } from "./qa-verdict.mjs";
+import { wrapMiniBash } from "./official-mini.mjs";
 import {
-  MINI_REVIEW_GLOB_SCHEMA,
-  MINI_REVIEW_GREP_SCHEMA,
   MINI_REVIEW_KIND,
   MINI_REVIEW_SUBMIT_SCHEMA,
   MINI_REVIEW_SYSTEM_PROMPT,
   MINI_REVIEW_TOOL_NAMES,
-  MINI_REVIEW_VIEW_SCHEMA,
   renderMiniReviewTask,
 } from "./mini-review-v2.mjs";
 
@@ -31,10 +29,10 @@ const FORMAT_ERROR = [
   "Tool call error:",
   "",
   "<error>",
-  "Every response needs to use at least one review tool.",
+  "Every response needs to call bash or submit_review.",
   "</error>",
   "",
-  "Use grep, glob, or view to inspect specific evidence, or finish with submit_review.",
+  "Use bash to inspect specific evidence, or finish with submit_review.",
 ].join("\n");
 
 function textBlock(text) {
@@ -50,7 +48,7 @@ export function isMiniReviewAgent(agent) {
   return header?.kind === MINI_REVIEW_KIND || header?.agentPreset === MINI_REVIEW_KIND;
 }
 
-/** Bind one immutable look oracle and its durable verdict sink. */
+/** Bind one look findings validator and its durable verdict sink. */
 export function bindMiniReviewSubmit(agent, oracleOrBinding, maybeSubmit) {
   if (!agent) throw new Error("mini-review binding requires an agent");
   const binding = typeof oracleOrBinding === "object" && oracleOrBinding?.oracle
@@ -173,32 +171,7 @@ export function reviewFindingsToVerdictInput(findings) {
   };
 }
 
-function inspectTool(name, schema, method) {
-  return {
-    name,
-    description: schema.description,
-    parameters: structuredClone(schema.parameters),
-    output: {
-      schema: { type: "string" },
-      render: (_args, value) => [textBlock(value)],
-    },
-    isConcurrencySafe() { return true; },
-    async execute(args, exec) {
-      const binding = bindingFor(exec?.agent);
-      if (!binding) return "ERROR mini-review repository inspection is unavailable";
-      try {
-        return await binding.oracle[method](args ?? {});
-      } catch (error) {
-        return `ERROR ${error instanceof Error ? error.message : String(error)}`;
-      }
-    },
-  };
-}
-
 export function buildMiniReviewTools() {
-  const grep = inspectTool("grep", MINI_REVIEW_GREP_SCHEMA, "grep");
-  const glob = inspectTool("glob", MINI_REVIEW_GLOB_SCHEMA, "glob");
-  const view = inspectTool("view", MINI_REVIEW_VIEW_SCHEMA, "view");
   const submit = {
     name: "submit_review",
     description: MINI_REVIEW_SUBMIT_SCHEMA.description,
@@ -246,7 +219,7 @@ export function buildMiniReviewTools() {
       }
     },
   };
-  return [grep, glob, view, submit];
+  return [submit];
 }
 
 function promptOf(holder) {
@@ -273,14 +246,15 @@ function installPersona(holder) {
 
 function installTools(holder) {
   const tools = toolsOf(holder);
-  if (!tools || typeof tools.register !== "function" || typeof tools.restrict !== "function") {
-    throw new Error("mini-review requires tools.register and tools.restrict");
+  if (!tools || typeof tools.get !== "function" || typeof tools.register !== "function" || typeof tools.restrict !== "function") {
+    throw new Error("mini-review requires tools.get, tools.register, and tools.restrict");
   }
+  const wrappedBash = wrapMiniBash(tools.get("bash"), { interceptCompletion: false });
   const lifts = [];
-  // Empty allow inherits no DSH globals. Register the immutable Git-oracle
-  // implementations only after isolation, so live-workspace grep/glob cannot
-  // leak into a review look. Restriction failures intentionally abort setup.
-  const restrict = () => tools.restrict({ allow: [] });
+  // Keep only the host bash catalog entry, then replace it with Mini's wrapped
+  // presentation before adding typed review completion. Restriction failures
+  // intentionally abort setup before either plugin tool is registered.
+  const restrict = () => tools.restrict({ allow: ["bash"] });
   if (typeof holder.effect === "function") {
     const lift = holder.effect(restrict, "qq-workflows mini-review");
     if (typeof lift === "function") lifts.push(lift);
@@ -288,6 +262,8 @@ function installTools(holder) {
     const lift = restrict();
     if (typeof lift === "function") lifts.push(lift);
   }
+  const bashLift = tools.register(wrappedBash);
+  if (typeof bashLift === "function") lifts.push(bashLift);
   for (const tool of buildMiniReviewTools()) {
     const lift = tools.register(tool);
     if (typeof lift === "function") lifts.push(lift);

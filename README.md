@@ -77,14 +77,15 @@ a publish failure cannot silently report a local-only landing.
 
 ## Mini-review Land QA
 
-Land review looks use the read-only `mini-review` preset. The reviewer starts
-from the architect's approved plan plus bounded changed-file counts and up to
-eight hunk pointers. It retrieves focused evidence from the immutable base and
-head Git objects with only `grep`, `glob`, and bounded `view`; unified diffs and
-file bodies are not inlined into the packet. It finishes with `submit_review`;
-zero findings passes, while any finding starts the one allowed fixer after look
-1 or blocks after look 2.
+Land review looks use the `mini-review` preset. The reviewer starts from the
+architect's approved plan plus bounded changed-file counts and up to eight hunk
+pointers; unified diffs and file bodies are not inlined into the packet. It uses
+wrapped host `bash` with Mini's 10k observation window to retrieve focused
+evidence with commands such as `git diff`, `git show`, `git grep`, `rg`, and
+`sed -n`. It finishes with `submit_review`; zero findings passes, while any
+finding starts the one allowed fixer after look 1 or blocks after look 2.
 
-The reviewer cannot run commands, read the working tree, edit files, commit, or
-access arbitrary revisions. Land still rejects a dirty QA worktree or a QA
-production commit as defense in depth.
+The reviewer must not mutate the worktree, edit files, or commit. Land rejects a
+dirty QA worktree or a QA production commit as a backstop. Submitted findings
+must still identify HEAD-side lines changed between the packet's base and head
+revisions.
