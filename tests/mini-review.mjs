@@ -17,7 +17,6 @@ import {
 import {
   MINI_REVIEW_GLOB_LIMIT,
   MINI_REVIEW_GREP_LIMIT,
-  MINI_REVIEW_INSPECT_LIMIT,
   MINI_REVIEW_VIEW_LINE_LIMIT,
 } from "../src/mini-review-v2.mjs";
 import { RepoOracle } from "../src/repo-oracle.mjs";
@@ -111,8 +110,19 @@ const fullHugeView = [
 assert.equal(hugeView, truncateObservation(fullHugeView));
 assert.match(hugeView, /environment output truncated/);
 assert.ok(Buffer.byteLength(hugeView, "utf8") <= 32 * 1024);
-for (let i = 3; i < MINI_REVIEW_INSPECT_LIMIT; i++) await capOracle.glob({ pattern: "no-match" });
-assert.match(await capOracle.glob({ pattern: "**" }), /INSPECTION LIMIT REACHED.*submit_review/);
+const unboundedOracle = new RepoOracle(base, head, { gitDir: join(repo, ".git") });
+for (let i = 0; i < 27; i++) {
+  if (i % 3 === 0) {
+    assert.equal(await unboundedOracle.grep({ query: "is_admin" }), "MATCHES 1\nsrc/auth.py:2|    return user.is_admin");
+  } else if (i % 3 === 1) {
+    assert.equal(await unboundedOracle.glob({ pattern: "**/*.py" }), "PATHS 1\nsrc/auth.py");
+  } else {
+    assert.match(await unboundedOracle.view({ path: "src/auth.py", start_line: 2, end_line: 2 }), /2\|    return user\.is_admin/);
+  }
+}
+assert.equal(await unboundedOracle.grep({ query: "is_admin" }), "MATCHES 1\nsrc/auth.py:2|    return user.is_admin");
+assert.equal(await unboundedOracle.glob({ pattern: "**/*.py" }), "PATHS 1\nsrc/auth.py");
+assert.match(await unboundedOracle.view({ path: "src/auth.py", start_line: 2, end_line: 2 }), /2\|    return user\.is_admin/);
 
 const findings = await new RepoOracle(base, head, { gitDir: join(repo, ".git") }).validateFindings([
   { path: "src/auth.py", line: 2, body: "Non-admin users can now authorize when is_admin is truthy." },
