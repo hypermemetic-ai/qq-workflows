@@ -2700,7 +2700,7 @@ try {
     assertMiniReviewMounted(qa, { owned: false });
     assert.deepEqual(harness.relay.labelsFor(intendedQa), []);
     const workflowHandle = Symbol.for("@hypermemetic-ai/qq-workflows/child-agent-handle");
-    const coreHandle = Symbol.for("@hypermemetic-ai/qq/agent-handle");
+    const coreHandle = Symbol.for("@hypermemetic-ai/qq-core/agent-handle");
     assert.ok(qa.child[coreHandle], "the host retains its restart-adoptable AgentHandle");
     delete qa.child[workflowHandle];
     assert.equal(qa.child[workflowHandle], undefined, "reapply cannot rely on the old controller marker");

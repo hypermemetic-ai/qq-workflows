@@ -1,7 +1,7 @@
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 // DSH-owned handles survive plugin-fiber replacement on the live Agent.
-export const AGENT_HANDLE = Symbol.for("@hypermemetic-ai/qq/agent-handle");
+export const AGENT_HANDLE = Symbol.for("@hypermemetic-ai/qq-core/agent-handle");
 
 export function adoptAgentHandle(handle) {
   const owner = handle && typeof handle.dispose === "function" ? handle : undefined;
