@@ -16,6 +16,7 @@ export const ARCHITECT_INHERITED_TOOLS = Object.freeze([
 export const ARCHITECT_PLUGIN_TOOLS = Object.freeze([
   "case_write",
   "delegate",
+  "research",
   "workflow_status",
   "workflow_send",
   "land",

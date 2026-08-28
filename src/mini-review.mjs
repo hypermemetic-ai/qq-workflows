@@ -201,11 +201,12 @@ export function buildMiniReviewTools() {
           throw new Error("submit_review requires only the findings field");
         }
         let verdict;
+        let findings;
         if (!bindingIsCompleted(binding, exec?.agent)) {
-          const findings = await binding.oracle.validateFindings(args.findings);
+          findings = await binding.oracle.validateFindings(args.findings);
           verdict = createQaVerdict(reviewFindingsToVerdictInput(findings));
         }
-        const result = await binding.submit({ agent: exec?.agent, verdict });
+        const result = await binding.submit({ agent: exec?.agent, verdict, findings });
         if (result?.status !== "refused") {
           markCompleted(exec?.agent);
           armChildSettlement(result, exec, { onFailure: () => clearCompleted(exec?.agent) });
@@ -230,14 +231,14 @@ function toolsOf(holder) {
   return holder?.tools ?? holder?.get?.("tools", false) ?? null;
 }
 
-function installPersona(holder) {
+function installPersona(holder, persona = MINI_REVIEW_SYSTEM_PROMPT) {
   const prompt = promptOf(holder);
   if (!prompt || typeof prompt.section !== "function") throw new Error("mini-review requires systemPrompt.section");
   if (typeof prompt.suppressRuntimeContext !== "function") throw new Error("mini-review requires systemPrompt.suppressRuntimeContext");
   const lift = prompt.section({
     name: MINI_REVIEW_PERSONA_SECTION,
     order: MINI_REVIEW_PERSONA_ORDER,
-    text: MINI_REVIEW_SYSTEM_PROMPT,
+    text: persona,
     complete: true,
   });
   prompt.suppressRuntimeContext();
@@ -296,14 +297,14 @@ function ownMount(agentCtx, lifts) {
   return record;
 }
 
-export function miniReviewSetup(agentCtx) {
+export function miniReviewSetup(agentCtx, options = {}) {
   if (!agentCtx) throw new Error("mini-review setup requires an agent context");
   const previous = agentCtx[MINI_REVIEW_MOUNT];
   if (previous?.generation === MOUNT_GENERATION) return;
   previous?.dispose?.();
   const lifts = [];
   try {
-    lifts.push(installPersona(agentCtx));
+    lifts.push(installPersona(agentCtx, options.prompt ?? MINI_REVIEW_SYSTEM_PROMPT));
     lifts.push(installTools(agentCtx));
     lifts.push(installFormatRecovery(agentCtx));
     ownMount(agentCtx, lifts);
