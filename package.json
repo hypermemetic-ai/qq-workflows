@@ -12,6 +12,7 @@
     "./tools": "./src/tools.mjs",
     "./architect": "./src/architect.mjs",
     "./mini": "./src/mini.mjs",
+    "./mini-coder": "./src/official-mini.mjs",
     "./git": "./src/git.mjs",
     "./iterate": "./src/iterate.mjs",
     "./land": "./src/land.mjs",
@@ -30,12 +31,19 @@
     "./qa-verdict": "./src/qa-verdict.mjs",
     "./mini-review": "./src/mini-review.mjs",
     "./repo-oracle": "./src/repo-oracle.mjs",
-    "./mini-docs": "./src/mini-docs.mjs"
+    "./mini-docs": "./src/mini-docs.mjs",
+    "./mini-research": "./src/mini-research.mjs",
+    "./research-evidence": "./src/research-evidence.mjs",
+    "./research-web": "./src/research-web.mjs",
+    "./research-sessions": "./src/research-sessions.mjs",
+    "./research-oracle": "./src/research-oracle.mjs",
+    "./research": "./src/research.mjs",
+    "./research-store": "./src/research-store.mjs"
   },
   "files": [
     "src/"
   ],
   "scripts": {
-    "test": "node tests/fold.mjs && node tests/observation.mjs && node tests/mini-swe-v2.mjs && node tests/hide-harness.mjs && node tests/projects-workflow.mjs && node tests/git-geometry.mjs && node tests/routing.mjs && node tests/architect-case-context.mjs && node tests/architect-wiki-index.mjs && node tests/mini-review.mjs && node tests/land.mjs && node tests/mini-docs.mjs"
+    "test": "node tests/fold.mjs && node tests/observation.mjs && node tests/mini-swe-v2.mjs && node tests/hide-harness.mjs && node tests/projects-workflow.mjs && node tests/git-geometry.mjs && node tests/routing.mjs && node tests/architect-case-context.mjs && node tests/architect-wiki-index.mjs && node tests/mini-review.mjs && node tests/land.mjs && node tests/mini-docs.mjs && node tests/research-evidence.mjs && node tests/research-web.mjs && node tests/research-sessions.mjs && node tests/mini-research.mjs && node tests/research-oracle.mjs && node tests/research.mjs"
   }
 }

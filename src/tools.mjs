@@ -194,7 +194,7 @@ function buildWorkflowSendTool(workflowSend) {
   };
 }
 
-export function buildArchitectTools({ delegate, workflowStatus, workflowSend, tasks, cases, land } = {}) {
+export function buildArchitectTools({ delegate, research, workflowStatus, workflowSend, tasks, cases, land } = {}) {
   const tools = [{
     name: "delegate",
     description: "Start one workflow from working memory. The result renders the authoritative durable delegation UUID first, followed by the current immutable physical session UUID, role, epoch, and informational ephemeral alias. Workflow-owned results return automatically.",
@@ -222,6 +222,24 @@ export function buildArchitectTools({ delegate, workflowStatus, workflowSend, ta
       try {
         if (!delegate) return refusal("delegate is unavailable");
         return await delegate({ agent: exec?.agent });
+      } catch (error) {
+        return refusal(error instanceof Error ? error.message : String(error));
+      }
+    },
+  }, {
+    name: "research",
+    description: "Start one evidence-backed research run from the approved working-memory document. The run gathers immutable evidence, writes answer.md, and receives one fresh-context mini-review before returning automatically.",
+    parameters: {},
+    output: {
+      schema: { type: "object", additionalProperties: true },
+      render: (_args, value) => [textBlock(value.status === "refused"
+        ? `Research refused: ${value.reason}`
+        : `research run ${value.runId}; child ${value.child}; workspace ${value.workspace}`)],
+    },
+    async execute(_args, exec) {
+      try {
+        if (!research) return refusal("research is unavailable");
+        return await research({ agent: exec?.agent });
       } catch (error) {
         return refusal(error instanceof Error ? error.message : String(error));
       }
