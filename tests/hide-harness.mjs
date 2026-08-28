@@ -28,6 +28,7 @@ assert.deepEqual(ARCHITECT_INHERITED_TOOLS, [
 assert.deepEqual(ARCHITECT_PLUGIN_TOOLS, [
   "case_write",
   "delegate",
+  "research",
   "workflow_status",
   "workflow_send",
   "land",
