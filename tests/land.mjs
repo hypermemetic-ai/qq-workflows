@@ -3124,6 +3124,115 @@ try {
     assert.equal(existsSync(capsule.worktree), false);
   }
 
+  // ---------------------------------------------------------------- projects-chair architect delegation resolves a git root before isolation
+  {
+    const repo = initRepo({ branch: "feat/projects-chair-invoke" });
+    const projectsRoot = mkdtempSync(join(scratch, "projects-chair-root-"));
+    const relay = {
+      hang() {},
+      clear() {},
+      alias: () => "projects",
+      async send() { return { status: "sent" }; },
+    };
+    const resolved = [];
+    const qq = {
+      projectsRoot,
+      gitRootForDelegate(cwd) {
+        resolved.push(cwd);
+        return repo.main;
+      },
+    };
+    const context = {
+      get(name) {
+        if (name === "qq-relay") return relay;
+        if (name === "qq") return qq;
+        return null;
+      },
+    };
+    const store = createLandStore(mkdtempSync(join(scratch, "projects-chair-land-")));
+    const land = createLand({
+      ctx: context,
+      store,
+      complete: async () => "land",
+      tasks: { archive: async (id) => id },
+      github: createGitHubMock(),
+    });
+    const created = [];
+    let child;
+    let childDisposals = 0;
+    let adoption;
+    const architect = createArchitect({
+      ctx: context,
+      cases: {
+        open() {},
+        ensure() {},
+        load() { return { text: "# Implement\n\nDelegate from the projects chair.\n" }; },
+        taskId() { return "projects-chair"; },
+        consume() { return "projects-chair"; },
+      },
+      folder: { pending: () => undefined, decide: () => ({ action: "keep" }) },
+      agents: {
+        create: async (options) => {
+          created.push(options);
+          child = childAgent({ id: options.sessionId, cwd: options.meta.cwd, registered: [] });
+          Object.assign(child.session.header, options.meta);
+          return {
+            agent: child,
+            async dispose() { childDisposals++; },
+          };
+        },
+      },
+      onInvokeChild: async (next, info) => {
+        adoption = await land.adoptImplementer(next, info);
+        return adoption;
+      },
+    });
+    const parent = {
+      session: { id: architectId, events: [], header: { cwd: projectsRoot } },
+      ctx: { on() { return () => {}; } },
+    };
+    architect.attach(parent);
+
+    const delegated = await architect.delegate({ agent: parent });
+    assert.equal(delegated.status, "ok", delegated.reason);
+    assert.deepEqual(resolved, [projectsRoot]);
+    assert.equal(created.length, 1);
+    assert.notEqual(created[0].meta.cwd, projectsRoot);
+    assert.notEqual(created[0].meta.cwd, repo.main);
+    assert.equal(git(created[0].meta.cwd, ["rev-parse", "--show-toplevel"]), created[0].meta.cwd);
+    assert.equal(adoption.status, "ok", adoption.reason);
+    assert.doesNotMatch(adoption.reason ?? "", /not a git worktree/i);
+    assert.equal(adoption.owned, true);
+    assert.deepEqual(land.ownedChildren(), [created[0].sessionId]);
+    assert.equal(land.bySession(created[0].sessionId).worktree, created[0].meta.cwd);
+    assert.equal(childDisposals, 0, "land keeps the adopted implementer live");
+
+    await adoption.rollback("test cleanup");
+    assert.equal(childDisposals, 1);
+
+    delete qq.gitRootForDelegate;
+    qq.defaultProject = "qq-workflows";
+    qq.listProjects = () => [
+      { name: "other", cwd: projectsRoot },
+      { name: "qq-workflows", cwd: repo.main },
+    ];
+    const fallbackDelegated = await architect.delegate({ agent: parent });
+    assert.equal(fallbackDelegated.status, "ok", fallbackDelegated.reason);
+    assert.equal(created.length, 2);
+    assert.notEqual(created[1].meta.cwd, projectsRoot);
+    assert.notEqual(created[1].meta.cwd, repo.main);
+    assert.equal(adoption.status, "ok", adoption.reason);
+    assert.equal(land.bySession(created[1].sessionId).worktree, created[1].meta.cwd);
+    await adoption.rollback("fallback test cleanup");
+    assert.equal(childDisposals, 2);
+
+    qq.gitRootForDelegate = () => projectsRoot;
+    const invalidRoot = await architect.delegate({ agent: parent });
+    assert.equal(invalidRoot.status, "refused");
+    assert.match(invalidRoot.reason, /delegate worktree:.*not a git worktree/is);
+    assert.equal(created.length, 2, "a resolved non-git root must not create a child");
+  }
+
   // ---------------------------------------------------------------- valid architect delegation isolates and completes its Land Mini
   {
     const repo = initRepo({ branch: "feat/invoke" });

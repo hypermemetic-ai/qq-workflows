@@ -340,7 +340,23 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
     const packet = `Delegation ID (authoritative): ${delegationId}.\n${returnAddress} Workflow completion is returned automatically; do not manually relay a duplicate report.\n\n${brief.trimEnd()}`;
     const taskId = cases?.taskId?.(parent.id) ?? null;
     const childId = `session-${randomUUID()}`;
-    let targetCwd = repoRootFor(parent.header?.cwd);
+    const parentCwd = parent.header?.cwd;
+    let targetCwd = repoRootFor(parentCwd);
+    let gitRootResolved = false;
+    const qq = ctx?.get?.("qq", false) ?? null;
+    if (typeof qq?.gitRootForDelegate === "function") {
+      const gitRoot = qq.gitRootForDelegate(parentCwd);
+      if (typeof gitRoot === "string" && gitRoot.length > 0) {
+        targetCwd = gitRoot;
+        gitRootResolved = true;
+      }
+    } else if (parentCwd === qq?.projectsRoot && typeof qq?.listProjects === "function") {
+      const gitRoot = qq.listProjects().find((project) => project?.name === qq.defaultProject)?.cwd;
+      if (typeof gitRoot === "string" && gitRoot.length > 0) {
+        targetCwd = gitRoot;
+        gitRootResolved = true;
+      }
+    }
     try {
       const prepared = await createDelegatedWorktree(run, {
         cwd: targetCwd,
@@ -351,7 +367,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
       targetCwd = prepared.worktree;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (!/not a git worktree/i.test(message)) {
+      if (gitRootResolved || !/not a git worktree/i.test(message)) {
         return { status: "refused", reason: `delegate worktree: ${message}` };
       }
     }
