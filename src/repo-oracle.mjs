@@ -4,7 +4,6 @@ import { promisify } from "node:util";
 import {
   MINI_REVIEW_GLOB_LIMIT,
   MINI_REVIEW_GREP_LIMIT,
-  MINI_REVIEW_INSPECT_LIMIT,
   MINI_REVIEW_VIEW_BYTE_LIMIT,
   MINI_REVIEW_VIEW_LINE_LIMIT,
 } from "./mini-review-v2.mjs";
@@ -12,7 +11,6 @@ import { truncateObservation } from "./observation.mjs";
 
 const execFileAsync = promisify(execFile);
 const SHA = /^[0-9a-f]{40,64}$/i;
-const INSPECT_REFUSAL = "INSPECTION LIMIT REACHED. Submit the review now with submit_review.";
 
 function sideOf(value) {
   const side = value ?? "head";
@@ -108,7 +106,6 @@ export class RepoOracle {
   #baseSha;
   #headSha;
   #gitDir;
-  #inspectSteps = 0;
   #command;
   #changedLinePromise = null;
 
@@ -159,14 +156,7 @@ export class RepoOracle {
     return sideOf(side) === "head" ? this.#headSha : this.#baseSha;
   }
 
-  #takeInspectStep() {
-    if (this.#inspectSteps >= MINI_REVIEW_INSPECT_LIMIT) return false;
-    this.#inspectSteps++;
-    return true;
-  }
-
   async grep({ query, path, side } = {}) {
-    if (!this.#takeInspectStep()) return INSPECT_REFUSAL;
     if (typeof query !== "string" || query.length === 0) throw new Error("query must be a non-empty string");
     if (query.includes("\0")) throw new Error("query must not contain NUL");
     const revision = this.#revision(side);
@@ -192,7 +182,6 @@ export class RepoOracle {
   }
 
   async glob({ pattern, side } = {}) {
-    if (!this.#takeInspectStep()) return INSPECT_REFUSAL;
     const matcher = globRegex(pattern);
     const revision = this.#revision(side);
     const result = await this.#command(["ls-tree", "-r", "--name-only", revision]);
@@ -207,7 +196,6 @@ export class RepoOracle {
   }
 
   async view({ path, start_line: startLine, end_line: endLine, side } = {}) {
-    if (!this.#takeInspectStep()) return INSPECT_REFUSAL;
     const safePath = validateRepoPath(path);
     if (!Number.isInteger(startLine) || !Number.isInteger(endLine)) {
       throw new Error("view requires integer start_line and end_line bounds");
@@ -284,5 +272,3 @@ export class RepoOracle {
     });
   }
 }
-
-export { INSPECT_REFUSAL };

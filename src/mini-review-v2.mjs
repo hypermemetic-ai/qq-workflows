@@ -8,7 +8,6 @@ export const MINI_REVIEW_GREP_LIMIT = 40;
 export const MINI_REVIEW_GLOB_LIMIT = 100;
 export const MINI_REVIEW_VIEW_LINE_LIMIT = 120;
 export const MINI_REVIEW_VIEW_BYTE_LIMIT = 32 * 1024;
-export const MINI_REVIEW_INSPECT_LIMIT = 24;
 
 function deepFreeze(value) {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
