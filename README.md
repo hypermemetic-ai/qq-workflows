@@ -23,6 +23,10 @@ The durable Land record stores:
 Old v1 Land records are upgraded in place on first load. Their generated
 `delegationId` is persisted atomically and reused thereafter.
 
+Architect inherits only the decided research/mailbox tools; its plugin tools are
+`case_write`, `delegate`, `workflow_status`, `workflow_send`, and `land`; new
+harness tools do not appear.
+
 Architect sessions receive two façade tools:
 
 - `workflow_status(delegationId)` reports run state, role, epoch, current
