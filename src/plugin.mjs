@@ -3,6 +3,7 @@
 // The wrapper lists registered workflows and selects which one this chair
 // is running, if any. Architect, find, and base are selectable. Land is git
 // machinery: official Mini completion and the architect/base land tool.
+// The reserved Projects chair implicitly receives its own non-selectable workflow.
 // Architect owns working memory, two-pair fold, delegate, and role settings.
 // Session context and awaitable leave/transition live on service.workflows;
 // /workflows select and clear stay the command path.
@@ -41,6 +42,7 @@ import {
 import { completeComposerLine, formatWorkflowList, parseWorkflowsInput } from "./command.mjs";
 import { DEFAULT_ACCEPTED_CONTEXTS, normalizeAcceptedContexts } from "./context.mjs";
 import { createWorkflowSessionApi } from "./transition.mjs";
+import { createProjectsWorkflow, PROJECTS_LABEL } from "./projects.mjs";
 
 export {
   DEFAULT_ACCEPTED_CONTEXTS,
@@ -53,6 +55,7 @@ export const name = "qq-workflows";
 export const inject = ["agents", "sessions"];
 export const provide = "qq-workflows";
 export const FIND_LABEL = "workflows:find";
+export { PROJECTS_LABEL };
 
 const WORKFLOW_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 const EXTERNAL_WORKFLOW_RESERVED = new Set([
@@ -64,6 +67,7 @@ const EXTERNAL_WORKFLOW_RESERVED = new Set([
   "land",
   "find",
   "base",
+  "projects",
 ]);
 const REGISTERED_WORKFLOW_METHODS = [
   "candidate",
@@ -170,6 +174,7 @@ export function apply(ctx, config = {}) {
     onInvokeChild: (child, info) => land.adoptImplementer(child, info),
   });
 
+  const projectsWorkflow = createProjectsWorkflow({ ctx });
   const workflows = new Map();
   const toolDisposers = new Map();
   const hideDisposers = new Map();
@@ -275,13 +280,17 @@ export function apply(ctx, config = {}) {
     record.dispose();
   }
 
+  const selectableCandidate = (agent) => (
+    isArchitectCandidate(agent) && !projectsWorkflow.candidate(agent)
+  );
+
   const architectWorkflow = Object.freeze({
     name: "architect",
-    candidate: isArchitectCandidate,
+    candidate: selectableCandidate,
     acceptedContexts: DEFAULT_ACCEPTED_CONTEXTS,
     settings: architectSettings,
     ensureAttached(agent) {
-      if (!isArchitectCandidate(agent)) return null;
+      if (!selectableCandidate(agent)) return null;
       const handle = architect.attach(agent);
       registerAgentTools(agent);
       return handle;
@@ -346,10 +355,10 @@ export function apply(ctx, config = {}) {
   const findAttached = new Set();
   const findWorkflow = Object.freeze({
     name: "find",
-    candidate: isArchitectCandidate,
+    candidate: selectableCandidate,
     acceptedContexts: DEFAULT_ACCEPTED_CONTEXTS,
     ensureAttached(agent) {
-      if (!isArchitectCandidate(agent)) return null;
+      if (!selectableCandidate(agent)) return null;
       const sessionId = sessionIdOf(agent);
       if (!sessionId) return null;
       if (!findAttached.has(sessionId)) {
@@ -378,11 +387,11 @@ export function apply(ctx, config = {}) {
 
   const baseWorkflow = Object.freeze({
     name: "base",
-    candidate: isArchitectCandidate,
+    candidate: selectableCandidate,
     acceptedContexts: DEFAULT_ACCEPTED_CONTEXTS,
     settings: baseSettings,
     ensureAttached(agent) {
-      if (!isArchitectCandidate(agent)) return null;
+      if (!selectableCandidate(agent)) return null;
       registerAgentTools(agent);
       return sessionIdOf(agent);
     },
@@ -419,6 +428,12 @@ export function apply(ctx, config = {}) {
 
   function syncSession(agent) {
     if (!agent) return;
+    if (projectsWorkflow.candidate(agent)) {
+      for (const workflow of workflows.values()) workflow.ensureDetached(agent);
+      projectsWorkflow.ensureAttached(agent);
+      return;
+    }
+    projectsWorkflow.ensureDetached(agent);
     const sessionId = sessionIdOf(agent);
     const chosen = selectedName(sessionId);
     for (const [name, workflow] of workflows) {
@@ -459,10 +474,13 @@ export function apply(ctx, config = {}) {
   }
 
   function selectWorkflow(sessionId, name) {
+    const agent = liveAgent(sessionId);
+    if (projectsWorkflow.candidate(agent)) {
+      throw new Error("this session is not a workflow picker");
+    }
     if (name === "land") throw new Error("land is not a selectable workflow");
     const workflow = workflows.get(name);
     if (!workflow) throw new Error(`unknown workflow: ${name}`);
-    const agent = liveAgent(sessionId);
     if (agent && workflow.candidate(agent) !== true) {
       throw new Error(`a child session cannot select ${name}`);
     }
@@ -523,6 +541,7 @@ export function apply(ctx, config = {}) {
     folder,
     architect,
     caseFile(sessionId) {
+      if (projectsWorkflow.candidate(liveAgent(sessionId))) return null;
       if (selectedName(sessionId) !== "architect") return null;
       const loaded = cases.ensure(sessionId);
       const id = cases.taskId?.(sessionId);
@@ -609,11 +628,13 @@ export function apply(ctx, config = {}) {
     for (const agent of agents.list()) {
       const sessionId = sessionIdOf(agent);
       const selected = selectedName(sessionId);
-      const label = selected === "architect"
-        ? architect.label
-        : selected === "find"
-          ? FIND_LABEL
-          : "";
+      const label = projectsWorkflow.candidate(agent)
+        ? PROJECTS_LABEL
+        : selected === "architect"
+          ? architect.label
+          : selected === "find"
+            ? FIND_LABEL
+            : "";
       if (!sessionId || !label) continue;
       try { relay.hang(sessionId, label); } catch {}
     }
@@ -625,6 +646,7 @@ export function apply(ctx, config = {}) {
 
   const talkingOff = new Map();
   function talkingBinding(sessionId) {
+    if (projectsWorkflow.candidate(liveAgent(sessionId))) return baseSettings.get("talking");
     const selected = selectedName(sessionId);
     if (selected === "architect") return architectSettings.get("talking") ?? baseSettings.get("talking");
     return baseSettings.get("talking");
@@ -667,6 +689,7 @@ export function apply(ctx, config = {}) {
   });
   ctx.on("agent/disposed", async ({ agent }) => {
     await land.releaseChild?.(agent);
+    projectsWorkflow.ensureDetached(agent);
     for (const workflow of workflows.values()) workflow.ensureDetached(agent);
     const sessionId = sessionIdOf(agent);
     unpinTalking(sessionId);
@@ -676,7 +699,7 @@ export function apply(ctx, config = {}) {
     const agent = context?.agent ?? context?.scope;
     const result = await next();
     let tools;
-    if (originOf(agent) === CHILD_ORIGIN) {
+    if (originOf(agent) === CHILD_ORIGIN || projectsWorkflow.candidate(agent)) {
       tools = stripHiddenHarnessTools(result?.tools);
     } else if (selectedName(sessionIdOf(agent)) === "architect") {
       tools = stripUnlistedArchitectTools(result?.tools);
@@ -723,6 +746,7 @@ export function apply(ctx, config = {}) {
   ctx.effect(() => async () => {
     if (typeof agents?.list === "function") {
       for (const agent of agents.list()) {
+        projectsWorkflow.ensureDetached(agent);
         for (const workflow of workflows.values()) workflow.ensureDetached(agent);
       }
     }
