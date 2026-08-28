@@ -1,0 +1,4041 @@
+{
+  "audit": {
+    "all_sampled": {
+      "C1": {
+        "false_completeness": 0,
+        "glued_events": 0,
+        "rerun": 15,
+        "wrong_edit_or_location": 13
+      },
+      "C2": {
+        "false_completeness": 0,
+        "glued_events": 0,
+        "rerun": 14,
+        "wrong_edit_or_location": 12
+      }
+    },
+    "by_class": {
+      "git_diff": {
+        "C1": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 2,
+          "wrong_edit_or_location": 2
+        },
+        "C2": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 2,
+          "wrong_edit_or_location": 2
+        },
+        "sampled_bodies": 2
+      },
+      "git_status": {
+        "C1": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 1,
+          "wrong_edit_or_location": 1
+        },
+        "C2": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 1,
+          "wrong_edit_or_location": 1
+        },
+        "sampled_bodies": 1
+      },
+      "listing": {
+        "C1": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 1,
+          "wrong_edit_or_location": 1
+        },
+        "C2": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 1,
+          "wrong_edit_or_location": 1
+        },
+        "sampled_bodies": 2
+      },
+      "lockfile/json": {
+        "C1": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 2,
+          "wrong_edit_or_location": 2
+        },
+        "C2": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 2,
+          "wrong_edit_or_location": 2
+        },
+        "sampled_bodies": 2
+      },
+      "mixed/compound": {
+        "C1": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 2,
+          "wrong_edit_or_location": 1
+        },
+        "C2": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 2,
+          "wrong_edit_or_location": 1
+        },
+        "sampled_bodies": 2
+      },
+      "npm/install/debug_log": {
+        "C1": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 2,
+          "wrong_edit_or_location": 2
+        },
+        "C2": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 2,
+          "wrong_edit_or_location": 2
+        },
+        "sampled_bodies": 2
+      },
+      "other": {
+        "C1": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 1,
+          "wrong_edit_or_location": 1
+        },
+        "C2": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 1,
+          "wrong_edit_or_location": 1
+        },
+        "sampled_bodies": 2
+      },
+      "search": {
+        "C1": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 1,
+          "wrong_edit_or_location": 0
+        },
+        "C2": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 1,
+          "wrong_edit_or_location": 0
+        },
+        "sampled_bodies": 2
+      },
+      "source_dump": {
+        "C1": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 0,
+          "wrong_edit_or_location": 0
+        },
+        "C2": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 0,
+          "wrong_edit_or_location": 0
+        },
+        "sampled_bodies": 0
+      },
+      "test": {
+        "C1": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 2,
+          "wrong_edit_or_location": 2
+        },
+        "C2": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 1,
+          "wrong_edit_or_location": 1
+        },
+        "sampled_bodies": 2
+      },
+      "write/edit": {
+        "C1": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 1,
+          "wrong_edit_or_location": 1
+        },
+        "C2": {
+          "false_completeness": 0,
+          "glued_events": 0,
+          "rerun": 1,
+          "wrong_edit_or_location": 1
+        },
+        "sampled_bodies": 2
+      }
+    },
+    "classes_sampled": 10,
+    "classes_without_raw_pre_envelope_overflow": [
+      "source_dump"
+    ],
+    "interpretation": "bounded audit disagreement counts, not accuracy estimates; already-windowed archive bodies were excluded because their original middle cannot be audited",
+    "sampled_C2_completion_bodies": 4,
+    "sampled_C2_fail_open_bodies": 15,
+    "sampled_bodies": 19,
+    "selection": "up to two raw, pre-envelope overflow bodies per frozen class: one C2 completion with most C1-hole direct signal where available plus largest fail-open; otherwise two largest fail-open bodies",
+    "status": "complete; temporary review material deleted"
+  },
+  "bodyless_aggregate_digest": "24679036f8cb993ece70afc5c156b9f50993090cad5b2eb305bdb152dadf4f02",
+  "contract_fidelity": {
+    "C1_hole_direct_signal_recovery": {
+      "fail": {
+        "C1_fully_hidden_lines": 2745,
+        "C1_hole_chars": 616418,
+        "C1_hole_lines_touching": 2833,
+        "C2_recovered_full_lines": 14,
+        "C2_recovered_hole_chars": 762,
+        "C2_structural_overlap_lines_still_elided": 101,
+        "accepted_bodies_with_recovered_full_lines": 2,
+        "bodies_with_C1_fully_hidden_lines": 158,
+        "by_class": {
+          "git_diff": {
+            "C1_fully_hidden_lines": 1283,
+            "C1_hole_chars": 79775,
+            "C1_hole_lines_touching": 1299,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 37,
+            "fail_open_bodies_with_hidden_lines": 37,
+            "fail_open_fully_hidden_lines_still_missing": 1283
+          },
+          "git_status": {
+            "C1_fully_hidden_lines": 1,
+            "C1_hole_chars": 102,
+            "C1_hole_lines_touching": 1,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 1,
+            "fail_open_bodies_with_hidden_lines": 1,
+            "fail_open_fully_hidden_lines_still_missing": 1
+          },
+          "listing": {
+            "C1_fully_hidden_lines": 166,
+            "C1_hole_chars": 55084,
+            "C1_hole_lines_touching": 170,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 4,
+            "fail_open_bodies_with_hidden_lines": 4,
+            "fail_open_fully_hidden_lines_still_missing": 166
+          },
+          "lockfile/json": {
+            "C1_fully_hidden_lines": 15,
+            "C1_hole_chars": 782,
+            "C1_hole_lines_touching": 15,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 1,
+            "fail_open_bodies_with_hidden_lines": 1,
+            "fail_open_fully_hidden_lines_still_missing": 15
+          },
+          "mixed/compound": {
+            "C1_fully_hidden_lines": 533,
+            "C1_hole_chars": 235564,
+            "C1_hole_lines_touching": 569,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 39,
+            "C2_structural_overlap_lines_still_elided": 2,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 48,
+            "fail_open_bodies_with_hidden_lines": 46,
+            "fail_open_fully_hidden_lines_still_missing": 531
+          },
+          "npm/install/debug_log": {
+            "C1_fully_hidden_lines": 1,
+            "C1_hole_chars": 20,
+            "C1_hole_lines_touching": 1,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 1,
+            "fail_open_bodies_with_hidden_lines": 1,
+            "fail_open_fully_hidden_lines_still_missing": 1
+          },
+          "other": {
+            "C1_fully_hidden_lines": 20,
+            "C1_hole_chars": 3081,
+            "C1_hole_lines_touching": 22,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 5,
+            "fail_open_bodies_with_hidden_lines": 5,
+            "fail_open_fully_hidden_lines_still_missing": 20
+          },
+          "search": {
+            "C1_fully_hidden_lines": 46,
+            "C1_hole_chars": 182827,
+            "C1_hole_lines_touching": 56,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 4,
+            "fail_open_bodies_with_hidden_lines": 4,
+            "fail_open_fully_hidden_lines_still_missing": 46
+          },
+          "source_dump": {
+            "C1_fully_hidden_lines": 0,
+            "C1_hole_chars": 0,
+            "C1_hole_lines_touching": 0,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 0,
+            "fail_open_bodies_with_hidden_lines": 0,
+            "fail_open_fully_hidden_lines_still_missing": 0
+          },
+          "test": {
+            "C1_fully_hidden_lines": 373,
+            "C1_hole_chars": 38084,
+            "C1_hole_lines_touching": 390,
+            "C2_recovered_full_lines": 14,
+            "C2_recovered_hole_chars": 723,
+            "C2_structural_overlap_lines_still_elided": 99,
+            "accepted_bodies_with_recovered_full_lines": 2,
+            "bodies_with_C1_fully_hidden_lines": 47,
+            "fail_open_bodies_with_hidden_lines": 45,
+            "fail_open_fully_hidden_lines_still_missing": 260
+          },
+          "write/edit": {
+            "C1_fully_hidden_lines": 307,
+            "C1_hole_chars": 21099,
+            "C1_hole_lines_touching": 310,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 10,
+            "fail_open_bodies_with_hidden_lines": 10,
+            "fail_open_fully_hidden_lines_still_missing": 307
+          }
+        },
+        "fail_open_bodies_with_hidden_lines": 154,
+        "fail_open_fully_hidden_lines_still_missing": 2630
+      },
+      "hunk": {
+        "C1_fully_hidden_lines": 4710,
+        "C1_hole_chars": 223996,
+        "C1_hole_lines_touching": 4768,
+        "C2_recovered_full_lines": 0,
+        "C2_recovered_hole_chars": 0,
+        "C2_structural_overlap_lines_still_elided": 0,
+        "accepted_bodies_with_recovered_full_lines": 0,
+        "bodies_with_C1_fully_hidden_lines": 58,
+        "by_class": {
+          "git_diff": {
+            "C1_fully_hidden_lines": 3725,
+            "C1_hole_chars": 176350,
+            "C1_hole_lines_touching": 3767,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 39,
+            "fail_open_bodies_with_hidden_lines": 39,
+            "fail_open_fully_hidden_lines_still_missing": 3725
+          },
+          "git_status": {
+            "C1_fully_hidden_lines": 0,
+            "C1_hole_chars": 0,
+            "C1_hole_lines_touching": 0,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 0,
+            "fail_open_bodies_with_hidden_lines": 0,
+            "fail_open_fully_hidden_lines_still_missing": 0
+          },
+          "listing": {
+            "C1_fully_hidden_lines": 17,
+            "C1_hole_chars": 1671,
+            "C1_hole_lines_touching": 18,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 2,
+            "fail_open_bodies_with_hidden_lines": 2,
+            "fail_open_fully_hidden_lines_still_missing": 17
+          },
+          "lockfile/json": {
+            "C1_fully_hidden_lines": 0,
+            "C1_hole_chars": 0,
+            "C1_hole_lines_touching": 0,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 0,
+            "fail_open_bodies_with_hidden_lines": 0,
+            "fail_open_fully_hidden_lines_still_missing": 0
+          },
+          "mixed/compound": {
+            "C1_fully_hidden_lines": 960,
+            "C1_hole_chars": 45480,
+            "C1_hole_lines_touching": 975,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 15,
+            "fail_open_bodies_with_hidden_lines": 15,
+            "fail_open_fully_hidden_lines_still_missing": 960
+          },
+          "npm/install/debug_log": {
+            "C1_fully_hidden_lines": 1,
+            "C1_hole_chars": 4,
+            "C1_hole_lines_touching": 1,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 1,
+            "fail_open_bodies_with_hidden_lines": 1,
+            "fail_open_fully_hidden_lines_still_missing": 1
+          },
+          "other": {
+            "C1_fully_hidden_lines": 0,
+            "C1_hole_chars": 0,
+            "C1_hole_lines_touching": 0,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 0,
+            "fail_open_bodies_with_hidden_lines": 0,
+            "fail_open_fully_hidden_lines_still_missing": 0
+          },
+          "search": {
+            "C1_fully_hidden_lines": 0,
+            "C1_hole_chars": 0,
+            "C1_hole_lines_touching": 0,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 0,
+            "fail_open_bodies_with_hidden_lines": 0,
+            "fail_open_fully_hidden_lines_still_missing": 0
+          },
+          "source_dump": {
+            "C1_fully_hidden_lines": 0,
+            "C1_hole_chars": 0,
+            "C1_hole_lines_touching": 0,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 0,
+            "fail_open_bodies_with_hidden_lines": 0,
+            "fail_open_fully_hidden_lines_still_missing": 0
+          },
+          "test": {
+            "C1_fully_hidden_lines": 7,
+            "C1_hole_chars": 491,
+            "C1_hole_lines_touching": 7,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 1,
+            "fail_open_bodies_with_hidden_lines": 1,
+            "fail_open_fully_hidden_lines_still_missing": 7
+          },
+          "write/edit": {
+            "C1_fully_hidden_lines": 0,
+            "C1_hole_chars": 0,
+            "C1_hole_lines_touching": 0,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 0,
+            "fail_open_bodies_with_hidden_lines": 0,
+            "fail_open_fully_hidden_lines_still_missing": 0
+          }
+        },
+        "fail_open_bodies_with_hidden_lines": 58,
+        "fail_open_fully_hidden_lines_still_missing": 4710
+      },
+      "locator": {
+        "C1_fully_hidden_lines": 6084,
+        "C1_hole_chars": 1395474,
+        "C1_hole_lines_touching": 6324,
+        "C2_recovered_full_lines": 2,
+        "C2_recovered_hole_chars": 188,
+        "C2_structural_overlap_lines_still_elided": 12,
+        "accepted_bodies_with_recovered_full_lines": 2,
+        "bodies_with_C1_fully_hidden_lines": 191,
+        "by_class": {
+          "git_diff": {
+            "C1_fully_hidden_lines": 830,
+            "C1_hole_chars": 54591,
+            "C1_hole_lines_touching": 843,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 32,
+            "fail_open_bodies_with_hidden_lines": 32,
+            "fail_open_fully_hidden_lines_still_missing": 830
+          },
+          "git_status": {
+            "C1_fully_hidden_lines": 17,
+            "C1_hole_chars": 2536,
+            "C1_hole_lines_touching": 19,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 1,
+            "fail_open_bodies_with_hidden_lines": 1,
+            "fail_open_fully_hidden_lines_still_missing": 17
+          },
+          "listing": {
+            "C1_fully_hidden_lines": 303,
+            "C1_hole_chars": 89739,
+            "C1_hole_lines_touching": 322,
+            "C2_recovered_full_lines": 1,
+            "C2_recovered_hole_chars": 43,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 1,
+            "bodies_with_C1_fully_hidden_lines": 12,
+            "fail_open_bodies_with_hidden_lines": 11,
+            "fail_open_fully_hidden_lines_still_missing": 302
+          },
+          "lockfile/json": {
+            "C1_fully_hidden_lines": 51,
+            "C1_hole_chars": 6478,
+            "C1_hole_lines_touching": 55,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 5,
+            "fail_open_bodies_with_hidden_lines": 5,
+            "fail_open_fully_hidden_lines_still_missing": 51
+          },
+          "mixed/compound": {
+            "C1_fully_hidden_lines": 2688,
+            "C1_hole_chars": 700959,
+            "C1_hole_lines_touching": 2818,
+            "C2_recovered_full_lines": 1,
+            "C2_recovered_hole_chars": 119,
+            "C2_structural_overlap_lines_still_elided": 3,
+            "accepted_bodies_with_recovered_full_lines": 1,
+            "bodies_with_C1_fully_hidden_lines": 82,
+            "fail_open_bodies_with_hidden_lines": 81,
+            "fail_open_fully_hidden_lines_still_missing": 2684
+          },
+          "npm/install/debug_log": {
+            "C1_fully_hidden_lines": 2,
+            "C1_hole_chars": 100,
+            "C1_hole_lines_touching": 3,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 1,
+            "fail_open_bodies_with_hidden_lines": 1,
+            "fail_open_fully_hidden_lines_still_missing": 2
+          },
+          "other": {
+            "C1_fully_hidden_lines": 781,
+            "C1_hole_chars": 143738,
+            "C1_hole_lines_touching": 795,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 9,
+            "fail_open_bodies_with_hidden_lines": 9,
+            "fail_open_fully_hidden_lines_still_missing": 781
+          },
+          "search": {
+            "C1_fully_hidden_lines": 74,
+            "C1_hole_chars": 215514,
+            "C1_hole_lines_touching": 89,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 7,
+            "fail_open_bodies_with_hidden_lines": 7,
+            "fail_open_fully_hidden_lines_still_missing": 74
+          },
+          "source_dump": {
+            "C1_fully_hidden_lines": 0,
+            "C1_hole_chars": 0,
+            "C1_hole_lines_touching": 0,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 0,
+            "fail_open_bodies_with_hidden_lines": 0,
+            "fail_open_fully_hidden_lines_still_missing": 0
+          },
+          "test": {
+            "C1_fully_hidden_lines": 801,
+            "C1_hole_chars": 96627,
+            "C1_hole_lines_touching": 828,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 26,
+            "C2_structural_overlap_lines_still_elided": 9,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 30,
+            "fail_open_bodies_with_hidden_lines": 28,
+            "fail_open_fully_hidden_lines_still_missing": 792
+          },
+          "write/edit": {
+            "C1_fully_hidden_lines": 537,
+            "C1_hole_chars": 85192,
+            "C1_hole_lines_touching": 552,
+            "C2_recovered_full_lines": 0,
+            "C2_recovered_hole_chars": 0,
+            "C2_structural_overlap_lines_still_elided": 0,
+            "accepted_bodies_with_recovered_full_lines": 0,
+            "bodies_with_C1_fully_hidden_lines": 12,
+            "fail_open_bodies_with_hidden_lines": 12,
+            "fail_open_fully_hidden_lines_still_missing": 537
+          }
+        },
+        "fail_open_bodies_with_hidden_lines": 187,
+        "fail_open_fully_hidden_lines_still_missing": 6070
+      }
+    },
+    "all_overflow": {
+      "C1_marker_holes": 278,
+      "C1_nonempty_middle_holes": 278,
+      "C1_source_projection_subsequence_violations": 0,
+      "C2_accepted_bodies": 8,
+      "C2_extra_marker_holes_vs_C1": 136,
+      "C2_fail_open_to_C1_bodies": 270,
+      "C2_interior_marker_holes": 412,
+      "C2_marker_chars": 25063,
+      "C2_marker_holes": 414,
+      "C2_omitted_frozen_disposable_chars": 45530,
+      "C2_omitted_frozen_disposable_lines": 918,
+      "C2_retained_broad_K_struct_chars_due_unique_payload_guard": 0,
+      "C2_retained_broad_K_struct_lines_due_unique_payload_guard": 0,
+      "C2_source_projection_subsequence_violations": 0,
+      "archive_already_windowed_not_evaluable_for_C2": 1695,
+      "archive_unavailable_hole_chars": 336921742,
+      "evaluated_overflow_bodies": 278,
+      "explicit_omission_marker_bodies": 278,
+      "logical_overflow_bodies": 1973,
+      "raw_overflow_bodies_evaluable_for_C2": 278,
+      "unmarked_continuation_bodies": 0
+    },
+    "by_class": {
+      "git_diff": {
+        "C1_marker_holes": 43,
+        "C1_nonempty_middle_holes": 43,
+        "C1_source_projection_subsequence_violations": 0,
+        "C2_accepted_bodies": 0,
+        "C2_extra_marker_holes_vs_C1": 0,
+        "C2_fail_open_to_C1_bodies": 43,
+        "C2_interior_marker_holes": 43,
+        "C2_marker_chars": 2588,
+        "C2_marker_holes": 43,
+        "C2_omitted_frozen_disposable_chars": 0,
+        "C2_omitted_frozen_disposable_lines": 0,
+        "C2_retained_broad_K_struct_chars_due_unique_payload_guard": 0,
+        "C2_retained_broad_K_struct_lines_due_unique_payload_guard": 0,
+        "C2_source_projection_subsequence_violations": 0,
+        "archive_already_windowed_not_evaluable_for_C2": 73,
+        "archive_unavailable_hole_chars": 1168098,
+        "evaluated_overflow_bodies": 43,
+        "explicit_omission_marker_bodies": 43,
+        "logical_overflow_bodies": 116,
+        "raw_overflow_bodies_evaluable_for_C2": 43,
+        "unmarked_continuation_bodies": 0
+      },
+      "git_status": {
+        "C1_marker_holes": 1,
+        "C1_nonempty_middle_holes": 1,
+        "C1_source_projection_subsequence_violations": 0,
+        "C2_accepted_bodies": 0,
+        "C2_extra_marker_holes_vs_C1": 0,
+        "C2_fail_open_to_C1_bodies": 1,
+        "C2_interior_marker_holes": 1,
+        "C2_marker_chars": 60,
+        "C2_marker_holes": 1,
+        "C2_omitted_frozen_disposable_chars": 0,
+        "C2_omitted_frozen_disposable_lines": 0,
+        "C2_retained_broad_K_struct_chars_due_unique_payload_guard": 0,
+        "C2_retained_broad_K_struct_lines_due_unique_payload_guard": 0,
+        "C2_source_projection_subsequence_violations": 0,
+        "archive_already_windowed_not_evaluable_for_C2": 0,
+        "archive_unavailable_hole_chars": 0,
+        "evaluated_overflow_bodies": 1,
+        "explicit_omission_marker_bodies": 1,
+        "logical_overflow_bodies": 1,
+        "raw_overflow_bodies_evaluable_for_C2": 1,
+        "unmarked_continuation_bodies": 0
+      },
+      "listing": {
+        "C1_marker_holes": 16,
+        "C1_nonempty_middle_holes": 16,
+        "C1_source_projection_subsequence_violations": 0,
+        "C2_accepted_bodies": 1,
+        "C2_extra_marker_holes_vs_C1": 0,
+        "C2_fail_open_to_C1_bodies": 15,
+        "C2_interior_marker_holes": 16,
+        "C2_marker_chars": 967,
+        "C2_marker_holes": 16,
+        "C2_omitted_frozen_disposable_chars": 9613,
+        "C2_omitted_frozen_disposable_lines": 109,
+        "C2_retained_broad_K_struct_chars_due_unique_payload_guard": 0,
+        "C2_retained_broad_K_struct_lines_due_unique_payload_guard": 0,
+        "C2_source_projection_subsequence_violations": 0,
+        "archive_already_windowed_not_evaluable_for_C2": 52,
+        "archive_unavailable_hole_chars": 13863583,
+        "evaluated_overflow_bodies": 16,
+        "explicit_omission_marker_bodies": 16,
+        "logical_overflow_bodies": 68,
+        "raw_overflow_bodies_evaluable_for_C2": 16,
+        "unmarked_continuation_bodies": 0
+      },
+      "lockfile/json": {
+        "C1_marker_holes": 8,
+        "C1_nonempty_middle_holes": 8,
+        "C1_source_projection_subsequence_violations": 0,
+        "C2_accepted_bodies": 0,
+        "C2_extra_marker_holes_vs_C1": 0,
+        "C2_fail_open_to_C1_bodies": 8,
+        "C2_interior_marker_holes": 8,
+        "C2_marker_chars": 480,
+        "C2_marker_holes": 8,
+        "C2_omitted_frozen_disposable_chars": 0,
+        "C2_omitted_frozen_disposable_lines": 0,
+        "C2_retained_broad_K_struct_chars_due_unique_payload_guard": 0,
+        "C2_retained_broad_K_struct_lines_due_unique_payload_guard": 0,
+        "C2_source_projection_subsequence_violations": 0,
+        "archive_already_windowed_not_evaluable_for_C2": 22,
+        "archive_unavailable_hole_chars": 1043697,
+        "evaluated_overflow_bodies": 8,
+        "explicit_omission_marker_bodies": 8,
+        "logical_overflow_bodies": 30,
+        "raw_overflow_bodies_evaluable_for_C2": 8,
+        "unmarked_continuation_bodies": 0
+      },
+      "mixed/compound": {
+        "C1_marker_holes": 111,
+        "C1_nonempty_middle_holes": 111,
+        "C1_source_projection_subsequence_violations": 0,
+        "C2_accepted_bodies": 3,
+        "C2_extra_marker_holes_vs_C1": 48,
+        "C2_fail_open_to_C1_bodies": 108,
+        "C2_interior_marker_holes": 157,
+        "C2_marker_chars": 9599,
+        "C2_marker_holes": 159,
+        "C2_omitted_frozen_disposable_chars": 7799,
+        "C2_omitted_frozen_disposable_lines": 135,
+        "C2_retained_broad_K_struct_chars_due_unique_payload_guard": 0,
+        "C2_retained_broad_K_struct_lines_due_unique_payload_guard": 0,
+        "C2_source_projection_subsequence_violations": 0,
+        "archive_already_windowed_not_evaluable_for_C2": 960,
+        "archive_unavailable_hole_chars": 282327377,
+        "evaluated_overflow_bodies": 111,
+        "explicit_omission_marker_bodies": 111,
+        "logical_overflow_bodies": 1071,
+        "raw_overflow_bodies_evaluable_for_C2": 111,
+        "unmarked_continuation_bodies": 0
+      },
+      "npm/install/debug_log": {
+        "C1_marker_holes": 2,
+        "C1_nonempty_middle_holes": 2,
+        "C1_source_projection_subsequence_violations": 0,
+        "C2_accepted_bodies": 0,
+        "C2_extra_marker_holes_vs_C1": 0,
+        "C2_fail_open_to_C1_bodies": 2,
+        "C2_interior_marker_holes": 2,
+        "C2_marker_chars": 119,
+        "C2_marker_holes": 2,
+        "C2_omitted_frozen_disposable_chars": 0,
+        "C2_omitted_frozen_disposable_lines": 0,
+        "C2_retained_broad_K_struct_chars_due_unique_payload_guard": 0,
+        "C2_retained_broad_K_struct_lines_due_unique_payload_guard": 0,
+        "C2_source_projection_subsequence_violations": 0,
+        "archive_already_windowed_not_evaluable_for_C2": 2,
+        "archive_unavailable_hole_chars": 27414,
+        "evaluated_overflow_bodies": 2,
+        "explicit_omission_marker_bodies": 2,
+        "logical_overflow_bodies": 4,
+        "raw_overflow_bodies_evaluable_for_C2": 2,
+        "unmarked_continuation_bodies": 0
+      },
+      "other": {
+        "C1_marker_holes": 16,
+        "C1_nonempty_middle_holes": 16,
+        "C1_source_projection_subsequence_violations": 0,
+        "C2_accepted_bodies": 1,
+        "C2_extra_marker_holes_vs_C1": 24,
+        "C2_fail_open_to_C1_bodies": 15,
+        "C2_interior_marker_holes": 40,
+        "C2_marker_chars": 2429,
+        "C2_marker_holes": 40,
+        "C2_omitted_frozen_disposable_chars": 4061,
+        "C2_omitted_frozen_disposable_lines": 133,
+        "C2_retained_broad_K_struct_chars_due_unique_payload_guard": 0,
+        "C2_retained_broad_K_struct_lines_due_unique_payload_guard": 0,
+        "C2_source_projection_subsequence_violations": 0,
+        "archive_already_windowed_not_evaluable_for_C2": 23,
+        "archive_unavailable_hole_chars": 4631304,
+        "evaluated_overflow_bodies": 16,
+        "explicit_omission_marker_bodies": 16,
+        "logical_overflow_bodies": 39,
+        "raw_overflow_bodies_evaluable_for_C2": 16,
+        "unmarked_continuation_bodies": 0
+      },
+      "search": {
+        "C1_marker_holes": 15,
+        "C1_nonempty_middle_holes": 15,
+        "C1_source_projection_subsequence_violations": 0,
+        "C2_accepted_bodies": 0,
+        "C2_extra_marker_holes_vs_C1": 0,
+        "C2_fail_open_to_C1_bodies": 15,
+        "C2_interior_marker_holes": 15,
+        "C2_marker_chars": 899,
+        "C2_marker_holes": 15,
+        "C2_omitted_frozen_disposable_chars": 0,
+        "C2_omitted_frozen_disposable_lines": 0,
+        "C2_retained_broad_K_struct_chars_due_unique_payload_guard": 0,
+        "C2_retained_broad_K_struct_lines_due_unique_payload_guard": 0,
+        "C2_source_projection_subsequence_violations": 0,
+        "archive_already_windowed_not_evaluable_for_C2": 151,
+        "archive_unavailable_hole_chars": 20747481,
+        "evaluated_overflow_bodies": 15,
+        "explicit_omission_marker_bodies": 15,
+        "logical_overflow_bodies": 166,
+        "raw_overflow_bodies_evaluable_for_C2": 15,
+        "unmarked_continuation_bodies": 0
+      },
+      "source_dump": {
+        "C1_marker_holes": 0,
+        "C1_nonempty_middle_holes": 0,
+        "C1_source_projection_subsequence_violations": 0,
+        "C2_accepted_bodies": 0,
+        "C2_extra_marker_holes_vs_C1": 0,
+        "C2_fail_open_to_C1_bodies": 0,
+        "C2_interior_marker_holes": 0,
+        "C2_marker_chars": 0,
+        "C2_marker_holes": 0,
+        "C2_omitted_frozen_disposable_chars": 0,
+        "C2_omitted_frozen_disposable_lines": 0,
+        "C2_retained_broad_K_struct_chars_due_unique_payload_guard": 0,
+        "C2_retained_broad_K_struct_lines_due_unique_payload_guard": 0,
+        "C2_source_projection_subsequence_violations": 0,
+        "archive_already_windowed_not_evaluable_for_C2": 352,
+        "archive_unavailable_hole_chars": 4282010,
+        "evaluated_overflow_bodies": 0,
+        "explicit_omission_marker_bodies": 0,
+        "logical_overflow_bodies": 352,
+        "raw_overflow_bodies_evaluable_for_C2": 0,
+        "unmarked_continuation_bodies": 0
+      },
+      "test": {
+        "C1_marker_holes": 52,
+        "C1_nonempty_middle_holes": 52,
+        "C1_source_projection_subsequence_violations": 0,
+        "C2_accepted_bodies": 3,
+        "C2_extra_marker_holes_vs_C1": 64,
+        "C2_fail_open_to_C1_bodies": 49,
+        "C2_interior_marker_holes": 116,
+        "C2_marker_chars": 7077,
+        "C2_marker_holes": 116,
+        "C2_omitted_frozen_disposable_chars": 24057,
+        "C2_omitted_frozen_disposable_lines": 541,
+        "C2_retained_broad_K_struct_chars_due_unique_payload_guard": 0,
+        "C2_retained_broad_K_struct_lines_due_unique_payload_guard": 0,
+        "C2_source_projection_subsequence_violations": 0,
+        "archive_already_windowed_not_evaluable_for_C2": 53,
+        "archive_unavailable_hole_chars": 8681250,
+        "evaluated_overflow_bodies": 52,
+        "explicit_omission_marker_bodies": 52,
+        "logical_overflow_bodies": 105,
+        "raw_overflow_bodies_evaluable_for_C2": 52,
+        "unmarked_continuation_bodies": 0
+      },
+      "write/edit": {
+        "C1_marker_holes": 14,
+        "C1_nonempty_middle_holes": 14,
+        "C1_source_projection_subsequence_violations": 0,
+        "C2_accepted_bodies": 0,
+        "C2_extra_marker_holes_vs_C1": 0,
+        "C2_fail_open_to_C1_bodies": 14,
+        "C2_interior_marker_holes": 14,
+        "C2_marker_chars": 845,
+        "C2_marker_holes": 14,
+        "C2_omitted_frozen_disposable_chars": 0,
+        "C2_omitted_frozen_disposable_lines": 0,
+        "C2_retained_broad_K_struct_chars_due_unique_payload_guard": 0,
+        "C2_retained_broad_K_struct_lines_due_unique_payload_guard": 0,
+        "C2_source_projection_subsequence_violations": 0,
+        "archive_already_windowed_not_evaluable_for_C2": 7,
+        "archive_unavailable_hole_chars": 149528,
+        "evaluated_overflow_bodies": 14,
+        "explicit_omission_marker_bodies": 14,
+        "logical_overflow_bodies": 21,
+        "raw_overflow_bodies_evaluable_for_C2": 14,
+        "unmarked_continuation_bodies": 0
+      }
+    },
+    "completion_and_density_footnote": {
+      "C1_marked_document_chars": 2796716,
+      "C1_visible_direct_signal_density_pct": 58.470577634625755,
+      "C1_visible_direct_signal_source_chars": 1635256,
+      "C2_fail_open_bodies": 270,
+      "C2_marked_document_chars": 2784184,
+      "C2_visible_direct_signal_density_pct": 58.2755665573827,
+      "C2_visible_direct_signal_source_chars": 1622499,
+      "C2_whole_document_elision_completions": 8,
+      "note": "footnote only; completion count and density do not choose a contract"
+    },
+    "definitions": {
+      "C1_holes": "one stock middle marker per overflow body",
+      "C2_holes": "one marker per contiguous K_struct run on accepted bodies; fail-open bodies are untouched stock C1",
+      "evaluation_scope": "C1/C2 fidelity is evaluated only on logical pre-envelope bodies present in the archive; already-windowed Mini/DSH holes are unknown, not zero",
+      "false_completeness": "structural check for unmarked source continuation; both contracts expose every omission with a marker and traverse through the original end",
+      "neighborhood": "retention of the original immediate physical-line neighbors",
+      "newly_visible_line": "a direct fail/hunk line wholly inside C1's hole and retained by an accepted C2 document",
+      "subsequence": "source projection after removing explicit markers is a Unicode code-point subsequence of the original"
+    },
+    "false_completeness": {
+      "note": "marker presence is necessary, not a semantic readability judgment",
+      "unmarked_continuation_bodies_C1": 0,
+      "unmarked_continuation_bodies_C2": 0
+    },
+    "newly_visible_fail_hunk_neighborhood": {
+      "both_original_immediate_neighbors_retained": 2,
+      "newly_visible_fail_or_hunk_lines": 14,
+      "one_original_immediate_neighbor_retained": 2,
+      "orphaned_from_both_original_immediate_neighbors": 10,
+      "source_edge_lines": 0
+    }
+  },
+  "coverage": {
+    "archives_at_or_before_cutoff": 600,
+    "bash_bodies": 17012,
+    "bash_bytes": 42231750,
+    "bash_issuing_sessions": 426,
+    "by_class": {
+      "git_diff": {
+        "bodies": 650,
+        "byte_share_pct": 6.32808491241779,
+        "bytes": 2672461,
+        "joined_bodies": 650,
+        "sensitive_bodies": 0,
+        "sensitive_bytes": 0,
+        "unresolved_bodies": 0
+      },
+      "git_status": {
+        "bodies": 1304,
+        "byte_share_pct": 0.9876526546969993,
+        "bytes": 417103,
+        "joined_bodies": 1304,
+        "sensitive_bodies": 0,
+        "sensitive_bytes": 0,
+        "unresolved_bodies": 0
+      },
+      "listing": {
+        "bodies": 952,
+        "byte_share_pct": 5.26336938440865,
+        "bytes": 2222813,
+        "joined_bodies": 952,
+        "sensitive_bodies": 10,
+        "sensitive_bytes": 18142,
+        "unresolved_bodies": 0
+      },
+      "lockfile/json": {
+        "bodies": 391,
+        "byte_share_pct": 2.4932402753852254,
+        "bytes": 1052939,
+        "joined_bodies": 391,
+        "sensitive_bodies": 8,
+        "sensitive_bytes": 46395,
+        "unresolved_bodies": 0
+      },
+      "mixed/compound": {
+        "bodies": 5974,
+        "byte_share_pct": 53.432393874277054,
+        "bytes": 22565435,
+        "joined_bodies": 5970,
+        "sensitive_bodies": 52,
+        "sensitive_bytes": 152398,
+        "unresolved_bodies": 4
+      },
+      "npm/install/debug_log": {
+        "bodies": 81,
+        "byte_share_pct": 0.48490294624305175,
+        "bytes": 204783,
+        "joined_bodies": 81,
+        "sensitive_bodies": 0,
+        "sensitive_bytes": 0,
+        "unresolved_bodies": 0
+      },
+      "other": {
+        "bodies": 4658,
+        "byte_share_pct": 3.402120442558028,
+        "bytes": 1436775,
+        "joined_bodies": 4656,
+        "sensitive_bodies": 0,
+        "sensitive_bytes": 0,
+        "unresolved_bodies": 2
+      },
+      "search": {
+        "bodies": 732,
+        "byte_share_pct": 7.653270347546574,
+        "bytes": 3232110,
+        "joined_bodies": 732,
+        "sensitive_bodies": 3,
+        "sensitive_bytes": 15361,
+        "unresolved_bodies": 0
+      },
+      "source_dump": {
+        "bodies": 621,
+        "byte_share_pct": 12.826283542595322,
+        "bytes": 5416764,
+        "joined_bodies": 621,
+        "sensitive_bodies": 1,
+        "sensitive_bytes": 10062,
+        "unresolved_bodies": 0
+      },
+      "test": {
+        "bodies": 1460,
+        "byte_share_pct": 5.796203093644,
+        "bytes": 2447838,
+        "joined_bodies": 1459,
+        "sensitive_bodies": 0,
+        "sensitive_bytes": 0,
+        "unresolved_bodies": 1
+      },
+      "write/edit": {
+        "bodies": 189,
+        "byte_share_pct": 1.3324785262273053,
+        "bytes": 562729,
+        "joined_bodies": 189,
+        "sensitive_bodies": 2,
+        "sensitive_bytes": 1533,
+        "unresolved_bodies": 0
+      }
+    },
+    "classifier_reconstruction_mismatches": 0,
+    "decode_failures": 0,
+    "divergent_result_groups": 3413,
+    "duplicate_result_events": 3654,
+    "included_session_ids_sha256": "9ed75559d4bfa9385aff4cd28bed9e3fa13c08246b05e92c33fc9dec654b4fb1",
+    "included_sessions": 599,
+    "joined_bodies": 17005,
+    "result_events": 63845,
+    "sensitive_identity_bodies": 76,
+    "sensitive_identity_bytes": 243891,
+    "unresolved_identity_bodies": 7,
+    "unresolved_identity_bytes": 0,
+    "zstd_failures": []
+  },
+  "method": {
+    "C1_status": "already shipped baseline; not a build",
+    "C2_contract": "all classes; identity below cap; elide only complete runs in the safe K_struct subset (blank/layout, progress, exact repeats), preserving first-seen ANSI/CRLF payload; accept only if marked document <10000 code points; otherwise return C1 on the original",
+    "archive_serialized_Mini_JSON_recapped": false,
+    "archive_stock_holes_reconstructed": false,
+    "authoritative_parent_session": "session-af60703c-a964-41ee-bb2b-9edfc7b170f3",
+    "cca_invoked": false,
+    "classifier_module": "experiments/cca-mixed-current/replay.py",
+    "classifier_module_sha256": "1bc41ffeb63b5c34c06ef7de3bbf7ca41aed9cbe409583f6c2fb75783c0e2bd9",
+    "code_point_measure": "Python len(str), matching production iteration/Array.from over Unicode code points",
+    "corpus": "$HOME/.local/state/qq/sessions/**/session.jsonl.zstd",
+    "delegation_id": "0995be92-d775-4936-a34f-a7af0608a2f6",
+    "dynamic_discovery_and_post_cutoff_telemetry_persisted": false,
+    "event_cutoff_ms": 1787925121608,
+    "event_cutoff_utc": "2026-08-28T13:52:01.608000+00:00",
+    "excerpts_persisted": false,
+    "first_result_per_bash_call": true,
+    "frozen_study_session_excluded": "session-676456e0-e1b6-4b74-a066-bd044f1bdacf",
+    "frozen_window_study_import": "experiments/bash-window-value-current/census.py",
+    "frozen_window_study_sha256": "b6dc294fb4691d1a956cb2c5b7c87bdbab6dc1dcf47504033e6993ec3c7299f2",
+    "full_commands_persisted": false,
+    "full_result_bodies_persisted": false,
+    "historical_commands_executed": false,
+    "live_pair_used": false,
+    "llm_judge_used": false,
+    "mixed_subcommand_segmentation_attempted": false,
+    "other_policy_families_evaluated": false,
+    "per_observation_data_persisted": false,
+    "product_behavior_changed": false,
+    "reorder_or_collage_evaluated": false,
+    "rtk_invoked": false,
+    "sample_identifiers_persisted": false,
+    "scanner_and_ladders_imported_transitively": "experiments/bash-filter-opportunity-current/census.py",
+    "scanner_and_ladders_sha256": "7fb40a7f132c1718538fac832e3a61e8753f06cce050e05e3b0f7786c7e3d354",
+    "selected_windows_persisted": false,
+    "stock_DSH_path": "src/observation.mjs truncateObservation",
+    "stock_Mini_paths": "src/official-mini.mjs formatSummaries and src/mini-swe-v2.mjs renderMiniSweObservation",
+    "stock_contract": "identity below 10000 logical output code points; at or above, source head 5000 + exact omitted-count marker/JSON field + source tail 5000",
+    "study_session": "session-858aea3d-5598-42bf-ab1b-0bb0fdfd2dbb"
+  },
+  "real_window_census": {
+    "all_bash_bodies": 17012,
+    "all_bash_logical_original_chars": 377540924,
+    "all_overflow": {
+      "already_windowed_bodies_with_hole_signal_unavailable": 1695,
+      "cumulative_frozen_ladders": {
+        "K_fail": {
+          "by_region": {
+            "head": {
+              "chars": 249456,
+              "lines_touching": 6038
+            },
+            "hole": {
+              "chars": 768214,
+              "lines_touching": 10070
+            },
+            "tail": {
+              "chars": 364560,
+              "lines_touching": 7442
+            }
+          },
+          "chars": 1382230,
+          "lines_touching": 23426
+        },
+        "K_hunk": {
+          "by_region": {
+            "head": {
+              "chars": 371854,
+              "lines_touching": 8282
+            },
+            "hole": {
+              "chars": 944325,
+              "lines_touching": 13586
+            },
+            "tail": {
+              "chars": 474882,
+              "lines_touching": 9468
+            }
+          },
+          "chars": 1791061,
+          "lines_touching": 31166
+        },
+        "K_nav": {
+          "by_region": {
+            "head": {
+              "chars": 851304,
+              "lines_touching": 11860
+            },
+            "hole": {
+              "chars": 1835103,
+              "lines_touching": 18632
+            },
+            "tail": {
+              "chars": 923757,
+              "lines_touching": 12669
+            }
+          },
+          "chars": 3610164,
+          "lines_touching": 42800
+        }
+      },
+      "direct_signal": {
+        "fail": {
+          "by_region": {
+            "head": {
+              "chars": 188888,
+              "lines_touching": 1779
+            },
+            "hole": {
+              "chars": 616418,
+              "lines_touching": 2833
+            },
+            "tail": {
+              "chars": 249061,
+              "lines_touching": 2224
+            }
+          },
+          "chars": 1054367,
+          "lines_touching": 6740
+        },
+        "hunk": {
+          "by_region": {
+            "head": {
+              "chars": 134433,
+              "lines_touching": 2592
+            },
+            "hole": {
+              "chars": 223996,
+              "lines_touching": 4768
+            },
+            "tail": {
+              "chars": 161554,
+              "lines_touching": 3130
+            }
+          },
+          "chars": 519983,
+          "lines_touching": 10432
+        },
+        "locator": {
+          "by_region": {
+            "head": {
+              "chars": 616725,
+              "lines_touching": 4527
+            },
+            "hole": {
+              "chars": 1395474,
+              "lines_touching": 6324
+            },
+            "tail": {
+              "chars": 606116,
+              "lines_touching": 4151
+            }
+          },
+          "chars": 2618315,
+          "lines_touching": 14748
+        }
+      },
+      "disjoint_partition": {
+        "K_fail_increment": {
+          "by_region": {
+            "head": {
+              "chars": 180524,
+              "lines_touching": 1638
+            },
+            "hole": {
+              "chars": 580653,
+              "lines_touching": 2274
+            },
+            "tail": {
+              "chars": 229923,
+              "lines_touching": 1949
+            }
+          },
+          "chars": 991100,
+          "lines_touching": 5771
+        },
+        "K_hunk_increment": {
+          "by_region": {
+            "head": {
+              "chars": 122398,
+              "lines_touching": 2244
+            },
+            "hole": {
+              "chars": 176111,
+              "lines_touching": 3516
+            },
+            "tail": {
+              "chars": 110322,
+              "lines_touching": 2026
+            }
+          },
+          "chars": 408831,
+          "lines_touching": 7740
+        },
+        "K_nav_increment": {
+          "by_region": {
+            "head": {
+              "chars": 479450,
+              "lines_touching": 3578
+            },
+            "hole": {
+              "chars": 890778,
+              "lines_touching": 5046
+            },
+            "tail": {
+              "chars": 448875,
+              "lines_touching": 3201
+            }
+          },
+          "chars": 1819103,
+          "lines_touching": 11634
+        },
+        "leftover_unique_after_K_nav": {
+          "by_region": {
+            "head": {
+              "chars": 538696,
+              "lines_touching": 9518
+            },
+            "hole": {
+              "chars": 801379,
+              "lines_touching": 12506
+            },
+            "tail": {
+              "chars": 466243,
+              "lines_touching": 7261
+            }
+          },
+          "chars": 1806318,
+          "lines_touching": 29095
+        },
+        "structural": {
+          "by_region": {
+            "head": {
+              "chars": 68932,
+              "lines_touching": 4400
+            },
+            "hole": {
+              "chars": 187561,
+              "lines_touching": 7796
+            },
+            "tail": {
+              "chars": 134637,
+              "lines_touching": 5493
+            }
+          },
+          "chars": 391130,
+          "lines_touching": 17655
+        }
+      },
+      "head_chars": 9865000,
+      "hole_chars": 339558224,
+      "hole_chars_with_signal_unavailable": 336921742,
+      "original_chars": 359288224,
+      "overflow_bodies": 1973,
+      "raw_overflow_bodies_with_signal_measurable": 278,
+      "signal_measurable_head_chars": 1390000,
+      "signal_measurable_hole_chars": 2636482,
+      "signal_measurable_original_chars": 5416482,
+      "signal_measurable_tail_chars": 1390000,
+      "tail_chars": 9865000
+    },
+    "archive_normalization": {
+      "by_class": {
+        "git_diff": {
+          "dsh_head_tail_text": {
+            "bodies": 29,
+            "logical_original_chars": 674473,
+            "reported_hole_chars": 384473,
+            "stored_chars": 291748
+          },
+          "mini_head_tail_json": {
+            "bodies": 44,
+            "logical_original_chars": 1223625,
+            "reported_hole_chars": 783625,
+            "stored_chars": 462092
+          },
+          "mini_identity_json": {
+            "bodies": 165,
+            "logical_original_chars": 360941,
+            "reported_hole_chars": 0,
+            "stored_chars": 379393
+          },
+          "raw_text": {
+            "bodies": 412,
+            "logical_original_chars": 1538424,
+            "reported_hole_chars": 0,
+            "stored_chars": 1538424
+          }
+        },
+        "git_status": {
+          "mini_identity_json": {
+            "bodies": 121,
+            "logical_original_chars": 85679,
+            "reported_hole_chars": 0,
+            "stored_chars": 92305
+          },
+          "raw_text": {
+            "bodies": 1183,
+            "logical_original_chars": 324723,
+            "reported_hole_chars": 0,
+            "stored_chars": 324723
+          }
+        },
+        "listing": {
+          "dsh_head_tail_text": {
+            "bodies": 4,
+            "logical_original_chars": 11310174,
+            "reported_hole_chars": 11270174,
+            "stored_chars": 40243
+          },
+          "mini_head_tail_json": {
+            "bodies": 48,
+            "logical_original_chars": 3073409,
+            "reported_hole_chars": 2593409,
+            "stored_chars": 498374
+          },
+          "mini_identity_json": {
+            "bodies": 202,
+            "logical_original_chars": 390334,
+            "reported_hole_chars": 0,
+            "stored_chars": 408224
+          },
+          "raw_text": {
+            "bodies": 698,
+            "logical_original_chars": 1273730,
+            "reported_hole_chars": 0,
+            "stored_chars": 1273730
+          }
+        },
+        "lockfile/json": {
+          "mini_head_tail_json": {
+            "bodies": 22,
+            "logical_original_chars": 1263697,
+            "reported_hole_chars": 1043697,
+            "stored_chars": 237318
+          },
+          "mini_identity_json": {
+            "bodies": 172,
+            "logical_original_chars": 293545,
+            "reported_hole_chars": 0,
+            "stored_chars": 315183
+          },
+          "raw_text": {
+            "bodies": 197,
+            "logical_original_chars": 499641,
+            "reported_hole_chars": 0,
+            "stored_chars": 499641
+          }
+        },
+        "mixed/compound": {
+          "dsh_head_tail_text": {
+            "bodies": 90,
+            "logical_original_chars": 22413660,
+            "reported_hole_chars": 21513660,
+            "stored_chars": 905441
+          },
+          "mini_head_tail_json": {
+            "bodies": 870,
+            "logical_original_chars": 269513717,
+            "reported_hole_chars": 260813717,
+            "stored_chars": 9191536
+          },
+          "mini_identity_json": {
+            "bodies": 2258,
+            "logical_original_chars": 5680954,
+            "reported_hole_chars": 0,
+            "stored_chars": 6008197
+          },
+          "raw_text": {
+            "bodies": 2756,
+            "logical_original_chars": 6421967,
+            "reported_hole_chars": 0,
+            "stored_chars": 6421967
+          }
+        },
+        "npm/install/debug_log": {
+          "mini_head_tail_json": {
+            "bodies": 2,
+            "logical_original_chars": 47414,
+            "reported_hole_chars": 27414,
+            "stored_chars": 20708
+          },
+          "mini_identity_json": {
+            "bodies": 27,
+            "logical_original_chars": 68561,
+            "reported_hole_chars": 0,
+            "stored_chars": 70849
+          },
+          "raw_text": {
+            "bodies": 52,
+            "logical_original_chars": 112684,
+            "reported_hole_chars": 0,
+            "stored_chars": 112684
+          }
+        },
+        "other": {
+          "dsh_head_tail_text": {
+            "bodies": 8,
+            "logical_original_chars": 416530,
+            "reported_hole_chars": 336530,
+            "stored_chars": 80484
+          },
+          "mini_head_tail_json": {
+            "bodies": 15,
+            "logical_original_chars": 4444774,
+            "reported_hole_chars": 4294774,
+            "stored_chars": 160079
+          },
+          "mini_identity_json": {
+            "bodies": 3209,
+            "logical_original_chars": 251277,
+            "reported_hole_chars": 0,
+            "stored_chars": 378116
+          },
+          "raw_text": {
+            "bodies": 1426,
+            "logical_original_chars": 815960,
+            "reported_hole_chars": 0,
+            "stored_chars": 815960
+          }
+        },
+        "search": {
+          "dsh_head_tail_text": {
+            "bodies": 23,
+            "logical_original_chars": 2373684,
+            "reported_hole_chars": 2143684,
+            "stored_chars": 231405
+          },
+          "mini_head_tail_json": {
+            "bodies": 128,
+            "logical_original_chars": 19883797,
+            "reported_hole_chars": 18603797,
+            "stored_chars": 1333987
+          },
+          "mini_identity_json": {
+            "bodies": 316,
+            "logical_original_chars": 794770,
+            "reported_hole_chars": 0,
+            "stored_chars": 832396
+          },
+          "raw_text": {
+            "bodies": 265,
+            "logical_original_chars": 819978,
+            "reported_hole_chars": 0,
+            "stored_chars": 819978
+          }
+        },
+        "source_dump": {
+          "dsh_head_tail_text": {
+            "bodies": 34,
+            "logical_original_chars": 639178,
+            "reported_hole_chars": 299178,
+            "stored_chars": 342051
+          },
+          "mini_head_tail_json": {
+            "bodies": 318,
+            "logical_original_chars": 7162832,
+            "reported_hole_chars": 3982832,
+            "stored_chars": 3390864
+          },
+          "mini_identity_json": {
+            "bodies": 214,
+            "logical_original_chars": 1364057,
+            "reported_hole_chars": 0,
+            "stored_chars": 1443486
+          },
+          "raw_text": {
+            "bodies": 55,
+            "logical_original_chars": 238629,
+            "reported_hole_chars": 0,
+            "stored_chars": 238629
+          }
+        },
+        "test": {
+          "dsh_head_tail_text": {
+            "bodies": 3,
+            "logical_original_chars": 113488,
+            "reported_hole_chars": 83488,
+            "stored_chars": 30183
+          },
+          "mini_head_tail_json": {
+            "bodies": 50,
+            "logical_original_chars": 9097762,
+            "reported_hole_chars": 8597762,
+            "stored_chars": 529137
+          },
+          "mini_identity_json": {
+            "bodies": 334,
+            "logical_original_chars": 225942,
+            "reported_hole_chars": 0,
+            "stored_chars": 244434
+          },
+          "raw_text": {
+            "bodies": 1073,
+            "logical_original_chars": 1622424,
+            "reported_hole_chars": 0,
+            "stored_chars": 1622424
+          }
+        },
+        "write/edit": {
+          "dsh_head_tail_text": {
+            "bodies": 1,
+            "logical_original_chars": 47210,
+            "reported_hole_chars": 37210,
+            "stored_chars": 10061
+          },
+          "mini_head_tail_json": {
+            "bodies": 6,
+            "logical_original_chars": 172318,
+            "reported_hole_chars": 112318,
+            "stored_chars": 62839
+          },
+          "mini_identity_json": {
+            "bodies": 63,
+            "logical_original_chars": 52523,
+            "reported_hole_chars": 0,
+            "stored_chars": 57047
+          },
+          "raw_text": {
+            "bodies": 119,
+            "logical_original_chars": 432439,
+            "reported_hole_chars": 0,
+            "stored_chars": 432439
+          }
+        }
+      },
+      "by_stored_shape": {
+        "dsh_head_tail_text": {
+          "bodies": 192,
+          "logical_original_chars": 37988397,
+          "reported_hole_chars": 36068397,
+          "stored_chars": 1931616
+        },
+        "mini_head_tail_json": {
+          "bodies": 1503,
+          "logical_original_chars": 315883345,
+          "reported_hole_chars": 300853345,
+          "stored_chars": 15886934
+        },
+        "mini_identity_json": {
+          "bodies": 7081,
+          "logical_original_chars": 9568583,
+          "reported_hole_chars": 0,
+          "stored_chars": 10229630
+        },
+        "raw_text": {
+          "bodies": 8236,
+          "logical_original_chars": 14100599,
+          "reported_hole_chars": 0,
+          "stored_chars": 14100599
+        }
+      },
+      "rule": "Mini identity JSON is measured from its output field. Mini output_head/output_tail JSON and valid DSH truncation-marker text are recognized as already-windowed C1; their original hole text is unavailable and is not classified or passed through C2 a second time."
+    },
+    "by_class": {
+      "git_diff": {
+        "already_windowed_bodies_with_hole_signal_unavailable": 73,
+        "cumulative_frozen_ladders": {
+          "K_fail": {
+            "by_region": {
+              "head": {
+                "chars": 41233,
+                "lines_touching": 1233
+              },
+              "hole": {
+                "chars": 95314,
+                "lines_touching": 2454
+              },
+              "tail": {
+                "chars": 77471,
+                "lines_touching": 1795
+              }
+            },
+            "chars": 214018,
+            "lines_touching": 5464
+          },
+          "K_hunk": {
+            "by_region": {
+              "head": {
+                "chars": 134156,
+                "lines_touching": 3021
+              },
+              "hole": {
+                "chars": 232569,
+                "lines_touching": 5238
+              },
+              "tail": {
+                "chars": 158383,
+                "lines_touching": 3266
+              }
+            },
+            "chars": 525108,
+            "lines_touching": 11471
+          },
+          "K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 150409,
+                "lines_touching": 3294
+              },
+              "hole": {
+                "chars": 260006,
+                "lines_touching": 5658
+              },
+              "tail": {
+                "chars": 176040,
+                "lines_touching": 3502
+              }
+            },
+            "chars": 586455,
+            "lines_touching": 12393
+          }
+        },
+        "direct_signal": {
+          "fail": {
+            "by_region": {
+              "head": {
+                "chars": 36908,
+                "lines_touching": 706
+              },
+              "hole": {
+                "chars": 79775,
+                "lines_touching": 1299
+              },
+              "tail": {
+                "chars": 65398,
+                "lines_touching": 975
+              }
+            },
+            "chars": 182081,
+            "lines_touching": 2964
+          },
+          "hunk": {
+            "by_region": {
+              "head": {
+                "chars": 100001,
+                "lines_touching": 2026
+              },
+              "hole": {
+                "chars": 176350,
+                "lines_touching": 3767
+              },
+              "tail": {
+                "chars": 117106,
+                "lines_touching": 2279
+              }
+            },
+            "chars": 393457,
+            "lines_touching": 8030
+          },
+          "locator": {
+            "by_region": {
+              "head": {
+                "chars": 35341,
+                "lines_touching": 638
+              },
+              "hole": {
+                "chars": 54591,
+                "lines_touching": 843
+              },
+              "tail": {
+                "chars": 42829,
+                "lines_touching": 584
+              }
+            },
+            "chars": 132761,
+            "lines_touching": 2052
+          }
+        },
+        "disjoint_partition": {
+          "K_fail_increment": {
+            "by_region": {
+              "head": {
+                "chars": 36757,
+                "lines_touching": 703
+              },
+              "hole": {
+                "chars": 75879,
+                "lines_touching": 1232
+              },
+              "tail": {
+                "chars": 62766,
+                "lines_touching": 938
+              }
+            },
+            "chars": 175402,
+            "lines_touching": 2857
+          },
+          "K_hunk_increment": {
+            "by_region": {
+              "head": {
+                "chars": 92923,
+                "lines_touching": 1788
+              },
+              "hole": {
+                "chars": 137255,
+                "lines_touching": 2784
+              },
+              "tail": {
+                "chars": 80912,
+                "lines_touching": 1471
+              }
+            },
+            "chars": 311090,
+            "lines_touching": 6007
+          },
+          "K_nav_increment": {
+            "by_region": {
+              "head": {
+                "chars": 16253,
+                "lines_touching": 273
+              },
+              "hole": {
+                "chars": 27437,
+                "lines_touching": 420
+              },
+              "tail": {
+                "chars": 17657,
+                "lines_touching": 236
+              }
+            },
+            "chars": 61347,
+            "lines_touching": 922
+          },
+          "leftover_unique_after_K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 64591,
+                "lines_touching": 1423
+              },
+              "hole": {
+                "chars": 71668,
+                "lines_touching": 1658
+              },
+              "tail": {
+                "chars": 38960,
+                "lines_touching": 804
+              }
+            },
+            "chars": 175219,
+            "lines_touching": 3861
+          },
+          "structural": {
+            "by_region": {
+              "head": {
+                "chars": 4476,
+                "lines_touching": 530
+              },
+              "hole": {
+                "chars": 19435,
+                "lines_touching": 1222
+              },
+              "tail": {
+                "chars": 14705,
+                "lines_touching": 857
+              }
+            },
+            "chars": 38616,
+            "lines_touching": 2607
+          }
+        },
+        "head_chars": 580000,
+        "hole_chars": 1499772,
+        "hole_chars_with_signal_unavailable": 1168098,
+        "original_chars": 2659772,
+        "overflow_bodies": 116,
+        "raw_overflow_bodies_with_signal_measurable": 43,
+        "signal_measurable_head_chars": 215000,
+        "signal_measurable_hole_chars": 331674,
+        "signal_measurable_original_chars": 761674,
+        "signal_measurable_tail_chars": 215000,
+        "tail_chars": 580000
+      },
+      "git_status": {
+        "already_windowed_bodies_with_hole_signal_unavailable": 0,
+        "cumulative_frozen_ladders": {
+          "K_fail": {
+            "by_region": {
+              "head": {
+                "chars": 271,
+                "lines_touching": 3
+              },
+              "hole": {
+                "chars": 102,
+                "lines_touching": 1
+              },
+              "tail": {
+                "chars": 1372,
+                "lines_touching": 26
+              }
+            },
+            "chars": 1745,
+            "lines_touching": 30
+          },
+          "K_hunk": {
+            "by_region": {
+              "head": {
+                "chars": 271,
+                "lines_touching": 3
+              },
+              "hole": {
+                "chars": 102,
+                "lines_touching": 1
+              },
+              "tail": {
+                "chars": 1372,
+                "lines_touching": 26
+              }
+            },
+            "chars": 1745,
+            "lines_touching": 30
+          },
+          "K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 4932,
+                "lines_touching": 89
+              },
+              "hole": {
+                "chars": 2536,
+                "lines_touching": 19
+              },
+              "tail": {
+                "chars": 2759,
+                "lines_touching": 40
+              }
+            },
+            "chars": 10227,
+            "lines_touching": 146
+          }
+        },
+        "direct_signal": {
+          "fail": {
+            "by_region": {
+              "head": {
+                "chars": 267,
+                "lines_touching": 2
+              },
+              "hole": {
+                "chars": 102,
+                "lines_touching": 1
+              },
+              "tail": {
+                "chars": 108,
+                "lines_touching": 6
+              }
+            },
+            "chars": 477,
+            "lines_touching": 9
+          },
+          "hunk": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 0,
+            "lines_touching": 0
+          },
+          "locator": {
+            "by_region": {
+              "head": {
+                "chars": 4928,
+                "lines_touching": 88
+              },
+              "hole": {
+                "chars": 2536,
+                "lines_touching": 19
+              },
+              "tail": {
+                "chars": 1589,
+                "lines_touching": 17
+              }
+            },
+            "chars": 9053,
+            "lines_touching": 122
+          }
+        },
+        "disjoint_partition": {
+          "K_fail_increment": {
+            "by_region": {
+              "head": {
+                "chars": 267,
+                "lines_touching": 2
+              },
+              "hole": {
+                "chars": 102,
+                "lines_touching": 1
+              },
+              "tail": {
+                "chars": 108,
+                "lines_touching": 6
+              }
+            },
+            "chars": 477,
+            "lines_touching": 9
+          },
+          "K_hunk_increment": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 0,
+            "lines_touching": 0
+          },
+          "K_nav_increment": {
+            "by_region": {
+              "head": {
+                "chars": 4661,
+                "lines_touching": 86
+              },
+              "hole": {
+                "chars": 2434,
+                "lines_touching": 18
+              },
+              "tail": {
+                "chars": 1387,
+                "lines_touching": 14
+              }
+            },
+            "chars": 8482,
+            "lines_touching": 116
+          },
+          "leftover_unique_after_K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 68,
+                "lines_touching": 2
+              },
+              "hole": {
+                "chars": 94,
+                "lines_touching": 1
+              },
+              "tail": {
+                "chars": 2241,
+                "lines_touching": 33
+              }
+            },
+            "chars": 2403,
+            "lines_touching": 36
+          },
+          "structural": {
+            "by_region": {
+              "head": {
+                "chars": 4,
+                "lines_touching": 1
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 1264,
+                "lines_touching": 20
+              }
+            },
+            "chars": 1268,
+            "lines_touching": 21
+          }
+        },
+        "head_chars": 5000,
+        "hole_chars": 2630,
+        "hole_chars_with_signal_unavailable": 0,
+        "original_chars": 12630,
+        "overflow_bodies": 1,
+        "raw_overflow_bodies_with_signal_measurable": 1,
+        "signal_measurable_head_chars": 5000,
+        "signal_measurable_hole_chars": 2630,
+        "signal_measurable_original_chars": 12630,
+        "signal_measurable_tail_chars": 5000,
+        "tail_chars": 5000
+      },
+      "listing": {
+        "already_windowed_bodies_with_hole_signal_unavailable": 52,
+        "cumulative_frozen_ladders": {
+          "K_fail": {
+            "by_region": {
+              "head": {
+                "chars": 14175,
+                "lines_touching": 278
+              },
+              "hole": {
+                "chars": 66625,
+                "lines_touching": 576
+              },
+              "tail": {
+                "chars": 24920,
+                "lines_touching": 369
+              }
+            },
+            "chars": 105720,
+            "lines_touching": 1214
+          },
+          "K_hunk": {
+            "by_region": {
+              "head": {
+                "chars": 14175,
+                "lines_touching": 278
+              },
+              "hole": {
+                "chars": 68296,
+                "lines_touching": 594
+              },
+              "tail": {
+                "chars": 25221,
+                "lines_touching": 373
+              }
+            },
+            "chars": 107692,
+            "lines_touching": 1235
+          },
+          "K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 53842,
+                "lines_touching": 613
+              },
+              "hole": {
+                "chars": 106941,
+                "lines_touching": 858
+              },
+              "tail": {
+                "chars": 70726,
+                "lines_touching": 821
+              }
+            },
+            "chars": 231509,
+            "lines_touching": 2266
+          }
+        },
+        "direct_signal": {
+          "fail": {
+            "by_region": {
+              "head": {
+                "chars": 10916,
+                "lines_touching": 60
+              },
+              "hole": {
+                "chars": 55084,
+                "lines_touching": 170
+              },
+              "tail": {
+                "chars": 15293,
+                "lines_touching": 69
+              }
+            },
+            "chars": 81293,
+            "lines_touching": 293
+          },
+          "hunk": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 1671,
+                "lines_touching": 18
+              },
+              "tail": {
+                "chars": 473,
+                "lines_touching": 5
+              }
+            },
+            "chars": 2144,
+            "lines_touching": 22
+          },
+          "locator": {
+            "by_region": {
+              "head": {
+                "chars": 50084,
+                "lines_touching": 371
+              },
+              "hole": {
+                "chars": 89739,
+                "lines_touching": 322
+              },
+              "tail": {
+                "chars": 60905,
+                "lines_touching": 509
+              }
+            },
+            "chars": 200728,
+            "lines_touching": 1180
+          }
+        },
+        "disjoint_partition": {
+          "K_fail_increment": {
+            "by_region": {
+              "head": {
+                "chars": 10072,
+                "lines_touching": 33
+              },
+              "hole": {
+                "chars": 50273,
+                "lines_touching": 56
+              },
+              "tail": {
+                "chars": 13732,
+                "lines_touching": 39
+              }
+            },
+            "chars": 74077,
+            "lines_touching": 122
+          },
+          "K_hunk_increment": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 1671,
+                "lines_touching": 18
+              },
+              "tail": {
+                "chars": 301,
+                "lines_touching": 4
+              }
+            },
+            "chars": 1972,
+            "lines_touching": 21
+          },
+          "K_nav_increment": {
+            "by_region": {
+              "head": {
+                "chars": 39667,
+                "lines_touching": 335
+              },
+              "hole": {
+                "chars": 38645,
+                "lines_touching": 264
+              },
+              "tail": {
+                "chars": 45505,
+                "lines_touching": 448
+              }
+            },
+            "chars": 123817,
+            "lines_touching": 1031
+          },
+          "leftover_unique_after_K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 26158,
+                "lines_touching": 414
+              },
+              "hole": {
+                "chars": 26990,
+                "lines_touching": 362
+              },
+              "tail": {
+                "chars": 9274,
+                "lines_touching": 173
+              }
+            },
+            "chars": 62422,
+            "lines_touching": 943
+          },
+          "structural": {
+            "by_region": {
+              "head": {
+                "chars": 4103,
+                "lines_touching": 245
+              },
+              "hole": {
+                "chars": 16352,
+                "lines_touching": 520
+              },
+              "tail": {
+                "chars": 11188,
+                "lines_touching": 330
+              }
+            },
+            "chars": 31643,
+            "lines_touching": 1092
+          }
+        },
+        "head_chars": 340000,
+        "hole_chars": 13997514,
+        "hole_chars_with_signal_unavailable": 13863583,
+        "original_chars": 14677514,
+        "overflow_bodies": 68,
+        "raw_overflow_bodies_with_signal_measurable": 16,
+        "signal_measurable_head_chars": 80000,
+        "signal_measurable_hole_chars": 133931,
+        "signal_measurable_original_chars": 293931,
+        "signal_measurable_tail_chars": 80000,
+        "tail_chars": 340000
+      },
+      "lockfile/json": {
+        "already_windowed_bodies_with_hole_signal_unavailable": 22,
+        "cumulative_frozen_ladders": {
+          "K_fail": {
+            "by_region": {
+              "head": {
+                "chars": 7850,
+                "lines_touching": 379
+              },
+              "hole": {
+                "chars": 8860,
+                "lines_touching": 600
+              },
+              "tail": {
+                "chars": 11568,
+                "lines_touching": 492
+              }
+            },
+            "chars": 28278,
+            "lines_touching": 1466
+          },
+          "K_hunk": {
+            "by_region": {
+              "head": {
+                "chars": 7850,
+                "lines_touching": 379
+              },
+              "hole": {
+                "chars": 8860,
+                "lines_touching": 600
+              },
+              "tail": {
+                "chars": 11568,
+                "lines_touching": 492
+              }
+            },
+            "chars": 28278,
+            "lines_touching": 1466
+          },
+          "K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 15139,
+                "lines_touching": 428
+              },
+              "hole": {
+                "chars": 14714,
+                "lines_touching": 644
+              },
+              "tail": {
+                "chars": 19315,
+                "lines_touching": 541
+              }
+            },
+            "chars": 49168,
+            "lines_touching": 1605
+          }
+        },
+        "direct_signal": {
+          "fail": {
+            "by_region": {
+              "head": {
+                "chars": 1101,
+                "lines_touching": 8
+              },
+              "hole": {
+                "chars": 782,
+                "lines_touching": 15
+              },
+              "tail": {
+                "chars": 1814,
+                "lines_touching": 17
+              }
+            },
+            "chars": 3697,
+            "lines_touching": 40
+          },
+          "hunk": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 0,
+            "lines_touching": 0
+          },
+          "locator": {
+            "by_region": {
+              "head": {
+                "chars": 9525,
+                "lines_touching": 73
+              },
+              "hole": {
+                "chars": 6478,
+                "lines_touching": 55
+              },
+              "tail": {
+                "chars": 10887,
+                "lines_touching": 84
+              }
+            },
+            "chars": 26890,
+            "lines_touching": 208
+          }
+        },
+        "disjoint_partition": {
+          "K_fail_increment": {
+            "by_region": {
+              "head": {
+                "chars": 1073,
+                "lines_touching": 7
+              },
+              "hole": {
+                "chars": 782,
+                "lines_touching": 15
+              },
+              "tail": {
+                "chars": 1778,
+                "lines_touching": 15
+              }
+            },
+            "chars": 3633,
+            "lines_touching": 37
+          },
+          "K_hunk_increment": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 0,
+            "lines_touching": 0
+          },
+          "K_nav_increment": {
+            "by_region": {
+              "head": {
+                "chars": 7289,
+                "lines_touching": 49
+              },
+              "hole": {
+                "chars": 5854,
+                "lines_touching": 44
+              },
+              "tail": {
+                "chars": 7747,
+                "lines_touching": 49
+              }
+            },
+            "chars": 20890,
+            "lines_touching": 139
+          },
+          "leftover_unique_after_K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 24861,
+                "lines_touching": 729
+              },
+              "hole": {
+                "chars": 36024,
+                "lines_touching": 934
+              },
+              "tail": {
+                "chars": 20685,
+                "lines_touching": 374
+              }
+            },
+            "chars": 81570,
+            "lines_touching": 2030
+          },
+          "structural": {
+            "by_region": {
+              "head": {
+                "chars": 6777,
+                "lines_touching": 372
+              },
+              "hole": {
+                "chars": 8078,
+                "lines_touching": 585
+              },
+              "tail": {
+                "chars": 9790,
+                "lines_touching": 477
+              }
+            },
+            "chars": 24645,
+            "lines_touching": 1429
+          }
+        },
+        "head_chars": 150000,
+        "hole_chars": 1094435,
+        "hole_chars_with_signal_unavailable": 1043697,
+        "original_chars": 1394435,
+        "overflow_bodies": 30,
+        "raw_overflow_bodies_with_signal_measurable": 8,
+        "signal_measurable_head_chars": 40000,
+        "signal_measurable_hole_chars": 50738,
+        "signal_measurable_original_chars": 130738,
+        "signal_measurable_tail_chars": 40000,
+        "tail_chars": 150000
+      },
+      "mixed/compound": {
+        "already_windowed_bodies_with_hole_signal_unavailable": 960,
+        "cumulative_frozen_ladders": {
+          "K_fail": {
+            "by_region": {
+              "head": {
+                "chars": 105283,
+                "lines_touching": 2026
+              },
+              "hole": {
+                "chars": 284645,
+                "lines_touching": 2696
+              },
+              "tail": {
+                "chars": 133391,
+                "lines_touching": 1963
+              }
+            },
+            "chars": 523319,
+            "lines_touching": 6638
+          },
+          "K_hunk": {
+            "by_region": {
+              "head": {
+                "chars": 133969,
+                "lines_touching": 2469
+              },
+              "hole": {
+                "chars": 321339,
+                "lines_touching": 3403
+              },
+              "tail": {
+                "chars": 162437,
+                "lines_touching": 2511
+              }
+            },
+            "chars": 617745,
+            "lines_touching": 8327
+          },
+          "K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 396615,
+                "lines_touching": 4192
+              },
+              "hole": {
+                "chars": 790916,
+                "lines_touching": 5762
+              },
+              "tail": {
+                "chars": 411695,
+                "lines_touching": 4132
+              }
+            },
+            "chars": 1599226,
+            "lines_touching": 13924
+          }
+        },
+        "direct_signal": {
+          "fail": {
+            "by_region": {
+              "head": {
+                "chars": 81105,
+                "lines_touching": 532
+              },
+              "hole": {
+                "chars": 235564,
+                "lines_touching": 569
+              },
+              "tail": {
+                "chars": 100381,
+                "lines_touching": 633
+              }
+            },
+            "chars": 417050,
+            "lines_touching": 1695
+          },
+          "hunk": {
+            "by_region": {
+              "head": {
+                "chars": 33595,
+                "lines_touching": 541
+              },
+              "hole": {
+                "chars": 45480,
+                "lines_touching": 975
+              },
+              "tail": {
+                "chars": 43503,
+                "lines_touching": 821
+              }
+            },
+            "chars": 122578,
+            "lines_touching": 2322
+          },
+          "locator": {
+            "by_region": {
+              "head": {
+                "chars": 335032,
+                "lines_touching": 2077
+              },
+              "hole": {
+                "chars": 700959,
+                "lines_touching": 2818
+              },
+              "tail": {
+                "chars": 319580,
+                "lines_touching": 1902
+              }
+            },
+            "chars": 1355571,
+            "lines_touching": 6660
+          }
+        },
+        "disjoint_partition": {
+          "K_fail_increment": {
+            "by_region": {
+              "head": {
+                "chars": 79812,
+                "lines_touching": 513
+              },
+              "hole": {
+                "chars": 232557,
+                "lines_touching": 530
+              },
+              "tail": {
+                "chars": 100116,
+                "lines_touching": 623
+              }
+            },
+            "chars": 412485,
+            "lines_touching": 1627
+          },
+          "K_hunk_increment": {
+            "by_region": {
+              "head": {
+                "chars": 28686,
+                "lines_touching": 443
+              },
+              "hole": {
+                "chars": 36694,
+                "lines_touching": 707
+              },
+              "tail": {
+                "chars": 29046,
+                "lines_touching": 548
+              }
+            },
+            "chars": 94426,
+            "lines_touching": 1689
+          },
+          "K_nav_increment": {
+            "by_region": {
+              "head": {
+                "chars": 262646,
+                "lines_touching": 1723
+              },
+              "hole": {
+                "chars": 469577,
+                "lines_touching": 2359
+              },
+              "tail": {
+                "chars": 249258,
+                "lines_touching": 1621
+              }
+            },
+            "chars": 981481,
+            "lines_touching": 5597
+          },
+          "leftover_unique_after_K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 158385,
+                "lines_touching": 2600
+              },
+              "hole": {
+                "chars": 211544,
+                "lines_touching": 2007
+              },
+              "tail": {
+                "chars": 143305,
+                "lines_touching": 2092
+              }
+            },
+            "chars": 513234,
+            "lines_touching": 6641
+          },
+          "structural": {
+            "by_region": {
+              "head": {
+                "chars": 25471,
+                "lines_touching": 1513
+              },
+              "hole": {
+                "chars": 52088,
+                "lines_touching": 2166
+              },
+              "tail": {
+                "chars": 33275,
+                "lines_touching": 1340
+              }
+            },
+            "chars": 110834,
+            "lines_touching": 5011
+          }
+        },
+        "head_chars": 5355000,
+        "hole_chars": 283329837,
+        "hole_chars_with_signal_unavailable": 282327377,
+        "original_chars": 294039837,
+        "overflow_bodies": 1071,
+        "raw_overflow_bodies_with_signal_measurable": 111,
+        "signal_measurable_head_chars": 555000,
+        "signal_measurable_hole_chars": 1002460,
+        "signal_measurable_original_chars": 2112460,
+        "signal_measurable_tail_chars": 555000,
+        "tail_chars": 5355000
+      },
+      "npm/install/debug_log": {
+        "already_windowed_bodies_with_hole_signal_unavailable": 2,
+        "cumulative_frozen_ladders": {
+          "K_fail": {
+            "by_region": {
+              "head": {
+                "chars": 929,
+                "lines_touching": 60
+              },
+              "hole": {
+                "chars": 480,
+                "lines_touching": 31
+              },
+              "tail": {
+                "chars": 1846,
+                "lines_touching": 87
+              }
+            },
+            "chars": 3255,
+            "lines_touching": 178
+          },
+          "K_hunk": {
+            "by_region": {
+              "head": {
+                "chars": 1254,
+                "lines_touching": 61
+              },
+              "hole": {
+                "chars": 480,
+                "lines_touching": 31
+              },
+              "tail": {
+                "chars": 1846,
+                "lines_touching": 87
+              }
+            },
+            "chars": 3580,
+            "lines_touching": 179
+          },
+          "K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 4382,
+                "lines_touching": 83
+              },
+              "hole": {
+                "chars": 580,
+                "lines_touching": 34
+              },
+              "tail": {
+                "chars": 5240,
+                "lines_touching": 117
+              }
+            },
+            "chars": 10202,
+            "lines_touching": 233
+          }
+        },
+        "direct_signal": {
+          "fail": {
+            "by_region": {
+              "head": {
+                "chars": 365,
+                "lines_touching": 3
+              },
+              "hole": {
+                "chars": 20,
+                "lines_touching": 1
+              },
+              "tail": {
+                "chars": 218,
+                "lines_touching": 5
+              }
+            },
+            "chars": 603,
+            "lines_touching": 9
+          },
+          "hunk": {
+            "by_region": {
+              "head": {
+                "chars": 373,
+                "lines_touching": 13
+              },
+              "hole": {
+                "chars": 4,
+                "lines_touching": 1
+              },
+              "tail": {
+                "chars": 409,
+                "lines_touching": 22
+              }
+            },
+            "chars": 786,
+            "lines_touching": 36
+          },
+          "locator": {
+            "by_region": {
+              "head": {
+                "chars": 3686,
+                "lines_touching": 24
+              },
+              "hole": {
+                "chars": 100,
+                "lines_touching": 3
+              },
+              "tail": {
+                "chars": 3616,
+                "lines_touching": 31
+              }
+            },
+            "chars": 7402,
+            "lines_touching": 57
+          }
+        },
+        "disjoint_partition": {
+          "K_fail_increment": {
+            "by_region": {
+              "head": {
+                "chars": 365,
+                "lines_touching": 3
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 154,
+                "lines_touching": 2
+              }
+            },
+            "chars": 519,
+            "lines_touching": 5
+          },
+          "K_hunk_increment": {
+            "by_region": {
+              "head": {
+                "chars": 325,
+                "lines_touching": 1
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 325,
+            "lines_touching": 1
+          },
+          "K_nav_increment": {
+            "by_region": {
+              "head": {
+                "chars": 3128,
+                "lines_touching": 22
+              },
+              "hole": {
+                "chars": 100,
+                "lines_touching": 3
+              },
+              "tail": {
+                "chars": 3394,
+                "lines_touching": 30
+              }
+            },
+            "chars": 6622,
+            "lines_touching": 54
+          },
+          "leftover_unique_after_K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 5618,
+                "lines_touching": 43
+              },
+              "hole": {
+                "chars": 2479,
+                "lines_touching": 18
+              },
+              "tail": {
+                "chars": 4760,
+                "lines_touching": 39
+              }
+            },
+            "chars": 12857,
+            "lines_touching": 97
+          },
+          "structural": {
+            "by_region": {
+              "head": {
+                "chars": 564,
+                "lines_touching": 57
+              },
+              "hole": {
+                "chars": 480,
+                "lines_touching": 31
+              },
+              "tail": {
+                "chars": 1692,
+                "lines_touching": 85
+              }
+            },
+            "chars": 2736,
+            "lines_touching": 173
+          }
+        },
+        "head_chars": 20000,
+        "hole_chars": 30473,
+        "hole_chars_with_signal_unavailable": 27414,
+        "original_chars": 70473,
+        "overflow_bodies": 4,
+        "raw_overflow_bodies_with_signal_measurable": 2,
+        "signal_measurable_head_chars": 10000,
+        "signal_measurable_hole_chars": 3059,
+        "signal_measurable_original_chars": 23059,
+        "signal_measurable_tail_chars": 10000,
+        "tail_chars": 20000
+      },
+      "other": {
+        "already_windowed_bodies_with_hole_signal_unavailable": 23,
+        "cumulative_frozen_ladders": {
+          "K_fail": {
+            "by_region": {
+              "head": {
+                "chars": 5316,
+                "lines_touching": 241
+              },
+              "hole": {
+                "chars": 13773,
+                "lines_touching": 428
+              },
+              "tail": {
+                "chars": 11121,
+                "lines_touching": 337
+              }
+            },
+            "chars": 30210,
+            "lines_touching": 1002
+          },
+          "K_hunk": {
+            "by_region": {
+              "head": {
+                "chars": 5316,
+                "lines_touching": 241
+              },
+              "hole": {
+                "chars": 13773,
+                "lines_touching": 428
+              },
+              "tail": {
+                "chars": 11121,
+                "lines_touching": 337
+              }
+            },
+            "chars": 30210,
+            "lines_touching": 1002
+          },
+          "K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 38796,
+                "lines_touching": 443
+              },
+              "hole": {
+                "chars": 151971,
+                "lines_touching": 1182
+              },
+              "tail": {
+                "chars": 39501,
+                "lines_touching": 475
+              }
+            },
+            "chars": 230268,
+            "lines_touching": 2083
+          }
+        },
+        "direct_signal": {
+          "fail": {
+            "by_region": {
+              "head": {
+                "chars": 2485,
+                "lines_touching": 25
+              },
+              "hole": {
+                "chars": 3081,
+                "lines_touching": 22
+              },
+              "tail": {
+                "chars": 3000,
+                "lines_touching": 24
+              }
+            },
+            "chars": 8566,
+            "lines_touching": 69
+          },
+          "hunk": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 0,
+            "lines_touching": 0
+          },
+          "locator": {
+            "by_region": {
+              "head": {
+                "chars": 34976,
+                "lines_touching": 207
+              },
+              "hole": {
+                "chars": 143738,
+                "lines_touching": 795
+              },
+              "tail": {
+                "chars": 31628,
+                "lines_touching": 161
+              }
+            },
+            "chars": 210342,
+            "lines_touching": 1149
+          }
+        },
+        "disjoint_partition": {
+          "K_fail_increment": {
+            "by_region": {
+              "head": {
+                "chars": 2485,
+                "lines_touching": 25
+              },
+              "hole": {
+                "chars": 3081,
+                "lines_touching": 22
+              },
+              "tail": {
+                "chars": 3000,
+                "lines_touching": 24
+              }
+            },
+            "chars": 8566,
+            "lines_touching": 69
+          },
+          "K_hunk_increment": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 0,
+            "lines_touching": 0
+          },
+          "K_nav_increment": {
+            "by_region": {
+              "head": {
+                "chars": 33480,
+                "lines_touching": 202
+              },
+              "hole": {
+                "chars": 138198,
+                "lines_touching": 754
+              },
+              "tail": {
+                "chars": 28380,
+                "lines_touching": 138
+              }
+            },
+            "chars": 200058,
+            "lines_touching": 1081
+          },
+          "leftover_unique_after_K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 41204,
+                "lines_touching": 830
+              },
+              "hole": {
+                "chars": 101555,
+                "lines_touching": 2124
+              },
+              "tail": {
+                "chars": 40499,
+                "lines_touching": 744
+              }
+            },
+            "chars": 183258,
+            "lines_touching": 3683
+          },
+          "structural": {
+            "by_region": {
+              "head": {
+                "chars": 2831,
+                "lines_touching": 216
+              },
+              "hole": {
+                "chars": 10692,
+                "lines_touching": 406
+              },
+              "tail": {
+                "chars": 8121,
+                "lines_touching": 313
+              }
+            },
+            "chars": 21644,
+            "lines_touching": 933
+          }
+        },
+        "head_chars": 195000,
+        "hole_chars": 4884830,
+        "hole_chars_with_signal_unavailable": 4631304,
+        "original_chars": 5274830,
+        "overflow_bodies": 39,
+        "raw_overflow_bodies_with_signal_measurable": 16,
+        "signal_measurable_head_chars": 80000,
+        "signal_measurable_hole_chars": 253526,
+        "signal_measurable_original_chars": 413526,
+        "signal_measurable_tail_chars": 80000,
+        "tail_chars": 195000
+      },
+      "search": {
+        "already_windowed_bodies_with_hole_signal_unavailable": 151,
+        "cumulative_frozen_ladders": {
+          "K_fail": {
+            "by_region": {
+              "head": {
+                "chars": 20941,
+                "lines_touching": 149
+              },
+              "hole": {
+                "chars": 183968,
+                "lines_touching": 83
+              },
+              "tail": {
+                "chars": 29559,
+                "lines_touching": 199
+              }
+            },
+            "chars": 234468,
+            "lines_touching": 416
+          },
+          "K_hunk": {
+            "by_region": {
+              "head": {
+                "chars": 20941,
+                "lines_touching": 149
+              },
+              "hole": {
+                "chars": 183968,
+                "lines_touching": 83
+              },
+              "tail": {
+                "chars": 29559,
+                "lines_touching": 199
+              }
+            },
+            "chars": 234468,
+            "lines_touching": 416
+          },
+          "K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 43845,
+                "lines_touching": 263
+              },
+              "hole": {
+                "chars": 232563,
+                "lines_touching": 137
+              },
+              "tail": {
+                "chars": 50927,
+                "lines_touching": 300
+              }
+            },
+            "chars": 327335,
+            "lines_touching": 678
+          }
+        },
+        "direct_signal": {
+          "fail": {
+            "by_region": {
+              "head": {
+                "chars": 20666,
+                "lines_touching": 52
+              },
+              "hole": {
+                "chars": 182827,
+                "lines_touching": 56
+              },
+              "tail": {
+                "chars": 28196,
+                "lines_touching": 78
+              }
+            },
+            "chars": 231689,
+            "lines_touching": 173
+          },
+          "hunk": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 0,
+            "lines_touching": 0
+          },
+          "locator": {
+            "by_region": {
+              "head": {
+                "chars": 42398,
+                "lines_touching": 155
+              },
+              "hole": {
+                "chars": 215514,
+                "lines_touching": 89
+              },
+              "tail": {
+                "chars": 45550,
+                "lines_touching": 161
+              }
+            },
+            "chars": 303462,
+            "lines_touching": 386
+          }
+        },
+        "disjoint_partition": {
+          "K_fail_increment": {
+            "by_region": {
+              "head": {
+                "chars": 20666,
+                "lines_touching": 52
+              },
+              "hole": {
+                "chars": 182827,
+                "lines_touching": 56
+              },
+              "tail": {
+                "chars": 27623,
+                "lines_touching": 77
+              }
+            },
+            "chars": 231116,
+            "lines_touching": 172
+          },
+          "K_hunk_increment": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 0,
+            "lines_touching": 0
+          },
+          "K_nav_increment": {
+            "by_region": {
+              "head": {
+                "chars": 22904,
+                "lines_touching": 114
+              },
+              "hole": {
+                "chars": 48595,
+                "lines_touching": 54
+              },
+              "tail": {
+                "chars": 21368,
+                "lines_touching": 101
+              }
+            },
+            "chars": 92867,
+            "lines_touching": 262
+          },
+          "leftover_unique_after_K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 31155,
+                "lines_touching": 308
+              },
+              "hole": {
+                "chars": 20242,
+                "lines_touching": 123
+              },
+              "tail": {
+                "chars": 24073,
+                "lines_touching": 410
+              }
+            },
+            "chars": 75470,
+            "lines_touching": 833
+          },
+          "structural": {
+            "by_region": {
+              "head": {
+                "chars": 275,
+                "lines_touching": 97
+              },
+              "hole": {
+                "chars": 1141,
+                "lines_touching": 27
+              },
+              "tail": {
+                "chars": 1936,
+                "lines_touching": 122
+              }
+            },
+            "chars": 3352,
+            "lines_touching": 244
+          }
+        },
+        "head_chars": 830000,
+        "hole_chars": 21000286,
+        "hole_chars_with_signal_unavailable": 20747481,
+        "original_chars": 22660286,
+        "overflow_bodies": 166,
+        "raw_overflow_bodies_with_signal_measurable": 15,
+        "signal_measurable_head_chars": 75000,
+        "signal_measurable_hole_chars": 252805,
+        "signal_measurable_original_chars": 402805,
+        "signal_measurable_tail_chars": 75000,
+        "tail_chars": 830000
+      },
+      "source_dump": {
+        "already_windowed_bodies_with_hole_signal_unavailable": 352,
+        "cumulative_frozen_ladders": {
+          "K_fail": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 0,
+            "lines_touching": 0
+          },
+          "K_hunk": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 0,
+            "lines_touching": 0
+          },
+          "K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 0,
+            "lines_touching": 0
+          }
+        },
+        "direct_signal": {
+          "fail": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 0,
+            "lines_touching": 0
+          },
+          "hunk": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 0,
+            "lines_touching": 0
+          },
+          "locator": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 0,
+            "lines_touching": 0
+          }
+        },
+        "disjoint_partition": {
+          "K_fail_increment": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 0,
+            "lines_touching": 0
+          },
+          "K_hunk_increment": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 0,
+            "lines_touching": 0
+          },
+          "K_nav_increment": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 0,
+            "lines_touching": 0
+          },
+          "leftover_unique_after_K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 0,
+            "lines_touching": 0
+          },
+          "structural": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 0,
+            "lines_touching": 0
+          }
+        },
+        "head_chars": 1760000,
+        "hole_chars": 4282010,
+        "hole_chars_with_signal_unavailable": 4282010,
+        "original_chars": 7802010,
+        "overflow_bodies": 352,
+        "raw_overflow_bodies_with_signal_measurable": 0,
+        "signal_measurable_head_chars": 0,
+        "signal_measurable_hole_chars": 0,
+        "signal_measurable_original_chars": 0,
+        "signal_measurable_tail_chars": 0,
+        "tail_chars": 1760000
+      },
+      "test": {
+        "already_windowed_bodies_with_hole_signal_unavailable": 53,
+        "cumulative_frozen_ladders": {
+          "K_fail": {
+            "by_region": {
+              "head": {
+                "chars": 45022,
+                "lines_touching": 1530
+              },
+              "hole": {
+                "chars": 86382,
+                "lines_touching": 2600
+              },
+              "tail": {
+                "chars": 60258,
+                "lines_touching": 1744
+              }
+            },
+            "chars": 191662,
+            "lines_touching": 5853
+          },
+          "K_hunk": {
+            "by_region": {
+              "head": {
+                "chars": 45486,
+                "lines_touching": 1542
+              },
+              "hole": {
+                "chars": 86873,
+                "lines_touching": 2607
+              },
+              "tail": {
+                "chars": 60321,
+                "lines_touching": 1747
+              }
+            },
+            "chars": 192680,
+            "lines_touching": 5875
+          },
+          "K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 99020,
+                "lines_touching": 2016
+              },
+              "hole": {
+                "chars": 167565,
+                "lines_touching": 3256
+              },
+              "tail": {
+                "chars": 102683,
+                "lines_touching": 2065
+              }
+            },
+            "chars": 369268,
+            "lines_touching": 7294
+          }
+        },
+        "direct_signal": {
+          "fail": {
+            "by_region": {
+              "head": {
+                "chars": 29120,
+                "lines_touching": 356
+              },
+              "hole": {
+                "chars": 38084,
+                "lines_touching": 390
+              },
+              "tail": {
+                "chars": 28113,
+                "lines_touching": 316
+              }
+            },
+            "chars": 95317,
+            "lines_touching": 1045
+          },
+          "hunk": {
+            "by_region": {
+              "head": {
+                "chars": 464,
+                "lines_touching": 12
+              },
+              "hole": {
+                "chars": 491,
+                "lines_touching": 7
+              },
+              "tail": {
+                "chars": 63,
+                "lines_touching": 3
+              }
+            },
+            "chars": 1018,
+            "lines_touching": 22
+          },
+          "locator": {
+            "by_region": {
+              "head": {
+                "chars": 60298,
+                "lines_touching": 558
+              },
+              "hole": {
+                "chars": 96627,
+                "lines_touching": 828
+              },
+              "tail": {
+                "chars": 53373,
+                "lines_touching": 379
+              }
+            },
+            "chars": 210298,
+            "lines_touching": 1738
+          }
+        },
+        "disjoint_partition": {
+          "K_fail_increment": {
+            "by_region": {
+              "head": {
+                "chars": 23177,
+                "lines_touching": 267
+              },
+              "hole": {
+                "chars": 23542,
+                "lines_touching": 229
+              },
+              "tail": {
+                "chars": 15433,
+                "lines_touching": 156
+              }
+            },
+            "chars": 62152,
+            "lines_touching": 640
+          },
+          "K_hunk_increment": {
+            "by_region": {
+              "head": {
+                "chars": 464,
+                "lines_touching": 12
+              },
+              "hole": {
+                "chars": 491,
+                "lines_touching": 7
+              },
+              "tail": {
+                "chars": 63,
+                "lines_touching": 3
+              }
+            },
+            "chars": 1018,
+            "lines_touching": 22
+          },
+          "K_nav_increment": {
+            "by_region": {
+              "head": {
+                "chars": 53534,
+                "lines_touching": 474
+              },
+              "hole": {
+                "chars": 80692,
+                "lines_touching": 649
+              },
+              "tail": {
+                "chars": 42362,
+                "lines_touching": 318
+              }
+            },
+            "chars": 176588,
+            "lines_touching": 1419
+          },
+          "leftover_unique_after_K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 160980,
+                "lines_touching": 2924
+              },
+              "hole": {
+                "chars": 271900,
+                "lines_touching": 4878
+              },
+              "tail": {
+                "chars": 157317,
+                "lines_touching": 2267
+              }
+            },
+            "chars": 590197,
+            "lines_touching": 10009
+          },
+          "structural": {
+            "by_region": {
+              "head": {
+                "chars": 21845,
+                "lines_touching": 1263
+              },
+              "hole": {
+                "chars": 62840,
+                "lines_touching": 2371
+              },
+              "tail": {
+                "chars": 44825,
+                "lines_touching": 1588
+              }
+            },
+            "chars": 129510,
+            "lines_touching": 5213
+          }
+        },
+        "head_chars": 525000,
+        "hole_chars": 9120715,
+        "hole_chars_with_signal_unavailable": 8681250,
+        "original_chars": 10170715,
+        "overflow_bodies": 105,
+        "raw_overflow_bodies_with_signal_measurable": 52,
+        "signal_measurable_head_chars": 260000,
+        "signal_measurable_hole_chars": 439465,
+        "signal_measurable_original_chars": 959465,
+        "signal_measurable_tail_chars": 260000,
+        "tail_chars": 525000
+      },
+      "write/edit": {
+        "already_windowed_bodies_with_hole_signal_unavailable": 7,
+        "cumulative_frozen_ladders": {
+          "K_fail": {
+            "by_region": {
+              "head": {
+                "chars": 8436,
+                "lines_touching": 139
+              },
+              "hole": {
+                "chars": 28065,
+                "lines_touching": 601
+              },
+              "tail": {
+                "chars": 13054,
+                "lines_touching": 430
+              }
+            },
+            "chars": 49555,
+            "lines_touching": 1165
+          },
+          "K_hunk": {
+            "by_region": {
+              "head": {
+                "chars": 8436,
+                "lines_touching": 139
+              },
+              "hole": {
+                "chars": 28065,
+                "lines_touching": 601
+              },
+              "tail": {
+                "chars": 13054,
+                "lines_touching": 430
+              }
+            },
+            "chars": 49555,
+            "lines_touching": 1165
+          },
+          "K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 44324,
+                "lines_touching": 439
+              },
+              "hole": {
+                "chars": 107311,
+                "lines_touching": 1082
+              },
+              "tail": {
+                "chars": 44871,
+                "lines_touching": 676
+              }
+            },
+            "chars": 196506,
+            "lines_touching": 2178
+          }
+        },
+        "direct_signal": {
+          "fail": {
+            "by_region": {
+              "head": {
+                "chars": 5955,
+                "lines_touching": 35
+              },
+              "hole": {
+                "chars": 21099,
+                "lines_touching": 310
+              },
+              "tail": {
+                "chars": 6540,
+                "lines_touching": 101
+              }
+            },
+            "chars": 33594,
+            "lines_touching": 443
+          },
+          "hunk": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 0,
+            "lines_touching": 0
+          },
+          "locator": {
+            "by_region": {
+              "head": {
+                "chars": 40457,
+                "lines_touching": 336
+              },
+              "hole": {
+                "chars": 85192,
+                "lines_touching": 552
+              },
+              "tail": {
+                "chars": 36159,
+                "lines_touching": 323
+              }
+            },
+            "chars": 161808,
+            "lines_touching": 1196
+          }
+        },
+        "disjoint_partition": {
+          "K_fail_increment": {
+            "by_region": {
+              "head": {
+                "chars": 5850,
+                "lines_touching": 33
+              },
+              "hole": {
+                "chars": 11610,
+                "lines_touching": 133
+              },
+              "tail": {
+                "chars": 5213,
+                "lines_touching": 69
+              }
+            },
+            "chars": 22673,
+            "lines_touching": 233
+          },
+          "K_hunk_increment": {
+            "by_region": {
+              "head": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "hole": {
+                "chars": 0,
+                "lines_touching": 0
+              },
+              "tail": {
+                "chars": 0,
+                "lines_touching": 0
+              }
+            },
+            "chars": 0,
+            "lines_touching": 0
+          },
+          "K_nav_increment": {
+            "by_region": {
+              "head": {
+                "chars": 35888,
+                "lines_touching": 300
+              },
+              "hole": {
+                "chars": 79246,
+                "lines_touching": 481
+              },
+              "tail": {
+                "chars": 31817,
+                "lines_touching": 246
+              }
+            },
+            "chars": 146951,
+            "lines_touching": 1013
+          },
+          "leftover_unique_after_K_nav": {
+            "by_region": {
+              "head": {
+                "chars": 25676,
+                "lines_touching": 245
+              },
+              "hole": {
+                "chars": 58883,
+                "lines_touching": 401
+              },
+              "tail": {
+                "chars": 25129,
+                "lines_touching": 325
+              }
+            },
+            "chars": 109688,
+            "lines_touching": 962
+          },
+          "structural": {
+            "by_region": {
+              "head": {
+                "chars": 2586,
+                "lines_touching": 106
+              },
+              "hole": {
+                "chars": 16455,
+                "lines_touching": 468
+              },
+              "tail": {
+                "chars": 7841,
+                "lines_touching": 361
+              }
+            },
+            "chars": 26882,
+            "lines_touching": 932
+          }
+        },
+        "head_chars": 105000,
+        "hole_chars": 315722,
+        "hole_chars_with_signal_unavailable": 149528,
+        "original_chars": 525722,
+        "overflow_bodies": 21,
+        "raw_overflow_bodies_with_signal_measurable": 14,
+        "signal_measurable_head_chars": 70000,
+        "signal_measurable_hole_chars": 166194,
+        "signal_measurable_original_chars": 306194,
+        "signal_measurable_tail_chars": 70000,
+        "tail_chars": 105000
+      }
+    },
+    "exactly_10000_char_bodies": 0,
+    "stock_shape": "C1 preserves logical source offsets [0,5000) and [chars-5000,chars), with one exact omitted-char marker between them",
+    "threshold_definition": "overflow iff logical original Unicode code points >= 10000; identity iff < 10000",
+    "under_cap_identity_bodies": 15039,
+    "under_cap_identity_chars": 18252700,
+    "utf8_footnote": {
+      "all_stored_body_utf8_bytes": 42231750,
+      "measure_note": "footnote only; thresholds/headlines use logical code points, and no byte count reconstructs an unavailable stock hole",
+      "raw_available_overflow_utf8_bytes": 5444580
+    }
+  },
+  "schema": "qq.bash-window-contract-current/v1",
+  "under_cap_identity_footnote": {
+    "C1_output_chars": 18252700,
+    "C2_output_chars": 18252700,
+    "bodies": 15039,
+    "chars_shrunk": 0,
+    "input_chars": 18252700
+  }
+}
