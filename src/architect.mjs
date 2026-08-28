@@ -343,7 +343,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
     const parentCwd = parent.header?.cwd;
     let targetCwd = repoRootFor(parentCwd);
     let gitRootResolved = false;
-    const qq = ctx?.get?.("qq", false) ?? null;
+    const qq = ctx?.get?.("qq-core", false) ?? ctx?.get?.("qq", false) ?? null;
     if (typeof qq?.gitRootForDelegate === "function") {
       const gitRoot = qq.gitRootForDelegate(parentCwd);
       if (typeof gitRoot === "string" && gitRoot.length > 0) {
