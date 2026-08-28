@@ -1,0 +1,380 @@
+{
+  "coverage": {
+    "bash_bytes": 41472665,
+    "bash_calls": 16776,
+    "bash_chars": 41390045,
+    "bash_issuing_sessions": 419,
+    "by_class": {
+      "git_diff": {
+        "bytes": 2659378,
+        "calls": 644,
+        "chars": 2658574,
+        "joined_calls": 644
+      },
+      "git_status": {
+        "bytes": 415300,
+        "calls": 1299,
+        "chars": 415225,
+        "joined_calls": 1299
+      },
+      "listing": {
+        "bytes": 2190510,
+        "calls": 939,
+        "chars": 2188270,
+        "joined_calls": 939
+      },
+      "lockfile/json": {
+        "bytes": 989606,
+        "calls": 368,
+        "chars": 988809,
+        "joined_calls": 368
+      },
+      "mixed/compound": {
+        "bytes": 22194080,
+        "calls": 5852,
+        "chars": 22155874,
+        "joined_calls": 5848,
+        "sensitive_bytes": 152398,
+        "sensitive_calls": 52
+      },
+      "npm/install/debug_log": {
+        "bytes": 201353,
+        "calls": 78,
+        "chars": 200811,
+        "joined_calls": 78
+      },
+      "other": {
+        "bytes": 1422227,
+        "calls": 4644,
+        "chars": 1420091,
+        "joined_calls": 4642
+      },
+      "search": {
+        "bytes": 3191524,
+        "calls": 725,
+        "chars": 3177198,
+        "joined_calls": 725
+      },
+      "source_dump": {
+        "bytes": 5215248,
+        "calls": 595,
+        "chars": 5213693,
+        "joined_calls": 595
+      },
+      "test": {
+        "bytes": 2437801,
+        "calls": 1450,
+        "chars": 2416205,
+        "joined_calls": 1449,
+        "matched_bytes": 135259,
+        "matched_calls": 34,
+        "unmatched_bytes": 2302542,
+        "unmatched_calls": 1416
+      },
+      "write/edit": {
+        "bytes": 555638,
+        "calls": 182,
+        "chars": 555295,
+        "joined_calls": 182
+      }
+    },
+    "decode_failures": 0,
+    "discovered_archives": 589,
+    "divergent_result_groups": 3403,
+    "duplicate_result_events": 3644,
+    "included_session_ids_sha256": "ebf7688975795497c0ec682baed451bba00e7f4e177ddebf67dcc1eb918f7072",
+    "included_sessions": 586,
+    "mixed_body_count": 5852,
+    "mixed_byte_share_pct": 53.51495979339644,
+    "mixed_bytes": 22194080,
+    "mixed_joined_body_count": 5848,
+    "post_cutoff_events": {
+      "agent/inbox/spliced": 10,
+      "approval/policy": 3,
+      "assistant/chunk": 817,
+      "assistant/message": 46,
+      "hook/result": 6,
+      "permission/preset": 3,
+      "request/context": 3,
+      "request/header": 3,
+      "sandbox/mode": 3,
+      "step/end": 46,
+      "step/start": 45,
+      "tool/call": 80,
+      "tool/result": 80,
+      "turn/end": 6,
+      "turn/start": 5,
+      "user/message": 8
+    },
+    "result_events": 63282,
+    "unresolved_bash_calls": 7,
+    "zstd_failures": []
+  },
+  "gate": {
+    "categories": [
+      "diff hunks",
+      "test failing-name lines",
+      "diagnostic lines"
+    ],
+    "cca_error": "fail-open identity",
+    "critical_ignored": true,
+    "exact_line_retention": "Counter (duplicate-sensitive)",
+    "reject_reasons": [
+      "changed_false",
+      "not_shorter",
+      "diff_hunk_loss",
+      "test_failing_name_loss",
+      "diagnostic_loss"
+    ],
+    "strictly_shorter_utf8_bytes_required": true
+  },
+  "method": {
+    "authoritative_parent_session": "session-af60703c-a964-41ee-bb2b-9edfc7b170f3",
+    "byte_measure": "pre-envelope UTF-8 with replacement for invalid scalar values",
+    "cca_exit_code_assumption": 0,
+    "cca_head_tail_disabled": false,
+    "cca_transport": "persistent JSONL; exact synchronous compressObservation call",
+    "classifier": "unchanged historical 11-class command/output classifier",
+    "comparable_sample": "largest 20 joined non-sensitive mixed bodies with >= 500 chars",
+    "critical_used_by_gate": false,
+    "delegation_id": "aa2d98c8-e415-4fbc-831c-9a1c6aa1aea8",
+    "event_cutoff_ms": 1787895040748,
+    "event_cutoff_utc": "2026-08-28T05:30:40.748000+00:00",
+    "excerpts_persisted": false,
+    "fail_open": true,
+    "first_result_per_call": true,
+    "full_bodies_persisted": false,
+    "full_commands_persisted": false,
+    "historical_commands_executed": false,
+    "one_shot_transport_equivalence": "30/30 marker-stripped candidates byte-identical",
+    "other_compressors_used": [],
+    "paid_model_used": false,
+    "post_hoc_stdin_only": true,
+    "replay_scope": "every joined non-sensitive mixed/compound body",
+    "secret_context_skipped_as_identity": true,
+    "stock_10k_envelope_applied": false,
+    "study_session_excluded": "session-ebff3456-8e68-4add-9d19-0680b99f7494"
+  },
+  "mixed": {
+    "all_current": {
+      "accepted_critical_true_bodies": 85,
+      "accepted_evidence_loss_bodies": 0,
+      "accepted_evidence_loss_categories": {},
+      "cca_changed_true_bodies": 3386,
+      "cca_critical_true_bodies": 1959,
+      "cca_errors": 0,
+      "dirty_bodies": 50,
+      "dirty_body_categories": {
+        "diagnostic lines": 47,
+        "diff hunks": 3,
+        "test failing-name lines": 19
+      },
+      "dirty_gate_reasons": {
+        "diagnostic_loss": 25,
+        "diff_hunk_loss": 3,
+        "not_shorter": 5,
+        "test_failing_name_loss": 17
+      },
+      "evaluated_bodies": 5796,
+      "gate_reason_bytes": {
+        "accepted": {
+          "candidate_saved_bytes": 449362,
+          "input_bytes": 1432122
+        },
+        "changed_false": {
+          "candidate_saved_bytes": 0,
+          "input_bytes": 10856965
+        },
+        "diagnostic_loss": {
+          "candidate_saved_bytes": 55723,
+          "input_bytes": 171619
+        },
+        "diff_hunk_loss": {
+          "candidate_saved_bytes": 17131,
+          "input_bytes": 30560
+        },
+        "not_shorter": {
+          "candidate_saved_bytes": -3572,
+          "input_bytes": 9369188
+        },
+        "test_failing_name_loss": {
+          "candidate_saved_bytes": 71175,
+          "input_bytes": 181228
+        }
+      },
+      "gate_reasons": {
+        "accepted": 239,
+        "changed_false": 2410,
+        "diagnostic_loss": 25,
+        "diff_hunk_loss": 3,
+        "not_shorter": 3102,
+        "test_failing_name_loss": 17
+      },
+      "gated": {
+        "accepted_bodies": 239,
+        "accepted_body_pct": 4.123533471359559,
+        "accepted_input_byte_pct": 6.497335366692978,
+        "accepted_input_bytes": 1432122,
+        "output_bytes": 21592320,
+        "output_bytes_including_identity_exclusions": 21744718,
+        "rejected_bodies": 5557,
+        "saved_bytes": 449362,
+        "saved_pct": 2.0386919655224136,
+        "saved_pct_of_all_mixed_bytes": 2.024693071305501
+      },
+      "identity_exclusion_bytes": 152398,
+      "identity_exclusions": {
+        "sensitive_identity_bodies": 52,
+        "sensitive_identity_bytes": 152398,
+        "unresolved_identity_bodies": 4,
+        "unresolved_identity_bytes": 0
+      },
+      "input_bytes": 22041682,
+      "mixed_census_bodies": 5852,
+      "mixed_census_bytes": 22194080,
+      "ungated": {
+        "larger_bodies": 2097,
+        "output_bytes": 21451863,
+        "output_bytes_including_identity_exclusions": 21604261,
+        "saved_bytes": 589819,
+        "saved_pct": 2.675925548694514,
+        "saved_pct_of_all_mixed_bytes": 2.65755102261504,
+        "shorter_bodies": 284
+      }
+    },
+    "comparable_largest_20": {
+      "accepted_critical_true_bodies": 3,
+      "accepted_evidence_loss_bodies": 0,
+      "accepted_evidence_loss_categories": {},
+      "cca_changed_true_bodies": 16,
+      "cca_critical_true_bodies": 12,
+      "cca_errors": 0,
+      "dirty_bodies": 1,
+      "dirty_body_categories": {
+        "diagnostic lines": 1,
+        "test failing-name lines": 1
+      },
+      "dirty_gate_reasons": {
+        "test_failing_name_loss": 1
+      },
+      "evaluated_bodies": 20,
+      "gate_reason_bytes": {
+        "accepted": {
+          "candidate_saved_bytes": 107083,
+          "input_bytes": 248444
+        },
+        "changed_false": {
+          "candidate_saved_bytes": 0,
+          "input_bytes": 185147
+        },
+        "not_shorter": {
+          "candidate_saved_bytes": -4,
+          "input_bytes": 332295
+        },
+        "test_failing_name_loss": {
+          "candidate_saved_bytes": 10712,
+          "input_bytes": 40617
+        }
+      },
+      "gate_reasons": {
+        "accepted": 7,
+        "changed_false": 4,
+        "not_shorter": 8,
+        "test_failing_name_loss": 1
+      },
+      "gated": {
+        "accepted_bodies": 7,
+        "accepted_body_pct": 35.0,
+        "accepted_input_byte_pct": 30.8050930994677,
+        "accepted_input_bytes": 248444,
+        "output_bytes": 699420,
+        "rejected_bodies": 13,
+        "saved_bytes": 107083,
+        "saved_pct": 13.277445961143355
+      },
+      "input_bytes": 806503,
+      "ungated": {
+        "larger_bodies": 4,
+        "output_bytes": 688712,
+        "saved_bytes": 117791,
+        "saved_pct": 14.605153359627925,
+        "shorter_bodies": 8
+      }
+    }
+  },
+  "pins": {
+    "accept_gate_sha256": "284bc2af2a6e255f521576a3d2c94a6e4bad36c1a9559853463fafb1bace3ff8",
+    "cca_bridge_sha256": "39552f6b449b4ef648160cf17664090b6ac56eb2517ae0551ef39dfc1e15638b",
+    "cca_commit": "fd9c022d364643fd80413201fb51a537c9020a86",
+    "cca_compressor_sha256": "ddbbc84567d19de46a6e82c09eacd4571f5b226a4f54a0c827eba6f0146358ae",
+    "cca_jsonl_bridge_sha256": "6e59a814a702769b3f9632769aec0693a89d28d16740fb4aa002f81b6ffcf45b",
+    "cca_package": "@linger-alpha/cca@0.2.0",
+    "cca_package_sha256": "827e47579dca02b3bbf9b6a5cc8a9bd0f4e57d8bebbb48a294761450bf4b0ef1",
+    "cca_rules_sha256": "f085d8271aa97fd50773948b826320d13201e76a8f8b11fdb5dba7114e370331",
+    "prior_classifier_source_sha256": "dd090d49786adfffa00701a36bbf48812e4f9a60ce80f1ff746f825784df8784",
+    "prior_route_replay_sha256": "d09e939716837f9c6c0b5dbb7f399d7862ce81f66ddeac00dec661ce85cde8df"
+  },
+  "prior": {
+    "bash_bytes": 29341881,
+    "bash_calls": 13637,
+    "bash_issuing_sessions": 337,
+    "mixed_byte_share_pct": 54.28244358294548,
+    "mixed_bytes": 15927490,
+    "mixed_calls": 4269,
+    "mixed_sample_accepted": 8,
+    "mixed_sample_dirty_bodies": 1,
+    "mixed_sample_gated_saved_bytes": 112908,
+    "mixed_sample_gated_saved_pct": 14.551387632325763,
+    "mixed_sample_input_bytes": 775926,
+    "mixed_sample_n": 20,
+    "mixed_sample_ungated_saved_bytes": 123616,
+    "mixed_sample_ungated_saved_pct": 15.931416140198937,
+    "selected_policy_projected_pct": 10.815483910618658,
+    "sessions": 459,
+    "test_ungated_rates": {
+      "matched": 0.5631198245671456,
+      "unmatched": 0.38345223126074574
+    }
+  },
+  "projection": {
+    "bytes_are_not_tokens_or_spend": true,
+    "description": "current all-safe-mixed CCA+gate actual; prior ungated test rates carried forward by label stratum; git_diff and all other classes identity",
+    "git_diff": {
+      "current_corpus_bytes": 2659378,
+      "projected_saved_bytes": 0,
+      "selected": "identity"
+    },
+    "input_bytes": 41472665,
+    "mixed": {
+      "actual_saved_bytes": 449362,
+      "actual_ungated_saved_bytes": 589819,
+      "current_corpus_bytes": 22194080,
+      "selected": "CCA then accept gate; sensitive/unresolved identity"
+    },
+    "other_classes": "identity",
+    "test": {
+      "current_corpus_bytes": 2437801,
+      "projected_saved_bytes": 959081.8918227076,
+      "selected": "CCA; not rerun",
+      "strata": {
+        "matched": {
+          "current_corpus_bytes": 135259,
+          "prior_sample_save_rate": 0.5631198245671456,
+          "projected_saved_bytes": 76167.02435112755
+        },
+        "unmatched": {
+          "current_corpus_bytes": 2302542,
+          "prior_sample_save_rate": 0.38345223126074574,
+          "projected_saved_bytes": 882914.86747158
+        }
+      }
+    },
+    "tests_only_projected_saved_pct": 2.312563930537639,
+    "tests_plus_gated_mixed_projected_saved_bytes": 1408443.8918227076,
+    "tests_plus_gated_mixed_projected_saved_pct": 3.3960776135864617,
+    "tests_plus_ungated_mixed_projected_saved_pct": 3.7347512917790735
+  },
+  "record_count": 5796,
+  "records_sha256": "4c6d601abf03d6b6791809e9b7c43434acfeba0680e7d604b9f6ab958224db72",
+  "schema": "qq.cca-mixed-current/v1"
+}
