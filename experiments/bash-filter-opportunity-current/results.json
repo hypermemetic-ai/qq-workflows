@@ -1,0 +1,4397 @@
+{
+  "bodyless_observation_count": 16944,
+  "bodyless_observation_digest": "0fa94645452d5e4750aedff0e00f3e5e9e0f802fba9491765b8e3de9dbeaf6bf",
+  "census": {
+    "by_class": {
+      "git_diff": {
+        "bodies": 650,
+        "byte_share_pct": 6.36262819781789,
+        "bytes": 2672461,
+        "size_strata": {
+          "1-255 B": {
+            "bodies": 178,
+            "bytes": 19123
+          },
+          "256 B-1 KiB": {
+            "bodies": 113,
+            "bytes": 70354
+          },
+          ">1-4 KiB": {
+            "bodies": 125,
+            "bytes": 281001
+          },
+          ">10-100 KiB": {
+            "bodies": 86,
+            "bytes": 1213993
+          },
+          ">100 KiB": {},
+          ">4-10 KiB": {
+            "bodies": 148,
+            "bytes": 1087990
+          },
+          "zero": {}
+        }
+      },
+      "git_status": {
+        "bodies": 1304,
+        "byte_share_pct": 0.9930439805087653,
+        "bytes": 417103,
+        "size_strata": {
+          "1-255 B": {
+            "bodies": 1052,
+            "bytes": 118229
+          },
+          "256 B-1 KiB": {
+            "bodies": 169,
+            "bytes": 93875
+          },
+          ">1-4 KiB": {
+            "bodies": 69,
+            "bytes": 121809
+          },
+          ">10-100 KiB": {
+            "bodies": 1,
+            "bytes": 12630
+          },
+          ">100 KiB": {},
+          ">4-10 KiB": {
+            "bodies": 13,
+            "bytes": 70560
+          },
+          "zero": {}
+        }
+      },
+      "listing": {
+        "bodies": 951,
+        "byte_share_pct": 5.289819860593913,
+        "bytes": 2221855,
+        "size_strata": {
+          "1-255 B": {
+            "bodies": 232,
+            "bytes": 28267
+          },
+          "256 B-1 KiB": {
+            "bodies": 264,
+            "bytes": 148927
+          },
+          ">1-4 KiB": {
+            "bodies": 287,
+            "bytes": 589540
+          },
+          ">10-100 KiB": {
+            "bodies": 50,
+            "bytes": 650752
+          },
+          ">100 KiB": {},
+          ">4-10 KiB": {
+            "bodies": 118,
+            "bytes": 804369
+          },
+          "zero": {}
+        }
+      },
+      "lockfile/json": {
+        "bodies": 379,
+        "byte_share_pct": 2.4307594291478574,
+        "bytes": 1020979,
+        "size_strata": {
+          "1-255 B": {
+            "bodies": 52,
+            "bytes": 6922
+          },
+          "256 B-1 KiB": {
+            "bodies": 98,
+            "bytes": 58878
+          },
+          ">1-4 KiB": {
+            "bodies": 151,
+            "bytes": 298980
+          },
+          ">10-100 KiB": {
+            "bodies": 27,
+            "bytes": 337196
+          },
+          ">100 KiB": {},
+          ">4-10 KiB": {
+            "bodies": 51,
+            "bytes": 319003
+          },
+          "zero": {}
+        }
+      },
+      "mixed/compound": {
+        "bodies": 5942,
+        "byte_share_pct": 53.55488617693197,
+        "bytes": 22494375,
+        "size_strata": {
+          "1-255 B": {
+            "bodies": 1351,
+            "bytes": 158808
+          },
+          "256 B-1 KiB": {
+            "bodies": 1199,
+            "bytes": 704678
+          },
+          ">1-4 KiB": {
+            "bodies": 1358,
+            "bytes": 2984651
+          },
+          ">10-100 KiB": {
+            "bodies": 946,
+            "bytes": 10977184
+          },
+          ">100 KiB": {},
+          ">4-10 KiB": {
+            "bodies": 1084,
+            "bytes": 7669054
+          },
+          "zero": {
+            "bodies": 4,
+            "bytes": 0
+          }
+        }
+      },
+      "npm/install/debug_log": {
+        "bodies": 80,
+        "byte_share_pct": 0.4872618205548388,
+        "bytes": 204662,
+        "size_strata": {
+          "1-255 B": {
+            "bodies": 21,
+            "bytes": 2262
+          },
+          "256 B-1 KiB": {
+            "bodies": 17,
+            "bytes": 8148
+          },
+          ">1-4 KiB": {
+            "bodies": 22,
+            "bytes": 49033
+          },
+          ">10-100 KiB": {
+            "bodies": 4,
+            "bytes": 43867
+          },
+          ">100 KiB": {},
+          ">4-10 KiB": {
+            "bodies": 16,
+            "bytes": 101352
+          },
+          "zero": {}
+        }
+      },
+      "other": {
+        "bodies": 4654,
+        "byte_share_pct": 3.4134516374870336,
+        "bytes": 1433734,
+        "size_strata": {
+          "1-255 B": {
+            "bodies": 4320,
+            "bytes": 334923
+          },
+          "256 B-1 KiB": {
+            "bodies": 184,
+            "bytes": 93180
+          },
+          ">1-4 KiB": {
+            "bodies": 79,
+            "bytes": 163156
+          },
+          ">10-100 KiB": {
+            "bodies": 28,
+            "bytes": 543303
+          },
+          ">100 KiB": {},
+          ">4-10 KiB": {
+            "bodies": 41,
+            "bytes": 299172
+          },
+          "zero": {
+            "bodies": 2,
+            "bytes": 0
+          }
+        }
+      },
+      "search": {
+        "bodies": 731,
+        "byte_share_pct": 7.686719376265253,
+        "bytes": 3228612,
+        "size_strata": {
+          "1-255 B": {
+            "bodies": 161,
+            "bytes": 15372
+          },
+          "256 B-1 KiB": {
+            "bodies": 128,
+            "bytes": 76413
+          },
+          ">1-4 KiB": {
+            "bodies": 150,
+            "bytes": 330740
+          },
+          ">10-100 KiB": {
+            "bodies": 122,
+            "bytes": 1535301
+          },
+          ">100 KiB": {},
+          ">4-10 KiB": {
+            "bodies": 170,
+            "bytes": 1270786
+          },
+          "zero": {}
+        }
+      },
+      "source_dump": {
+        "bodies": 605,
+        "byte_share_pct": 12.615536657725128,
+        "bytes": 5298837,
+        "size_strata": {
+          "1-255 B": {
+            "bodies": 14,
+            "bytes": 2117
+          },
+          "256 B-1 KiB": {
+            "bodies": 8,
+            "bytes": 4251
+          },
+          ">1-4 KiB": {
+            "bodies": 39,
+            "bytes": 110542
+          },
+          ">10-100 KiB": {
+            "bodies": 318,
+            "bytes": 3390305
+          },
+          ">100 KiB": {},
+          ">4-10 KiB": {
+            "bodies": 226,
+            "bytes": 1791622
+          },
+          "zero": {}
+        }
+      },
+      "test": {
+        "bodies": 1460,
+        "byte_share_pct": 5.827842981615129,
+        "bytes": 2447838,
+        "size_strata": {
+          "1-255 B": {
+            "bodies": 815,
+            "bytes": 69443
+          },
+          "256 B-1 KiB": {
+            "bodies": 315,
+            "bytes": 186211
+          },
+          ">1-4 KiB": {
+            "bodies": 167,
+            "bytes": 286312
+          },
+          ">10-100 KiB": {
+            "bodies": 97,
+            "bytes": 1454355
+          },
+          ">100 KiB": {},
+          ">4-10 KiB": {
+            "bodies": 65,
+            "bytes": 451517
+          },
+          "zero": {
+            "bodies": 1,
+            "bytes": 0
+          }
+        }
+      },
+      "write/edit": {
+        "bodies": 188,
+        "byte_share_pct": 1.3380498813522157,
+        "bytes": 562014,
+        "size_strata": {
+          "1-255 B": {
+            "bodies": 67,
+            "bytes": 6505
+          },
+          "256 B-1 KiB": {
+            "bodies": 55,
+            "bytes": 33804
+          },
+          ">1-4 KiB": {
+            "bodies": 31,
+            "bytes": 60925
+          },
+          ">10-100 KiB": {
+            "bodies": 17,
+            "bytes": 338707
+          },
+          ">100 KiB": {},
+          ">4-10 KiB": {
+            "bodies": 18,
+            "bytes": 122073
+          },
+          "zero": {}
+        }
+      }
+    },
+    "mixed": {
+      "classifier_path": {
+        "generic fallback": {
+          "bodies": 1073,
+          "bytes": 3177497
+        },
+        "multi-tag compound": {
+          "bodies": 4869,
+          "bytes": 19316878
+        }
+      },
+      "operator_exclusive_signatures": {
+        "&&": {
+          "bodies": 1164,
+          "bytes": 1598762
+        },
+        "&&+heredoc": {
+          "bodies": 308,
+          "bytes": 352158
+        },
+        "&&+pipe": {
+          "bodies": 1057,
+          "bytes": 6106694
+        },
+        "&&+pipe+heredoc": {
+          "bodies": 245,
+          "bytes": 950333
+        },
+        "heredoc": {
+          "bodies": 685,
+          "bytes": 1744679
+        },
+        "pipe": {
+          "bodies": 1944,
+          "bytes": 9764453
+        },
+        "pipe+heredoc": {
+          "bodies": 539,
+          "bytes": 1977296
+        }
+      },
+      "operator_inclusive": {
+        "&&": {
+          "bodies": 2774,
+          "bytes": 9007947
+        },
+        "heredoc": {
+          "bodies": 1777,
+          "bytes": 5024466
+        },
+        "pipe": {
+          "bodies": 3785,
+          "bytes": 18798776
+        }
+      }
+    }
+  },
+  "class_aware_caps": {
+    "independent": {
+      "adjacent_exact_repeat": {
+        "all_scope_output_bytes": 41997112,
+        "all_scope_output_first_10k_remaining_bytes": 38426500,
+        "by_class": {
+          "git_diff": {
+            "all_scope_output_bytes": 2672461,
+            "all_scope_output_first_10k_remaining_bytes": 2316425,
+            "changed_bodies": 0,
+            "evaluated_bodies": 650,
+            "first_10k_length_reduction_bytes": 0,
+            "input_bytes": 2672461,
+            "input_first_10k_bytes": 2316425,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 2672461,
+            "output_first_10k_remaining_bytes": 2316425,
+            "saved_bytes": 0,
+            "scope_bodies": 650,
+            "scope_bytes": 2672461,
+            "scope_first_10k_input_bytes": 2316425
+          },
+          "git_status": {
+            "all_scope_output_bytes": 417103,
+            "all_scope_output_first_10k_remaining_bytes": 414473,
+            "changed_bodies": 0,
+            "evaluated_bodies": 1304,
+            "first_10k_length_reduction_bytes": 0,
+            "input_bytes": 417103,
+            "input_first_10k_bytes": 414473,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 417103,
+            "output_first_10k_remaining_bytes": 414473,
+            "saved_bytes": 0,
+            "scope_bodies": 1304,
+            "scope_bytes": 417103,
+            "scope_first_10k_input_bytes": 414473
+          },
+          "listing": {
+            "all_scope_output_bytes": 2221527,
+            "all_scope_output_first_10k_remaining_bytes": 2067415,
+            "changed_bodies": 1,
+            "evaluated_bodies": 941,
+            "first_10k_length_reduction_bytes": 328,
+            "identity_exclusion_bodies": 10,
+            "identity_exclusion_bytes": 18142,
+            "input_bytes": 2203713,
+            "input_first_10k_bytes": 2050597,
+            "marker_bytes": 72,
+            "omitted_lines": 4,
+            "output_bytes": 2203385,
+            "output_first_10k_remaining_bytes": 2050269,
+            "saved_bytes": 328,
+            "scope_bodies": 951,
+            "scope_bytes": 2221855,
+            "scope_first_10k_input_bytes": 2067743
+          },
+          "lockfile/json": {
+            "all_scope_output_bytes": 1020660,
+            "all_scope_output_first_10k_remaining_bytes": 953208,
+            "changed_bodies": 2,
+            "evaluated_bodies": 371,
+            "first_10k_length_reduction_bytes": 319,
+            "identity_exclusion_bodies": 8,
+            "identity_exclusion_bytes": 46395,
+            "input_bytes": 974584,
+            "input_first_10k_bytes": 935843,
+            "marker_bytes": 108,
+            "omitted_lines": 10,
+            "output_bytes": 974265,
+            "output_first_10k_remaining_bytes": 935524,
+            "saved_bytes": 319,
+            "scope_bodies": 379,
+            "scope_bytes": 1020979,
+            "scope_first_10k_input_bytes": 953527
+          },
+          "mixed/compound": {
+            "all_scope_output_bytes": 22490564,
+            "all_scope_output_first_10k_remaining_bytes": 20957808,
+            "changed_bodies": 17,
+            "evaluated_bodies": 5886,
+            "first_10k_length_reduction_bytes": 2585,
+            "identity_exclusion_bodies": 56,
+            "identity_exclusion_bytes": 152398,
+            "input_bytes": 22341977,
+            "input_first_10k_bytes": 20819040,
+            "marker_bytes": 1193,
+            "omitted_lines": 178,
+            "output_bytes": 22338166,
+            "output_first_10k_remaining_bytes": 20816455,
+            "saved_bytes": 3811,
+            "scope_bodies": 5942,
+            "scope_bytes": 22494375,
+            "scope_first_10k_input_bytes": 20960393
+          },
+          "npm/install/debug_log": {
+            "all_scope_output_bytes": 204662,
+            "all_scope_output_first_10k_remaining_bytes": 200795,
+            "changed_bodies": 0,
+            "evaluated_bodies": 80,
+            "first_10k_length_reduction_bytes": 0,
+            "input_bytes": 204662,
+            "input_first_10k_bytes": 200795,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 204662,
+            "output_first_10k_remaining_bytes": 200795,
+            "saved_bytes": 0,
+            "scope_bodies": 80,
+            "scope_bytes": 204662,
+            "scope_first_10k_input_bytes": 200795
+          },
+          "other": {
+            "all_scope_output_bytes": 1433663,
+            "all_scope_output_first_10k_remaining_bytes": 1169198,
+            "changed_bodies": 2,
+            "evaluated_bodies": 4652,
+            "first_10k_length_reduction_bytes": 71,
+            "identity_exclusion_bodies": 2,
+            "identity_exclusion_bytes": 0,
+            "input_bytes": 1433734,
+            "input_first_10k_bytes": 1169269,
+            "marker_bytes": 72,
+            "omitted_lines": 2,
+            "output_bytes": 1433663,
+            "output_first_10k_remaining_bytes": 1169198,
+            "saved_bytes": 71,
+            "scope_bodies": 4654,
+            "scope_bytes": 1433734,
+            "scope_first_10k_input_bytes": 1169269
+          },
+          "search": {
+            "all_scope_output_bytes": 3227837,
+            "all_scope_output_first_10k_remaining_bytes": 2906720,
+            "changed_bodies": 1,
+            "evaluated_bodies": 728,
+            "first_10k_length_reduction_bytes": 775,
+            "identity_exclusion_bodies": 3,
+            "identity_exclusion_bytes": 15361,
+            "input_bytes": 3213251,
+            "input_first_10k_bytes": 2892234,
+            "marker_bytes": 148,
+            "omitted_lines": 52,
+            "output_bytes": 3212476,
+            "output_first_10k_remaining_bytes": 2891459,
+            "saved_bytes": 775,
+            "scope_bodies": 731,
+            "scope_bytes": 3228612,
+            "scope_first_10k_input_bytes": 2907495
+          },
+          "source_dump": {
+            "all_scope_output_bytes": 5298837,
+            "all_scope_output_first_10k_remaining_bytes": 5085114,
+            "changed_bodies": 0,
+            "evaluated_bodies": 604,
+            "first_10k_length_reduction_bytes": 0,
+            "identity_exclusion_bodies": 1,
+            "identity_exclusion_bytes": 10062,
+            "input_bytes": 5288775,
+            "input_first_10k_bytes": 5075114,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 5288775,
+            "output_first_10k_remaining_bytes": 5075114,
+            "saved_bytes": 0,
+            "scope_bodies": 605,
+            "scope_bytes": 5298837,
+            "scope_first_10k_input_bytes": 5085114
+          },
+          "test": {
+            "all_scope_output_bytes": 2447784,
+            "all_scope_output_first_10k_remaining_bytes": 1962608,
+            "changed_bodies": 5,
+            "evaluated_bodies": 1459,
+            "first_10k_length_reduction_bytes": 0,
+            "identity_exclusion_bodies": 1,
+            "identity_exclusion_bytes": 0,
+            "input_bytes": 2447838,
+            "input_first_10k_bytes": 1962608,
+            "marker_bytes": 288,
+            "omitted_lines": 24,
+            "output_bytes": 2447784,
+            "output_first_10k_remaining_bytes": 1962608,
+            "saved_bytes": 54,
+            "scope_bodies": 1460,
+            "scope_bytes": 2447838,
+            "scope_first_10k_input_bytes": 1962608
+          },
+          "write/edit": {
+            "all_scope_output_bytes": 562014,
+            "all_scope_output_first_10k_remaining_bytes": 392736,
+            "changed_bodies": 0,
+            "evaluated_bodies": 186,
+            "first_10k_length_reduction_bytes": 0,
+            "identity_exclusion_bodies": 2,
+            "identity_exclusion_bytes": 1533,
+            "input_bytes": 560481,
+            "input_first_10k_bytes": 391203,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 560481,
+            "output_first_10k_remaining_bytes": 391203,
+            "saved_bytes": 0,
+            "scope_bodies": 188,
+            "scope_bytes": 562014,
+            "scope_first_10k_input_bytes": 392736
+          }
+        },
+        "changed_bodies": 28,
+        "evaluated_bodies": 16861,
+        "evidence_risk": "low",
+        "first_10k_length_reduction_bytes": 4078,
+        "identity_exclusion_bodies": 83,
+        "identity_exclusion_bytes": 243891,
+        "input_bytes": 41758579,
+        "input_first_10k_bytes": 38227601,
+        "marker_bytes": 1881,
+        "omitted_lines": 270,
+        "output_bytes": 41753221,
+        "output_first_10k_remaining_bytes": 38223523,
+        "saved_bytes": 5358,
+        "saved_pct_of_all_bash_bytes": 0.012756392659765008,
+        "scope_bodies": 16944,
+        "scope_bytes": 42002470,
+        "scope_first_10k_input_bytes": 38430578
+      },
+      "install_debug_fail_last_40": {
+        "all_scope_output_bytes": 175198,
+        "all_scope_output_first_10k_remaining_bytes": 174490,
+        "by_class": {
+          "git_diff": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "git_status": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "listing": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "lockfile/json": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "mixed/compound": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "npm/install/debug_log": {
+            "all_scope_output_bytes": 175198,
+            "all_scope_output_first_10k_remaining_bytes": 174490,
+            "changed_bodies": 12,
+            "evaluated_bodies": 80,
+            "first_10k_length_reduction_bytes": 26305,
+            "input_bytes": 204662,
+            "input_first_10k_bytes": 200795,
+            "marker_bytes": 1815,
+            "omitted_lines": 537,
+            "output_bytes": 175198,
+            "output_first_10k_remaining_bytes": 174490,
+            "saved_bytes": 29464,
+            "scope_bodies": 80,
+            "scope_bytes": 204662,
+            "scope_first_10k_input_bytes": 200795
+          },
+          "other": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "search": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "source_dump": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "test": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "write/edit": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          }
+        },
+        "changed_bodies": 12,
+        "evaluated_bodies": 80,
+        "evidence_risk": "high",
+        "first_10k_length_reduction_bytes": 26305,
+        "input_bytes": 204662,
+        "input_first_10k_bytes": 200795,
+        "marker_bytes": 1815,
+        "omitted_lines": 537,
+        "output_bytes": 175198,
+        "output_first_10k_remaining_bytes": 174490,
+        "saved_bytes": 29464,
+        "saved_pct_of_all_bash_bytes": 0.070148255566875,
+        "scope_bodies": 80,
+        "scope_bytes": 204662,
+        "scope_first_10k_input_bytes": 200795
+      },
+      "layout": {
+        "all_scope_output_bytes": 41979007,
+        "all_scope_output_first_10k_remaining_bytes": 38417607,
+        "by_class": {
+          "git_diff": {
+            "all_scope_output_bytes": 2672348,
+            "all_scope_output_first_10k_remaining_bytes": 2316312,
+            "changed_bodies": 20,
+            "evaluated_bodies": 650,
+            "first_10k_length_reduction_bytes": 113,
+            "input_bytes": 2672461,
+            "input_first_10k_bytes": 2316425,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 2672348,
+            "output_first_10k_remaining_bytes": 2316312,
+            "saved_bytes": 113,
+            "scope_bodies": 650,
+            "scope_bytes": 2672461,
+            "scope_first_10k_input_bytes": 2316425
+          },
+          "git_status": {
+            "all_scope_output_bytes": 417097,
+            "all_scope_output_first_10k_remaining_bytes": 414467,
+            "changed_bodies": 5,
+            "evaluated_bodies": 1304,
+            "first_10k_length_reduction_bytes": 6,
+            "input_bytes": 417103,
+            "input_first_10k_bytes": 414473,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 417097,
+            "output_first_10k_remaining_bytes": 414467,
+            "saved_bytes": 6,
+            "scope_bodies": 1304,
+            "scope_bytes": 417103,
+            "scope_first_10k_input_bytes": 414473
+          },
+          "listing": {
+            "all_scope_output_bytes": 2221439,
+            "all_scope_output_first_10k_remaining_bytes": 2067327,
+            "changed_bodies": 50,
+            "evaluated_bodies": 941,
+            "first_10k_length_reduction_bytes": 416,
+            "identity_exclusion_bodies": 10,
+            "identity_exclusion_bytes": 18142,
+            "input_bytes": 2203713,
+            "input_first_10k_bytes": 2050597,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 2203297,
+            "output_first_10k_remaining_bytes": 2050181,
+            "saved_bytes": 416,
+            "scope_bodies": 951,
+            "scope_bytes": 2221855,
+            "scope_first_10k_input_bytes": 2067743
+          },
+          "lockfile/json": {
+            "all_scope_output_bytes": 1019687,
+            "all_scope_output_first_10k_remaining_bytes": 953108,
+            "changed_bodies": 8,
+            "evaluated_bodies": 371,
+            "first_10k_length_reduction_bytes": 419,
+            "identity_exclusion_bodies": 8,
+            "identity_exclusion_bytes": 46395,
+            "input_bytes": 974584,
+            "input_first_10k_bytes": 935843,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 973292,
+            "output_first_10k_remaining_bytes": 935424,
+            "saved_bytes": 1292,
+            "scope_bodies": 379,
+            "scope_bytes": 1020979,
+            "scope_first_10k_input_bytes": 953527
+          },
+          "mixed/compound": {
+            "all_scope_output_bytes": 22476739,
+            "all_scope_output_first_10k_remaining_bytes": 20951195,
+            "changed_bodies": 96,
+            "evaluated_bodies": 5886,
+            "first_10k_length_reduction_bytes": 9198,
+            "identity_exclusion_bodies": 56,
+            "identity_exclusion_bytes": 152398,
+            "input_bytes": 22341977,
+            "input_first_10k_bytes": 20819040,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 22324341,
+            "output_first_10k_remaining_bytes": 20809842,
+            "saved_bytes": 17636,
+            "scope_bodies": 5942,
+            "scope_bytes": 22494375,
+            "scope_first_10k_input_bytes": 20960393
+          },
+          "npm/install/debug_log": {
+            "all_scope_output_bytes": 204660,
+            "all_scope_output_first_10k_remaining_bytes": 200794,
+            "changed_bodies": 2,
+            "evaluated_bodies": 80,
+            "first_10k_length_reduction_bytes": 1,
+            "input_bytes": 204662,
+            "input_first_10k_bytes": 200795,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 204660,
+            "output_first_10k_remaining_bytes": 200794,
+            "saved_bytes": 2,
+            "scope_bodies": 80,
+            "scope_bytes": 204662,
+            "scope_first_10k_input_bytes": 200795
+          },
+          "other": {
+            "all_scope_output_bytes": 1433081,
+            "all_scope_output_first_10k_remaining_bytes": 1168616,
+            "changed_bodies": 16,
+            "evaluated_bodies": 4652,
+            "first_10k_length_reduction_bytes": 653,
+            "identity_exclusion_bodies": 2,
+            "identity_exclusion_bytes": 0,
+            "input_bytes": 1433734,
+            "input_first_10k_bytes": 1169269,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 1433081,
+            "output_first_10k_remaining_bytes": 1168616,
+            "saved_bytes": 653,
+            "scope_bodies": 4654,
+            "scope_bytes": 1433734,
+            "scope_first_10k_input_bytes": 1169269
+          },
+          "search": {
+            "all_scope_output_bytes": 3228547,
+            "all_scope_output_first_10k_remaining_bytes": 2907439,
+            "changed_bodies": 12,
+            "evaluated_bodies": 728,
+            "first_10k_length_reduction_bytes": 56,
+            "identity_exclusion_bodies": 3,
+            "identity_exclusion_bytes": 15361,
+            "input_bytes": 3213251,
+            "input_first_10k_bytes": 2892234,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 3213186,
+            "output_first_10k_remaining_bytes": 2892178,
+            "saved_bytes": 65,
+            "scope_bodies": 731,
+            "scope_bytes": 3228612,
+            "scope_first_10k_input_bytes": 2907495
+          },
+          "source_dump": {
+            "all_scope_output_bytes": 5298812,
+            "all_scope_output_first_10k_remaining_bytes": 5085114,
+            "changed_bodies": 1,
+            "evaluated_bodies": 604,
+            "first_10k_length_reduction_bytes": 0,
+            "identity_exclusion_bodies": 1,
+            "identity_exclusion_bytes": 10062,
+            "input_bytes": 5288775,
+            "input_first_10k_bytes": 5075114,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 5288750,
+            "output_first_10k_remaining_bytes": 5075114,
+            "saved_bytes": 25,
+            "scope_bodies": 605,
+            "scope_bytes": 5298837,
+            "scope_first_10k_input_bytes": 5085114
+          },
+          "test": {
+            "all_scope_output_bytes": 2445481,
+            "all_scope_output_first_10k_remaining_bytes": 1960510,
+            "changed_bodies": 49,
+            "evaluated_bodies": 1459,
+            "first_10k_length_reduction_bytes": 2098,
+            "identity_exclusion_bodies": 1,
+            "identity_exclusion_bytes": 0,
+            "input_bytes": 2447838,
+            "input_first_10k_bytes": 1962608,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 2445481,
+            "output_first_10k_remaining_bytes": 1960510,
+            "saved_bytes": 2357,
+            "scope_bodies": 1460,
+            "scope_bytes": 2447838,
+            "scope_first_10k_input_bytes": 1962608
+          },
+          "write/edit": {
+            "all_scope_output_bytes": 561116,
+            "all_scope_output_first_10k_remaining_bytes": 392725,
+            "changed_bodies": 4,
+            "evaluated_bodies": 186,
+            "first_10k_length_reduction_bytes": 11,
+            "identity_exclusion_bodies": 2,
+            "identity_exclusion_bytes": 1533,
+            "input_bytes": 560481,
+            "input_first_10k_bytes": 391203,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 559583,
+            "output_first_10k_remaining_bytes": 391192,
+            "saved_bytes": 898,
+            "scope_bodies": 188,
+            "scope_bytes": 562014,
+            "scope_first_10k_input_bytes": 392736
+          }
+        },
+        "changed_bodies": 263,
+        "evaluated_bodies": 16861,
+        "evidence_risk": "low",
+        "first_10k_length_reduction_bytes": 12971,
+        "identity_exclusion_bodies": 83,
+        "identity_exclusion_bytes": 243891,
+        "input_bytes": 41758579,
+        "input_first_10k_bytes": 38227601,
+        "marker_bytes": 0,
+        "omitted_lines": 0,
+        "output_bytes": 41735116,
+        "output_first_10k_remaining_bytes": 38214630,
+        "saved_bytes": 23463,
+        "saved_pct_of_all_bash_bytes": 0.055861000555443525,
+        "scope_bodies": 16944,
+        "scope_bytes": 42002470,
+        "scope_first_10k_input_bytes": 38430578
+      },
+      "listing_first_50": {
+        "all_scope_output_bytes": 1919624,
+        "all_scope_output_first_10k_remaining_bytes": 1836548,
+        "by_class": {
+          "git_diff": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "git_status": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "listing": {
+            "all_scope_output_bytes": 1919624,
+            "all_scope_output_first_10k_remaining_bytes": 1836548,
+            "changed_bodies": 132,
+            "evaluated_bodies": 941,
+            "first_10k_length_reduction_bytes": 231195,
+            "identity_exclusion_bodies": 10,
+            "identity_exclusion_bytes": 18142,
+            "input_bytes": 2203713,
+            "input_first_10k_bytes": 2050597,
+            "marker_bytes": 12672,
+            "omitted_lines": 6113,
+            "output_bytes": 1901482,
+            "output_first_10k_remaining_bytes": 1819402,
+            "saved_bytes": 302231,
+            "scope_bodies": 951,
+            "scope_bytes": 2221855,
+            "scope_first_10k_input_bytes": 2067743
+          },
+          "lockfile/json": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "mixed/compound": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "npm/install/debug_log": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "other": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "search": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "source_dump": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "test": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "write/edit": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          }
+        },
+        "changed_bodies": 132,
+        "evaluated_bodies": 941,
+        "evidence_risk": "medium-high",
+        "first_10k_length_reduction_bytes": 231195,
+        "identity_exclusion_bodies": 10,
+        "identity_exclusion_bytes": 18142,
+        "input_bytes": 2203713,
+        "input_first_10k_bytes": 2050597,
+        "marker_bytes": 12672,
+        "omitted_lines": 6113,
+        "output_bytes": 1901482,
+        "output_first_10k_remaining_bytes": 1819402,
+        "saved_bytes": 302231,
+        "saved_pct_of_all_bash_bytes": 0.7195553023429336,
+        "scope_bodies": 951,
+        "scope_bytes": 2221855,
+        "scope_first_10k_input_bytes": 2067743
+      },
+      "lockfile_json_first_last_40": {
+        "all_scope_output_bytes": 938692,
+        "all_scope_output_first_10k_remaining_bytes": 893611,
+        "by_class": {
+          "git_diff": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "git_status": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "listing": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "lockfile/json": {
+            "all_scope_output_bytes": 938692,
+            "all_scope_output_first_10k_remaining_bytes": 893611,
+            "changed_bodies": 23,
+            "evaluated_bodies": 371,
+            "first_10k_length_reduction_bytes": 59916,
+            "identity_exclusion_bodies": 8,
+            "identity_exclusion_bytes": 46395,
+            "input_bytes": 974584,
+            "input_first_10k_bytes": 935843,
+            "marker_bytes": 2416,
+            "omitted_lines": 2724,
+            "output_bytes": 892297,
+            "output_first_10k_remaining_bytes": 875927,
+            "saved_bytes": 82287,
+            "scope_bodies": 379,
+            "scope_bytes": 1020979,
+            "scope_first_10k_input_bytes": 953527
+          },
+          "mixed/compound": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "npm/install/debug_log": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "other": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "search": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "source_dump": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "test": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "write/edit": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          }
+        },
+        "changed_bodies": 23,
+        "evaluated_bodies": 371,
+        "evidence_risk": "high",
+        "first_10k_length_reduction_bytes": 59916,
+        "identity_exclusion_bodies": 8,
+        "identity_exclusion_bytes": 46395,
+        "input_bytes": 974584,
+        "input_first_10k_bytes": 935843,
+        "marker_bytes": 2416,
+        "omitted_lines": 2724,
+        "output_bytes": 892297,
+        "output_first_10k_remaining_bytes": 875927,
+        "saved_bytes": 82287,
+        "saved_pct_of_all_bash_bytes": 0.19590990720307638,
+        "scope_bodies": 379,
+        "scope_bytes": 1020979,
+        "scope_first_10k_input_bytes": 953527
+      },
+      "nonadjacent_exact_repeat": {
+        "all_scope_output_bytes": 41864583,
+        "all_scope_output_first_10k_remaining_bytes": 38354663,
+        "by_class": {
+          "git_diff": {
+            "all_scope_output_bytes": 2671763,
+            "all_scope_output_first_10k_remaining_bytes": 2315727,
+            "changed_bodies": 5,
+            "evaluated_bodies": 650,
+            "first_10k_length_reduction_bytes": 698,
+            "input_bytes": 2672461,
+            "input_first_10k_bytes": 2316425,
+            "marker_bytes": 648,
+            "omitted_lines": 23,
+            "output_bytes": 2671763,
+            "output_first_10k_remaining_bytes": 2315727,
+            "saved_bytes": 698,
+            "scope_bodies": 650,
+            "scope_bytes": 2672461,
+            "scope_first_10k_input_bytes": 2316425
+          },
+          "git_status": {
+            "all_scope_output_bytes": 416737,
+            "all_scope_output_first_10k_remaining_bytes": 414107,
+            "changed_bodies": 1,
+            "evaluated_bodies": 1304,
+            "first_10k_length_reduction_bytes": 366,
+            "input_bytes": 417103,
+            "input_first_10k_bytes": 414473,
+            "marker_bytes": 504,
+            "omitted_lines": 21,
+            "output_bytes": 416737,
+            "output_first_10k_remaining_bytes": 414107,
+            "saved_bytes": 366,
+            "scope_bodies": 1304,
+            "scope_bytes": 417103,
+            "scope_first_10k_input_bytes": 414473
+          },
+          "listing": {
+            "all_scope_output_bytes": 2214858,
+            "all_scope_output_first_10k_remaining_bytes": 2064645,
+            "changed_bodies": 11,
+            "evaluated_bodies": 941,
+            "first_10k_length_reduction_bytes": 3098,
+            "identity_exclusion_bodies": 10,
+            "identity_exclusion_bytes": 18142,
+            "input_bytes": 2203713,
+            "input_first_10k_bytes": 2050597,
+            "marker_bytes": 4618,
+            "omitted_lines": 433,
+            "output_bytes": 2196716,
+            "output_first_10k_remaining_bytes": 2047499,
+            "saved_bytes": 6997,
+            "scope_bodies": 951,
+            "scope_bytes": 2221855,
+            "scope_first_10k_input_bytes": 2067743
+          },
+          "lockfile/json": {
+            "all_scope_output_bytes": 1012681,
+            "all_scope_output_first_10k_remaining_bytes": 951720,
+            "changed_bodies": 15,
+            "evaluated_bodies": 371,
+            "first_10k_length_reduction_bytes": 1807,
+            "identity_exclusion_bodies": 8,
+            "identity_exclusion_bytes": 46395,
+            "input_bytes": 974584,
+            "input_first_10k_bytes": 935843,
+            "marker_bytes": 7503,
+            "omitted_lines": 695,
+            "output_bytes": 966286,
+            "output_first_10k_remaining_bytes": 934036,
+            "saved_bytes": 8298,
+            "scope_bodies": 379,
+            "scope_bytes": 1020979,
+            "scope_first_10k_input_bytes": 953527
+          },
+          "mixed/compound": {
+            "all_scope_output_bytes": 22418217,
+            "all_scope_output_first_10k_remaining_bytes": 20913412,
+            "changed_bodies": 109,
+            "evaluated_bodies": 5886,
+            "first_10k_length_reduction_bytes": 46981,
+            "identity_exclusion_bodies": 56,
+            "identity_exclusion_bytes": 152398,
+            "input_bytes": 22341977,
+            "input_first_10k_bytes": 20819040,
+            "marker_bytes": 32783,
+            "omitted_lines": 3526,
+            "output_bytes": 22265819,
+            "output_first_10k_remaining_bytes": 20772059,
+            "saved_bytes": 76158,
+            "scope_bodies": 5942,
+            "scope_bytes": 22494375,
+            "scope_first_10k_input_bytes": 20960393
+          },
+          "npm/install/debug_log": {
+            "all_scope_output_bytes": 194776,
+            "all_scope_output_first_10k_remaining_bytes": 191225,
+            "changed_bodies": 8,
+            "evaluated_bodies": 80,
+            "first_10k_length_reduction_bytes": 9570,
+            "input_bytes": 204662,
+            "input_first_10k_bytes": 200795,
+            "marker_bytes": 2097,
+            "omitted_lines": 221,
+            "output_bytes": 194776,
+            "output_first_10k_remaining_bytes": 191225,
+            "saved_bytes": 9886,
+            "scope_bodies": 80,
+            "scope_bytes": 204662,
+            "scope_first_10k_input_bytes": 200795
+          },
+          "other": {
+            "all_scope_output_bytes": 1433091,
+            "all_scope_output_first_10k_remaining_bytes": 1168990,
+            "changed_bodies": 12,
+            "evaluated_bodies": 4652,
+            "first_10k_length_reduction_bytes": 279,
+            "identity_exclusion_bodies": 2,
+            "identity_exclusion_bytes": 0,
+            "input_bytes": 1433734,
+            "input_first_10k_bytes": 1169269,
+            "marker_bytes": 3172,
+            "omitted_lines": 187,
+            "output_bytes": 1433091,
+            "output_first_10k_remaining_bytes": 1168990,
+            "saved_bytes": 643,
+            "scope_bodies": 4654,
+            "scope_bytes": 1433734,
+            "scope_first_10k_input_bytes": 1169269
+          },
+          "search": {
+            "all_scope_output_bytes": 3227961,
+            "all_scope_output_first_10k_remaining_bytes": 2906844,
+            "changed_bodies": 2,
+            "evaluated_bodies": 728,
+            "first_10k_length_reduction_bytes": 651,
+            "identity_exclusion_bodies": 3,
+            "identity_exclusion_bytes": 15361,
+            "input_bytes": 3213251,
+            "input_first_10k_bytes": 2892234,
+            "marker_bytes": 364,
+            "omitted_lines": 54,
+            "output_bytes": 3212600,
+            "output_first_10k_remaining_bytes": 2891583,
+            "saved_bytes": 651,
+            "scope_bodies": 731,
+            "scope_bytes": 3228612,
+            "scope_first_10k_input_bytes": 2907495
+          },
+          "source_dump": {
+            "all_scope_output_bytes": 5298837,
+            "all_scope_output_first_10k_remaining_bytes": 5085114,
+            "changed_bodies": 0,
+            "evaluated_bodies": 604,
+            "first_10k_length_reduction_bytes": 0,
+            "identity_exclusion_bodies": 1,
+            "identity_exclusion_bytes": 10062,
+            "input_bytes": 5288775,
+            "input_first_10k_bytes": 5075114,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 5288775,
+            "output_first_10k_remaining_bytes": 5075114,
+            "saved_bytes": 0,
+            "scope_bodies": 605,
+            "scope_bytes": 5298837,
+            "scope_first_10k_input_bytes": 5085114
+          },
+          "test": {
+            "all_scope_output_bytes": 2417447,
+            "all_scope_output_first_10k_remaining_bytes": 1951583,
+            "changed_bodies": 46,
+            "evaluated_bodies": 1459,
+            "first_10k_length_reduction_bytes": 11025,
+            "identity_exclusion_bodies": 1,
+            "identity_exclusion_bytes": 0,
+            "input_bytes": 2447838,
+            "input_first_10k_bytes": 1962608,
+            "marker_bytes": 27820,
+            "omitted_lines": 4092,
+            "output_bytes": 2417447,
+            "output_first_10k_remaining_bytes": 1951583,
+            "saved_bytes": 30391,
+            "scope_bodies": 1460,
+            "scope_bytes": 2447838,
+            "scope_first_10k_input_bytes": 1962608
+          },
+          "write/edit": {
+            "all_scope_output_bytes": 558215,
+            "all_scope_output_first_10k_remaining_bytes": 391296,
+            "changed_bodies": 7,
+            "evaluated_bodies": 186,
+            "first_10k_length_reduction_bytes": 1440,
+            "identity_exclusion_bodies": 2,
+            "identity_exclusion_bytes": 1533,
+            "input_bytes": 560481,
+            "input_first_10k_bytes": 391203,
+            "marker_bytes": 1082,
+            "omitted_lines": 126,
+            "output_bytes": 556682,
+            "output_first_10k_remaining_bytes": 389763,
+            "saved_bytes": 3799,
+            "scope_bodies": 188,
+            "scope_bytes": 562014,
+            "scope_first_10k_input_bytes": 392736
+          }
+        },
+        "changed_bodies": 216,
+        "evaluated_bodies": 16861,
+        "evidence_risk": "low-medium",
+        "first_10k_length_reduction_bytes": 75915,
+        "identity_exclusion_bodies": 83,
+        "identity_exclusion_bytes": 243891,
+        "input_bytes": 41758579,
+        "input_first_10k_bytes": 38227601,
+        "marker_bytes": 80591,
+        "omitted_lines": 9378,
+        "output_bytes": 41620692,
+        "output_first_10k_remaining_bytes": 38151686,
+        "saved_bytes": 137887,
+        "saved_pct_of_all_bash_bytes": 0.3282830747810784,
+        "scope_bodies": 16944,
+        "scope_bytes": 42002470,
+        "scope_first_10k_input_bytes": 38430578
+      },
+      "progress": {
+        "all_scope_output_bytes": 42002470,
+        "all_scope_output_first_10k_remaining_bytes": 38430578,
+        "by_class": {
+          "git_diff": {
+            "all_scope_output_bytes": 2672461,
+            "all_scope_output_first_10k_remaining_bytes": 2316425,
+            "changed_bodies": 0,
+            "evaluated_bodies": 650,
+            "first_10k_length_reduction_bytes": 0,
+            "input_bytes": 2672461,
+            "input_first_10k_bytes": 2316425,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 2672461,
+            "output_first_10k_remaining_bytes": 2316425,
+            "saved_bytes": 0,
+            "scope_bodies": 650,
+            "scope_bytes": 2672461,
+            "scope_first_10k_input_bytes": 2316425
+          },
+          "git_status": {
+            "all_scope_output_bytes": 417103,
+            "all_scope_output_first_10k_remaining_bytes": 414473,
+            "changed_bodies": 0,
+            "evaluated_bodies": 1304,
+            "first_10k_length_reduction_bytes": 0,
+            "input_bytes": 417103,
+            "input_first_10k_bytes": 414473,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 417103,
+            "output_first_10k_remaining_bytes": 414473,
+            "saved_bytes": 0,
+            "scope_bodies": 1304,
+            "scope_bytes": 417103,
+            "scope_first_10k_input_bytes": 414473
+          },
+          "listing": {
+            "all_scope_output_bytes": 2221855,
+            "all_scope_output_first_10k_remaining_bytes": 2067743,
+            "changed_bodies": 0,
+            "evaluated_bodies": 941,
+            "first_10k_length_reduction_bytes": 0,
+            "identity_exclusion_bodies": 10,
+            "identity_exclusion_bytes": 18142,
+            "input_bytes": 2203713,
+            "input_first_10k_bytes": 2050597,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 2203713,
+            "output_first_10k_remaining_bytes": 2050597,
+            "saved_bytes": 0,
+            "scope_bodies": 951,
+            "scope_bytes": 2221855,
+            "scope_first_10k_input_bytes": 2067743
+          },
+          "lockfile/json": {
+            "all_scope_output_bytes": 1020979,
+            "all_scope_output_first_10k_remaining_bytes": 953527,
+            "changed_bodies": 0,
+            "evaluated_bodies": 371,
+            "first_10k_length_reduction_bytes": 0,
+            "identity_exclusion_bodies": 8,
+            "identity_exclusion_bytes": 46395,
+            "input_bytes": 974584,
+            "input_first_10k_bytes": 935843,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 974584,
+            "output_first_10k_remaining_bytes": 935843,
+            "saved_bytes": 0,
+            "scope_bodies": 379,
+            "scope_bytes": 1020979,
+            "scope_first_10k_input_bytes": 953527
+          },
+          "mixed/compound": {
+            "all_scope_output_bytes": 22494375,
+            "all_scope_output_first_10k_remaining_bytes": 20960393,
+            "changed_bodies": 0,
+            "evaluated_bodies": 5886,
+            "first_10k_length_reduction_bytes": 0,
+            "identity_exclusion_bodies": 56,
+            "identity_exclusion_bytes": 152398,
+            "input_bytes": 22341977,
+            "input_first_10k_bytes": 20819040,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 22341977,
+            "output_first_10k_remaining_bytes": 20819040,
+            "saved_bytes": 0,
+            "scope_bodies": 5942,
+            "scope_bytes": 22494375,
+            "scope_first_10k_input_bytes": 20960393
+          },
+          "npm/install/debug_log": {
+            "all_scope_output_bytes": 204662,
+            "all_scope_output_first_10k_remaining_bytes": 200795,
+            "changed_bodies": 0,
+            "evaluated_bodies": 80,
+            "first_10k_length_reduction_bytes": 0,
+            "input_bytes": 204662,
+            "input_first_10k_bytes": 200795,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 204662,
+            "output_first_10k_remaining_bytes": 200795,
+            "saved_bytes": 0,
+            "scope_bodies": 80,
+            "scope_bytes": 204662,
+            "scope_first_10k_input_bytes": 200795
+          },
+          "other": {
+            "all_scope_output_bytes": 1433734,
+            "all_scope_output_first_10k_remaining_bytes": 1169269,
+            "changed_bodies": 0,
+            "evaluated_bodies": 4652,
+            "first_10k_length_reduction_bytes": 0,
+            "identity_exclusion_bodies": 2,
+            "identity_exclusion_bytes": 0,
+            "input_bytes": 1433734,
+            "input_first_10k_bytes": 1169269,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 1433734,
+            "output_first_10k_remaining_bytes": 1169269,
+            "saved_bytes": 0,
+            "scope_bodies": 4654,
+            "scope_bytes": 1433734,
+            "scope_first_10k_input_bytes": 1169269
+          },
+          "search": {
+            "all_scope_output_bytes": 3228612,
+            "all_scope_output_first_10k_remaining_bytes": 2907495,
+            "changed_bodies": 0,
+            "evaluated_bodies": 728,
+            "first_10k_length_reduction_bytes": 0,
+            "identity_exclusion_bodies": 3,
+            "identity_exclusion_bytes": 15361,
+            "input_bytes": 3213251,
+            "input_first_10k_bytes": 2892234,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 3213251,
+            "output_first_10k_remaining_bytes": 2892234,
+            "saved_bytes": 0,
+            "scope_bodies": 731,
+            "scope_bytes": 3228612,
+            "scope_first_10k_input_bytes": 2907495
+          },
+          "source_dump": {
+            "all_scope_output_bytes": 5298837,
+            "all_scope_output_first_10k_remaining_bytes": 5085114,
+            "changed_bodies": 0,
+            "evaluated_bodies": 604,
+            "first_10k_length_reduction_bytes": 0,
+            "identity_exclusion_bodies": 1,
+            "identity_exclusion_bytes": 10062,
+            "input_bytes": 5288775,
+            "input_first_10k_bytes": 5075114,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 5288775,
+            "output_first_10k_remaining_bytes": 5075114,
+            "saved_bytes": 0,
+            "scope_bodies": 605,
+            "scope_bytes": 5298837,
+            "scope_first_10k_input_bytes": 5085114
+          },
+          "test": {
+            "all_scope_output_bytes": 2447838,
+            "all_scope_output_first_10k_remaining_bytes": 1962608,
+            "changed_bodies": 0,
+            "evaluated_bodies": 1459,
+            "first_10k_length_reduction_bytes": 0,
+            "identity_exclusion_bodies": 1,
+            "identity_exclusion_bytes": 0,
+            "input_bytes": 2447838,
+            "input_first_10k_bytes": 1962608,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 2447838,
+            "output_first_10k_remaining_bytes": 1962608,
+            "saved_bytes": 0,
+            "scope_bodies": 1460,
+            "scope_bytes": 2447838,
+            "scope_first_10k_input_bytes": 1962608
+          },
+          "write/edit": {
+            "all_scope_output_bytes": 562014,
+            "all_scope_output_first_10k_remaining_bytes": 392736,
+            "changed_bodies": 0,
+            "evaluated_bodies": 186,
+            "first_10k_length_reduction_bytes": 0,
+            "identity_exclusion_bodies": 2,
+            "identity_exclusion_bytes": 1533,
+            "input_bytes": 560481,
+            "input_first_10k_bytes": 391203,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 560481,
+            "output_first_10k_remaining_bytes": 391203,
+            "saved_bytes": 0,
+            "scope_bodies": 188,
+            "scope_bytes": 562014,
+            "scope_first_10k_input_bytes": 392736
+          }
+        },
+        "changed_bodies": 0,
+        "evaluated_bodies": 16861,
+        "evidence_risk": "low-medium",
+        "first_10k_length_reduction_bytes": 0,
+        "identity_exclusion_bodies": 83,
+        "identity_exclusion_bytes": 243891,
+        "input_bytes": 41758579,
+        "input_first_10k_bytes": 38227601,
+        "marker_bytes": 0,
+        "omitted_lines": 0,
+        "output_bytes": 41758579,
+        "output_first_10k_remaining_bytes": 38227601,
+        "saved_bytes": 0,
+        "saved_pct_of_all_bash_bytes": 0.0,
+        "scope_bodies": 16944,
+        "scope_bytes": 42002470,
+        "scope_first_10k_input_bytes": 38430578
+      },
+      "search_first_50_matches": {
+        "all_scope_output_bytes": 3081017,
+        "all_scope_output_first_10k_remaining_bytes": 2783426,
+        "by_class": {
+          "git_diff": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "git_status": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "listing": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "lockfile/json": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "mixed/compound": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "npm/install/debug_log": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "other": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "search": {
+            "all_scope_output_bytes": 3081017,
+            "all_scope_output_first_10k_remaining_bytes": 2783426,
+            "changed_bodies": 41,
+            "evaluated_bodies": 728,
+            "first_10k_length_reduction_bytes": 124069,
+            "identity_exclusion_bodies": 3,
+            "identity_exclusion_bytes": 15361,
+            "input_bytes": 3213251,
+            "input_first_10k_bytes": 2892234,
+            "marker_bytes": 11663,
+            "omitted_lines": 2852,
+            "output_bytes": 3065656,
+            "output_first_10k_remaining_bytes": 2768165,
+            "saved_bytes": 147595,
+            "scope_bodies": 731,
+            "scope_bytes": 3228612,
+            "scope_first_10k_input_bytes": 2907495
+          },
+          "source_dump": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "test": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "write/edit": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          }
+        },
+        "changed_bodies": 41,
+        "evaluated_bodies": 728,
+        "evidence_risk": "high",
+        "first_10k_length_reduction_bytes": 124069,
+        "identity_exclusion_bodies": 3,
+        "identity_exclusion_bytes": 15361,
+        "input_bytes": 3213251,
+        "input_first_10k_bytes": 2892234,
+        "marker_bytes": 11663,
+        "omitted_lines": 2852,
+        "output_bytes": 3065656,
+        "output_first_10k_remaining_bytes": 2768165,
+        "saved_bytes": 147595,
+        "saved_pct_of_all_bash_bytes": 0.35139600123516546,
+        "scope_bodies": 731,
+        "scope_bytes": 3228612,
+        "scope_first_10k_input_bytes": 2907495
+      },
+      "source_first_last_40": {
+        "all_scope_output_bytes": 5027087,
+        "all_scope_output_first_10k_remaining_bytes": 4815419,
+        "by_class": {
+          "git_diff": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "git_status": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "listing": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "lockfile/json": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "mixed/compound": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "npm/install/debug_log": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "other": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "search": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "source_dump": {
+            "all_scope_output_bytes": 5027087,
+            "all_scope_output_first_10k_remaining_bytes": 4815419,
+            "changed_bodies": 65,
+            "evaluated_bodies": 604,
+            "first_10k_length_reduction_bytes": 269695,
+            "identity_exclusion_bodies": 1,
+            "identity_exclusion_bytes": 10062,
+            "input_bytes": 5288775,
+            "input_first_10k_bytes": 5075114,
+            "marker_bytes": 10668,
+            "omitted_lines": 6451,
+            "output_bytes": 5017025,
+            "output_first_10k_remaining_bytes": 4805419,
+            "saved_bytes": 271750,
+            "scope_bodies": 605,
+            "scope_bytes": 5298837,
+            "scope_first_10k_input_bytes": 5085114
+          },
+          "test": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "write/edit": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          }
+        },
+        "changed_bodies": 65,
+        "evaluated_bodies": 604,
+        "evidence_risk": "high",
+        "first_10k_length_reduction_bytes": 269695,
+        "identity_exclusion_bodies": 1,
+        "identity_exclusion_bytes": 10062,
+        "input_bytes": 5288775,
+        "input_first_10k_bytes": 5075114,
+        "marker_bytes": 10668,
+        "omitted_lines": 6451,
+        "output_bytes": 5017025,
+        "output_first_10k_remaining_bytes": 4805419,
+        "saved_bytes": 271750,
+        "saved_pct_of_all_bash_bytes": 0.6469857605993171,
+        "scope_bodies": 605,
+        "scope_bytes": 5298837,
+        "scope_first_10k_input_bytes": 5085114
+      },
+      "structural_stack": {
+        "all_scope_output_bytes": 41854483,
+        "all_scope_output_first_10k_remaining_bytes": 38347224,
+        "by_class": {
+          "git_diff": {
+            "all_scope_output_bytes": 2671650,
+            "all_scope_output_first_10k_remaining_bytes": 2315614,
+            "changed_bodies": 25,
+            "evaluated_bodies": 650,
+            "first_10k_length_reduction_bytes": 811,
+            "input_bytes": 2672461,
+            "input_first_10k_bytes": 2316425,
+            "marker_bytes": 648,
+            "omitted_lines": 23,
+            "output_bytes": 2671650,
+            "output_first_10k_remaining_bytes": 2315614,
+            "saved_bytes": 811,
+            "scope_bodies": 650,
+            "scope_bytes": 2672461,
+            "scope_first_10k_input_bytes": 2316425
+          },
+          "git_status": {
+            "all_scope_output_bytes": 416704,
+            "all_scope_output_first_10k_remaining_bytes": 414074,
+            "changed_bodies": 7,
+            "evaluated_bodies": 1304,
+            "first_10k_length_reduction_bytes": 399,
+            "input_bytes": 417103,
+            "input_first_10k_bytes": 414473,
+            "marker_bytes": 504,
+            "omitted_lines": 21,
+            "output_bytes": 416704,
+            "output_first_10k_remaining_bytes": 414074,
+            "saved_bytes": 399,
+            "scope_bodies": 1304,
+            "scope_bytes": 417103,
+            "scope_first_10k_input_bytes": 414473
+          },
+          "listing": {
+            "all_scope_output_bytes": 2214393,
+            "all_scope_output_first_10k_remaining_bytes": 2064180,
+            "changed_bodies": 66,
+            "evaluated_bodies": 941,
+            "first_10k_length_reduction_bytes": 3563,
+            "identity_exclusion_bodies": 10,
+            "identity_exclusion_bytes": 18142,
+            "input_bytes": 2203713,
+            "input_first_10k_bytes": 2050597,
+            "marker_bytes": 4690,
+            "omitted_lines": 434,
+            "output_bytes": 2196251,
+            "output_first_10k_remaining_bytes": 2047034,
+            "saved_bytes": 7462,
+            "scope_bodies": 951,
+            "scope_bytes": 2221855,
+            "scope_first_10k_input_bytes": 2067743
+          },
+          "lockfile/json": {
+            "all_scope_output_bytes": 1012290,
+            "all_scope_output_first_10k_remaining_bytes": 951465,
+            "changed_bodies": 23,
+            "evaluated_bodies": 371,
+            "first_10k_length_reduction_bytes": 2062,
+            "identity_exclusion_bodies": 8,
+            "identity_exclusion_bytes": 46395,
+            "input_bytes": 974584,
+            "input_first_10k_bytes": 935843,
+            "marker_bytes": 7467,
+            "omitted_lines": 695,
+            "output_bytes": 965895,
+            "output_first_10k_remaining_bytes": 933781,
+            "saved_bytes": 8689,
+            "scope_bodies": 379,
+            "scope_bytes": 1020979,
+            "scope_first_10k_input_bytes": 953527
+          },
+          "mixed/compound": {
+            "all_scope_output_bytes": 22413293,
+            "all_scope_output_first_10k_remaining_bytes": 20910067,
+            "changed_bodies": 206,
+            "evaluated_bodies": 5886,
+            "first_10k_length_reduction_bytes": 50326,
+            "identity_exclusion_bodies": 56,
+            "identity_exclusion_bytes": 152398,
+            "input_bytes": 22341977,
+            "input_first_10k_bytes": 20819040,
+            "marker_bytes": 31736,
+            "omitted_lines": 3418,
+            "output_bytes": 22260895,
+            "output_first_10k_remaining_bytes": 20768714,
+            "saved_bytes": 81082,
+            "scope_bodies": 5942,
+            "scope_bytes": 22494375,
+            "scope_first_10k_input_bytes": 20960393
+          },
+          "npm/install/debug_log": {
+            "all_scope_output_bytes": 194774,
+            "all_scope_output_first_10k_remaining_bytes": 191224,
+            "changed_bodies": 10,
+            "evaluated_bodies": 80,
+            "first_10k_length_reduction_bytes": 9571,
+            "input_bytes": 204662,
+            "input_first_10k_bytes": 200795,
+            "marker_bytes": 2097,
+            "omitted_lines": 221,
+            "output_bytes": 194774,
+            "output_first_10k_remaining_bytes": 191224,
+            "saved_bytes": 9888,
+            "scope_bodies": 80,
+            "scope_bytes": 204662,
+            "scope_first_10k_input_bytes": 200795
+          },
+          "other": {
+            "all_scope_output_bytes": 1432140,
+            "all_scope_output_first_10k_remaining_bytes": 1168237,
+            "changed_bodies": 36,
+            "evaluated_bodies": 4652,
+            "first_10k_length_reduction_bytes": 1032,
+            "identity_exclusion_bodies": 2,
+            "identity_exclusion_bytes": 0,
+            "input_bytes": 1433734,
+            "input_first_10k_bytes": 1169269,
+            "marker_bytes": 3028,
+            "omitted_lines": 185,
+            "output_bytes": 1432140,
+            "output_first_10k_remaining_bytes": 1168237,
+            "saved_bytes": 1594,
+            "scope_bodies": 4654,
+            "scope_bytes": 1433734,
+            "scope_first_10k_input_bytes": 1169269
+          },
+          "search": {
+            "all_scope_output_bytes": 3227575,
+            "all_scope_output_first_10k_remaining_bytes": 2906481,
+            "changed_bodies": 24,
+            "evaluated_bodies": 728,
+            "first_10k_length_reduction_bytes": 1014,
+            "identity_exclusion_bodies": 3,
+            "identity_exclusion_bytes": 15361,
+            "input_bytes": 3213251,
+            "input_first_10k_bytes": 2892234,
+            "marker_bytes": 292,
+            "omitted_lines": 56,
+            "output_bytes": 3212214,
+            "output_first_10k_remaining_bytes": 2891220,
+            "saved_bytes": 1037,
+            "scope_bodies": 731,
+            "scope_bytes": 3228612,
+            "scope_first_10k_input_bytes": 2907495
+          },
+          "source_dump": {
+            "all_scope_output_bytes": 5298799,
+            "all_scope_output_first_10k_remaining_bytes": 5085114,
+            "changed_bodies": 2,
+            "evaluated_bodies": 604,
+            "first_10k_length_reduction_bytes": 0,
+            "identity_exclusion_bodies": 1,
+            "identity_exclusion_bytes": 10062,
+            "input_bytes": 5288775,
+            "input_first_10k_bytes": 5075114,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 5288737,
+            "output_first_10k_remaining_bytes": 5075114,
+            "saved_bytes": 38,
+            "scope_bodies": 605,
+            "scope_bytes": 5298837,
+            "scope_first_10k_input_bytes": 5085114
+          },
+          "test": {
+            "all_scope_output_bytes": 2415060,
+            "all_scope_output_first_10k_remaining_bytes": 1949485,
+            "changed_bodies": 94,
+            "evaluated_bodies": 1459,
+            "first_10k_length_reduction_bytes": 13123,
+            "identity_exclusion_bodies": 1,
+            "identity_exclusion_bytes": 0,
+            "input_bytes": 2447838,
+            "input_first_10k_bytes": 1962608,
+            "marker_bytes": 27964,
+            "omitted_lines": 4104,
+            "output_bytes": 2415060,
+            "output_first_10k_remaining_bytes": 1949485,
+            "saved_bytes": 32778,
+            "scope_bodies": 1460,
+            "scope_bytes": 2447838,
+            "scope_first_10k_input_bytes": 1962608
+          },
+          "write/edit": {
+            "all_scope_output_bytes": 557805,
+            "all_scope_output_first_10k_remaining_bytes": 391283,
+            "changed_bodies": 12,
+            "evaluated_bodies": 186,
+            "first_10k_length_reduction_bytes": 1453,
+            "identity_exclusion_bodies": 2,
+            "identity_exclusion_bytes": 1533,
+            "input_bytes": 560481,
+            "input_first_10k_bytes": 391203,
+            "marker_bytes": 794,
+            "omitted_lines": 112,
+            "output_bytes": 556272,
+            "output_first_10k_remaining_bytes": 389750,
+            "saved_bytes": 4209,
+            "scope_bodies": 188,
+            "scope_bytes": 562014,
+            "scope_first_10k_input_bytes": 392736
+          }
+        },
+        "changed_bodies": 505,
+        "evaluated_bodies": 16861,
+        "evidence_risk": "low-medium",
+        "first_10k_length_reduction_bytes": 83354,
+        "identity_exclusion_bodies": 83,
+        "identity_exclusion_bytes": 243891,
+        "input_bytes": 41758579,
+        "input_first_10k_bytes": 38227601,
+        "marker_bytes": 79220,
+        "omitted_lines": 9269,
+        "output_bytes": 41610592,
+        "output_first_10k_remaining_bytes": 38144247,
+        "saved_bytes": 147987,
+        "saved_pct_of_all_bash_bytes": 0.3523292796828377,
+        "scope_bodies": 16944,
+        "scope_bytes": 42002470,
+        "scope_first_10k_input_bytes": 38430578
+      },
+      "terminal_control": {
+        "all_scope_output_bytes": 42001429,
+        "all_scope_output_first_10k_remaining_bytes": 38429762,
+        "by_class": {
+          "git_diff": {
+            "all_scope_output_bytes": 2672461,
+            "all_scope_output_first_10k_remaining_bytes": 2316425,
+            "changed_bodies": 0,
+            "evaluated_bodies": 650,
+            "first_10k_length_reduction_bytes": 0,
+            "input_bytes": 2672461,
+            "input_first_10k_bytes": 2316425,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 2672461,
+            "output_first_10k_remaining_bytes": 2316425,
+            "saved_bytes": 0,
+            "scope_bodies": 650,
+            "scope_bytes": 2672461,
+            "scope_first_10k_input_bytes": 2316425
+          },
+          "git_status": {
+            "all_scope_output_bytes": 417076,
+            "all_scope_output_first_10k_remaining_bytes": 414446,
+            "changed_bodies": 1,
+            "evaluated_bodies": 1304,
+            "first_10k_length_reduction_bytes": 27,
+            "input_bytes": 417103,
+            "input_first_10k_bytes": 414473,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 417076,
+            "output_first_10k_remaining_bytes": 414446,
+            "saved_bytes": 27,
+            "scope_bodies": 1304,
+            "scope_bytes": 417103,
+            "scope_first_10k_input_bytes": 414473
+          },
+          "listing": {
+            "all_scope_output_bytes": 2221738,
+            "all_scope_output_first_10k_remaining_bytes": 2067626,
+            "changed_bodies": 6,
+            "evaluated_bodies": 941,
+            "first_10k_length_reduction_bytes": 117,
+            "identity_exclusion_bodies": 10,
+            "identity_exclusion_bytes": 18142,
+            "input_bytes": 2203713,
+            "input_first_10k_bytes": 2050597,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 2203596,
+            "output_first_10k_remaining_bytes": 2050480,
+            "saved_bytes": 117,
+            "scope_bodies": 951,
+            "scope_bytes": 2221855,
+            "scope_first_10k_input_bytes": 2067743
+          },
+          "lockfile/json": {
+            "all_scope_output_bytes": 1020951,
+            "all_scope_output_first_10k_remaining_bytes": 953499,
+            "changed_bodies": 1,
+            "evaluated_bodies": 371,
+            "first_10k_length_reduction_bytes": 28,
+            "identity_exclusion_bodies": 8,
+            "identity_exclusion_bytes": 46395,
+            "input_bytes": 974584,
+            "input_first_10k_bytes": 935843,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 974556,
+            "output_first_10k_remaining_bytes": 935815,
+            "saved_bytes": 28,
+            "scope_bodies": 379,
+            "scope_bytes": 1020979,
+            "scope_first_10k_input_bytes": 953527
+          },
+          "mixed/compound": {
+            "all_scope_output_bytes": 22494010,
+            "all_scope_output_first_10k_remaining_bytes": 20960028,
+            "changed_bodies": 20,
+            "evaluated_bodies": 5886,
+            "first_10k_length_reduction_bytes": 365,
+            "identity_exclusion_bodies": 56,
+            "identity_exclusion_bytes": 152398,
+            "input_bytes": 22341977,
+            "input_first_10k_bytes": 20819040,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 22341612,
+            "output_first_10k_remaining_bytes": 20818675,
+            "saved_bytes": 365,
+            "scope_bodies": 5942,
+            "scope_bytes": 22494375,
+            "scope_first_10k_input_bytes": 20960393
+          },
+          "npm/install/debug_log": {
+            "all_scope_output_bytes": 204662,
+            "all_scope_output_first_10k_remaining_bytes": 200795,
+            "changed_bodies": 0,
+            "evaluated_bodies": 80,
+            "first_10k_length_reduction_bytes": 0,
+            "input_bytes": 204662,
+            "input_first_10k_bytes": 200795,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 204662,
+            "output_first_10k_remaining_bytes": 200795,
+            "saved_bytes": 0,
+            "scope_bodies": 80,
+            "scope_bytes": 204662,
+            "scope_first_10k_input_bytes": 200795
+          },
+          "other": {
+            "all_scope_output_bytes": 1433420,
+            "all_scope_output_first_10k_remaining_bytes": 1169153,
+            "changed_bodies": 10,
+            "evaluated_bodies": 4652,
+            "first_10k_length_reduction_bytes": 116,
+            "identity_exclusion_bodies": 2,
+            "identity_exclusion_bytes": 0,
+            "input_bytes": 1433734,
+            "input_first_10k_bytes": 1169269,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 1433420,
+            "output_first_10k_remaining_bytes": 1169153,
+            "saved_bytes": 314,
+            "scope_bodies": 4654,
+            "scope_bytes": 1433734,
+            "scope_first_10k_input_bytes": 1169269
+          },
+          "search": {
+            "all_scope_output_bytes": 3228437,
+            "all_scope_output_first_10k_remaining_bytes": 2907334,
+            "changed_bodies": 11,
+            "evaluated_bodies": 728,
+            "first_10k_length_reduction_bytes": 161,
+            "identity_exclusion_bodies": 3,
+            "identity_exclusion_bytes": 15361,
+            "input_bytes": 3213251,
+            "input_first_10k_bytes": 2892234,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 3213076,
+            "output_first_10k_remaining_bytes": 2892073,
+            "saved_bytes": 175,
+            "scope_bodies": 731,
+            "scope_bytes": 3228612,
+            "scope_first_10k_input_bytes": 2907495
+          },
+          "source_dump": {
+            "all_scope_output_bytes": 5298824,
+            "all_scope_output_first_10k_remaining_bytes": 5085114,
+            "changed_bodies": 1,
+            "evaluated_bodies": 604,
+            "first_10k_length_reduction_bytes": 0,
+            "identity_exclusion_bodies": 1,
+            "identity_exclusion_bytes": 10062,
+            "input_bytes": 5288775,
+            "input_first_10k_bytes": 5075114,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 5288762,
+            "output_first_10k_remaining_bytes": 5075114,
+            "saved_bytes": 13,
+            "scope_bodies": 605,
+            "scope_bytes": 5298837,
+            "scope_first_10k_input_bytes": 5085114
+          },
+          "test": {
+            "all_scope_output_bytes": 2447838,
+            "all_scope_output_first_10k_remaining_bytes": 1962608,
+            "changed_bodies": 0,
+            "evaluated_bodies": 1459,
+            "first_10k_length_reduction_bytes": 0,
+            "identity_exclusion_bodies": 1,
+            "identity_exclusion_bytes": 0,
+            "input_bytes": 2447838,
+            "input_first_10k_bytes": 1962608,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 2447838,
+            "output_first_10k_remaining_bytes": 1962608,
+            "saved_bytes": 0,
+            "scope_bodies": 1460,
+            "scope_bytes": 2447838,
+            "scope_first_10k_input_bytes": 1962608
+          },
+          "write/edit": {
+            "all_scope_output_bytes": 562012,
+            "all_scope_output_first_10k_remaining_bytes": 392734,
+            "changed_bodies": 2,
+            "evaluated_bodies": 186,
+            "first_10k_length_reduction_bytes": 2,
+            "identity_exclusion_bodies": 2,
+            "identity_exclusion_bytes": 1533,
+            "input_bytes": 560481,
+            "input_first_10k_bytes": 391203,
+            "marker_bytes": 0,
+            "omitted_lines": 0,
+            "output_bytes": 560479,
+            "output_first_10k_remaining_bytes": 391201,
+            "saved_bytes": 2,
+            "scope_bodies": 188,
+            "scope_bytes": 562014,
+            "scope_first_10k_input_bytes": 392736
+          }
+        },
+        "changed_bodies": 52,
+        "evaluated_bodies": 16861,
+        "evidence_risk": "low",
+        "first_10k_length_reduction_bytes": 816,
+        "identity_exclusion_bodies": 83,
+        "identity_exclusion_bytes": 243891,
+        "input_bytes": 41758579,
+        "input_first_10k_bytes": 38227601,
+        "marker_bytes": 0,
+        "omitted_lines": 0,
+        "output_bytes": 41757538,
+        "output_first_10k_remaining_bytes": 38226785,
+        "saved_bytes": 1041,
+        "saved_pct_of_all_bash_bytes": 0.0024784256735377705,
+        "scope_bodies": 16944,
+        "scope_bytes": 42002470,
+        "scope_first_10k_input_bytes": 38430578
+      },
+      "test_passing_fold": {
+        "all_scope_output_bytes": 2350679,
+        "all_scope_output_first_10k_remaining_bytes": 1889271,
+        "by_class": {
+          "git_diff": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "git_status": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "listing": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "lockfile/json": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "mixed/compound": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "npm/install/debug_log": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "other": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "search": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "source_dump": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          },
+          "test": {
+            "all_scope_output_bytes": 2350679,
+            "all_scope_output_first_10k_remaining_bytes": 1889271,
+            "changed_bodies": 111,
+            "evaluated_bodies": 1459,
+            "first_10k_length_reduction_bytes": 73337,
+            "identity_exclusion_bodies": 1,
+            "identity_exclusion_bytes": 0,
+            "input_bytes": 2447838,
+            "input_first_10k_bytes": 1962608,
+            "marker_bytes": 4384,
+            "omitted_lines": 1594,
+            "output_bytes": 2350679,
+            "output_first_10k_remaining_bytes": 1889271,
+            "saved_bytes": 97159,
+            "scope_bodies": 1460,
+            "scope_bytes": 2447838,
+            "scope_first_10k_input_bytes": 1962608
+          },
+          "write/edit": {
+            "all_scope_output_bytes": 0,
+            "all_scope_output_first_10k_remaining_bytes": 0
+          }
+        },
+        "changed_bodies": 111,
+        "evaluated_bodies": 1459,
+        "evidence_risk": "medium",
+        "first_10k_length_reduction_bytes": 73337,
+        "identity_exclusion_bodies": 1,
+        "identity_exclusion_bytes": 0,
+        "input_bytes": 2447838,
+        "input_first_10k_bytes": 1962608,
+        "marker_bytes": 4384,
+        "omitted_lines": 1594,
+        "output_bytes": 2350679,
+        "output_first_10k_remaining_bytes": 1889271,
+        "saved_bytes": 97159,
+        "saved_pct_of_all_bash_bytes": 0.23131734871782542,
+        "scope_bodies": 1460,
+        "scope_bytes": 2447838,
+        "scope_first_10k_input_bytes": 1962608
+      }
+    },
+    "stacked": {
+      "all_corpus_output_bytes": 40950882,
+      "all_corpus_output_first_10k_remaining_bytes": 37573004,
+      "all_scope_output_bytes": 40950882,
+      "all_scope_output_first_10k_remaining_bytes": 37573004,
+      "by_class": {
+        "git_diff": {
+          "all_scope_output_bytes": 2671650,
+          "all_scope_output_first_10k_remaining_bytes": 2315614,
+          "changed_bodies": 25,
+          "evaluated_bodies": 650,
+          "first_10k_length_reduction_bytes": 811,
+          "input_bytes": 2672461,
+          "input_first_10k_bytes": 2316425,
+          "marker_bytes": 648,
+          "omitted_lines": 23,
+          "output_bytes": 2671650,
+          "output_first_10k_remaining_bytes": 2315614,
+          "saved_bytes": 811,
+          "scope_bodies": 650,
+          "scope_bytes": 2672461,
+          "scope_first_10k_input_bytes": 2316425
+        },
+        "git_status": {
+          "all_scope_output_bytes": 416704,
+          "all_scope_output_first_10k_remaining_bytes": 414074,
+          "changed_bodies": 7,
+          "evaluated_bodies": 1304,
+          "first_10k_length_reduction_bytes": 399,
+          "input_bytes": 417103,
+          "input_first_10k_bytes": 414473,
+          "marker_bytes": 504,
+          "omitted_lines": 21,
+          "output_bytes": 416704,
+          "output_first_10k_remaining_bytes": 414074,
+          "saved_bytes": 399,
+          "scope_bodies": 1304,
+          "scope_bytes": 417103,
+          "scope_first_10k_input_bytes": 414473
+        },
+        "listing": {
+          "all_scope_output_bytes": 1920252,
+          "all_scope_output_first_10k_remaining_bytes": 1837380,
+          "changed_bodies": 175,
+          "evaluated_bodies": 941,
+          "first_10k_length_reduction_bytes": 230363,
+          "identity_exclusion_bodies": 10,
+          "identity_exclusion_bytes": 18142,
+          "input_bytes": 2203713,
+          "input_first_10k_bytes": 2050597,
+          "marker_bytes": 17004,
+          "omitted_lines": 6130,
+          "output_bytes": 1902110,
+          "output_first_10k_remaining_bytes": 1820234,
+          "saved_bytes": 301603,
+          "scope_bodies": 951,
+          "scope_bytes": 2221855,
+          "scope_first_10k_input_bytes": 2067743
+        },
+        "lockfile/json": {
+          "all_scope_output_bytes": 941752,
+          "all_scope_output_first_10k_remaining_bytes": 896671,
+          "changed_bodies": 38,
+          "evaluated_bodies": 371,
+          "first_10k_length_reduction_bytes": 56856,
+          "identity_exclusion_bodies": 8,
+          "identity_exclusion_bytes": 46395,
+          "input_bytes": 974584,
+          "input_first_10k_bytes": 935843,
+          "marker_bytes": 9636,
+          "omitted_lines": 2855,
+          "output_bytes": 895357,
+          "output_first_10k_remaining_bytes": 878987,
+          "saved_bytes": 79227,
+          "scope_bodies": 379,
+          "scope_bytes": 1020979,
+          "scope_first_10k_input_bytes": 953527
+        },
+        "mixed/compound": {
+          "all_scope_output_bytes": 22413293,
+          "all_scope_output_first_10k_remaining_bytes": 20910067,
+          "changed_bodies": 206,
+          "evaluated_bodies": 5886,
+          "first_10k_length_reduction_bytes": 50326,
+          "identity_exclusion_bodies": 56,
+          "identity_exclusion_bytes": 152398,
+          "input_bytes": 22341977,
+          "input_first_10k_bytes": 20819040,
+          "marker_bytes": 31736,
+          "omitted_lines": 3418,
+          "output_bytes": 22260895,
+          "output_first_10k_remaining_bytes": 20768714,
+          "saved_bytes": 81082,
+          "scope_bodies": 5942,
+          "scope_bytes": 22494375,
+          "scope_first_10k_input_bytes": 20960393
+        },
+        "npm/install/debug_log": {
+          "all_scope_output_bytes": 170620,
+          "all_scope_output_first_10k_remaining_bytes": 169912,
+          "changed_bodies": 15,
+          "evaluated_bodies": 80,
+          "first_10k_length_reduction_bytes": 30883,
+          "input_bytes": 204662,
+          "input_first_10k_bytes": 200795,
+          "marker_bytes": 3723,
+          "omitted_lines": 609,
+          "output_bytes": 170620,
+          "output_first_10k_remaining_bytes": 169912,
+          "saved_bytes": 34042,
+          "scope_bodies": 80,
+          "scope_bytes": 204662,
+          "scope_first_10k_input_bytes": 200795
+        },
+        "other": {
+          "all_scope_output_bytes": 1432140,
+          "all_scope_output_first_10k_remaining_bytes": 1168237,
+          "changed_bodies": 36,
+          "evaluated_bodies": 4652,
+          "first_10k_length_reduction_bytes": 1032,
+          "identity_exclusion_bodies": 2,
+          "identity_exclusion_bytes": 0,
+          "input_bytes": 1433734,
+          "input_first_10k_bytes": 1169269,
+          "marker_bytes": 3028,
+          "omitted_lines": 185,
+          "output_bytes": 1432140,
+          "output_first_10k_remaining_bytes": 1168237,
+          "saved_bytes": 1594,
+          "scope_bodies": 4654,
+          "scope_bytes": 1433734,
+          "scope_first_10k_input_bytes": 1169269
+        },
+        "search": {
+          "all_scope_output_bytes": 3081716,
+          "all_scope_output_first_10k_remaining_bytes": 2784125,
+          "changed_bodies": 56,
+          "evaluated_bodies": 728,
+          "first_10k_length_reduction_bytes": 123370,
+          "identity_exclusion_bodies": 3,
+          "identity_exclusion_bytes": 15361,
+          "input_bytes": 3213251,
+          "input_first_10k_bytes": 2892234,
+          "marker_bytes": 11843,
+          "omitted_lines": 2824,
+          "output_bytes": 3066355,
+          "output_first_10k_remaining_bytes": 2768864,
+          "saved_bytes": 146896,
+          "scope_bodies": 731,
+          "scope_bytes": 3228612,
+          "scope_first_10k_input_bytes": 2907495
+        },
+        "source_dump": {
+          "all_scope_output_bytes": 5027049,
+          "all_scope_output_first_10k_remaining_bytes": 4815381,
+          "changed_bodies": 65,
+          "evaluated_bodies": 604,
+          "first_10k_length_reduction_bytes": 269733,
+          "identity_exclusion_bodies": 1,
+          "identity_exclusion_bytes": 10062,
+          "input_bytes": 5288775,
+          "input_first_10k_bytes": 5075114,
+          "marker_bytes": 10668,
+          "omitted_lines": 6451,
+          "output_bytes": 5016987,
+          "output_first_10k_remaining_bytes": 4805381,
+          "saved_bytes": 271788,
+          "scope_bodies": 605,
+          "scope_bytes": 5298837,
+          "scope_first_10k_input_bytes": 5085114
+        },
+        "test": {
+          "all_scope_output_bytes": 2317901,
+          "all_scope_output_first_10k_remaining_bytes": 1870260,
+          "changed_bodies": 146,
+          "evaluated_bodies": 1459,
+          "first_10k_length_reduction_bytes": 92348,
+          "identity_exclusion_bodies": 1,
+          "identity_exclusion_bytes": 0,
+          "input_bytes": 2447838,
+          "input_first_10k_bytes": 1962608,
+          "marker_bytes": 32348,
+          "omitted_lines": 5698,
+          "output_bytes": 2317901,
+          "output_first_10k_remaining_bytes": 1870260,
+          "saved_bytes": 129937,
+          "scope_bodies": 1460,
+          "scope_bytes": 2447838,
+          "scope_first_10k_input_bytes": 1962608
+        },
+        "write/edit": {
+          "all_scope_output_bytes": 557805,
+          "all_scope_output_first_10k_remaining_bytes": 391283,
+          "changed_bodies": 12,
+          "evaluated_bodies": 186,
+          "first_10k_length_reduction_bytes": 1453,
+          "identity_exclusion_bodies": 2,
+          "identity_exclusion_bytes": 1533,
+          "input_bytes": 560481,
+          "input_first_10k_bytes": 391203,
+          "marker_bytes": 794,
+          "omitted_lines": 112,
+          "output_bytes": 556272,
+          "output_first_10k_remaining_bytes": 389750,
+          "saved_bytes": 4209,
+          "scope_bodies": 188,
+          "scope_bytes": 562014,
+          "scope_first_10k_input_bytes": 392736
+        }
+      },
+      "changed_bodies": 781,
+      "evaluated_bodies": 16861,
+      "evidence_risk": "class-dependent",
+      "first_10k_length_reduction_bytes": 857574,
+      "identity_exclusion_bodies": 83,
+      "identity_exclusion_bytes": 243891,
+      "incremental_by_family": {
+        "adjacent_exact_repeat": {
+          "changed_bodies": 28,
+          "incremental_saved_bytes": 5358,
+          "listing_incremental_saved_bytes": 328,
+          "lockfile/json_incremental_saved_bytes": 319,
+          "mixed/compound_incremental_saved_bytes": 3811,
+          "other_incremental_saved_bytes": 71,
+          "search_incremental_saved_bytes": 775,
+          "test_incremental_saved_bytes": 54
+        },
+        "install_debug_fail_last_40": {
+          "changed_bodies": 11,
+          "incremental_saved_bytes": 24154,
+          "npm/install/debug_log_incremental_saved_bytes": 24154
+        },
+        "layout": {
+          "changed_bodies": 263,
+          "git_diff_incremental_saved_bytes": 113,
+          "git_status_incremental_saved_bytes": 6,
+          "incremental_saved_bytes": 23463,
+          "listing_incremental_saved_bytes": 416,
+          "lockfile/json_incremental_saved_bytes": 1292,
+          "mixed/compound_incremental_saved_bytes": 17636,
+          "npm/install/debug_log_incremental_saved_bytes": 2,
+          "other_incremental_saved_bytes": 653,
+          "search_incremental_saved_bytes": 65,
+          "source_dump_incremental_saved_bytes": 25,
+          "test_incremental_saved_bytes": 2357,
+          "write/edit_incremental_saved_bytes": 898
+        },
+        "listing_first_50": {
+          "changed_bodies": 131,
+          "incremental_saved_bytes": 294141,
+          "listing_incremental_saved_bytes": 294141
+        },
+        "lockfile_json_first_last_40": {
+          "changed_bodies": 23,
+          "incremental_saved_bytes": 70538,
+          "lockfile/json_incremental_saved_bytes": 70538
+        },
+        "nonadjacent_exact_repeat": {
+          "changed_bodies": 196,
+          "git_diff_incremental_saved_bytes": 698,
+          "git_status_incremental_saved_bytes": 366,
+          "incremental_saved_bytes": 118125,
+          "listing_incremental_saved_bytes": 6601,
+          "lockfile/json_incremental_saved_bytes": 7050,
+          "mixed/compound_incremental_saved_bytes": 59270,
+          "npm/install/debug_log_incremental_saved_bytes": 9886,
+          "other_incremental_saved_bytes": 556,
+          "search_incremental_saved_bytes": 22,
+          "test_incremental_saved_bytes": 30367,
+          "write/edit_incremental_saved_bytes": 3309
+        },
+        "progress": {},
+        "search_first_50_matches": {
+          "changed_bodies": 40,
+          "incremental_saved_bytes": 145859,
+          "search_incremental_saved_bytes": 145859
+        },
+        "source_first_last_40": {
+          "changed_bodies": 65,
+          "incremental_saved_bytes": 271750,
+          "source_dump_incremental_saved_bytes": 271750
+        },
+        "terminal_control": {
+          "changed_bodies": 52,
+          "git_status_incremental_saved_bytes": 27,
+          "incremental_saved_bytes": 1041,
+          "listing_incremental_saved_bytes": 117,
+          "lockfile/json_incremental_saved_bytes": 28,
+          "mixed/compound_incremental_saved_bytes": 365,
+          "other_incremental_saved_bytes": 314,
+          "search_incremental_saved_bytes": 175,
+          "source_dump_incremental_saved_bytes": 13,
+          "write/edit_incremental_saved_bytes": 2
+        },
+        "test_passing_fold": {
+          "changed_bodies": 111,
+          "incremental_saved_bytes": 97159,
+          "test_incremental_saved_bytes": 97159
+        }
+      },
+      "input_bytes": 41758579,
+      "input_first_10k_bytes": 38227601,
+      "marker_bytes": 121932,
+      "omitted_lines": 28326,
+      "output_bytes": 40706991,
+      "output_first_10k_remaining_bytes": 37370027,
+      "saved_bytes": 1051588,
+      "saved_pct_of_all_bash_bytes": 2.503633714874387,
+      "scope_bodies": 16944,
+      "scope_bytes": 42002470,
+      "scope_first_10k_input_bytes": 38430578
+    }
+  },
+  "coverage": {
+    "archives_at_or_before_cutoff": 598,
+    "bash_bodies": 16944,
+    "bash_bytes": 42002470,
+    "bash_issuing_sessions": 425,
+    "by_class": {
+      "git_diff": {
+        "bodies": 650,
+        "byte_share_pct": 6.36262819781789,
+        "bytes": 2672461,
+        "joined_bodies": 650,
+        "sensitive_bodies": 0,
+        "sensitive_bytes": 0,
+        "unresolved_bodies": 0
+      },
+      "git_status": {
+        "bodies": 1304,
+        "byte_share_pct": 0.9930439805087653,
+        "bytes": 417103,
+        "joined_bodies": 1304,
+        "sensitive_bodies": 0,
+        "sensitive_bytes": 0,
+        "unresolved_bodies": 0
+      },
+      "listing": {
+        "bodies": 951,
+        "byte_share_pct": 5.289819860593913,
+        "bytes": 2221855,
+        "joined_bodies": 951,
+        "sensitive_bodies": 10,
+        "sensitive_bytes": 18142,
+        "unresolved_bodies": 0
+      },
+      "lockfile/json": {
+        "bodies": 379,
+        "byte_share_pct": 2.4307594291478574,
+        "bytes": 1020979,
+        "joined_bodies": 379,
+        "sensitive_bodies": 8,
+        "sensitive_bytes": 46395,
+        "unresolved_bodies": 0
+      },
+      "mixed/compound": {
+        "bodies": 5942,
+        "byte_share_pct": 53.55488617693197,
+        "bytes": 22494375,
+        "joined_bodies": 5938,
+        "sensitive_bodies": 52,
+        "sensitive_bytes": 152398,
+        "unresolved_bodies": 4
+      },
+      "npm/install/debug_log": {
+        "bodies": 80,
+        "byte_share_pct": 0.4872618205548388,
+        "bytes": 204662,
+        "joined_bodies": 80,
+        "sensitive_bodies": 0,
+        "sensitive_bytes": 0,
+        "unresolved_bodies": 0
+      },
+      "other": {
+        "bodies": 4654,
+        "byte_share_pct": 3.4134516374870336,
+        "bytes": 1433734,
+        "joined_bodies": 4652,
+        "sensitive_bodies": 0,
+        "sensitive_bytes": 0,
+        "unresolved_bodies": 2
+      },
+      "search": {
+        "bodies": 731,
+        "byte_share_pct": 7.686719376265253,
+        "bytes": 3228612,
+        "joined_bodies": 731,
+        "sensitive_bodies": 3,
+        "sensitive_bytes": 15361,
+        "unresolved_bodies": 0
+      },
+      "source_dump": {
+        "bodies": 605,
+        "byte_share_pct": 12.615536657725128,
+        "bytes": 5298837,
+        "joined_bodies": 605,
+        "sensitive_bodies": 1,
+        "sensitive_bytes": 10062,
+        "unresolved_bodies": 0
+      },
+      "test": {
+        "bodies": 1460,
+        "byte_share_pct": 5.827842981615129,
+        "bytes": 2447838,
+        "joined_bodies": 1459,
+        "sensitive_bodies": 0,
+        "sensitive_bytes": 0,
+        "unresolved_bodies": 1
+      },
+      "write/edit": {
+        "bodies": 188,
+        "byte_share_pct": 1.3380498813522157,
+        "bytes": 562014,
+        "joined_bodies": 188,
+        "sensitive_bodies": 2,
+        "sensitive_bytes": 1533,
+        "unresolved_bodies": 0
+      }
+    },
+    "classifier_reconstruction_mismatches": 0,
+    "decode_failures": 0,
+    "discovered_archives": 598,
+    "divergent_result_groups": 3409,
+    "duplicate_result_events": 3650,
+    "first_10k_input_bytes": 38430578,
+    "included_session_ids_sha256": "38758b14e631300066ecbfbaca01e200493b43de369eafcfecbb0d8087f4c343",
+    "included_sessions": 597,
+    "joined_bodies": 16937,
+    "post_cutoff_events": {
+      "agent/inbox/spliced": 4,
+      "approval/policy": 1,
+      "assistant/chunk": 541,
+      "assistant/message": 29,
+      "hook/result": 6,
+      "permission/preset": 1,
+      "request/context": 1,
+      "request/header": 1,
+      "sandbox/mode": 1,
+      "step/end": 30,
+      "step/start": 30,
+      "tool/call": 48,
+      "tool/result": 49,
+      "turn/end": 2,
+      "turn/start": 2,
+      "user/message": 4
+    },
+    "result_events": 63715,
+    "sensitive_identity_bodies": 76,
+    "sensitive_identity_bytes": 243891,
+    "unresolved_identity_bodies": 7,
+    "unresolved_identity_bytes": 0,
+    "zstd_failures": []
+  },
+  "keep_list_sensitivity": {
+    "definition": "Raw physical-line union. K_struct matches layout, ANSI/CRLF, progress, and exact-repeat-after-first occurrences. Later rungs add semantic evidence. Candidate ceilings are non-matching first-seen lines; no unique-line ceiling is an implemented filter.",
+    "disjoint_partition": {
+      "fail_increment": {
+        "by_class": {
+          "git_diff": {
+            "bytes": 881847,
+            "clipped_tail_bytes": 114825,
+            "lines": 5974,
+            "original_first_10k_bytes": 767022
+          },
+          "git_status": {
+            "bytes": 122527,
+            "clipped_tail_bytes": 61,
+            "lines": 1053,
+            "original_first_10k_bytes": 122466
+          },
+          "listing": {
+            "bytes": 350235,
+            "clipped_tail_bytes": 61987,
+            "lines": 633,
+            "original_first_10k_bytes": 288248
+          },
+          "lockfile/json": {
+            "bytes": 279696,
+            "clipped_tail_bytes": 8958,
+            "lines": 335,
+            "original_first_10k_bytes": 270738
+          },
+          "mixed/compound": {
+            "bytes": 11671675,
+            "clipped_tail_bytes": 613648,
+            "lines": 12841,
+            "original_first_10k_bytes": 11058027
+          },
+          "npm/install/debug_log": {
+            "bytes": 58122,
+            "clipped_tail_bytes": 656,
+            "lines": 166,
+            "original_first_10k_bytes": 57466
+          },
+          "other": {
+            "bytes": 305976,
+            "clipped_tail_bytes": 12735,
+            "lines": 1371,
+            "original_first_10k_bytes": 293241
+          },
+          "search": {
+            "bytes": 1715101,
+            "clipped_tail_bytes": 217614,
+            "lines": 1332,
+            "original_first_10k_bytes": 1497487
+          },
+          "source_dump": {
+            "bytes": 3887847,
+            "clipped_tail_bytes": 178176,
+            "lines": 1359,
+            "original_first_10k_bytes": 3709671
+          },
+          "test": {
+            "bytes": 889841,
+            "clipped_tail_bytes": 47904,
+            "lines": 3260,
+            "original_first_10k_bytes": 841937
+          },
+          "write/edit": {
+            "bytes": 126791,
+            "clipped_tail_bytes": 13644,
+            "lines": 477,
+            "original_first_10k_bytes": 113147
+          }
+        },
+        "bytes": 20289658,
+        "clipped_tail_bytes": 1270208,
+        "lines": 28801,
+        "original_first_10k_bytes": 19019450
+      },
+      "greedy_increment": {
+        "by_class": {
+          "git_diff": {
+            "bytes": 22836,
+            "clipped_tail_bytes": 1138,
+            "lines": 406,
+            "original_first_10k_bytes": 21698
+          },
+          "git_status": {
+            "bytes": 6297,
+            "clipped_tail_bytes": 0,
+            "lines": 164,
+            "original_first_10k_bytes": 6297
+          },
+          "listing": {
+            "bytes": 186256,
+            "clipped_tail_bytes": 4150,
+            "lines": 4474,
+            "original_first_10k_bytes": 182106
+          },
+          "lockfile/json": {
+            "bytes": 47165,
+            "clipped_tail_bytes": 4380,
+            "lines": 514,
+            "original_first_10k_bytes": 42785
+          },
+          "mixed/compound": {
+            "bytes": 478737,
+            "clipped_tail_bytes": 46460,
+            "lines": 7253,
+            "original_first_10k_bytes": 432277
+          },
+          "npm/install/debug_log": {
+            "bytes": 4554,
+            "clipped_tail_bytes": 818,
+            "lines": 65,
+            "original_first_10k_bytes": 3736
+          },
+          "other": {
+            "bytes": 63332,
+            "clipped_tail_bytes": 31192,
+            "lines": 1442,
+            "original_first_10k_bytes": 32140
+          },
+          "search": {
+            "bytes": 48887,
+            "clipped_tail_bytes": 2765,
+            "lines": 410,
+            "original_first_10k_bytes": 46122
+          },
+          "source_dump": {
+            "bytes": 29842,
+            "clipped_tail_bytes": 86,
+            "lines": 391,
+            "original_first_10k_bytes": 29756
+          },
+          "test": {
+            "bytes": 170738,
+            "clipped_tail_bytes": 58917,
+            "lines": 4454,
+            "original_first_10k_bytes": 111821
+          },
+          "write/edit": {
+            "bytes": 21159,
+            "clipped_tail_bytes": 3854,
+            "lines": 235,
+            "original_first_10k_bytes": 17305
+          }
+        },
+        "bytes": 1079803,
+        "clipped_tail_bytes": 153760,
+        "lines": 19808,
+        "original_first_10k_bytes": 926043
+      },
+      "hunk_increment": {
+        "by_class": {
+          "git_diff": {
+            "bytes": 602400,
+            "clipped_tail_bytes": 121039,
+            "lines": 11888,
+            "original_first_10k_bytes": 481361
+          },
+          "git_status": {},
+          "listing": {
+            "bytes": 10679,
+            "clipped_tail_bytes": 1972,
+            "lines": 136,
+            "original_first_10k_bytes": 8707
+          },
+          "lockfile/json": {
+            "bytes": 1000,
+            "clipped_tail_bytes": 0,
+            "lines": 14,
+            "original_first_10k_bytes": 1000
+          },
+          "mixed/compound": {
+            "bytes": 294312,
+            "clipped_tail_bytes": 32874,
+            "lines": 4963,
+            "original_first_10k_bytes": 261438
+          },
+          "npm/install/debug_log": {
+            "bytes": 325,
+            "clipped_tail_bytes": 0,
+            "lines": 1,
+            "original_first_10k_bytes": 325
+          },
+          "other": {
+            "bytes": 129,
+            "clipped_tail_bytes": 0,
+            "lines": 3,
+            "original_first_10k_bytes": 129
+          },
+          "search": {
+            "bytes": 45,
+            "clipped_tail_bytes": 0,
+            "lines": 3,
+            "original_first_10k_bytes": 45
+          },
+          "source_dump": {
+            "bytes": 2002,
+            "clipped_tail_bytes": 78,
+            "lines": 23,
+            "original_first_10k_bytes": 1924
+          },
+          "test": {
+            "bytes": 1095,
+            "clipped_tail_bytes": 290,
+            "lines": 27,
+            "original_first_10k_bytes": 805
+          },
+          "write/edit": {}
+        },
+        "bytes": 911987,
+        "clipped_tail_bytes": 156253,
+        "lines": 17058,
+        "original_first_10k_bytes": 755734
+      },
+      "leftover_after_greedy": {
+        "by_class": {
+          "git_diff": {
+            "bytes": 537758,
+            "clipped_tail_bytes": 66808,
+            "lines": 12923,
+            "original_first_10k_bytes": 470950
+          },
+          "git_status": {
+            "bytes": 62061,
+            "clipped_tail_bytes": 1299,
+            "lines": 1714,
+            "original_first_10k_bytes": 60762
+          },
+          "listing": {
+            "bytes": 396842,
+            "clipped_tail_bytes": 16145,
+            "lines": 10331,
+            "original_first_10k_bytes": 380697
+          },
+          "lockfile/json": {
+            "bytes": 261523,
+            "clipped_tail_bytes": 32907,
+            "lines": 6035,
+            "original_first_10k_bytes": 228616
+          },
+          "mixed/compound": {
+            "bytes": 2550862,
+            "clipped_tail_bytes": 197861,
+            "lines": 58756,
+            "original_first_10k_bytes": 2353001
+          },
+          "npm/install/debug_log": {
+            "bytes": 43493,
+            "clipped_tail_bytes": 1161,
+            "lines": 586,
+            "original_first_10k_bytes": 42332
+          },
+          "other": {
+            "bytes": 413813,
+            "clipped_tail_bytes": 67949,
+            "lines": 17263,
+            "original_first_10k_bytes": 345864
+          },
+          "search": {
+            "bytes": 325405,
+            "clipped_tail_bytes": 25587,
+            "lines": 5795,
+            "original_first_10k_bytes": 299818
+          },
+          "source_dump": {
+            "bytes": 514997,
+            "clipped_tail_bytes": 10685,
+            "lines": 12691,
+            "original_first_10k_bytes": 504312
+          },
+          "test": {
+            "bytes": 796670,
+            "clipped_tail_bytes": 221300,
+            "lines": 15537,
+            "original_first_10k_bytes": 575370
+          },
+          "write/edit": {
+            "bytes": 151182,
+            "clipped_tail_bytes": 58812,
+            "lines": 1948,
+            "original_first_10k_bytes": 92370
+          }
+        },
+        "bytes": 6054606,
+        "clipped_tail_bytes": 700514,
+        "lines": 143579,
+        "original_first_10k_bytes": 5354092
+      },
+      "nav_increment": {
+        "by_class": {
+          "git_diff": {
+            "bytes": 539900,
+            "clipped_tail_bytes": 27071,
+            "lines": 4196,
+            "original_first_10k_bytes": 512829
+          },
+          "git_status": {
+            "bytes": 218542,
+            "clipped_tail_bytes": 278,
+            "lines": 3223,
+            "original_first_10k_bytes": 218264
+          },
+          "listing": {
+            "bytes": 1209266,
+            "clipped_tail_bytes": 47521,
+            "lines": 6269,
+            "original_first_10k_bytes": 1161745
+          },
+          "lockfile/json": {
+            "bytes": 380266,
+            "clipped_tail_bytes": 13383,
+            "lines": 1072,
+            "original_first_10k_bytes": 366883
+          },
+          "mixed/compound": {
+            "bytes": 7155155,
+            "clipped_tail_bytes": 591570,
+            "lines": 28506,
+            "original_first_10k_bytes": 6563585
+          },
+          "npm/install/debug_log": {
+            "bytes": 79084,
+            "clipped_tail_bytes": 1213,
+            "lines": 208,
+            "original_first_10k_bytes": 77871
+          },
+          "other": {
+            "bytes": 604515,
+            "clipped_tail_bytes": 140692,
+            "lines": 4395,
+            "original_first_10k_bytes": 463823
+          },
+          "search": {
+            "bytes": 1119893,
+            "clipped_tail_bytes": 74043,
+            "lines": 2485,
+            "original_first_10k_bytes": 1045850
+          },
+          "source_dump": {
+            "bytes": 853397,
+            "clipped_tail_bytes": 24630,
+            "lines": 481,
+            "original_first_10k_bytes": 828767
+          },
+          "test": {
+            "bytes": 389654,
+            "clipped_tail_bytes": 79019,
+            "lines": 2493,
+            "original_first_10k_bytes": 310635
+          },
+          "write/edit": {
+            "bytes": 231337,
+            "clipped_tail_bytes": 71762,
+            "lines": 1461,
+            "original_first_10k_bytes": 159575
+          }
+        },
+        "bytes": 12781009,
+        "clipped_tail_bytes": 1071182,
+        "lines": 54789,
+        "original_first_10k_bytes": 11709827
+      },
+      "structural": {
+        "by_class": {
+          "git_diff": {
+            "bytes": 87720,
+            "clipped_tail_bytes": 25155,
+            "lines": 6022,
+            "original_first_10k_bytes": 62565
+          },
+          "git_status": {
+            "bytes": 7676,
+            "clipped_tail_bytes": 992,
+            "lines": 279,
+            "original_first_10k_bytes": 6684
+          },
+          "listing": {
+            "bytes": 68577,
+            "clipped_tail_bytes": 22337,
+            "lines": 2758,
+            "original_first_10k_bytes": 46240
+          },
+          "lockfile/json": {
+            "bytes": 51329,
+            "clipped_tail_bytes": 7824,
+            "lines": 2614,
+            "original_first_10k_bytes": 43505
+          },
+          "mixed/compound": {
+            "bytes": 343634,
+            "clipped_tail_bytes": 51569,
+            "lines": 16518,
+            "original_first_10k_bytes": 292065
+          },
+          "npm/install/debug_log": {
+            "bytes": 19084,
+            "clipped_tail_bytes": 19,
+            "lines": 530,
+            "original_first_10k_bytes": 19065
+          },
+          "other": {
+            "bytes": 45969,
+            "clipped_tail_bytes": 11897,
+            "lines": 2641,
+            "original_first_10k_bytes": 34072
+          },
+          "search": {
+            "bytes": 19281,
+            "clipped_tail_bytes": 1108,
+            "lines": 989,
+            "original_first_10k_bytes": 18173
+          },
+          "source_dump": {
+            "bytes": 10752,
+            "clipped_tail_bytes": 68,
+            "lines": 771,
+            "original_first_10k_bytes": 10684
+          },
+          "test": {
+            "bytes": 199840,
+            "clipped_tail_bytes": 77800,
+            "lines": 9173,
+            "original_first_10k_bytes": 122040
+          },
+          "write/edit": {
+            "bytes": 31545,
+            "clipped_tail_bytes": 21206,
+            "lines": 1213,
+            "original_first_10k_bytes": 10339
+          }
+        },
+        "bytes": 885407,
+        "clipped_tail_bytes": 219975,
+        "lines": 43508,
+        "original_first_10k_bytes": 665432
+      }
+    },
+    "ladders": {
+      "K_fail": {
+        "bodies": 16944,
+        "by_class": {
+          "git_diff": {
+            "bodies": 650,
+            "bytes": 969567,
+            "candidate_drop_ceiling_bytes": 1702894,
+            "candidate_drop_ceiling_clipped_tail_bytes": 216056,
+            "candidate_drop_ceiling_lines": 29413,
+            "candidate_drop_ceiling_original_first_10k_bytes": 1486838,
+            "clipped_tail_bytes": 139980,
+            "eligible_candidate_drop_ceiling_bytes": 1702894,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 216056,
+            "eligible_candidate_drop_ceiling_lines": 29413,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 1486838,
+            "incremental_bytes": 881847,
+            "incremental_lines": 5974,
+            "input_bytes": 2672461,
+            "lines": 11996,
+            "original_first_10k_bytes": 829587
+          },
+          "git_status": {
+            "bodies": 1304,
+            "bytes": 130203,
+            "candidate_drop_ceiling_bytes": 286900,
+            "candidate_drop_ceiling_clipped_tail_bytes": 1577,
+            "candidate_drop_ceiling_lines": 5101,
+            "candidate_drop_ceiling_original_first_10k_bytes": 285323,
+            "clipped_tail_bytes": 1053,
+            "eligible_candidate_drop_ceiling_bytes": 286900,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 1577,
+            "eligible_candidate_drop_ceiling_lines": 5101,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 285323,
+            "incremental_bytes": 122527,
+            "incremental_lines": 1053,
+            "input_bytes": 417103,
+            "lines": 1332,
+            "original_first_10k_bytes": 129150
+          },
+          "listing": {
+            "bodies": 951,
+            "bytes": 418812,
+            "candidate_drop_ceiling_bytes": 1803043,
+            "candidate_drop_ceiling_clipped_tail_bytes": 69788,
+            "candidate_drop_ceiling_lines": 21210,
+            "candidate_drop_ceiling_original_first_10k_bytes": 1733255,
+            "clipped_tail_bytes": 84324,
+            "eligible_candidate_drop_ceiling_bytes": 1787753,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 68793,
+            "eligible_candidate_drop_ceiling_lines": 20992,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 1718960,
+            "identity_excluded_candidate_ceiling_bytes": 15290,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 995,
+            "identity_excluded_candidate_ceiling_lines": 218,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 14295,
+            "incremental_bytes": 350235,
+            "incremental_lines": 633,
+            "input_bytes": 2221855,
+            "lines": 3391,
+            "original_first_10k_bytes": 334488
+          },
+          "lockfile/json": {
+            "bodies": 379,
+            "bytes": 331025,
+            "candidate_drop_ceiling_bytes": 689954,
+            "candidate_drop_ceiling_clipped_tail_bytes": 50670,
+            "candidate_drop_ceiling_lines": 7635,
+            "candidate_drop_ceiling_original_first_10k_bytes": 639284,
+            "clipped_tail_bytes": 16782,
+            "eligible_candidate_drop_ceiling_bytes": 651894,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 24387,
+            "eligible_candidate_drop_ceiling_lines": 6834,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 627507,
+            "identity_excluded_candidate_ceiling_bytes": 38060,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 26283,
+            "identity_excluded_candidate_ceiling_lines": 801,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 11777,
+            "incremental_bytes": 279696,
+            "incremental_lines": 335,
+            "input_bytes": 1020979,
+            "lines": 2949,
+            "original_first_10k_bytes": 314243
+          },
+          "mixed/compound": {
+            "bodies": 5942,
+            "bytes": 12015309,
+            "candidate_drop_ceiling_bytes": 10479066,
+            "candidate_drop_ceiling_clipped_tail_bytes": 868765,
+            "candidate_drop_ceiling_lines": 99478,
+            "candidate_drop_ceiling_original_first_10k_bytes": 9610301,
+            "clipped_tail_bytes": 665217,
+            "eligible_candidate_drop_ceiling_bytes": 10395961,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 865241,
+            "eligible_candidate_drop_ceiling_lines": 98643,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 9530720,
+            "identity_excluded_candidate_ceiling_bytes": 83105,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 3524,
+            "identity_excluded_candidate_ceiling_lines": 835,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 79581,
+            "incremental_bytes": 11671675,
+            "incremental_lines": 12841,
+            "input_bytes": 22494375,
+            "lines": 29359,
+            "original_first_10k_bytes": 11350092
+          },
+          "npm/install/debug_log": {
+            "bodies": 80,
+            "bytes": 77206,
+            "candidate_drop_ceiling_bytes": 127456,
+            "candidate_drop_ceiling_clipped_tail_bytes": 3192,
+            "candidate_drop_ceiling_lines": 860,
+            "candidate_drop_ceiling_original_first_10k_bytes": 124264,
+            "clipped_tail_bytes": 675,
+            "eligible_candidate_drop_ceiling_bytes": 127456,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 3192,
+            "eligible_candidate_drop_ceiling_lines": 860,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 124264,
+            "incremental_bytes": 58122,
+            "incremental_lines": 166,
+            "input_bytes": 204662,
+            "lines": 696,
+            "original_first_10k_bytes": 76531
+          },
+          "other": {
+            "bodies": 4654,
+            "bytes": 351945,
+            "candidate_drop_ceiling_bytes": 1081789,
+            "candidate_drop_ceiling_clipped_tail_bytes": 239833,
+            "candidate_drop_ceiling_lines": 23103,
+            "candidate_drop_ceiling_original_first_10k_bytes": 841956,
+            "clipped_tail_bytes": 24632,
+            "eligible_candidate_drop_ceiling_bytes": 1081789,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 239833,
+            "eligible_candidate_drop_ceiling_lines": 23103,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 841956,
+            "incremental_bytes": 305976,
+            "incremental_lines": 1371,
+            "input_bytes": 1433734,
+            "lines": 4012,
+            "original_first_10k_bytes": 327313
+          },
+          "search": {
+            "bodies": 731,
+            "bytes": 1734382,
+            "candidate_drop_ceiling_bytes": 1494230,
+            "candidate_drop_ceiling_clipped_tail_bytes": 102395,
+            "candidate_drop_ceiling_lines": 8693,
+            "candidate_drop_ceiling_original_first_10k_bytes": 1391835,
+            "clipped_tail_bytes": 218722,
+            "eligible_candidate_drop_ceiling_bytes": 1481374,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 102295,
+            "eligible_candidate_drop_ceiling_lines": 8619,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 1379079,
+            "identity_excluded_candidate_ceiling_bytes": 12856,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 100,
+            "identity_excluded_candidate_ceiling_lines": 74,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 12756,
+            "incremental_bytes": 1715101,
+            "incremental_lines": 1332,
+            "input_bytes": 3228612,
+            "lines": 2321,
+            "original_first_10k_bytes": 1515660
+          },
+          "source_dump": {
+            "bodies": 605,
+            "bytes": 3898599,
+            "candidate_drop_ceiling_bytes": 1400238,
+            "candidate_drop_ceiling_clipped_tail_bytes": 35479,
+            "candidate_drop_ceiling_lines": 13586,
+            "candidate_drop_ceiling_original_first_10k_bytes": 1364759,
+            "clipped_tail_bytes": 178244,
+            "eligible_candidate_drop_ceiling_bytes": 1390489,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 35417,
+            "eligible_candidate_drop_ceiling_lines": 13401,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 1355072,
+            "identity_excluded_candidate_ceiling_bytes": 9749,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 62,
+            "identity_excluded_candidate_ceiling_lines": 185,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 9687,
+            "incremental_bytes": 3887847,
+            "incremental_lines": 1359,
+            "input_bytes": 5298837,
+            "lines": 2130,
+            "original_first_10k_bytes": 3720355
+          },
+          "test": {
+            "bodies": 1460,
+            "bytes": 1089681,
+            "candidate_drop_ceiling_bytes": 1358157,
+            "candidate_drop_ceiling_clipped_tail_bytes": 359526,
+            "candidate_drop_ceiling_lines": 22511,
+            "candidate_drop_ceiling_original_first_10k_bytes": 998631,
+            "clipped_tail_bytes": 125704,
+            "eligible_candidate_drop_ceiling_bytes": 1358157,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 359526,
+            "eligible_candidate_drop_ceiling_lines": 22511,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 998631,
+            "incremental_bytes": 889841,
+            "incremental_lines": 3260,
+            "input_bytes": 2447838,
+            "lines": 12433,
+            "original_first_10k_bytes": 963977
+          },
+          "write/edit": {
+            "bodies": 188,
+            "bytes": 158336,
+            "candidate_drop_ceiling_bytes": 403678,
+            "candidate_drop_ceiling_clipped_tail_bytes": 134428,
+            "candidate_drop_ceiling_lines": 3644,
+            "candidate_drop_ceiling_original_first_10k_bytes": 269250,
+            "clipped_tail_bytes": 34850,
+            "eligible_candidate_drop_ceiling_bytes": 402204,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 134428,
+            "eligible_candidate_drop_ceiling_lines": 3609,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 267776,
+            "identity_excluded_candidate_ceiling_bytes": 1474,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 0,
+            "identity_excluded_candidate_ceiling_lines": 35,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 1474,
+            "incremental_bytes": 126791,
+            "incremental_lines": 477,
+            "input_bytes": 562014,
+            "lines": 1690,
+            "original_first_10k_bytes": 123486
+          }
+        },
+        "bytes": 21175065,
+        "candidate_drop_ceiling_bytes": 20827405,
+        "candidate_drop_ceiling_clipped_tail_bytes": 2081709,
+        "candidate_drop_ceiling_lines": 235234,
+        "candidate_drop_ceiling_original_first_10k_bytes": 18745696,
+        "clipped_tail_bytes": 1490183,
+        "eligible_candidate_drop_ceiling_bytes": 20666871,
+        "eligible_candidate_drop_ceiling_clipped_tail_bytes": 2050745,
+        "eligible_candidate_drop_ceiling_lines": 233086,
+        "eligible_candidate_drop_ceiling_original_first_10k_bytes": 18616126,
+        "eligible_candidate_drop_ceiling_pct_of_all_bash_bytes": 49.20394205388397,
+        "identity_excluded_candidate_ceiling_bytes": 160534,
+        "identity_excluded_candidate_ceiling_clipped_tail_bytes": 30964,
+        "identity_excluded_candidate_ceiling_lines": 2148,
+        "identity_excluded_candidate_ceiling_original_first_10k_bytes": 129570,
+        "incremental_bytes": 20289658,
+        "incremental_lines": 28801,
+        "input_bytes": 42002470,
+        "keep_floor_pct_of_all_bash_bytes": 50.413856613670575,
+        "lines": 72309,
+        "original_first_10k_bytes": 19684882
+      },
+      "K_greedy": {
+        "bodies": 16944,
+        "by_class": {
+          "git_diff": {
+            "bodies": 650,
+            "bytes": 2134703,
+            "candidate_drop_ceiling_bytes": 537758,
+            "candidate_drop_ceiling_clipped_tail_bytes": 66808,
+            "candidate_drop_ceiling_lines": 12923,
+            "candidate_drop_ceiling_original_first_10k_bytes": 470950,
+            "clipped_tail_bytes": 289228,
+            "eligible_candidate_drop_ceiling_bytes": 537758,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 66808,
+            "eligible_candidate_drop_ceiling_lines": 12923,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 470950,
+            "incremental_bytes": 22836,
+            "incremental_lines": 406,
+            "input_bytes": 2672461,
+            "lines": 28486,
+            "original_first_10k_bytes": 1845475
+          },
+          "git_status": {
+            "bodies": 1304,
+            "bytes": 355042,
+            "candidate_drop_ceiling_bytes": 62061,
+            "candidate_drop_ceiling_clipped_tail_bytes": 1299,
+            "candidate_drop_ceiling_lines": 1714,
+            "candidate_drop_ceiling_original_first_10k_bytes": 60762,
+            "clipped_tail_bytes": 1331,
+            "eligible_candidate_drop_ceiling_bytes": 62061,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 1299,
+            "eligible_candidate_drop_ceiling_lines": 1714,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 60762,
+            "incremental_bytes": 6297,
+            "incremental_lines": 164,
+            "input_bytes": 417103,
+            "lines": 4719,
+            "original_first_10k_bytes": 353711
+          },
+          "listing": {
+            "bodies": 951,
+            "bytes": 1825013,
+            "candidate_drop_ceiling_bytes": 396842,
+            "candidate_drop_ceiling_clipped_tail_bytes": 16145,
+            "candidate_drop_ceiling_lines": 10331,
+            "candidate_drop_ceiling_original_first_10k_bytes": 380697,
+            "clipped_tail_bytes": 137967,
+            "eligible_candidate_drop_ceiling_bytes": 390944,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 15150,
+            "eligible_candidate_drop_ceiling_lines": 10191,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 375794,
+            "identity_excluded_candidate_ceiling_bytes": 5898,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 995,
+            "identity_excluded_candidate_ceiling_lines": 140,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 4903,
+            "incremental_bytes": 186256,
+            "incremental_lines": 4474,
+            "input_bytes": 2221855,
+            "lines": 14270,
+            "original_first_10k_bytes": 1687046
+          },
+          "lockfile/json": {
+            "bodies": 379,
+            "bytes": 759456,
+            "candidate_drop_ceiling_bytes": 261523,
+            "candidate_drop_ceiling_clipped_tail_bytes": 32907,
+            "candidate_drop_ceiling_lines": 6035,
+            "candidate_drop_ceiling_original_first_10k_bytes": 228616,
+            "clipped_tail_bytes": 34545,
+            "eligible_candidate_drop_ceiling_bytes": 230881,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 9491,
+            "eligible_candidate_drop_ceiling_lines": 5334,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 221390,
+            "identity_excluded_candidate_ceiling_bytes": 30642,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 23416,
+            "identity_excluded_candidate_ceiling_lines": 701,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 7226,
+            "incremental_bytes": 47165,
+            "incremental_lines": 514,
+            "input_bytes": 1020979,
+            "lines": 4549,
+            "original_first_10k_bytes": 724911
+          },
+          "mixed/compound": {
+            "bodies": 5942,
+            "bytes": 19943513,
+            "candidate_drop_ceiling_bytes": 2550862,
+            "candidate_drop_ceiling_clipped_tail_bytes": 197861,
+            "candidate_drop_ceiling_lines": 58756,
+            "candidate_drop_ceiling_original_first_10k_bytes": 2353001,
+            "clipped_tail_bytes": 1336121,
+            "eligible_candidate_drop_ceiling_bytes": 2529261,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 196303,
+            "eligible_candidate_drop_ceiling_lines": 58168,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 2332958,
+            "identity_excluded_candidate_ceiling_bytes": 21601,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 1558,
+            "identity_excluded_candidate_ceiling_lines": 588,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 20043,
+            "incremental_bytes": 478737,
+            "incremental_lines": 7253,
+            "input_bytes": 22494375,
+            "lines": 70081,
+            "original_first_10k_bytes": 18607392
+          },
+          "npm/install/debug_log": {
+            "bodies": 80,
+            "bytes": 161169,
+            "candidate_drop_ceiling_bytes": 43493,
+            "candidate_drop_ceiling_clipped_tail_bytes": 1161,
+            "candidate_drop_ceiling_lines": 586,
+            "candidate_drop_ceiling_original_first_10k_bytes": 42332,
+            "clipped_tail_bytes": 2706,
+            "eligible_candidate_drop_ceiling_bytes": 43493,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 1161,
+            "eligible_candidate_drop_ceiling_lines": 586,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 42332,
+            "incremental_bytes": 4554,
+            "incremental_lines": 65,
+            "input_bytes": 204662,
+            "lines": 970,
+            "original_first_10k_bytes": 158463
+          },
+          "other": {
+            "bodies": 4654,
+            "bytes": 1019921,
+            "candidate_drop_ceiling_bytes": 413813,
+            "candidate_drop_ceiling_clipped_tail_bytes": 67949,
+            "candidate_drop_ceiling_lines": 17263,
+            "candidate_drop_ceiling_original_first_10k_bytes": 345864,
+            "clipped_tail_bytes": 196516,
+            "eligible_candidate_drop_ceiling_bytes": 413813,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 67949,
+            "eligible_candidate_drop_ceiling_lines": 17263,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 345864,
+            "incremental_bytes": 63332,
+            "incremental_lines": 1442,
+            "input_bytes": 1433734,
+            "lines": 9852,
+            "original_first_10k_bytes": 823405
+          },
+          "search": {
+            "bodies": 731,
+            "bytes": 2903207,
+            "candidate_drop_ceiling_bytes": 325405,
+            "candidate_drop_ceiling_clipped_tail_bytes": 25587,
+            "candidate_drop_ceiling_lines": 5795,
+            "candidate_drop_ceiling_original_first_10k_bytes": 299818,
+            "clipped_tail_bytes": 295530,
+            "eligible_candidate_drop_ceiling_bytes": 322803,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 25487,
+            "eligible_candidate_drop_ceiling_lines": 5735,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 297316,
+            "identity_excluded_candidate_ceiling_bytes": 2602,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 100,
+            "identity_excluded_candidate_ceiling_lines": 60,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 2502,
+            "incremental_bytes": 48887,
+            "incremental_lines": 410,
+            "input_bytes": 3228612,
+            "lines": 5219,
+            "original_first_10k_bytes": 2607677
+          },
+          "source_dump": {
+            "bodies": 605,
+            "bytes": 4783840,
+            "candidate_drop_ceiling_bytes": 514997,
+            "candidate_drop_ceiling_clipped_tail_bytes": 10685,
+            "candidate_drop_ceiling_lines": 12691,
+            "candidate_drop_ceiling_original_first_10k_bytes": 504312,
+            "clipped_tail_bytes": 203038,
+            "eligible_candidate_drop_ceiling_bytes": 506183,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 10623,
+            "eligible_candidate_drop_ceiling_lines": 12518,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 495560,
+            "identity_excluded_candidate_ceiling_bytes": 8814,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 62,
+            "identity_excluded_candidate_ceiling_lines": 173,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 8752,
+            "incremental_bytes": 29842,
+            "incremental_lines": 391,
+            "input_bytes": 5298837,
+            "lines": 3025,
+            "original_first_10k_bytes": 4580802
+          },
+          "test": {
+            "bodies": 1460,
+            "bytes": 1651168,
+            "candidate_drop_ceiling_bytes": 796670,
+            "candidate_drop_ceiling_clipped_tail_bytes": 221300,
+            "candidate_drop_ceiling_lines": 15537,
+            "candidate_drop_ceiling_original_first_10k_bytes": 575370,
+            "clipped_tail_bytes": 263930,
+            "eligible_candidate_drop_ceiling_bytes": 796670,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 221300,
+            "eligible_candidate_drop_ceiling_lines": 15537,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 575370,
+            "incremental_bytes": 170738,
+            "incremental_lines": 4454,
+            "input_bytes": 2447838,
+            "lines": 19407,
+            "original_first_10k_bytes": 1387238
+          },
+          "write/edit": {
+            "bodies": 188,
+            "bytes": 410832,
+            "candidate_drop_ceiling_bytes": 151182,
+            "candidate_drop_ceiling_clipped_tail_bytes": 58812,
+            "candidate_drop_ceiling_lines": 1948,
+            "candidate_drop_ceiling_original_first_10k_bytes": 92370,
+            "clipped_tail_bytes": 110466,
+            "eligible_candidate_drop_ceiling_bytes": 149783,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 58812,
+            "eligible_candidate_drop_ceiling_lines": 1914,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 90971,
+            "identity_excluded_candidate_ceiling_bytes": 1399,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 0,
+            "identity_excluded_candidate_ceiling_lines": 34,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 1399,
+            "incremental_bytes": 21159,
+            "incremental_lines": 235,
+            "input_bytes": 562014,
+            "lines": 3386,
+            "original_first_10k_bytes": 300366
+          }
+        },
+        "bytes": 35947864,
+        "candidate_drop_ceiling_bytes": 6054606,
+        "candidate_drop_ceiling_clipped_tail_bytes": 700514,
+        "candidate_drop_ceiling_lines": 143579,
+        "candidate_drop_ceiling_original_first_10k_bytes": 5354092,
+        "clipped_tail_bytes": 2871378,
+        "eligible_candidate_drop_ceiling_bytes": 5983650,
+        "eligible_candidate_drop_ceiling_clipped_tail_bytes": 674383,
+        "eligible_candidate_drop_ceiling_lines": 141883,
+        "eligible_candidate_drop_ceiling_original_first_10k_bytes": 5309267,
+        "eligible_candidate_drop_ceiling_pct_of_all_bash_bytes": 14.245947916872508,
+        "identity_excluded_candidate_ceiling_bytes": 70956,
+        "identity_excluded_candidate_ceiling_clipped_tail_bytes": 26131,
+        "identity_excluded_candidate_ceiling_lines": 1696,
+        "identity_excluded_candidate_ceiling_original_first_10k_bytes": 44825,
+        "incremental_bytes": 1079803,
+        "incremental_lines": 19808,
+        "input_bytes": 42002470,
+        "keep_floor_pct_of_all_bash_bytes": 85.58511916084935,
+        "lines": 163964,
+        "original_first_10k_bytes": 33076486
+      },
+      "K_hunk": {
+        "bodies": 16944,
+        "by_class": {
+          "git_diff": {
+            "bodies": 650,
+            "bytes": 1571967,
+            "candidate_drop_ceiling_bytes": 1100494,
+            "candidate_drop_ceiling_clipped_tail_bytes": 95017,
+            "candidate_drop_ceiling_lines": 17525,
+            "candidate_drop_ceiling_original_first_10k_bytes": 1005477,
+            "clipped_tail_bytes": 261019,
+            "eligible_candidate_drop_ceiling_bytes": 1100494,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 95017,
+            "eligible_candidate_drop_ceiling_lines": 17525,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 1005477,
+            "incremental_bytes": 602400,
+            "incremental_lines": 11888,
+            "input_bytes": 2672461,
+            "lines": 23884,
+            "original_first_10k_bytes": 1310948
+          },
+          "git_status": {
+            "bodies": 1304,
+            "bytes": 130203,
+            "candidate_drop_ceiling_bytes": 286900,
+            "candidate_drop_ceiling_clipped_tail_bytes": 1577,
+            "candidate_drop_ceiling_lines": 5101,
+            "candidate_drop_ceiling_original_first_10k_bytes": 285323,
+            "clipped_tail_bytes": 1053,
+            "eligible_candidate_drop_ceiling_bytes": 286900,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 1577,
+            "eligible_candidate_drop_ceiling_lines": 5101,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 285323,
+            "input_bytes": 417103,
+            "lines": 1332,
+            "original_first_10k_bytes": 129150
+          },
+          "listing": {
+            "bodies": 951,
+            "bytes": 429491,
+            "candidate_drop_ceiling_bytes": 1792364,
+            "candidate_drop_ceiling_clipped_tail_bytes": 67816,
+            "candidate_drop_ceiling_lines": 21074,
+            "candidate_drop_ceiling_original_first_10k_bytes": 1724548,
+            "clipped_tail_bytes": 86296,
+            "eligible_candidate_drop_ceiling_bytes": 1777074,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 66821,
+            "eligible_candidate_drop_ceiling_lines": 20856,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 1710253,
+            "identity_excluded_candidate_ceiling_bytes": 15290,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 995,
+            "identity_excluded_candidate_ceiling_lines": 218,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 14295,
+            "incremental_bytes": 10679,
+            "incremental_lines": 136,
+            "input_bytes": 2221855,
+            "lines": 3527,
+            "original_first_10k_bytes": 343195
+          },
+          "lockfile/json": {
+            "bodies": 379,
+            "bytes": 332025,
+            "candidate_drop_ceiling_bytes": 688954,
+            "candidate_drop_ceiling_clipped_tail_bytes": 50670,
+            "candidate_drop_ceiling_lines": 7621,
+            "candidate_drop_ceiling_original_first_10k_bytes": 638284,
+            "clipped_tail_bytes": 16782,
+            "eligible_candidate_drop_ceiling_bytes": 650894,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 24387,
+            "eligible_candidate_drop_ceiling_lines": 6820,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 626507,
+            "identity_excluded_candidate_ceiling_bytes": 38060,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 26283,
+            "identity_excluded_candidate_ceiling_lines": 801,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 11777,
+            "incremental_bytes": 1000,
+            "incremental_lines": 14,
+            "input_bytes": 1020979,
+            "lines": 2963,
+            "original_first_10k_bytes": 315243
+          },
+          "mixed/compound": {
+            "bodies": 5942,
+            "bytes": 12309621,
+            "candidate_drop_ceiling_bytes": 10184754,
+            "candidate_drop_ceiling_clipped_tail_bytes": 835891,
+            "candidate_drop_ceiling_lines": 94515,
+            "candidate_drop_ceiling_original_first_10k_bytes": 9348863,
+            "clipped_tail_bytes": 698091,
+            "eligible_candidate_drop_ceiling_bytes": 10101934,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 832367,
+            "eligible_candidate_drop_ceiling_lines": 93683,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 9269567,
+            "identity_excluded_candidate_ceiling_bytes": 82820,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 3524,
+            "identity_excluded_candidate_ceiling_lines": 832,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 79296,
+            "incremental_bytes": 294312,
+            "incremental_lines": 4963,
+            "input_bytes": 22494375,
+            "lines": 34322,
+            "original_first_10k_bytes": 11611530
+          },
+          "npm/install/debug_log": {
+            "bodies": 80,
+            "bytes": 77531,
+            "candidate_drop_ceiling_bytes": 127131,
+            "candidate_drop_ceiling_clipped_tail_bytes": 3192,
+            "candidate_drop_ceiling_lines": 859,
+            "candidate_drop_ceiling_original_first_10k_bytes": 123939,
+            "clipped_tail_bytes": 675,
+            "eligible_candidate_drop_ceiling_bytes": 127131,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 3192,
+            "eligible_candidate_drop_ceiling_lines": 859,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 123939,
+            "incremental_bytes": 325,
+            "incremental_lines": 1,
+            "input_bytes": 204662,
+            "lines": 697,
+            "original_first_10k_bytes": 76856
+          },
+          "other": {
+            "bodies": 4654,
+            "bytes": 352074,
+            "candidate_drop_ceiling_bytes": 1081660,
+            "candidate_drop_ceiling_clipped_tail_bytes": 239833,
+            "candidate_drop_ceiling_lines": 23100,
+            "candidate_drop_ceiling_original_first_10k_bytes": 841827,
+            "clipped_tail_bytes": 24632,
+            "eligible_candidate_drop_ceiling_bytes": 1081660,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 239833,
+            "eligible_candidate_drop_ceiling_lines": 23100,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 841827,
+            "incremental_bytes": 129,
+            "incremental_lines": 3,
+            "input_bytes": 1433734,
+            "lines": 4015,
+            "original_first_10k_bytes": 327442
+          },
+          "search": {
+            "bodies": 731,
+            "bytes": 1734427,
+            "candidate_drop_ceiling_bytes": 1494185,
+            "candidate_drop_ceiling_clipped_tail_bytes": 102395,
+            "candidate_drop_ceiling_lines": 8690,
+            "candidate_drop_ceiling_original_first_10k_bytes": 1391790,
+            "clipped_tail_bytes": 218722,
+            "eligible_candidate_drop_ceiling_bytes": 1481329,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 102295,
+            "eligible_candidate_drop_ceiling_lines": 8616,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 1379034,
+            "identity_excluded_candidate_ceiling_bytes": 12856,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 100,
+            "identity_excluded_candidate_ceiling_lines": 74,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 12756,
+            "incremental_bytes": 45,
+            "incremental_lines": 3,
+            "input_bytes": 3228612,
+            "lines": 2324,
+            "original_first_10k_bytes": 1515705
+          },
+          "source_dump": {
+            "bodies": 605,
+            "bytes": 3900601,
+            "candidate_drop_ceiling_bytes": 1398236,
+            "candidate_drop_ceiling_clipped_tail_bytes": 35401,
+            "candidate_drop_ceiling_lines": 13563,
+            "candidate_drop_ceiling_original_first_10k_bytes": 1362835,
+            "clipped_tail_bytes": 178322,
+            "eligible_candidate_drop_ceiling_bytes": 1388487,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 35339,
+            "eligible_candidate_drop_ceiling_lines": 13378,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 1353148,
+            "identity_excluded_candidate_ceiling_bytes": 9749,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 62,
+            "identity_excluded_candidate_ceiling_lines": 185,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 9687,
+            "incremental_bytes": 2002,
+            "incremental_lines": 23,
+            "input_bytes": 5298837,
+            "lines": 2153,
+            "original_first_10k_bytes": 3722279
+          },
+          "test": {
+            "bodies": 1460,
+            "bytes": 1090776,
+            "candidate_drop_ceiling_bytes": 1357062,
+            "candidate_drop_ceiling_clipped_tail_bytes": 359236,
+            "candidate_drop_ceiling_lines": 22484,
+            "candidate_drop_ceiling_original_first_10k_bytes": 997826,
+            "clipped_tail_bytes": 125994,
+            "eligible_candidate_drop_ceiling_bytes": 1357062,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 359236,
+            "eligible_candidate_drop_ceiling_lines": 22484,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 997826,
+            "incremental_bytes": 1095,
+            "incremental_lines": 27,
+            "input_bytes": 2447838,
+            "lines": 12460,
+            "original_first_10k_bytes": 964782
+          },
+          "write/edit": {
+            "bodies": 188,
+            "bytes": 158336,
+            "candidate_drop_ceiling_bytes": 403678,
+            "candidate_drop_ceiling_clipped_tail_bytes": 134428,
+            "candidate_drop_ceiling_lines": 3644,
+            "candidate_drop_ceiling_original_first_10k_bytes": 269250,
+            "clipped_tail_bytes": 34850,
+            "eligible_candidate_drop_ceiling_bytes": 402204,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 134428,
+            "eligible_candidate_drop_ceiling_lines": 3609,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 267776,
+            "identity_excluded_candidate_ceiling_bytes": 1474,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 0,
+            "identity_excluded_candidate_ceiling_lines": 35,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 1474,
+            "input_bytes": 562014,
+            "lines": 1690,
+            "original_first_10k_bytes": 123486
+          }
+        },
+        "bytes": 22087052,
+        "candidate_drop_ceiling_bytes": 19915418,
+        "candidate_drop_ceiling_clipped_tail_bytes": 1925456,
+        "candidate_drop_ceiling_lines": 218176,
+        "candidate_drop_ceiling_original_first_10k_bytes": 17989962,
+        "clipped_tail_bytes": 1646436,
+        "eligible_candidate_drop_ceiling_bytes": 19755169,
+        "eligible_candidate_drop_ceiling_clipped_tail_bytes": 1894492,
+        "eligible_candidate_drop_ceiling_lines": 216031,
+        "eligible_candidate_drop_ceiling_original_first_10k_bytes": 17860677,
+        "eligible_candidate_drop_ceiling_pct_of_all_bash_bytes": 47.03335065771132,
+        "identity_excluded_candidate_ceiling_bytes": 160249,
+        "identity_excluded_candidate_ceiling_clipped_tail_bytes": 30964,
+        "identity_excluded_candidate_ceiling_lines": 2145,
+        "identity_excluded_candidate_ceiling_original_first_10k_bytes": 129285,
+        "incremental_bytes": 911987,
+        "incremental_lines": 17058,
+        "input_bytes": 42002470,
+        "keep_floor_pct_of_all_bash_bytes": 52.585126541367686,
+        "lines": 89367,
+        "original_first_10k_bytes": 20440616
+      },
+      "K_nav": {
+        "bodies": 16944,
+        "by_class": {
+          "git_diff": {
+            "bodies": 650,
+            "bytes": 2111867,
+            "candidate_drop_ceiling_bytes": 560594,
+            "candidate_drop_ceiling_clipped_tail_bytes": 67946,
+            "candidate_drop_ceiling_lines": 13329,
+            "candidate_drop_ceiling_original_first_10k_bytes": 492648,
+            "clipped_tail_bytes": 288090,
+            "eligible_candidate_drop_ceiling_bytes": 560594,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 67946,
+            "eligible_candidate_drop_ceiling_lines": 13329,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 492648,
+            "incremental_bytes": 539900,
+            "incremental_lines": 4196,
+            "input_bytes": 2672461,
+            "lines": 28080,
+            "original_first_10k_bytes": 1823777
+          },
+          "git_status": {
+            "bodies": 1304,
+            "bytes": 348745,
+            "candidate_drop_ceiling_bytes": 68358,
+            "candidate_drop_ceiling_clipped_tail_bytes": 1299,
+            "candidate_drop_ceiling_lines": 1878,
+            "candidate_drop_ceiling_original_first_10k_bytes": 67059,
+            "clipped_tail_bytes": 1331,
+            "eligible_candidate_drop_ceiling_bytes": 68358,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 1299,
+            "eligible_candidate_drop_ceiling_lines": 1878,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 67059,
+            "incremental_bytes": 218542,
+            "incremental_lines": 3223,
+            "input_bytes": 417103,
+            "lines": 4555,
+            "original_first_10k_bytes": 347414
+          },
+          "listing": {
+            "bodies": 951,
+            "bytes": 1638757,
+            "candidate_drop_ceiling_bytes": 583098,
+            "candidate_drop_ceiling_clipped_tail_bytes": 20295,
+            "candidate_drop_ceiling_lines": 14805,
+            "candidate_drop_ceiling_original_first_10k_bytes": 562803,
+            "clipped_tail_bytes": 133817,
+            "eligible_candidate_drop_ceiling_bytes": 576256,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 19300,
+            "eligible_candidate_drop_ceiling_lines": 14639,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 556956,
+            "identity_excluded_candidate_ceiling_bytes": 6842,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 995,
+            "identity_excluded_candidate_ceiling_lines": 166,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 5847,
+            "incremental_bytes": 1209266,
+            "incremental_lines": 6269,
+            "input_bytes": 2221855,
+            "lines": 9796,
+            "original_first_10k_bytes": 1504940
+          },
+          "lockfile/json": {
+            "bodies": 379,
+            "bytes": 712291,
+            "candidate_drop_ceiling_bytes": 308688,
+            "candidate_drop_ceiling_clipped_tail_bytes": 37287,
+            "candidate_drop_ceiling_lines": 6549,
+            "candidate_drop_ceiling_original_first_10k_bytes": 271401,
+            "clipped_tail_bytes": 30165,
+            "eligible_candidate_drop_ceiling_bytes": 275053,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 12889,
+            "eligible_candidate_drop_ceiling_lines": 5795,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 262164,
+            "identity_excluded_candidate_ceiling_bytes": 33635,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 24398,
+            "identity_excluded_candidate_ceiling_lines": 754,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 9237,
+            "incremental_bytes": 380266,
+            "incremental_lines": 1072,
+            "input_bytes": 1020979,
+            "lines": 4035,
+            "original_first_10k_bytes": 682126
+          },
+          "mixed/compound": {
+            "bodies": 5942,
+            "bytes": 19464776,
+            "candidate_drop_ceiling_bytes": 3029599,
+            "candidate_drop_ceiling_clipped_tail_bytes": 244321,
+            "candidate_drop_ceiling_lines": 66009,
+            "candidate_drop_ceiling_original_first_10k_bytes": 2785278,
+            "clipped_tail_bytes": 1289661,
+            "eligible_candidate_drop_ceiling_bytes": 3006258,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 242642,
+            "eligible_candidate_drop_ceiling_lines": 65373,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 2763616,
+            "identity_excluded_candidate_ceiling_bytes": 23341,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 1679,
+            "identity_excluded_candidate_ceiling_lines": 636,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 21662,
+            "incremental_bytes": 7155155,
+            "incremental_lines": 28506,
+            "input_bytes": 22494375,
+            "lines": 62828,
+            "original_first_10k_bytes": 18175115
+          },
+          "npm/install/debug_log": {
+            "bodies": 80,
+            "bytes": 156615,
+            "candidate_drop_ceiling_bytes": 48047,
+            "candidate_drop_ceiling_clipped_tail_bytes": 1979,
+            "candidate_drop_ceiling_lines": 651,
+            "candidate_drop_ceiling_original_first_10k_bytes": 46068,
+            "clipped_tail_bytes": 1888,
+            "eligible_candidate_drop_ceiling_bytes": 48047,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 1979,
+            "eligible_candidate_drop_ceiling_lines": 651,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 46068,
+            "incremental_bytes": 79084,
+            "incremental_lines": 208,
+            "input_bytes": 204662,
+            "lines": 905,
+            "original_first_10k_bytes": 154727
+          },
+          "other": {
+            "bodies": 4654,
+            "bytes": 956589,
+            "candidate_drop_ceiling_bytes": 477145,
+            "candidate_drop_ceiling_clipped_tail_bytes": 99141,
+            "candidate_drop_ceiling_lines": 18705,
+            "candidate_drop_ceiling_original_first_10k_bytes": 378004,
+            "clipped_tail_bytes": 165324,
+            "eligible_candidate_drop_ceiling_bytes": 477145,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 99141,
+            "eligible_candidate_drop_ceiling_lines": 18705,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 378004,
+            "incremental_bytes": 604515,
+            "incremental_lines": 4395,
+            "input_bytes": 1433734,
+            "lines": 8410,
+            "original_first_10k_bytes": 791265
+          },
+          "search": {
+            "bodies": 731,
+            "bytes": 2854320,
+            "candidate_drop_ceiling_bytes": 374292,
+            "candidate_drop_ceiling_clipped_tail_bytes": 28352,
+            "candidate_drop_ceiling_lines": 6205,
+            "candidate_drop_ceiling_original_first_10k_bytes": 345940,
+            "clipped_tail_bytes": 292765,
+            "eligible_candidate_drop_ceiling_bytes": 371687,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 28252,
+            "eligible_candidate_drop_ceiling_lines": 6144,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 343435,
+            "identity_excluded_candidate_ceiling_bytes": 2605,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 100,
+            "identity_excluded_candidate_ceiling_lines": 61,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 2505,
+            "incremental_bytes": 1119893,
+            "incremental_lines": 2485,
+            "input_bytes": 3228612,
+            "lines": 4809,
+            "original_first_10k_bytes": 2561555
+          },
+          "source_dump": {
+            "bodies": 605,
+            "bytes": 4753998,
+            "candidate_drop_ceiling_bytes": 544839,
+            "candidate_drop_ceiling_clipped_tail_bytes": 10771,
+            "candidate_drop_ceiling_lines": 13082,
+            "candidate_drop_ceiling_original_first_10k_bytes": 534068,
+            "clipped_tail_bytes": 202952,
+            "eligible_candidate_drop_ceiling_bytes": 535708,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 10709,
+            "eligible_candidate_drop_ceiling_lines": 12905,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 524999,
+            "identity_excluded_candidate_ceiling_bytes": 9131,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 62,
+            "identity_excluded_candidate_ceiling_lines": 177,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 9069,
+            "incremental_bytes": 853397,
+            "incremental_lines": 481,
+            "input_bytes": 5298837,
+            "lines": 2634,
+            "original_first_10k_bytes": 4551046
+          },
+          "test": {
+            "bodies": 1460,
+            "bytes": 1480430,
+            "candidate_drop_ceiling_bytes": 967408,
+            "candidate_drop_ceiling_clipped_tail_bytes": 280217,
+            "candidate_drop_ceiling_lines": 19991,
+            "candidate_drop_ceiling_original_first_10k_bytes": 687191,
+            "clipped_tail_bytes": 205013,
+            "eligible_candidate_drop_ceiling_bytes": 967408,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 280217,
+            "eligible_candidate_drop_ceiling_lines": 19991,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 687191,
+            "incremental_bytes": 389654,
+            "incremental_lines": 2493,
+            "input_bytes": 2447838,
+            "lines": 14953,
+            "original_first_10k_bytes": 1275417
+          },
+          "write/edit": {
+            "bodies": 188,
+            "bytes": 389673,
+            "candidate_drop_ceiling_bytes": 172341,
+            "candidate_drop_ceiling_clipped_tail_bytes": 62666,
+            "candidate_drop_ceiling_lines": 2183,
+            "candidate_drop_ceiling_original_first_10k_bytes": 109675,
+            "clipped_tail_bytes": 106612,
+            "eligible_candidate_drop_ceiling_bytes": 170942,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 62666,
+            "eligible_candidate_drop_ceiling_lines": 2149,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 108276,
+            "identity_excluded_candidate_ceiling_bytes": 1399,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 0,
+            "identity_excluded_candidate_ceiling_lines": 34,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 1399,
+            "incremental_bytes": 231337,
+            "incremental_lines": 1461,
+            "input_bytes": 562014,
+            "lines": 3151,
+            "original_first_10k_bytes": 283061
+          }
+        },
+        "bytes": 34868061,
+        "candidate_drop_ceiling_bytes": 7134409,
+        "candidate_drop_ceiling_clipped_tail_bytes": 854274,
+        "candidate_drop_ceiling_lines": 163387,
+        "candidate_drop_ceiling_original_first_10k_bytes": 6280135,
+        "clipped_tail_bytes": 2717618,
+        "eligible_candidate_drop_ceiling_bytes": 7057456,
+        "eligible_candidate_drop_ceiling_clipped_tail_bytes": 827040,
+        "eligible_candidate_drop_ceiling_lines": 161559,
+        "eligible_candidate_drop_ceiling_original_first_10k_bytes": 6230416,
+        "eligible_candidate_drop_ceiling_pct_of_all_bash_bytes": 16.802478520906032,
+        "identity_excluded_candidate_ceiling_bytes": 76953,
+        "identity_excluded_candidate_ceiling_clipped_tail_bytes": 27234,
+        "identity_excluded_candidate_ceiling_lines": 1828,
+        "identity_excluded_candidate_ceiling_original_first_10k_bytes": 49719,
+        "incremental_bytes": 12781009,
+        "incremental_lines": 54789,
+        "input_bytes": 42002470,
+        "keep_floor_pct_of_all_bash_bytes": 83.01431082505385,
+        "lines": 144156,
+        "original_first_10k_bytes": 32150443
+      },
+      "K_struct": {
+        "bodies": 16944,
+        "by_class": {
+          "git_diff": {
+            "bodies": 650,
+            "bytes": 87720,
+            "candidate_drop_ceiling_bytes": 2584741,
+            "candidate_drop_ceiling_clipped_tail_bytes": 330881,
+            "candidate_drop_ceiling_lines": 35387,
+            "candidate_drop_ceiling_original_first_10k_bytes": 2253860,
+            "clipped_tail_bytes": 25155,
+            "eligible_candidate_drop_ceiling_bytes": 2584741,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 330881,
+            "eligible_candidate_drop_ceiling_lines": 35387,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 2253860,
+            "incremental_bytes": 87720,
+            "incremental_lines": 6022,
+            "input_bytes": 2672461,
+            "lines": 6022,
+            "original_first_10k_bytes": 62565
+          },
+          "git_status": {
+            "bodies": 1304,
+            "bytes": 7676,
+            "candidate_drop_ceiling_bytes": 409427,
+            "candidate_drop_ceiling_clipped_tail_bytes": 1638,
+            "candidate_drop_ceiling_lines": 6154,
+            "candidate_drop_ceiling_original_first_10k_bytes": 407789,
+            "clipped_tail_bytes": 992,
+            "eligible_candidate_drop_ceiling_bytes": 409427,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 1638,
+            "eligible_candidate_drop_ceiling_lines": 6154,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 407789,
+            "incremental_bytes": 7676,
+            "incremental_lines": 279,
+            "input_bytes": 417103,
+            "lines": 279,
+            "original_first_10k_bytes": 6684
+          },
+          "listing": {
+            "bodies": 951,
+            "bytes": 68577,
+            "candidate_drop_ceiling_bytes": 2153278,
+            "candidate_drop_ceiling_clipped_tail_bytes": 131775,
+            "candidate_drop_ceiling_lines": 21843,
+            "candidate_drop_ceiling_original_first_10k_bytes": 2021503,
+            "clipped_tail_bytes": 22337,
+            "eligible_candidate_drop_ceiling_bytes": 2137811,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 130780,
+            "eligible_candidate_drop_ceiling_lines": 21622,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 2007031,
+            "identity_excluded_candidate_ceiling_bytes": 15467,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 995,
+            "identity_excluded_candidate_ceiling_lines": 221,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 14472,
+            "incremental_bytes": 68577,
+            "incremental_lines": 2758,
+            "input_bytes": 2221855,
+            "lines": 2758,
+            "original_first_10k_bytes": 46240
+          },
+          "lockfile/json": {
+            "bodies": 379,
+            "bytes": 51329,
+            "candidate_drop_ceiling_bytes": 969650,
+            "candidate_drop_ceiling_clipped_tail_bytes": 59628,
+            "candidate_drop_ceiling_lines": 7970,
+            "candidate_drop_ceiling_original_first_10k_bytes": 910022,
+            "clipped_tail_bytes": 7824,
+            "eligible_candidate_drop_ceiling_bytes": 930392,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 32484,
+            "eligible_candidate_drop_ceiling_lines": 7147,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 897908,
+            "identity_excluded_candidate_ceiling_bytes": 39258,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 27144,
+            "identity_excluded_candidate_ceiling_lines": 823,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 12114,
+            "incremental_bytes": 51329,
+            "incremental_lines": 2614,
+            "input_bytes": 1020979,
+            "lines": 2614,
+            "original_first_10k_bytes": 43505
+          },
+          "mixed/compound": {
+            "bodies": 5942,
+            "bytes": 343634,
+            "candidate_drop_ceiling_bytes": 22150741,
+            "candidate_drop_ceiling_clipped_tail_bytes": 1482413,
+            "candidate_drop_ceiling_lines": 112319,
+            "candidate_drop_ceiling_original_first_10k_bytes": 20668328,
+            "clipped_tail_bytes": 51569,
+            "eligible_candidate_drop_ceiling_bytes": 21999819,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 1471368,
+            "eligible_candidate_drop_ceiling_lines": 111428,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 20528451,
+            "identity_excluded_candidate_ceiling_bytes": 150922,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 11045,
+            "identity_excluded_candidate_ceiling_lines": 891,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 139877,
+            "incremental_bytes": 343634,
+            "incremental_lines": 16518,
+            "input_bytes": 22494375,
+            "lines": 16518,
+            "original_first_10k_bytes": 292065
+          },
+          "npm/install/debug_log": {
+            "bodies": 80,
+            "bytes": 19084,
+            "candidate_drop_ceiling_bytes": 185578,
+            "candidate_drop_ceiling_clipped_tail_bytes": 3848,
+            "candidate_drop_ceiling_lines": 1026,
+            "candidate_drop_ceiling_original_first_10k_bytes": 181730,
+            "clipped_tail_bytes": 19,
+            "eligible_candidate_drop_ceiling_bytes": 185578,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 3848,
+            "eligible_candidate_drop_ceiling_lines": 1026,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 181730,
+            "incremental_bytes": 19084,
+            "incremental_lines": 530,
+            "input_bytes": 204662,
+            "lines": 530,
+            "original_first_10k_bytes": 19065
+          },
+          "other": {
+            "bodies": 4654,
+            "bytes": 45969,
+            "candidate_drop_ceiling_bytes": 1387765,
+            "candidate_drop_ceiling_clipped_tail_bytes": 252568,
+            "candidate_drop_ceiling_lines": 24474,
+            "candidate_drop_ceiling_original_first_10k_bytes": 1135197,
+            "clipped_tail_bytes": 11897,
+            "eligible_candidate_drop_ceiling_bytes": 1387765,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 252568,
+            "eligible_candidate_drop_ceiling_lines": 24474,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 1135197,
+            "incremental_bytes": 45969,
+            "incremental_lines": 2641,
+            "input_bytes": 1433734,
+            "lines": 2641,
+            "original_first_10k_bytes": 34072
+          },
+          "search": {
+            "bodies": 731,
+            "bytes": 19281,
+            "candidate_drop_ceiling_bytes": 3209331,
+            "candidate_drop_ceiling_clipped_tail_bytes": 320009,
+            "candidate_drop_ceiling_lines": 10025,
+            "candidate_drop_ceiling_original_first_10k_bytes": 2889322,
+            "clipped_tail_bytes": 1108,
+            "eligible_candidate_drop_ceiling_bytes": 3193970,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 319909,
+            "eligible_candidate_drop_ceiling_lines": 9946,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 2874061,
+            "identity_excluded_candidate_ceiling_bytes": 15361,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 100,
+            "identity_excluded_candidate_ceiling_lines": 79,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 15261,
+            "incremental_bytes": 19281,
+            "incremental_lines": 989,
+            "input_bytes": 3228612,
+            "lines": 989,
+            "original_first_10k_bytes": 18173
+          },
+          "source_dump": {
+            "bodies": 605,
+            "bytes": 10752,
+            "candidate_drop_ceiling_bytes": 5288085,
+            "candidate_drop_ceiling_clipped_tail_bytes": 213655,
+            "candidate_drop_ceiling_lines": 14945,
+            "candidate_drop_ceiling_original_first_10k_bytes": 5074430,
+            "clipped_tail_bytes": 68,
+            "eligible_candidate_drop_ceiling_bytes": 5278023,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 213593,
+            "eligible_candidate_drop_ceiling_lines": 14755,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 5064430,
+            "identity_excluded_candidate_ceiling_bytes": 10062,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 62,
+            "identity_excluded_candidate_ceiling_lines": 190,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 10000,
+            "incremental_bytes": 10752,
+            "incremental_lines": 771,
+            "input_bytes": 5298837,
+            "lines": 771,
+            "original_first_10k_bytes": 10684
+          },
+          "test": {
+            "bodies": 1460,
+            "bytes": 199840,
+            "candidate_drop_ceiling_bytes": 2247998,
+            "candidate_drop_ceiling_clipped_tail_bytes": 407430,
+            "candidate_drop_ceiling_lines": 25771,
+            "candidate_drop_ceiling_original_first_10k_bytes": 1840568,
+            "clipped_tail_bytes": 77800,
+            "eligible_candidate_drop_ceiling_bytes": 2247998,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 407430,
+            "eligible_candidate_drop_ceiling_lines": 25771,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 1840568,
+            "incremental_bytes": 199840,
+            "incremental_lines": 9173,
+            "input_bytes": 2447838,
+            "lines": 9173,
+            "original_first_10k_bytes": 122040
+          },
+          "write/edit": {
+            "bodies": 188,
+            "bytes": 31545,
+            "candidate_drop_ceiling_bytes": 530469,
+            "candidate_drop_ceiling_clipped_tail_bytes": 148072,
+            "candidate_drop_ceiling_lines": 4121,
+            "candidate_drop_ceiling_original_first_10k_bytes": 382397,
+            "clipped_tail_bytes": 21206,
+            "eligible_candidate_drop_ceiling_bytes": 528942,
+            "eligible_candidate_drop_ceiling_clipped_tail_bytes": 148072,
+            "eligible_candidate_drop_ceiling_lines": 4083,
+            "eligible_candidate_drop_ceiling_original_first_10k_bytes": 380870,
+            "identity_excluded_candidate_ceiling_bytes": 1527,
+            "identity_excluded_candidate_ceiling_clipped_tail_bytes": 0,
+            "identity_excluded_candidate_ceiling_lines": 38,
+            "identity_excluded_candidate_ceiling_original_first_10k_bytes": 1527,
+            "incremental_bytes": 31545,
+            "incremental_lines": 1213,
+            "input_bytes": 562014,
+            "lines": 1213,
+            "original_first_10k_bytes": 10339
+          }
+        },
+        "bytes": 885407,
+        "candidate_drop_ceiling_bytes": 41117063,
+        "candidate_drop_ceiling_clipped_tail_bytes": 3351917,
+        "candidate_drop_ceiling_lines": 264035,
+        "candidate_drop_ceiling_original_first_10k_bytes": 37765146,
+        "clipped_tail_bytes": 219975,
+        "eligible_candidate_drop_ceiling_bytes": 40884466,
+        "eligible_candidate_drop_ceiling_clipped_tail_bytes": 3312571,
+        "eligible_candidate_drop_ceiling_lines": 261793,
+        "eligible_candidate_drop_ceiling_original_first_10k_bytes": 37571895,
+        "eligible_candidate_drop_ceiling_pct_of_all_bash_bytes": 97.33824225099143,
+        "identity_excluded_candidate_ceiling_bytes": 232597,
+        "identity_excluded_candidate_ceiling_clipped_tail_bytes": 39346,
+        "identity_excluded_candidate_ceiling_lines": 2242,
+        "identity_excluded_candidate_ceiling_original_first_10k_bytes": 193251,
+        "incremental_bytes": 885407,
+        "incremental_lines": 43508,
+        "input_bytes": 42002470,
+        "keep_floor_pct_of_all_bash_bytes": 2.1079879349952515,
+        "lines": 43508,
+        "original_first_10k_bytes": 665432
+      }
+    },
+    "physical_line_bytes": 42002470,
+    "physical_lines": 307543
+  },
+  "method": {
+    "authoritative_parent_session": "session-af60703c-a964-41ee-bb2b-9edfc7b170f3",
+    "byte_measure": "pre-envelope UTF-8 with replacement for invalid scalar values",
+    "candidate_text_persisted": false,
+    "classifier": "imported frozen 11-class classify_bash and compound_shell",
+    "classifier_module": "experiments/cca-mixed-current/replay.py",
+    "classifier_module_sha256": "1bc41ffeb63b5c34c06ef7de3bbf7ca41aed9cbe409583f6c2fb75783c0e2bd9",
+    "corpus": "$HOME/.local/state/qq/sessions/**/session.jsonl.zstd",
+    "delegation_id": "92bb40b1-5440-414b-b654-172c958bdfe8",
+    "envelope_reference_bytes": 10000,
+    "event_cutoff_ms": 1787919339065,
+    "event_cutoff_utc": "2026-08-28T12:15:39.065000+00:00",
+    "excerpts_persisted": false,
+    "first_result_per_bash_call": true,
+    "full_commands_persisted": false,
+    "full_result_text_persisted": false,
+    "historical_commands_executed": false,
+    "live_pair_used": false,
+    "mixed_subcommand_segmentation_attempted": false,
+    "optional_pipe_last_stage_cap_evaluated": false,
+    "per_observation_rows_persisted": false,
+    "sensitive_and_unresolved_filter_policy": "identity but included in denominators",
+    "stock_10k_envelope_applied": false,
+    "study_session_excluded": "session-e2a0fe75-9bf3-42fe-8cff-51886cbab871"
+  },
+  "schema": "qq.bash-filter-opportunity-current/v1"
+}
