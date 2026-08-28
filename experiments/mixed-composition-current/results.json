@@ -1,0 +1,1428 @@
+{
+  "bodyless_observation_count": 5907,
+  "bodyless_observation_digest": "0424f220bf8f42f97d7b26517cafdf08288914861e15bc6491b05f54bc2f901d",
+  "candidate_filters": {
+    "conservative_stack": {
+      "by_family_incremental": {
+        "adjacent_exact_repetition": {
+          "changed_bodies": 6,
+          "incremental_saved_bytes": 564,
+          "marker_bytes": 434,
+          "raw_removed_bytes": 998
+        },
+        "layout_boilerplate": {
+          "changed_bodies": 96,
+          "incremental_saved_bytes": 17636,
+          "marker_bytes": 0,
+          "raw_removed_bytes": 17636
+        },
+        "nonadjacent_exact_repetition": {
+          "changed_bodies": 76,
+          "incremental_saved_bytes": 24302,
+          "marker_bytes": 19855,
+          "raw_removed_bytes": 44157
+        },
+        "passing_test_runs": {
+          "changed_bodies": 11,
+          "incremental_saved_bytes": 3452,
+          "marker_bytes": 547,
+          "raw_removed_bytes": 3999
+        },
+        "progress_runs": {},
+        "terminal_control": {
+          "changed_bodies": 20,
+          "incremental_saved_bytes": 365,
+          "marker_bytes": 0,
+          "raw_removed_bytes": 365
+        }
+      },
+      "changed_bodies": 192,
+      "evaluated_bodies": 5851,
+      "identity_exclusion_bodies": 56,
+      "identity_exclusion_bytes": 152398,
+      "input_bytes": 22239519,
+      "output_bytes": 22193200,
+      "saved_bytes": 46319,
+      "saved_pct_of_all_mixed_bytes": 0.20685589357981274
+    },
+    "independent": {
+      "adjacent_exact_repetition": {
+        "changed_bodies": 6,
+        "evaluated_bodies": 5851,
+        "evidence_risk": "low",
+        "fail_open_not_shorter_bodies": 9,
+        "identity_exclusion_bodies": 56,
+        "identity_exclusion_bytes": 152398,
+        "input_bytes": 22239519,
+        "marker_bytes": 434,
+        "output_bytes": 22238955,
+        "raw_removed_bytes": 998,
+        "saved_bytes": 564,
+        "saved_pct_of_all_mixed_bytes": 0.002518766035083106
+      },
+      "evidence_indexed_large_body_slice": {
+        "changed_bodies": 34,
+        "evaluated_bodies": 5851,
+        "evidence_risk": "high",
+        "fail_open_not_shorter_bodies": 4,
+        "identity_exclusion_bodies": 56,
+        "identity_exclusion_bytes": 152398,
+        "input_bytes": 22239519,
+        "marker_bytes": 12270,
+        "output_bytes": 22155456,
+        "raw_removed_bytes": 96333,
+        "saved_bytes": 84063,
+        "saved_pct_of_all_mixed_bytes": 0.3754167184524666
+      },
+      "layout_boilerplate": {
+        "changed_bodies": 96,
+        "evaluated_bodies": 5851,
+        "evidence_risk": "low",
+        "fail_open_not_shorter_bodies": 0,
+        "identity_exclusion_bodies": 56,
+        "identity_exclusion_bytes": 152398,
+        "input_bytes": 22239519,
+        "marker_bytes": 0,
+        "output_bytes": 22221883,
+        "raw_removed_bytes": 17636,
+        "saved_bytes": 17636,
+        "saved_pct_of_all_mixed_bytes": 0.07876056346582563
+      },
+      "nonadjacent_exact_repetition": {
+        "changed_bodies": 86,
+        "evaluated_bodies": 5851,
+        "evidence_risk": "low-medium",
+        "fail_open_not_shorter_bodies": 203,
+        "identity_exclusion_bodies": 56,
+        "identity_exclusion_bytes": 152398,
+        "input_bytes": 22239519,
+        "marker_bytes": 22092,
+        "output_bytes": 22203622,
+        "raw_removed_bytes": 57989,
+        "saved_bytes": 35897,
+        "saved_pct_of_all_mixed_bytes": 0.1603123126974792
+      },
+      "passing_test_runs": {
+        "changed_bodies": 11,
+        "evaluated_bodies": 5851,
+        "evidence_risk": "medium",
+        "fail_open_not_shorter_bodies": 0,
+        "identity_exclusion_bodies": 56,
+        "identity_exclusion_bytes": 152398,
+        "input_bytes": 22239519,
+        "marker_bytes": 547,
+        "output_bytes": 22236067,
+        "raw_removed_bytes": 3999,
+        "saved_bytes": 3452,
+        "saved_pct_of_all_mixed_bytes": 0.015416277221820714
+      },
+      "progress_runs": {
+        "evaluated_bodies": 5851,
+        "evidence_risk": "low-medium",
+        "fail_open_not_shorter_bodies": 0,
+        "identity_exclusion_bodies": 56,
+        "identity_exclusion_bytes": 152398,
+        "input_bytes": 22239519,
+        "output_bytes": 22239519,
+        "saved_pct_of_all_mixed_bytes": 0.0
+      },
+      "terminal_control": {
+        "changed_bodies": 20,
+        "evaluated_bodies": 5851,
+        "evidence_risk": "low",
+        "fail_open_not_shorter_bodies": 0,
+        "identity_exclusion_bodies": 56,
+        "identity_exclusion_bytes": 152398,
+        "input_bytes": 22239519,
+        "marker_bytes": 0,
+        "output_bytes": 22239154,
+        "raw_removed_bytes": 365,
+        "saved_bytes": 365,
+        "saved_pct_of_all_mixed_bytes": 0.0016300524872434996
+      }
+    }
+  },
+  "composition": {
+    "classifier_path": {
+      "generic-compound fallback": {
+        "bodies": 1068,
+        "bytes": 3166540
+      },
+      "multi-tag compound": {
+        "bodies": 4839,
+        "bytes": 19225377
+      }
+    },
+    "command_shape_exclusive_signatures": {
+      "&&": {
+        "bodies": 1158,
+        "bytes": 1580412
+      },
+      "&&+heredoc": {
+        "bodies": 305,
+        "bytes": 350282
+      },
+      "&&+pipe": {
+        "bodies": 1041,
+        "bytes": 6045749
+      },
+      "&&+pipe+heredoc": {
+        "bodies": 238,
+        "bytes": 932964
+      },
+      "heredoc": {
+        "bodies": 683,
+        "bytes": 1743471
+      },
+      "pipe": {
+        "bodies": 1943,
+        "bytes": 9761743
+      },
+      "pipe+heredoc": {
+        "bodies": 539,
+        "bytes": 1977296
+      }
+    },
+    "command_shape_inclusive": {
+      "&&": {
+        "bodies": 2742,
+        "bytes": 8909407
+      },
+      "heredoc": {
+        "bodies": 1765,
+        "bytes": 5004013
+      },
+      "pipe": {
+        "bodies": 3761,
+        "bytes": 18717752
+      }
+    },
+    "constituent_tag_combinations": {
+      "git_diff+git_status": {
+        "bodies": 554,
+        "bytes": 700096
+      },
+      "git_diff+git_status+listing": {
+        "bodies": 62,
+        "bytes": 119296
+      },
+      "git_diff+git_status+listing+lockfile/json": {
+        "bodies": 5,
+        "bytes": 11404
+      },
+      "git_diff+git_status+lockfile/json": {
+        "bodies": 24,
+        "bytes": 70606
+      },
+      "git_diff+git_status+npm/install/debug_log+lockfile/json": {
+        "bodies": 1,
+        "bytes": 60
+      },
+      "git_diff+git_status+search": {
+        "bodies": 20,
+        "bytes": 55823
+      },
+      "git_diff+git_status+search+listing": {
+        "bodies": 6,
+        "bytes": 24163
+      },
+      "git_diff+git_status+search+listing+lockfile/json": {
+        "bodies": 1,
+        "bytes": 10569
+      },
+      "git_diff+git_status+search+lockfile/json": {
+        "bodies": 7,
+        "bytes": 13698
+      },
+      "git_diff+git_status+source_dump": {
+        "bodies": 9,
+        "bytes": 25091
+      },
+      "git_diff+git_status+source_dump+listing": {
+        "bodies": 2,
+        "bytes": 3744
+      },
+      "git_diff+git_status+source_dump+listing+lockfile/json": {
+        "bodies": 1,
+        "bytes": 10647
+      },
+      "git_diff+git_status+source_dump+lockfile/json": {
+        "bodies": 3,
+        "bytes": 20307
+      },
+      "git_diff+git_status+source_dump+search": {
+        "bodies": 2,
+        "bytes": 15677
+      },
+      "git_diff+git_status+source_dump+search+listing": {
+        "bodies": 3,
+        "bytes": 6612
+      },
+      "git_diff+git_status+source_dump+search+listing+lockfile/json": {
+        "bodies": 1,
+        "bytes": 1098
+      },
+      "git_diff+git_status+source_dump+search+lockfile/json": {
+        "bodies": 3,
+        "bytes": 13785
+      },
+      "git_diff+git_status+test": {
+        "bodies": 68,
+        "bytes": 110561
+      },
+      "git_diff+git_status+test+listing": {
+        "bodies": 11,
+        "bytes": 24107
+      },
+      "git_diff+git_status+test+listing+lockfile/json": {
+        "bodies": 2,
+        "bytes": 1574
+      },
+      "git_diff+git_status+test+lockfile/json": {
+        "bodies": 2,
+        "bytes": 11186
+      },
+      "git_diff+git_status+test+npm/install/debug_log+write/edit": {
+        "bodies": 1,
+        "bytes": 7292
+      },
+      "git_diff+git_status+test+npm/install/debug_log+write/edit+source_dump+lockfile/json": {
+        "bodies": 2,
+        "bytes": 2067
+      },
+      "git_diff+git_status+test+npm/install/debug_log+write/edit+source_dump+search": {
+        "bodies": 1,
+        "bytes": 387
+      },
+      "git_diff+git_status+test+npm/install/debug_log+write/edit+source_dump+search+lockfile/json": {
+        "bodies": 2,
+        "bytes": 6491
+      },
+      "git_diff+git_status+test+search": {
+        "bodies": 15,
+        "bytes": 52753
+      },
+      "git_diff+git_status+test+search+listing": {
+        "bodies": 4,
+        "bytes": 19433
+      },
+      "git_diff+git_status+test+search+lockfile/json": {
+        "bodies": 3,
+        "bytes": 17143
+      },
+      "git_diff+git_status+test+source_dump": {
+        "bodies": 25,
+        "bytes": 94190
+      },
+      "git_diff+git_status+test+source_dump+listing": {
+        "bodies": 1,
+        "bytes": 954
+      },
+      "git_diff+git_status+test+source_dump+lockfile/json": {
+        "bodies": 2,
+        "bytes": 12141
+      },
+      "git_diff+git_status+test+source_dump+search": {
+        "bodies": 11,
+        "bytes": 57071
+      },
+      "git_diff+git_status+test+source_dump+search+listing": {
+        "bodies": 2,
+        "bytes": 10232
+      },
+      "git_diff+git_status+test+source_dump+search+listing+lockfile/json": {
+        "bodies": 1,
+        "bytes": 10235
+      },
+      "git_diff+git_status+test+write/edit": {
+        "bodies": 31,
+        "bytes": 49963
+      },
+      "git_diff+git_status+test+write/edit+listing": {
+        "bodies": 5,
+        "bytes": 7390
+      },
+      "git_diff+git_status+test+write/edit+listing+lockfile/json": {
+        "bodies": 2,
+        "bytes": 2980
+      },
+      "git_diff+git_status+test+write/edit+lockfile/json": {
+        "bodies": 3,
+        "bytes": 3403
+      },
+      "git_diff+git_status+test+write/edit+search": {
+        "bodies": 7,
+        "bytes": 18763
+      },
+      "git_diff+git_status+test+write/edit+search+listing": {
+        "bodies": 2,
+        "bytes": 5021
+      },
+      "git_diff+git_status+test+write/edit+search+lockfile/json": {
+        "bodies": 3,
+        "bytes": 10209
+      },
+      "git_diff+git_status+test+write/edit+source_dump": {
+        "bodies": 13,
+        "bytes": 18595
+      },
+      "git_diff+git_status+test+write/edit+source_dump+lockfile/json": {
+        "bodies": 3,
+        "bytes": 11128
+      },
+      "git_diff+git_status+test+write/edit+source_dump+search+listing": {
+        "bodies": 1,
+        "bytes": 7587
+      },
+      "git_diff+git_status+test+write/edit+source_dump+search+lockfile/json": {
+        "bodies": 2,
+        "bytes": 2939
+      },
+      "git_diff+git_status+write/edit": {
+        "bodies": 31,
+        "bytes": 107179
+      },
+      "git_diff+git_status+write/edit+listing": {
+        "bodies": 4,
+        "bytes": 13999
+      },
+      "git_diff+git_status+write/edit+listing+lockfile/json": {
+        "bodies": 1,
+        "bytes": 5743
+      },
+      "git_diff+git_status+write/edit+lockfile/json": {
+        "bodies": 4,
+        "bytes": 6566
+      },
+      "git_diff+git_status+write/edit+search": {
+        "bodies": 7,
+        "bytes": 17468
+      },
+      "git_diff+git_status+write/edit+search+listing": {
+        "bodies": 2,
+        "bytes": 1121
+      },
+      "git_diff+git_status+write/edit+search+listing+lockfile/json": {
+        "bodies": 2,
+        "bytes": 5673
+      },
+      "git_diff+git_status+write/edit+search+lockfile/json": {
+        "bodies": 6,
+        "bytes": 11378
+      },
+      "git_diff+git_status+write/edit+source_dump": {
+        "bodies": 4,
+        "bytes": 4707
+      },
+      "git_diff+git_status+write/edit+source_dump+listing+lockfile/json": {
+        "bodies": 1,
+        "bytes": 517
+      },
+      "git_diff+git_status+write/edit+source_dump+lockfile/json": {
+        "bodies": 3,
+        "bytes": 10633
+      },
+      "git_diff+git_status+write/edit+source_dump+search": {
+        "bodies": 3,
+        "bytes": 14159
+      },
+      "git_diff+listing": {
+        "bodies": 33,
+        "bytes": 74746
+      },
+      "git_diff+listing+lockfile/json": {
+        "bodies": 5,
+        "bytes": 26945
+      },
+      "git_diff+lockfile/json": {
+        "bodies": 24,
+        "bytes": 130538
+      },
+      "git_diff+search": {
+        "bodies": 71,
+        "bytes": 406777
+      },
+      "git_diff+search+listing": {
+        "bodies": 13,
+        "bytes": 118983
+      },
+      "git_diff+search+listing+lockfile/json": {
+        "bodies": 4,
+        "bytes": 10582
+      },
+      "git_diff+search+lockfile/json": {
+        "bodies": 7,
+        "bytes": 52305
+      },
+      "git_diff+source_dump": {
+        "bodies": 44,
+        "bytes": 323732
+      },
+      "git_diff+source_dump+listing": {
+        "bodies": 3,
+        "bytes": 12709
+      },
+      "git_diff+source_dump+listing+lockfile/json": {
+        "bodies": 2,
+        "bytes": 30316
+      },
+      "git_diff+source_dump+lockfile/json": {
+        "bodies": 5,
+        "bytes": 42291
+      },
+      "git_diff+source_dump+search": {
+        "bodies": 35,
+        "bytes": 150941
+      },
+      "git_diff+source_dump+search+lockfile/json": {
+        "bodies": 1,
+        "bytes": 3340
+      },
+      "git_diff+test": {
+        "bodies": 114,
+        "bytes": 613151
+      },
+      "git_diff+test+listing": {
+        "bodies": 3,
+        "bytes": 14645
+      },
+      "git_diff+test+lockfile/json": {
+        "bodies": 6,
+        "bytes": 34976
+      },
+      "git_diff+test+npm/install/debug_log+write/edit": {
+        "bodies": 2,
+        "bytes": 1182
+      },
+      "git_diff+test+npm/install/debug_log+write/edit+lockfile/json": {
+        "bodies": 1,
+        "bytes": 6916
+      },
+      "git_diff+test+npm/install/debug_log+write/edit+source_dump": {
+        "bodies": 1,
+        "bytes": 5424
+      },
+      "git_diff+test+npm/install/debug_log+write/edit+source_dump+listing+lockfile/json": {
+        "bodies": 1,
+        "bytes": 2033
+      },
+      "git_diff+test+npm/install/debug_log+write/edit+source_dump+lockfile/json": {
+        "bodies": 1,
+        "bytes": 9092
+      },
+      "git_diff+test+search": {
+        "bodies": 29,
+        "bytes": 185916
+      },
+      "git_diff+test+search+listing": {
+        "bodies": 2,
+        "bytes": 7175
+      },
+      "git_diff+test+search+lockfile/json": {
+        "bodies": 2,
+        "bytes": 11528
+      },
+      "git_diff+test+source_dump": {
+        "bodies": 22,
+        "bytes": 125113
+      },
+      "git_diff+test+source_dump+listing": {
+        "bodies": 4,
+        "bytes": 24894
+      },
+      "git_diff+test+source_dump+lockfile/json": {
+        "bodies": 4,
+        "bytes": 33341
+      },
+      "git_diff+test+source_dump+search": {
+        "bodies": 24,
+        "bytes": 118488
+      },
+      "git_diff+test+source_dump+search+listing+lockfile/json": {
+        "bodies": 2,
+        "bytes": 7287
+      },
+      "git_diff+test+source_dump+search+lockfile/json": {
+        "bodies": 1,
+        "bytes": 3527
+      },
+      "git_diff+test+write/edit": {
+        "bodies": 106,
+        "bytes": 168454
+      },
+      "git_diff+test+write/edit+lockfile/json": {
+        "bodies": 5,
+        "bytes": 15555
+      },
+      "git_diff+test+write/edit+search": {
+        "bodies": 10,
+        "bytes": 17073
+      },
+      "git_diff+test+write/edit+search+listing": {
+        "bodies": 2,
+        "bytes": 689
+      },
+      "git_diff+test+write/edit+search+lockfile/json": {
+        "bodies": 1,
+        "bytes": 3260
+      },
+      "git_diff+test+write/edit+source_dump": {
+        "bodies": 14,
+        "bytes": 64559
+      },
+      "git_diff+test+write/edit+source_dump+lockfile/json": {
+        "bodies": 4,
+        "bytes": 21651
+      },
+      "git_diff+test+write/edit+source_dump+search": {
+        "bodies": 1,
+        "bytes": 7775
+      },
+      "git_diff+test+write/edit+source_dump+search+listing": {
+        "bodies": 1,
+        "bytes": 4472
+      },
+      "git_diff+test+write/edit+source_dump+search+lockfile/json": {
+        "bodies": 1,
+        "bytes": 145
+      },
+      "git_diff+write/edit": {
+        "bodies": 37,
+        "bytes": 124874
+      },
+      "git_diff+write/edit+listing": {
+        "bodies": 1,
+        "bytes": 24
+      },
+      "git_diff+write/edit+lockfile/json": {
+        "bodies": 7,
+        "bytes": 40480
+      },
+      "git_diff+write/edit+search": {
+        "bodies": 11,
+        "bytes": 28011
+      },
+      "git_diff+write/edit+search+listing": {
+        "bodies": 2,
+        "bytes": 60802
+      },
+      "git_diff+write/edit+search+lockfile/json": {
+        "bodies": 1,
+        "bytes": 1582
+      },
+      "git_diff+write/edit+source_dump": {
+        "bodies": 18,
+        "bytes": 121532
+      },
+      "git_diff+write/edit+source_dump+lockfile/json": {
+        "bodies": 4,
+        "bytes": 13848
+      },
+      "git_diff+write/edit+source_dump+search": {
+        "bodies": 4,
+        "bytes": 21822
+      },
+      "git_status+listing": {
+        "bodies": 129,
+        "bytes": 270467
+      },
+      "git_status+listing+lockfile/json": {
+        "bodies": 24,
+        "bytes": 42761
+      },
+      "git_status+lockfile/json": {
+        "bodies": 21,
+        "bytes": 18968
+      },
+      "git_status+npm/install/debug_log+write/edit+lockfile/json": {
+        "bodies": 1,
+        "bytes": 897
+      },
+      "git_status+npm/install/debug_log+write/edit+search+lockfile/json": {
+        "bodies": 1,
+        "bytes": 1396
+      },
+      "git_status+search": {
+        "bodies": 21,
+        "bytes": 27534
+      },
+      "git_status+search+listing": {
+        "bodies": 28,
+        "bytes": 116033
+      },
+      "git_status+search+listing+lockfile/json": {
+        "bodies": 5,
+        "bytes": 16122
+      },
+      "git_status+search+lockfile/json": {
+        "bodies": 6,
+        "bytes": 16582
+      },
+      "git_status+source_dump": {
+        "bodies": 21,
+        "bytes": 43308
+      },
+      "git_status+source_dump+listing": {
+        "bodies": 4,
+        "bytes": 7041
+      },
+      "git_status+source_dump+listing+lockfile/json": {
+        "bodies": 2,
+        "bytes": 5942
+      },
+      "git_status+source_dump+lockfile/json": {
+        "bodies": 3,
+        "bytes": 9623
+      },
+      "git_status+source_dump+search": {
+        "bodies": 4,
+        "bytes": 17988
+      },
+      "git_status+source_dump+search+listing": {
+        "bodies": 1,
+        "bytes": 1653
+      },
+      "git_status+source_dump+search+listing+lockfile/json": {
+        "bodies": 2,
+        "bytes": 16217
+      },
+      "git_status+source_dump+search+lockfile/json": {
+        "bodies": 1,
+        "bytes": 8977
+      },
+      "git_status+test": {
+        "bodies": 21,
+        "bytes": 24671
+      },
+      "git_status+test+listing": {
+        "bodies": 5,
+        "bytes": 929
+      },
+      "git_status+test+listing+lockfile/json": {
+        "bodies": 2,
+        "bytes": 4360
+      },
+      "git_status+test+lockfile/json": {
+        "bodies": 4,
+        "bytes": 2897
+      },
+      "git_status+test+npm/install/debug_log+search+listing": {
+        "bodies": 1,
+        "bytes": 133
+      },
+      "git_status+test+npm/install/debug_log+write/edit": {
+        "bodies": 1,
+        "bytes": 110
+      },
+      "git_status+test+npm/install/debug_log+write/edit+search": {
+        "bodies": 1,
+        "bytes": 2823
+      },
+      "git_status+test+npm/install/debug_log+write/edit+search+lockfile/json": {
+        "bodies": 1,
+        "bytes": 2668
+      },
+      "git_status+test+npm/install/debug_log+write/edit+source_dump+listing+lockfile/json": {
+        "bodies": 1,
+        "bytes": 194
+      },
+      "git_status+test+npm/install/debug_log+write/edit+source_dump+lockfile/json": {
+        "bodies": 1,
+        "bytes": 1735
+      },
+      "git_status+test+npm/install/debug_log+write/edit+source_dump+search": {
+        "bodies": 1,
+        "bytes": 10954
+      },
+      "git_status+test+search": {
+        "bodies": 6,
+        "bytes": 24904
+      },
+      "git_status+test+search+listing": {
+        "bodies": 2,
+        "bytes": 2754
+      },
+      "git_status+test+search+lockfile/json": {
+        "bodies": 1,
+        "bytes": 10550
+      },
+      "git_status+test+source_dump": {
+        "bodies": 6,
+        "bytes": 40179
+      },
+      "git_status+test+source_dump+search": {
+        "bodies": 2,
+        "bytes": 12183
+      },
+      "git_status+test+source_dump+search+listing": {
+        "bodies": 1,
+        "bytes": 10510
+      },
+      "git_status+test+source_dump+search+lockfile/json": {
+        "bodies": 1,
+        "bytes": 1473
+      },
+      "git_status+test+write/edit": {
+        "bodies": 31,
+        "bytes": 25320
+      },
+      "git_status+test+write/edit+listing": {
+        "bodies": 2,
+        "bytes": 1190
+      },
+      "git_status+test+write/edit+lockfile/json": {
+        "bodies": 4,
+        "bytes": 3242
+      },
+      "git_status+test+write/edit+search": {
+        "bodies": 3,
+        "bytes": 226
+      },
+      "git_status+test+write/edit+search+listing": {
+        "bodies": 5,
+        "bytes": 14180
+      },
+      "git_status+test+write/edit+search+lockfile/json": {
+        "bodies": 1,
+        "bytes": 881
+      },
+      "git_status+test+write/edit+source_dump": {
+        "bodies": 1,
+        "bytes": 291
+      },
+      "git_status+test+write/edit+source_dump+listing": {
+        "bodies": 2,
+        "bytes": 9941
+      },
+      "git_status+test+write/edit+source_dump+search+lockfile/json": {
+        "bodies": 1,
+        "bytes": 840
+      },
+      "git_status+write/edit": {
+        "bodies": 33,
+        "bytes": 20141
+      },
+      "git_status+write/edit+listing": {
+        "bodies": 7,
+        "bytes": 10309
+      },
+      "git_status+write/edit+lockfile/json": {
+        "bodies": 4,
+        "bytes": 3015
+      },
+      "git_status+write/edit+search": {
+        "bodies": 2,
+        "bytes": 2587
+      },
+      "git_status+write/edit+search+listing": {
+        "bodies": 1,
+        "bytes": 501
+      },
+      "git_status+write/edit+search+listing+lockfile/json": {
+        "bodies": 3,
+        "bytes": 5011
+      },
+      "git_status+write/edit+search+lockfile/json": {
+        "bodies": 1,
+        "bytes": 900
+      },
+      "git_status+write/edit+source_dump": {
+        "bodies": 3,
+        "bytes": 19754
+      },
+      "git_status+write/edit+source_dump+listing": {
+        "bodies": 3,
+        "bytes": 2072
+      },
+      "git_status+write/edit+source_dump+listing+lockfile/json": {
+        "bodies": 1,
+        "bytes": 402
+      },
+      "git_status+write/edit+source_dump+lockfile/json": {
+        "bodies": 3,
+        "bytes": 492
+      },
+      "git_status+write/edit+source_dump+search": {
+        "bodies": 1,
+        "bytes": 10574
+      },
+      "git_status+write/edit+source_dump+search+listing+lockfile/json": {
+        "bodies": 1,
+        "bytes": 3173
+      },
+      "listing+lockfile/json": {
+        "bodies": 214,
+        "bytes": 679218
+      },
+      "no-tag generic-compound": {
+        "bodies": 1068,
+        "bytes": 3166540
+      },
+      "npm/install/debug_log+listing": {
+        "bodies": 19,
+        "bytes": 68083
+      },
+      "npm/install/debug_log+listing+lockfile/json": {
+        "bodies": 8,
+        "bytes": 80665
+      },
+      "npm/install/debug_log+lockfile/json": {
+        "bodies": 8,
+        "bytes": 22325
+      },
+      "npm/install/debug_log+search": {
+        "bodies": 24,
+        "bytes": 130072
+      },
+      "npm/install/debug_log+search+listing": {
+        "bodies": 19,
+        "bytes": 80056
+      },
+      "npm/install/debug_log+search+listing+lockfile/json": {
+        "bodies": 1,
+        "bytes": 3769
+      },
+      "npm/install/debug_log+search+lockfile/json": {
+        "bodies": 6,
+        "bytes": 12625
+      },
+      "npm/install/debug_log+source_dump+lockfile/json": {
+        "bodies": 2,
+        "bytes": 3109
+      },
+      "npm/install/debug_log+source_dump+search": {
+        "bodies": 1,
+        "bytes": 10477
+      },
+      "npm/install/debug_log+source_dump+search+listing+lockfile/json": {
+        "bodies": 1,
+        "bytes": 605
+      },
+      "npm/install/debug_log+write/edit": {
+        "bodies": 10,
+        "bytes": 14143
+      },
+      "npm/install/debug_log+write/edit+listing": {
+        "bodies": 4,
+        "bytes": 8451
+      },
+      "npm/install/debug_log+write/edit+listing+lockfile/json": {
+        "bodies": 3,
+        "bytes": 13896
+      },
+      "npm/install/debug_log+write/edit+lockfile/json": {
+        "bodies": 14,
+        "bytes": 19794
+      },
+      "npm/install/debug_log+write/edit+search": {
+        "bodies": 3,
+        "bytes": 14497
+      },
+      "npm/install/debug_log+write/edit+search+listing": {
+        "bodies": 1,
+        "bytes": 568
+      },
+      "npm/install/debug_log+write/edit+search+listing+lockfile/json": {
+        "bodies": 4,
+        "bytes": 31944
+      },
+      "npm/install/debug_log+write/edit+search+lockfile/json": {
+        "bodies": 5,
+        "bytes": 13963
+      },
+      "npm/install/debug_log+write/edit+source_dump": {
+        "bodies": 3,
+        "bytes": 2017
+      },
+      "npm/install/debug_log+write/edit+source_dump+listing+lockfile/json": {
+        "bodies": 1,
+        "bytes": 10498
+      },
+      "npm/install/debug_log+write/edit+source_dump+lockfile/json": {
+        "bodies": 3,
+        "bytes": 8527
+      },
+      "npm/install/debug_log+write/edit+source_dump+search+listing+lockfile/json": {
+        "bodies": 1,
+        "bytes": 523
+      },
+      "search+listing": {
+        "bodies": 457,
+        "bytes": 1712755
+      },
+      "search+listing+lockfile/json": {
+        "bodies": 122,
+        "bytes": 541357
+      },
+      "search+lockfile/json": {
+        "bodies": 139,
+        "bytes": 524695
+      },
+      "source_dump+listing": {
+        "bodies": 42,
+        "bytes": 266718
+      },
+      "source_dump+listing+lockfile/json": {
+        "bodies": 26,
+        "bytes": 174479
+      },
+      "source_dump+lockfile/json": {
+        "bodies": 39,
+        "bytes": 297136
+      },
+      "source_dump+search": {
+        "bodies": 277,
+        "bytes": 2283261
+      },
+      "source_dump+search+listing": {
+        "bodies": 33,
+        "bytes": 242733
+      },
+      "source_dump+search+listing+lockfile/json": {
+        "bodies": 21,
+        "bytes": 108142
+      },
+      "source_dump+search+lockfile/json": {
+        "bodies": 40,
+        "bytes": 341394
+      },
+      "test+listing": {
+        "bodies": 21,
+        "bytes": 52557
+      },
+      "test+listing+lockfile/json": {
+        "bodies": 7,
+        "bytes": 18420
+      },
+      "test+lockfile/json": {
+        "bodies": 3,
+        "bytes": 1464
+      },
+      "test+npm/install/debug_log": {
+        "bodies": 1,
+        "bytes": 313
+      },
+      "test+npm/install/debug_log+listing": {
+        "bodies": 3,
+        "bytes": 5370
+      },
+      "test+npm/install/debug_log+lockfile/json": {
+        "bodies": 2,
+        "bytes": 25378
+      },
+      "test+npm/install/debug_log+search+listing": {
+        "bodies": 1,
+        "bytes": 10869
+      },
+      "test+npm/install/debug_log+search+listing+lockfile/json": {
+        "bodies": 1,
+        "bytes": 10302
+      },
+      "test+npm/install/debug_log+write/edit": {
+        "bodies": 10,
+        "bytes": 33839
+      },
+      "test+npm/install/debug_log+write/edit+listing+lockfile/json": {
+        "bodies": 1,
+        "bytes": 2169
+      },
+      "test+npm/install/debug_log+write/edit+lockfile/json": {
+        "bodies": 6,
+        "bytes": 14339
+      },
+      "test+npm/install/debug_log+write/edit+search": {
+        "bodies": 4,
+        "bytes": 5003
+      },
+      "test+npm/install/debug_log+write/edit+source_dump": {
+        "bodies": 3,
+        "bytes": 3149
+      },
+      "test+npm/install/debug_log+write/edit+source_dump+listing+lockfile/json": {
+        "bodies": 4,
+        "bytes": 11508
+      },
+      "test+npm/install/debug_log+write/edit+source_dump+lockfile/json": {
+        "bodies": 1,
+        "bytes": 93
+      },
+      "test+npm/install/debug_log+write/edit+source_dump+search": {
+        "bodies": 2,
+        "bytes": 3612
+      },
+      "test+npm/install/debug_log+write/edit+source_dump+search+lockfile/json": {
+        "bodies": 1,
+        "bytes": 109
+      },
+      "test+search": {
+        "bodies": 114,
+        "bytes": 483387
+      },
+      "test+search+listing": {
+        "bodies": 16,
+        "bytes": 57391
+      },
+      "test+search+listing+lockfile/json": {
+        "bodies": 6,
+        "bytes": 16252
+      },
+      "test+search+lockfile/json": {
+        "bodies": 6,
+        "bytes": 32951
+      },
+      "test+source_dump": {
+        "bodies": 179,
+        "bytes": 1474185
+      },
+      "test+source_dump+listing": {
+        "bodies": 5,
+        "bytes": 44719
+      },
+      "test+source_dump+listing+lockfile/json": {
+        "bodies": 4,
+        "bytes": 34867
+      },
+      "test+source_dump+lockfile/json": {
+        "bodies": 5,
+        "bytes": 47764
+      },
+      "test+source_dump+search": {
+        "bodies": 139,
+        "bytes": 1083949
+      },
+      "test+source_dump+search+listing": {
+        "bodies": 15,
+        "bytes": 124177
+      },
+      "test+source_dump+search+listing+lockfile/json": {
+        "bodies": 3,
+        "bytes": 31467
+      },
+      "test+source_dump+search+lockfile/json": {
+        "bodies": 8,
+        "bytes": 70185
+      },
+      "test+write/edit": {
+        "bodies": 175,
+        "bytes": 368752
+      },
+      "test+write/edit+listing": {
+        "bodies": 2,
+        "bytes": 489
+      },
+      "test+write/edit+lockfile/json": {
+        "bodies": 13,
+        "bytes": 39028
+      },
+      "test+write/edit+search": {
+        "bodies": 28,
+        "bytes": 83270
+      },
+      "test+write/edit+search+listing": {
+        "bodies": 2,
+        "bytes": 2326
+      },
+      "test+write/edit+search+listing+lockfile/json": {
+        "bodies": 5,
+        "bytes": 17630
+      },
+      "test+write/edit+search+lockfile/json": {
+        "bodies": 3,
+        "bytes": 4200
+      },
+      "test+write/edit+source_dump": {
+        "bodies": 31,
+        "bytes": 102473
+      },
+      "test+write/edit+source_dump+listing": {
+        "bodies": 3,
+        "bytes": 3668
+      },
+      "test+write/edit+source_dump+listing+lockfile/json": {
+        "bodies": 1,
+        "bytes": 1562
+      },
+      "test+write/edit+source_dump+lockfile/json": {
+        "bodies": 16,
+        "bytes": 40887
+      },
+      "test+write/edit+source_dump+search": {
+        "bodies": 4,
+        "bytes": 18552
+      },
+      "test+write/edit+source_dump+search+listing+lockfile/json": {
+        "bodies": 1,
+        "bytes": 10292
+      },
+      "test+write/edit+source_dump+search+lockfile/json": {
+        "bodies": 3,
+        "bytes": 6480
+      },
+      "write/edit+listing": {
+        "bodies": 20,
+        "bytes": 53166
+      },
+      "write/edit+listing+lockfile/json": {
+        "bodies": 7,
+        "bytes": 24857
+      },
+      "write/edit+lockfile/json": {
+        "bodies": 99,
+        "bytes": 285363
+      },
+      "write/edit+search": {
+        "bodies": 52,
+        "bytes": 174043
+      },
+      "write/edit+search+listing": {
+        "bodies": 6,
+        "bytes": 29961
+      },
+      "write/edit+search+listing+lockfile/json": {
+        "bodies": 4,
+        "bytes": 13690
+      },
+      "write/edit+search+lockfile/json": {
+        "bodies": 17,
+        "bytes": 52131
+      },
+      "write/edit+source_dump": {
+        "bodies": 39,
+        "bytes": 173401
+      },
+      "write/edit+source_dump+listing": {
+        "bodies": 1,
+        "bytes": 6673
+      },
+      "write/edit+source_dump+listing+lockfile/json": {
+        "bodies": 5,
+        "bytes": 13623
+      },
+      "write/edit+source_dump+lockfile/json": {
+        "bodies": 21,
+        "bytes": 49503
+      },
+      "write/edit+source_dump+search": {
+        "bodies": 14,
+        "bytes": 94400
+      },
+      "write/edit+source_dump+search+listing+lockfile/json": {
+        "bodies": 3,
+        "bytes": 26952
+      },
+      "write/edit+source_dump+search+lockfile/json": {
+        "bodies": 4,
+        "bytes": 12029
+      }
+    },
+    "constituent_tags_inclusive": {
+      "git_diff": {
+        "bodies": 1693,
+        "bytes": 5183115
+      },
+      "git_status": {
+        "bodies": 1442,
+        "bytes": 2788192
+      },
+      "listing": {
+        "bodies": 1556,
+        "bytes": 5891713
+      },
+      "lockfile/json": {
+        "bodies": 1193,
+        "bytes": 4769195
+      },
+      "npm/install/debug_log": {
+        "bodies": 203,
+        "bytes": 738514
+      },
+      "search": {
+        "bodies": 2064,
+        "bytes": 10501341
+      },
+      "source_dump": {
+        "bodies": 1370,
+        "bytes": 8984740
+      },
+      "test": {
+        "bodies": 1555,
+        "bytes": 6693651
+      },
+      "write/edit": {
+        "bodies": 1166,
+        "bytes": 3172475
+      }
+    },
+    "size_strata": {
+      "1-255 B": {
+        "bodies": 1345,
+        "bytes": 157895
+      },
+      "256 B-1 KiB": {
+        "bodies": 1193,
+        "bytes": 701885
+      },
+      ">1-4 KiB": {
+        "bodies": 1344,
+        "bytes": 2952806
+      },
+      ">10-100 KiB": {
+        "bodies": 944,
+        "bytes": 10955778
+      },
+      ">100 KiB": {
+        "bodies": 0,
+        "bytes": 0
+      },
+      ">4-10 KiB": {
+        "bodies": 1077,
+        "bytes": 7623553
+      },
+      "zero": {
+        "bodies": 4,
+        "bytes": 0
+      }
+    }
+  },
+  "coverage": {
+    "archives_at_or_before_cutoff": 592,
+    "bash_bytes": 41791274,
+    "bash_calls": 16870,
+    "bash_issuing_sessions": 422,
+    "by_class": {
+      "git_diff": {
+        "bytes": 2659378,
+        "calls": 644
+      },
+      "git_status": {
+        "bytes": 415951,
+        "calls": 1302
+      },
+      "listing": {
+        "bytes": 2216425,
+        "calls": 948
+      },
+      "lockfile/json": {
+        "bytes": 1012037,
+        "calls": 374
+      },
+      "mixed/compound": {
+        "bytes": 22391917,
+        "calls": 5907
+      },
+      "npm/install/debug_log": {
+        "bytes": 204662,
+        "calls": 80
+      },
+      "other": {
+        "bytes": 1430291,
+        "calls": 4650
+      },
+      "search": {
+        "bytes": 3224916,
+        "calls": 729
+      },
+      "source_dump": {
+        "bytes": 5237384,
+        "calls": 598
+      },
+      "test": {
+        "bytes": 2442182,
+        "calls": 1455
+      },
+      "write/edit": {
+        "bytes": 556131,
+        "calls": 183
+      }
+    },
+    "constituent_reconstruction_mismatches": 0,
+    "decode_failures": 0,
+    "divergent_result_groups": 3404,
+    "duplicate_result_events": 3645,
+    "included_session_ids_sha256": "0370411f3f332f83505de0ce599f45e633f19c4a34154d6a7bedd0f57cb3f803",
+    "included_sessions": 591,
+    "mixed_body_count": 5907,
+    "mixed_byte_share_pct": 53.58036464741419,
+    "mixed_bytes": 22391917,
+    "mixed_joined_body_count": 5903,
+    "post_cutoff_events_ignored": true,
+    "result_events": 63450,
+    "sensitive_mixed_bodies": 52,
+    "sensitive_mixed_bytes": 152398,
+    "unresolved_bash_calls": 7,
+    "zstd_failures": []
+  },
+  "method": {
+    "authoritative_parent_session": "session-af60703c-a964-41ee-bb2b-9edfc7b170f3",
+    "byte_measure": "pre-envelope UTF-8 with replacement for invalid scalar values",
+    "cca_invoked": false,
+    "classifier": "imported frozen 11-class classify_bash and compound_shell",
+    "classifier_module": "experiments/cca-mixed-current/replay.py",
+    "classifier_module_sha256": "1bc41ffeb63b5c34c06ef7de3bbf7ca41aed9cbe409583f6c2fb75783c0e2bd9",
+    "corpus": "$HOME/.local/state/qq/sessions/**/session.jsonl.zstd",
+    "delegation_id": "835fde7c-7d7f-4cc9-af23-78019657d6e9",
+    "event_cutoff_ms": 1787915481900,
+    "event_cutoff_utc": "2026-08-28T11:11:21.900000+00:00",
+    "excerpts_persisted": false,
+    "first_result_per_bash_call": true,
+    "full_bodies_persisted": false,
+    "full_commands_persisted": false,
+    "historical_commands_executed": false,
+    "live_pair_used": false,
+    "per_observation_records_persisted": false,
+    "rtk_invoked": false,
+    "sensitive_and_unresolved_filter_policy": "identity",
+    "stock_10k_envelope_applied": false,
+    "study_session_excluded": "session-401143a9-2d26-4793-a2e9-8c8409f236fe"
+  },
+  "schema": "qq.mixed-composition-current/v1",
+  "structure": {
+    "disjoint_line_profile": {
+      "exact_repetition_after_first": {
+        "bytes": 329429,
+        "lines": 15210
+      },
+      "first_seen_other_payload_like": {
+        "bytes": 22046346,
+        "lines": 112161
+      },
+      "layout_boilerplate": {
+        "bytes": 4987,
+        "lines": 1097
+      },
+      "progress_update": {
+        "bytes": 202,
+        "lines": 7
+      },
+      "recognized_tool_wrapper": {
+        "bytes": 0,
+        "lines": 0
+      },
+      "routine_passing_test": {
+        "bytes": 10953,
+        "lines": 154
+      }
+    },
+    "inclusive_named_evidence": {
+      "diagnostic_or_diff_or_failing": {
+        "bytes": 12205379,
+        "lines": 23180
+      },
+      "path": {
+        "bytes": 18349724,
+        "lines": 37758
+      },
+      "summary_or_count": {
+        "bytes": 13785782,
+        "lines": 10750
+      },
+      "version": {
+        "bytes": 2572725,
+        "lines": 1976
+      }
+    },
+    "physical_line_bytes": 22391917,
+    "physical_lines": 128629,
+    "terminal_control_bytes_inclusive": 365
+  }
+}
