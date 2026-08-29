@@ -9,9 +9,12 @@ import {
   bindMiniResearch,
   MINI_RESEARCH_GLOBAL_ALLOW,
   MINI_RESEARCH_KIND,
+  MINI_RESEARCH_SYSTEM_PROMPT,
   MINI_RESEARCH_TOOLS,
   miniResearchSetup,
   parseResearchCommand,
+  renderMiniResearchReviewTask,
+  renderMiniResearchTask,
   wrapMiniResearchBash,
 } from "../src/mini-research.mjs";
 import { MINI_SWE_COMPLETION_COMMAND } from "../src/mini-swe-v2.mjs";
@@ -26,6 +29,23 @@ assert.equal(isMiniAgent({ header: { kind: "mini" } }), true, "legacy coding ses
 assert.equal(MINI_RESEARCH_KIND, "mini-research");
 assert.deepEqual(MINI_RESEARCH_TOOLS, ["bash"]);
 assert.deepEqual(MINI_RESEARCH_GLOBAL_ALLOW, ["bash"]);
+assert.equal(MINI_RESEARCH_SYSTEM_PROMPT, "You are a helpful assistant that can research questions using a computer.");
+assert.equal(MINI_RESEARCH_SYSTEM_PROMPT.includes("\n"), false, "the v2 system prompt stays one line");
+const researchTask = renderMiniResearchTask({ task: "What does the fixture show?" });
+assert.match(researchTask, /^Please research this question: What does the fixture show\?/);
+assert.match(researchTask, /## Recommended Workflow/);
+assert.match(researchTask, /web-search 'query'/);
+assert.match(researchTask, new RegExp(MINI_SWE_COMPLETION_COMMAND));
+const reviewTask = renderMiniResearchReviewTask({
+  question: "What does the fixture show?",
+  answer: "The fixture answers it [W001].",
+  manifest: [{ ref: "W001", path: "evidence/web/W001.md" }],
+});
+assert.match(reviewTask, /^Please review this proposed research answer\./);
+assert.match(reviewTask, /Question:\nWhat does the fixture show\?/);
+assert.match(reviewTask, /Proposed answer:\nThe fixture answers it \[W001\]\./);
+assert.match(reviewTask, /"ref":"W001"/);
+assert.match(reviewTask, /an empty findings array is valid/);
 assert.deepEqual(parseResearchCommand("session-search 'one phrase' \"two phrase\""), {
   name: "session-search", args: ["one phrase", "two phrase"],
 });
@@ -64,7 +84,11 @@ assert.deepEqual(calls, [
 assert.equal(delegated.length, 0);
 const native = await wrapped.execute({ command: "printf ordinary" }, { agent });
 assert.equal(native.exitCode, 0);
-assert.deepEqual(delegated, [{ command: "printf ordinary" }], "other bash is unchanged");
+assert.deepEqual(delegated, [{
+  command: "printf ordinary",
+  description: "Execute Mini Research bash command",
+}], "ordinary bash gains only the host-required description");
+assert.deepEqual(Object.keys(wrapped.parameters.properties), ["command"], "host-only description is not advertised");
 const pipeline = await wrapped.execute({ command: "web-search alpha | cat" }, { agent });
 assert.equal(pipeline.exitCode, 2);
 assert.equal(delegated.length, 1, "evidence pipelines are never sent to native bash");

@@ -7,23 +7,20 @@ import {
   MINI_SWE_BASH_SCHEMA,
   MINI_SWE_COMPLETION_COMMAND,
   isMiniSweCompletionCommand,
+  withNativeBashDescription,
 } from "./mini-swe-v2.mjs";
+import {
+  MINI_RESEARCH_SYSTEM_PROMPT,
+} from "./mini-research-v2.mjs";
+
+export * from "./mini-research-v2.mjs";
 
 export const MINI_RESEARCH_KIND = "mini-research";
 export const MINI_RESEARCH_TOOLS = Object.freeze(["bash"]);
 export const MINI_RESEARCH_GLOBAL_ALLOW = MINI_INHERITED_TOOLS;
 export const MINI_RESEARCH_PERSONA_SECTION = "deployment:persona";
 export const MINI_RESEARCH_PERSONA_ORDER = 0;
-export const MINI_RESEARCH_PROMPT = [
-  "You are mini-research, a focused evidence-gathering research agent.",
-  "",
-  "Work backward from question.md. Code is available under repo/. Search results are leads, not evidence: materialize every web or session source you rely on with web-get or session-get. Use ordinary Unix tools to inspect the immutable snapshots under evidence/.",
-  "",
-  "Seek contrary evidence for important conclusions. Distinguish direct observation from inference. Stop when additional retrieval is unlikely to change the answer. Write a direct answer to answer.md, citing only acquired W### or S### refs and repo/ paths. Mark strong evidence, weak evidence, and inference where that distinction matters, and surface unresolved contradictions rather than flattening them.",
-  "",
-  `When answer.md is ready, run exactly: ${MINI_SWE_COMPLETION_COMMAND}`,
-  "Every response must make at least one bash tool call. The completion command must be issued alone.",
-].join("\n");
+export const MINI_RESEARCH_PROMPT = MINI_RESEARCH_SYSTEM_PROMPT;
 
 const BINDING = Symbol.for("qq.miniResearchBinding");
 const COMPLETED = Symbol.for("qq.miniResearchCompleted");
@@ -287,7 +284,7 @@ export function wrapMiniResearchBash(base) {
         catch (error) { return syntheticResult("", 1, `${error instanceof Error ? error.message : String(error)}\n`); }
       }
       // Ordinary bash remains native; only exact evidence command invocations are intercepted.
-      return base.execute(args, exec);
+      return base.execute(withNativeBashDescription(args, "Execute Mini Research bash command"), exec);
     },
     finalizeContent(exec, result) {
       if (bashPayload(result)?.kind === "foreground") return observationBlocks(result);
@@ -308,7 +305,7 @@ function installPersona(holder) {
   const lift = prompt.section({
     name: MINI_RESEARCH_PERSONA_SECTION,
     order: MINI_RESEARCH_PERSONA_ORDER,
-    text: MINI_RESEARCH_PROMPT,
+    text: MINI_RESEARCH_SYSTEM_PROMPT,
     complete: true,
   });
   prompt.suppressRuntimeContext();
@@ -367,19 +364,6 @@ export function ensureMiniResearchMounted(agent) {
   return true;
 }
 
-export function renderMiniResearchTask() {
-  return [
-    "Research the question in question.md.",
-    "",
-    "Available host evidence commands (invoke each as a standalone bash command):",
-    "  web-search 'query'",
-    "  web-get W001",
-    "  session-search 'phrase one' 'phrase two'",
-    "  session-get S001",
-    "",
-    "Write answer.md and then issue the completion command alone.",
-  ].join("\n");
-}
 
 export function assembleMiniResearchPrompt(sections, { runtimeSuppressed = false } = {}) {
   const complete = [...sections].reverse().find((section) => section?.complete === true);
