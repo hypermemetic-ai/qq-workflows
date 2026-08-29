@@ -156,6 +156,15 @@ function syncLiveDelegationChild(land, agent) {
   return land?.resumeChild?.(agent) ?? false;
 }
 
+
+export function compactActivityProjection(record) {
+  return Object.freeze({
+    id: String(record?.id ?? ""),
+    parentSessionUuid: String(record?.parentSessionUuid ?? ""),
+    status: String(record?.status ?? ""),
+  });
+}
+
 export function apply(ctx, config = {}) {
   const agents = hostAgents(ctx);
   const phaseStore = createPhaseStore(defaultPhaseDir(process.env, config), { now: config.now ?? Date.now });
@@ -252,19 +261,19 @@ export function apply(ctx, config = {}) {
   const hostSettings = createHostSettings({ settingsFile: config.settingsFile });
   const delegationStore = createDelegationStore(defaultDelegationDir(process.env, config), {
     onChange: (record) => {
-      implementationRecords.set(record.id, record);
+      implementationRecords.set(record.id, compactActivityProjection(record));
       safeReconcileSemanticPhase(record.parentSessionUuid);
     },
   });
-  for (const record of delegationStore.list()) implementationRecords.set(record.id, record);
+  for (const record of delegationStore.list()) implementationRecords.set(record.id, compactActivityProjection(record));
   const researchDir = defaultResearchDir(process.env, config);
   const researchStore = createResearchStore(researchDir, {
     onChange: (record) => {
-      researchRecords.set(record.id, record);
+      researchRecords.set(record.id, compactActivityProjection(record));
       safeReconcileSemanticPhase(record.parentSessionUuid);
     },
   });
-  for (const record of researchStore.list()) researchRecords.set(record.id, record);
+  for (const record of researchStore.list()) researchRecords.set(record.id, compactActivityProjection(record));
   const tokenMeter = ctx.get("tokenMeter", false);
   const folder = createFolder({
     tokenMeter,
@@ -1015,4 +1024,5 @@ export const internals = Object.freeze({
   toolsService,
   hostAgents,
   syncLiveDelegationChild,
+  compactActivityProjection,
 });

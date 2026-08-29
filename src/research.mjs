@@ -23,7 +23,7 @@ import {
   MINI_QA_KIND,
   miniQaSetup,
 } from "./mini-qa.mjs";
-import { createResearchWorkspace, checkAnswerCitations, readManifest, workspacePaths } from "./research-evidence.mjs";
+import { createResearchWorkspace, checkAnswerCitations, sha256, workspacePaths } from "./research-evidence.mjs";
 import { createResearchOracle } from "./research-oracle.mjs";
 import { createResearchSessions } from "./research-sessions.mjs";
 import { createResearchWeb } from "./research-web.mjs";
@@ -52,18 +52,50 @@ async function projectRoot(ctx, parent) {
 }
 
 
-function reportText(state, answer) {
+export const RESEARCH_INLINE_ANSWER_MAX_CHARS = 8_000;
+export const RESEARCH_ANSWER_PREVIEW_CHARS = 4_000;
+export const RESEARCH_REPORT_MAX_CHARS = 12_000;
+
+function boundedLine(value, limit = 400) {
+  const text = String(value ?? "").replace(/[\r\n\t]/g, " ");
+  if (text.length <= limit) return text;
+  const suffix = `… [${text.length - limit} chars omitted]`;
+  return `${text.slice(0, Math.max(0, limit - suffix.length))}${suffix}`.slice(0, limit);
+}
+
+function boundedText(value, limit, label) {
+  const text = String(value ?? "");
+  if (text.length <= limit) return text;
+  const suffix = `\n[${label}: ${text.length - limit} additional chars omitted]`;
+  return `${text.slice(0, Math.max(0, limit - suffix.length))}${suffix}`.slice(0, limit);
+}
+
+export function reportText(state, answer) {
   const findings = state.reviewFindings ?? [];
-  return [
+  const complete = answer.length <= RESEARCH_INLINE_ANSWER_MAX_CHARS;
+  const answerBody = complete
+    ? ["Complete answer (inlined):", answer.trim()].join("\n")
+    : [
+        "LARGE ANSWER — BOUNDED PREVIEW ONLY (not the complete answer):",
+        boundedText(answer.trim(), RESEARCH_ANSWER_PREVIEW_CHARS, "answer preview"),
+        "Read the immutable answer artifact above for complete content.",
+      ].join("\n");
+  const findingPreview = findings.slice(0, 20).map((finding) =>
+    `- answer.md:${finding.line}: ${boundedLine(finding.body)}`);
+  const omittedFindings = Math.max(0, findings.length - findingPreview.length);
+  const body = [
     `Research delegation ${state.id} completed.`,
-    `Answer path: ${state.root}/answer.md`,
+    `Immutable answer path: ${state.root}/answer.md`,
+    `Answer bytes: ${state.answerBytes || Buffer.byteLength(answer, "utf8")}`,
+    `Answer SHA-256: ${state.answerSha256 || sha256(answer)}`,
     `Citation check: ${state.citationCheck?.ok === true ? "passed" : "failed"}`,
     `Review findings: ${findings.length}`,
-    ...(findings.length ? findings.map((finding) => `- answer.md:${finding.line}: ${finding.body}`) : ["- none"]),
+    ...(findingPreview.length ? findingPreview : ["- none"]),
+    ...(omittedFindings ? [`[${omittedFindings} review findings omitted]`] : []),
     "",
-    "Answer:",
-    answer.trim(),
+    answerBody,
   ].join("\n");
+  return boundedText(body, RESEARCH_REPORT_MAX_CHARS, "research report");
 }
 
 export function createResearch({
@@ -296,7 +328,9 @@ export function createResearch({
     const messageId = state.reportMessageId || randomUUID();
     if (!state.reportMessageId) state = store.save({ ...state, reportMessageId: messageId });
     let answer = "";
-    try { answer = await readFile(`${state.root}/answer.md`, "utf8"); } catch { /* blocked runs may have no answer */ }
+    if (state.status === "completed") {
+      try { answer = await readFile(`${state.root}/answer.md`, "utf8"); } catch { /* integrity/report metadata will expose a missing answer */ }
+    }
     const relay = relayOf(ctx);
     if (!relay || typeof relay.send !== "function") throw new Error("research completion requires qq-relay");
     const fromId = state.reviewSession || state.researchSession;
@@ -305,7 +339,11 @@ export function createResearch({
       to: state.parentSessionUuid,
       message: state.status === "completed"
         ? reportText(state, answer)
-        : `Research delegation ${state.id} blocked: ${state.blockedReason || "child closed before completion"}\nAnswer path: ${state.root}/answer.md`,
+        : boundedText([
+            `Research delegation ${state.id} blocked.`,
+            `Reason: ${boundedLine(state.blockedReason || "child closed before completion", 2_000)}`,
+            `Answer artifact (may be incomplete): ${boundedLine(`${state.root}/answer.md`, 1_000)}`,
+          ].join("\n"), RESEARCH_REPORT_MAX_CHARS, "blocked research report"),
       delivery: "default",
       messageId,
     });
@@ -333,16 +371,44 @@ export function createResearch({
       return { status: "refused", reason: "submit_review requires the owned research review session" };
     }
     if (state.status === "completed") {
-      return postToolSettlement(id, { status: "ok", verdict: findings?.length ? "fail" : "pass", alreadySubmitted: true }, "research review result committed");
+      if (!state.reported) {
+        try { await deliver(state); }
+        catch (error) {
+          log(ctx, "warn", `qq-workflows: research report still pending for ${delegationId}: ${error instanceof Error ? error.message : String(error)}`);
+          return { status: "refused", reason: "research answer is durable but its parent report is still pending; retry submit_review" };
+        }
+      }
+      const savedFindings = state.reviewFindings ?? [];
+      return postToolSettlement(id, {
+        status: "ok",
+        verdict: savedFindings.length ? "fail" : "pass",
+        alreadySubmitted: true,
+        outcome: savedFindings.length ? `${savedFindings.length} research answer defect(s) found` : "research answer review passed",
+      }, "research review result committed after report delivery");
     }
     if (state.status !== "reviewing") {
       return { status: "refused", reason: "submit_review requires the owned research review session" };
     }
     const normalized = Array.isArray(findings) ? findings : [];
+    try {
+      const [answer, manifestText] = await Promise.all([
+        readFile(`${state.root}/answer.md`, "utf8"),
+        readFile(`${state.root}/evidence/manifest.jsonl`, "utf8"),
+      ]);
+      if (state.answerSha256 && (sha256(answer) !== state.answerSha256 || Buffer.byteLength(answer, "utf8") !== state.answerBytes)) {
+        return { status: "refused", reason: "answer.md changed during fresh-context review" };
+      }
+      if (state.manifestSha256 && sha256(manifestText) !== state.manifestSha256) {
+        return { status: "refused", reason: "evidence/manifest.jsonl changed during fresh-context review" };
+      }
+    } catch (error) {
+      return { status: "refused", reason: `research review artifact integrity check failed: ${error instanceof Error ? error.message : String(error)}` };
+    }
     state = store.save({ ...state, status: "completed", reviewFindings: normalized });
     try { await deliver(state); }
     catch (error) {
       log(ctx, "warn", `qq-workflows: research report pending for ${delegationId}: ${error instanceof Error ? error.message : String(error)}`);
+      return { status: "refused", reason: "research answer is durable but its parent report is pending; retry submit_review" };
     }
     return postToolSettlement(id, {
       status: "ok",
@@ -389,14 +455,10 @@ export function createResearch({
       pinNonInteractiveApproval(child, { delegated: true });
       retain(created, child);
       bindReview(child, planned);
-      const [answer, manifest] = await Promise.all([
-        readFile(`${planned.root}/answer.md`, "utf8"),
-        readManifest(workspacePaths(planned.root)),
-      ]);
       child.followup({
         id: randomUUID(),
         role: "user",
-        content: [{ type: "text", text: renderMiniResearchReviewTask({ question: planned.question, answer, manifest }) }],
+        content: [{ type: "text", text: renderMiniResearchReviewTask() }],
         source: { kind: "plugin", plugin: "qq-workflows", form: "notice" },
       });
       return child;
@@ -436,7 +498,17 @@ export function createResearch({
     }
     const citationCheck = await checkAnswerCitations(workspacePaths(state.root));
     if (!citationCheck.ok) return { status: "refused", reason: citationCheck.reason };
-    const checked = store.save({ ...state, citationCheck });
+    const [answer, manifestText] = await Promise.all([
+      readFile(`${state.root}/answer.md`, "utf8"),
+      readFile(`${state.root}/evidence/manifest.jsonl`, "utf8"),
+    ]);
+    const checked = store.save({
+      ...state,
+      citationCheck,
+      answerSha256: sha256(answer),
+      answerBytes: Buffer.byteLength(answer, "utf8"),
+      manifestSha256: sha256(manifestText),
+    });
     try { await spawnReview(checked); }
     catch (error) { return { status: "refused", reason: `cannot start research review: ${error instanceof Error ? error.message : String(error)}` }; }
     return postToolSettlement(id, {
@@ -506,7 +578,7 @@ export function createResearch({
       child.followup({
         id: randomUUID(),
         role: "user",
-        content: [{ type: "text", text: renderMiniResearchTask({ task: text }) }],
+        content: [{ type: "text", text: renderMiniResearchTask() }],
         source: { kind: "plugin", plugin: "qq-workflows", form: "notice" },
       });
       return { status: "ok", delegationId: state.id, child: sessionIdOf(child), role: "mini-research", phaseEpoch: 1, workspace: state.root };
@@ -528,7 +600,8 @@ export function createResearch({
       bindResearch(agent, state);
       return true;
     }
-    if (isMiniQaAgent(agent) && state.reviewSession === id && state.status === "reviewing") {
+    if (isMiniQaAgent(agent) && state.reviewSession === id
+      && (state.status === "reviewing" || (state.status === "completed" && !state.reported))) {
       bindReview(agent, state);
       return true;
     }

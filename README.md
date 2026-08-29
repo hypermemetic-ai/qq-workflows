@@ -75,7 +75,7 @@ phase.
 ## Working memory
 
 Working memory is the architect's only durable plan document and the exact
-source of every delegation packet. The architect prompt requires `case_write`
+semantic source of each delegation task and task artifact. The architect prompt requires `case_write`
 after every operator message that materially changes the plan, before replying.
 A generated empty document says that it is empty; a heading alone is also empty.
 Delegation refuses empty working memory.
@@ -129,3 +129,66 @@ submission. Failures retain the capsule for diagnosis or retry.
   private capsule. Search leads are not evidence until materialized.
 - `mini-docs` is a host-mounted writer adapter. It has no standalone Cordis
   `apply`; this plugin mounts it from the agent header.
+
+## Packet and artifact lifecycle
+
+Working memory remains semantic task content. Delegation UUIDs, parent/child
+session UUIDs, epochs, aliases, and automatic-return notices live in child
+headers and durable workflow records; they are not prefixed to working memory,
+used for branch slugging, or shown to code/research/QA roles that cannot act on
+them. Architects communicate with other architects through relay, never
+directly with another architect's children. An architect may communicate with
+its own children through the workflow-owned status/send/stop tools.
+
+The first `mini-code` child receives the exact implementation task once. The
+host also writes those bytes to `.git/qq-workflows/task.md` (or the equivalent
+per-worktree Git metadata directory), with byte count and SHA-256 metadata. Git
+metadata does not dirty the worktree. Before every fresh QA or revision handoff,
+the host rewrites the artifact from active durable state and verifies its bytes
+and digest, so a prior child cannot poison later context. New handoffs contain
+only the artifact pointer/digest, a bounded proposal summary, and a bounded
+phase delta. Artifact-backed terminal records drop their duplicate durable
+`brief`; blocked worktrees retain the artifact for diagnosis.
+
+Proposal packets never copy a new task into `packet.brief`. They keep at most 24
+changed-file previews and 8 hunk pointers; every rendered path/pointer is at
+most 240 characters, packet formatting is at most 12,000 characters, and
+omitted-file counts/markers are explicit. Phase deltas are at most 4,000
+characters and implementation outcomes at most 16,000. Terminal reports contain
+status, ref, bounded change summary, QA verdict, and useful diagnostics—not the
+original task or session-routing boilerplate. QA tool results remain compact.
+
+Pending implementation phases are crash-safe structured
+`qq.delegation-phase-input/v1` records. Legacy records with a pre-rendered
+`pendingPhase.message` are never lossily migrated or re-rendered: retries replay
+those exact bytes. Legacy packets/briefs remain readable. Canonical v2
+implementation IDs are their filenames, so UUID lookup is direct. Dashboard
+activity maps retain only `{ id, parentSessionUuid, status }` projections rather
+than complete tasks and packets.
+
+Research capsules are the exact-data interface: the initial child reads
+`question.md`, and fresh review reads `question.md`, `answer.md`, and
+`evidence/manifest.jsonl` rather than receiving copies in its prompt. Answer and
+manifest digests are checked across review. Small answers are inlined in the
+final report; large answers return a clearly labelled bounded preview plus the
+immutable path, UTF-8 byte size, and SHA-256. The complete report is capped at
+12,000 characters. Successful research and review children are disposed only
+after their respective durable tool result settles; the review additionally
+waits for report delivery. Completed-but-unreported reviews remain recoverable.
+
+Reusable Mini behavior still follows the upstream-compatible instance-template
+shape. Static role rules remain in those templates because moving them wholesale
+into the one-line persona can change Mini format-recovery and provider behavior;
+this is the intentional prompt-compatibility tradeoff. Dynamic task/artifact
+content is now separate and bounded, which removes the high-impact repeated
+prefix data even where the static template is retained.
+
+Before creating a pull request, Land resolves and type-checks the local candidate
+as a commit, imports and pushes its full immutable OID to an explicit full heads
+ref, exact-queries and fetches that remote ref into a diagnostic evidence ref,
+and requires matching OID and commit type. Any missing, ambiguous, mismatched,
+or non-commit publication fails before GitHub or cleanup and preserves the local
+ref/worktree evidence. GitHub commands are bound to the repository selected from
+`origin`; an existing open PR is reused only when base, head branch, and head OID
+all match. After ambiguous create errors (including a 504), Land checks for that
+exact PR before deciding whether a retry is safe.

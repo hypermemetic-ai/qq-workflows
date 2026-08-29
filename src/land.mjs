@@ -13,15 +13,19 @@ import { dirname, join } from "node:path";
 import {
   checked,
   inspectWorktree,
+  reason,
   runCommand,
 } from "./git.mjs";
 
 import {
   DELEGATION_PACKET_SCHEMA,
+  boundFormattedText,
+  boundedPacketLine,
   compilePacket,
   formatPacket,
   isTestPath,
 } from "./proposal-packet.mjs";
+import { materializeTaskArtifact } from "./task-artifact.mjs";
 import { createQaVerdict } from "./qa-verdict.mjs";
 import { RepoOracle } from "./repo-oracle.mjs";
 import { AGENT_HANDLE, adoptAgentHandle } from "./agent-handle.mjs";
@@ -54,6 +58,9 @@ const DELEGATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CHILD_AGENT_HANDLE = Symbol.for("@hypermemetic-ai/qq-workflows/child-agent-handle");
 const SETTLEMENT_TRANSITIONS = new Set(["dispose", "finish_land", "start_qa", "start_implementation"]);
+export const DELEGATION_PHASE_INPUT_SCHEMA = "qq.delegation-phase-input/v1";
+export const PHASE_DELTA_MAX_CHARS = 4_000;
+export const DELEGATION_OUTCOME_MAX_CHARS = 16_000;
 
 /** A chair that may invoke land. Children never are. */
 export function isLandCandidate(agent) {
@@ -145,7 +152,17 @@ function advancePhase(state, sessionUuid, role, fields = {}) {
 }
 
 function finishWorkflow(state, fields = {}) {
-  return { ...state, ...fields, current: null, transitioning: false, pendingPhase: null };
+  const next = { ...state, ...fields, current: null, transitioning: false, pendingPhase: null };
+  // Artifact-backed records can drop their duplicate durable task body at the
+  // terminal boundary. Legacy records keep old fields for lossless recovery.
+  if (next.taskArtifact) {
+    next.brief = "";
+    if (next.packet?.brief) {
+      const { brief: _legacyDuplicate, ...packet } = next.packet;
+      next.packet = packet;
+    }
+  }
+  return next;
 }
 
 function workflowRoleForState(state, sessionId, fallback = "implementation") {
@@ -201,38 +218,50 @@ function appendVerdictFailure(verdict, feedback) {
   verdict.feedback = `${verdict.feedback ? `${verdict.feedback}\n` : ""}${feedback}`;
 }
 
+export function renderDelegationPhaseTask(pending) {
+  if (pending?.message) return pending.message;
+  const input = pending?.input;
+  if (!input) return "";
+  const seed = [
+    `Exact task artifact: ${input.taskArtifact}`,
+    `Expected task SHA-256: ${input.taskSha256}`,
+    "Read the artifact before review or revision. Do not edit it; the host verifies and rematerializes it between phases.",
+    `Proposal summary:
+${input.proposal}`,
+    `Phase delta:
+${input.delta}`,
+  ].join("\n\n");
+  return pending.role === "qa"
+    ? renderMiniQaTask({ task: seed })
+    : pending.role === "implementation" ? renderMiniSweTask(seed) : seed;
+}
+
 export function formatOutcome(state, kind) {
-  const packet = state?.packet;
-  const body = packet ? formatPacket(packet) : state?.brief ?? "";
-  // Terminal runs clear the routable pointer, but retain the last immutable
-  // phase UUID as diagnostics in lifecycle reports.
-  const activeChild = state?.current?.sessionUuid || state?.qaSession || state?.implementationSession || "";
-  const role = state?.current?.role || (activeChild ? workflowRoleForState(state, activeChild) : "none");
-  const topology = [
-    `Delegation ID (authoritative): ${state?.delegationId || "unknown"}`,
-        state?.parentSessionUuid ? `Parent session (authoritative UUID): ${state.parentSessionUuid}` : "",
-    activeChild ? `Workflow child session (stable UUID): ${activeChild}` : "",
-    `Workflow role: ${role}`,
-    Number.isSafeInteger(state?.phaseEpoch) ? `Phase epoch: ${state.phaseEpoch}` : "",
-    Number.isSafeInteger(state?.look) ? `QA look: ${state.look}` : "",
-    state?.ref ? `Ref: ${state.ref}` : "",
-    state?.worktree ? `Worktree: ${state.worktree}` : "",
-  ].filter(Boolean).join("\n");
+  const status = kind === "landed" ? "landed" : kind === "blocked" ? "blocked" : String(kind || state?.status || "completed");
+  const packet = state?.packet ? formatPacket(state.packet) : "No proposal summary was recorded.";
   const verdict = state?.qaVerdict;
-  const verdictEvidence = verdict ? [
-    `Saved structured QA verdict (${verdict.verdict}):`,
-    `Summary: ${verdict.summary}`,
-    `Feedback: ${verdict.feedback || "(none)"}`,
-    `Tests modified: ${verdict.tests_modified === true ? "yes" : "no"}`,
-  ].join("\n") : "";
-  if (kind === "landed") {
-    return [topology, `Landed on ${state.baseBranch}.`, verdictEvidence, body].filter(Boolean).join("\n\n");
-  }
-  if (kind === "blocked") {
-    const why = state.blockedReason || "blocked";
-    return [topology, `Blocked: ${why}`, verdictEvidence, body].filter(Boolean).join("\n\n");
-  }
-  return [topology, verdictEvidence, body].filter(Boolean).join("\n\n");
+  const qa = verdict
+    ? [
+        `QA verdict: ${verdict.verdict}`,
+        `QA summary: ${boundFormattedText(verdict.summary || "(none)", 1_000, "QA summary")}`,
+        `QA feedback: ${boundFormattedText(verdict.feedback || "(none)", PHASE_DELTA_MAX_CHARS, "QA feedback")}`,
+        `Tests modified by QA: ${verdict.tests_modified === true ? "yes" : "no"}`,
+      ].join("\n")
+    : "QA verdict: unavailable";
+  const diagnostics = [
+    state?.ref ? `Ref: ${boundedPacketLine(state.ref, 120)}` : "",
+    status === "landed" ? `Base branch: ${boundedPacketLine(state?.baseBranch || "main", 120)}` : "",
+    status === "blocked" ? `Blocked reason: ${boundFormattedText(state?.blockedReason || "blocked", 2_000, "blocked reason")}` : "",
+    status === "blocked" && state?.worktree ? `Retained worktree: ${boundedPacketLine(state.worktree)}` : "",
+    state?.archiveError ? `Task archive diagnostic: ${boundFormattedText(state.archiveError, 1_000, "archive diagnostic")}` : "",
+  ].filter(Boolean).join("\n");
+  return boundFormattedText([
+    `Implementation delegation ${state?.delegationId || "unknown"}: ${status}.`,
+    diagnostics,
+    qa,
+    `Change summary:
+${packet}`,
+  ].filter(Boolean).join("\n\n"), DELEGATION_OUTCOME_MAX_CHARS, "implementation outcome");
 }
 
 export async function enforceQaWorktree(run, state, verdict) {
@@ -272,38 +301,194 @@ export async function enforceQaWorktree(run, state, verdict) {
 
 /** GitHub PR operations used by Land. Kept behind the injected command runner so
  * tests can exercise the complete land sequence without network access. */
+function githubJson(result, label) {
+  try { return JSON.parse(String(result?.stdout ?? "")); }
+  catch (error) { throw new Error(`${label}: GitHub returned malformed JSON`, { cause: error }); }
+}
+
+export function githubRepositoryFromOrigin(value) {
+  const source = String(value ?? "").trim();
+  let host = "";
+  let pathname = "";
+  const scp = source.match(/^(?:[^@\s]+@)?([^:/\s]+):(.+)$/);
+  if (scp && !source.includes("://")) {
+    host = scp[1];
+    pathname = scp[2];
+  } else {
+    try {
+      const parsed = new URL(source);
+      host = parsed.hostname;
+      pathname = parsed.pathname;
+    } catch {
+      return "";
+    }
+  }
+  const parts = pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "").split("/").filter(Boolean);
+  if (!host || parts.length !== 2) return "";
+  const repository = `${parts[0]}/${parts[1]}`;
+  return host.toLowerCase() === "github.com" ? repository : `${host}/${repository}`;
+}
+
+/** GitHub PR operations bound explicitly to the repository selected by origin. */
 export function createGitHubClient(run = runCommand) {
+  const repositories = new Map();
+
+  async function repositoryFor(mainRoot) {
+    if (repositories.has(mainRoot)) return repositories.get(mainRoot);
+    const origin = await checked(
+      run, "git", ["remote", "get-url", "origin"], { cwd: mainRoot }, "cannot resolve origin for GitHub",
+    );
+    const repository = githubRepositoryFromOrigin(origin.stdout);
+    if (!repository) throw new Error("cannot bind GitHub operations to origin: origin is not an unambiguous GitHub repository URL");
+    const selected = await checked(
+      run,
+      "gh",
+      ["repo", "view", repository, "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+      { cwd: mainRoot },
+      "cannot bind GitHub operations to origin",
+    );
+    const selectedName = String(selected.stdout ?? "").trim();
+    if (!selectedName || !repository.endsWith(selectedName)) {
+      throw new Error("cannot bind GitHub operations to origin: repository identity mismatch");
+    }
+    repositories.set(mainRoot, repository);
+    return repository;
+  }
+
+  async function matchingPullRequest({ mainRoot, repository, baseBranch, headBranch, headRef }) {
+    const listed = await checked(
+      run,
+      "gh",
+      [
+        "pr", "list", "--repo", repository,
+        "--state", "open", "--base", baseBranch, "--head", headBranch,
+        "--json", "url,headRefOid,headRefName,baseRefName", "--limit", "100",
+      ],
+      { cwd: mainRoot },
+      "cannot inspect existing pull requests",
+    );
+    const rows = githubJson(listed, "cannot inspect existing pull requests");
+    if (!Array.isArray(rows)) throw new Error("cannot inspect existing pull requests: expected an array");
+    const matches = rows.filter((row) => row?.headRefOid === headRef
+      && row?.headRefName === headBranch && row?.baseRefName === baseBranch && typeof row?.url === "string" && row.url);
+    if (matches.length > 1) throw new Error(`multiple open pull requests match published candidate ${headRef}`);
+    return matches[0]?.url ?? "";
+  }
+
   return Object.freeze({
-    async openPullRequest({ mainRoot, baseBranch, headBranch, title, body = "" }) {
+    async openPullRequest({ mainRoot, baseBranch, headBranch, headRef, title, body = "" }) {
+      const repository = await repositoryFor(mainRoot);
+      const existing = await matchingPullRequest({ mainRoot, repository, baseBranch, headBranch, headRef });
+      if (existing) return existing;
       const pullRequestTitle = String(title ?? "").trim() || headBranch;
-      const opened = await checked(
-        run,
-        "gh",
-        [
-          "pr", "create",
-          "--base", baseBranch,
-          "--head", headBranch,
-          "--title", pullRequestTitle,
-          "--body", String(body ?? ""),
-        ],
-        { cwd: mainRoot },
-        "pull request creation failed",
-      );
+      const args = [
+        "pr", "create", "--repo", repository,
+        "--base", baseBranch,
+        "--head", headBranch,
+        "--title", pullRequestTitle,
+        "--body", String(body ?? ""),
+      ];
+      const opened = await run("gh", args, { cwd: mainRoot });
+      if (opened?.code !== 0) {
+        // A timeout/504 can arrive after GitHub committed the mutation. Query
+        // the exact head OID before deciding whether a retry is safe.
+        const recovered = await matchingPullRequest({ mainRoot, repository, baseBranch, headBranch, headRef });
+        if (recovered) return recovered;
+        throw new Error(`pull request creation failed: ${reason(opened, "command failed")}`);
+      }
       const pullRequest = String(opened.stdout ?? "").trim().split(/\r?\n/).at(-1)?.trim() ?? "";
       if (!pullRequest) throw new Error("pull request creation failed: GitHub did not return a pull request URL");
       return pullRequest;
     },
 
     async mergePullRequest({ mainRoot, pullRequest, headRef }) {
+      const repository = await repositoryFor(mainRoot);
       await checked(
         run,
         "gh",
-        ["pr", "merge", pullRequest, "--merge", "--match-head-commit", headRef],
+        ["pr", "merge", pullRequest, "--repo", repository, "--merge", "--match-head-commit", headRef],
         { cwd: mainRoot },
         "pull request merge failed",
       );
     },
   });
+}
+
+const GIT_OID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
+
+/** Publish and independently verify the exact reviewed commit before PR work. */
+export async function publishCandidate(run, state, { mainRoot = state.mainRoot, worktree = state.worktree } = {}) {
+  const remoteRef = `refs/heads/${state.branch}`;
+  await checked(run, "git", ["check-ref-format", remoteRef], { cwd: mainRoot }, "proposal branch name is invalid");
+  const resolved = await checked(
+    run, "git", ["rev-parse", "--verify", state.ref], { cwd: worktree }, "local candidate does not resolve",
+  );
+  const candidateOid = resolved.stdout.trim().toLowerCase();
+  if (!GIT_OID.test(candidateOid)) throw new Error(`local candidate resolved to an invalid object id: ${resolved.stdout.trim()}`);
+  const localType = await checked(
+    run, "git", ["cat-file", "-t", candidateOid], { cwd: worktree }, "cannot inspect local candidate object type",
+  );
+  if (localType.stdout.trim() !== "commit") {
+    throw new Error(`local candidate ${candidateOid} has object type ${localType.stdout.trim() || "unknown"}, not commit`);
+  }
+
+  // Import by immutable OID, not by a potentially stale or ambiguous branch.
+  await checked(
+    run, "git", ["fetch", "--no-tags", worktree, candidateOid], { cwd: mainRoot }, "cannot import exact proposal commit",
+  );
+  const importedType = await checked(
+    run, "git", ["cat-file", "-t", candidateOid], { cwd: mainRoot }, "cannot inspect imported proposal object type",
+  );
+  if (importedType.stdout.trim() !== "commit") {
+    throw new Error(`imported candidate ${candidateOid} has object type ${importedType.stdout.trim() || "unknown"}, not commit`);
+  }
+  await checked(
+    run,
+    "git",
+    ["push", "origin", `${candidateOid}:${remoteRef}`],
+    { cwd: mainRoot },
+    "proposal push failed",
+  );
+
+  const queried = await checked(
+    run, "git", ["ls-remote", "--refs", "origin", remoteRef], { cwd: mainRoot }, "cannot query published proposal ref",
+  );
+  const rows = String(queried.stdout ?? "").trim().split(/\r?\n/).filter(Boolean);
+  if (rows.length !== 1) {
+    throw new Error(`published proposal ref ${remoteRef} is ${rows.length ? "ambiguous" : "missing"}; expected exactly ${candidateOid}`);
+  }
+  const match = rows[0].match(/^([0-9a-f]{40}(?:[0-9a-f]{24})?)\t(.+)$/i);
+  if (!match || match[2] !== remoteRef) {
+    throw new Error(`published proposal ref query was ambiguous or malformed: ${rows[0]}`);
+  }
+  const remoteOid = match[1].toLowerCase();
+  if (remoteOid !== candidateOid) {
+    throw new Error(`published proposal OID mismatch: local ${candidateOid}, remote ${remoteOid}`);
+  }
+
+  const evidenceId = String(state.delegationId || state.id || candidateOid.slice(0, 12)).replace(/[^a-z0-9-]/gi, "-").slice(0, 80);
+  const evidenceRef = `refs/qq-workflows/published/${evidenceId}`;
+  await checked(
+    run,
+    "git",
+    ["fetch", "--no-tags", "origin", `${remoteRef}:${evidenceRef}`],
+    { cwd: mainRoot },
+    "cannot fetch exact published proposal ref",
+  );
+  const fetched = await checked(
+    run, "git", ["rev-parse", "--verify", evidenceRef], { cwd: mainRoot }, "cannot resolve fetched publication evidence",
+  );
+  const fetchedOid = fetched.stdout.trim().toLowerCase();
+  const remoteType = await checked(
+    run, "git", ["cat-file", "-t", evidenceRef], { cwd: mainRoot }, "cannot inspect published proposal object type",
+  );
+  if (fetchedOid !== candidateOid) {
+    throw new Error(`fetched proposal OID mismatch: local ${candidateOid}, fetched ${fetchedOid}`);
+  }
+  if (remoteType.stdout.trim() !== "commit") {
+    throw new Error(`published proposal ${candidateOid} has object type ${remoteType.stdout.trim() || "unknown"}, not commit`);
+  }
+  return Object.freeze({ candidateOid, localType: "commit", remoteOid: fetchedOid, remoteType: "commit", remoteRef, evidenceRef });
 }
 
 export async function landWorktree(run, state, { github = createGitHubClient(run) } = {}) {
@@ -324,11 +509,17 @@ export async function landWorktree(run, state, { github = createGitHubClient(run
     run, "git", ["status", "--porcelain", "--untracked-files=all"], { cwd: worktree }, "cannot inspect delegated worktree",
   );
   if (worktreeStatus.stdout.trim()) throw new Error("delegated worktree has uncommitted residue");
+  const proposalPresence = await run(
+    "git", ["diff", "--quiet", `${state.baseRef}...${state.ref}`, "--"], { cwd: worktree },
+  );
+  if (proposalPresence?.code === 0) throw new Error("delegated proposal has no changes relative to its reviewed base");
+  if (proposalPresence?.code !== 1) throw new Error(`cannot inspect whether proposal has changes: ${reason(proposalPresence, "git diff failed")}`);
   const proposalDiff = await checked(
     run, "git", ["diff", "--name-only", "--no-renames", "--diff-filter=d", "-z", `${state.baseRef}...${state.ref}`, "--"],
     { cwd: worktree }, "cannot inspect proposal paths",
   );
-  const generatedPaths = parseChangedPaths(proposalDiff.stdout).filter((path) => path === "openwiki" || path.startsWith("openwiki/"));
+  const proposalPaths = parseChangedPaths(proposalDiff.stdout);
+  const generatedPaths = proposalPaths.filter((path) => path === "openwiki" || path.startsWith("openwiki/"));
   if (generatedPaths.length) {
     throw new Error(`delegated proposal changes generated OpenWiki paths: ${generatedPaths.join(", ")}`);
   }
@@ -340,30 +531,16 @@ export async function landWorktree(run, state, { github = createGitHubClient(run
     "cannot read proposal title",
   );
 
-  // Import the reviewed commit from the capsule, but never merge it into local
-  // main. origin/main is the source of truth and only GitHub may create the
-  // merge commit.
-  await checked(
-    run,
-    "git",
-    ["fetch", worktree, state.branch],
-    { cwd: mainRoot },
-    "cannot import proposal branch",
-  );
-  await checked(
-    run,
-    "git",
-    ["push", "origin", `${state.ref}:refs/heads/${state.branch}`],
-    { cwd: mainRoot },
-    "proposal push failed",
-  );
+  // Fail closed on publication. GitHub is not called until the exact immutable
+  // candidate is independently visible as a commit at the exact remote ref.
+  const publication = await publishCandidate(run, state, { mainRoot, worktree });
   const pullRequest = String(await github.openPullRequest({
     mainRoot,
     baseBranch: state.baseBranch,
     headBranch: state.branch,
-    headRef: state.ref,
+    headRef: publication.candidateOid,
     title: proposalSubject.stdout.trim() || state.branch,
-    body: `Automated Land proposal for ${state.ref}.`,
+    body: `Automated Land proposal for ${publication.candidateOid}.`,
   }) ?? "").trim();
   if (!pullRequest) throw new Error("pull request creation failed: GitHub did not return a pull request identifier");
   await github.mergePullRequest({
@@ -371,7 +548,7 @@ export async function landWorktree(run, state, { github = createGitHubClient(run
     pullRequest,
     baseBranch: state.baseBranch,
     headBranch: state.branch,
-    headRef: state.ref,
+    headRef: publication.candidateOid,
   });
   await checked(
     run,
@@ -383,7 +560,7 @@ export async function landWorktree(run, state, { github = createGitHubClient(run
   await checked(
     run,
     "git",
-    ["merge-base", "--is-ancestor", state.ref, `origin/${state.baseBranch}`],
+    ["merge-base", "--is-ancestor", publication.candidateOid, `origin/${state.baseBranch}`],
     { cwd: mainRoot },
     "pull request merge is not present on origin",
   );
@@ -428,6 +605,9 @@ export async function landWorktree(run, state, { github = createGitHubClient(run
     }
   }
   await run("git", ["branch", "-D", state.branch], { cwd: mainRoot });
+  // Publication failures retain this evidence ref. A fully landed proposal no
+  // longer needs the duplicate object pointer.
+  await run("git", ["update-ref", "-d", publication.evidenceRef], { cwd: mainRoot });
   return state;
 }
 
@@ -473,23 +653,26 @@ export function createLand({
     return settings?.get?.(role) ?? null;
   }
 
-  function pendingPhaseMessage(state, pending, { system, user, task } = {}) {
-    const parentSession = state.parentSessionUuid || state.architectSession;
-    const identity = [
-      `Delegation ID (authoritative): ${state.delegationId}.`,
-      `Workflow phase: role ${pending.role}; epoch ${pending.phaseEpoch}; child session ${pending.sessionUuid}.`,
-      `Authoritative parent session UUID: ${parentSession}. Session aliases are informational and ephemeral.`,
-      "Workflow completion is returned automatically; do not manually relay a duplicate report.",
-    ].join(" ");
-    const compiled = state.packet ? `Packet:\n${formatPacket(state.packet)}` : "";
-    const seed = [identity, system, task ?? user, compiled].filter(Boolean).join("\n\n");
-    if (pending.role === "qa") {
-      return renderMiniQaTask({ task: seed });
-    }
-    return pending.role === "implementation" ? renderMiniSweTask(seed) : seed;
+  function pendingPhaseMessage(_state, pending) {
+    return renderDelegationPhaseTask(pending);
   }
 
-  function planPhase(state, role, packet = {}) {
+  async function ensureTaskArtifact(state) {
+    if (!state?.brief) throw new Error(`delegation ${state?.id || "unknown"} has no durable task for a fresh phase`);
+    const artifact = await materializeTaskArtifact(run, {
+      worktree: state.worktree,
+      task: state.brief,
+      expectedDigest: state.taskArtifact?.sha256,
+    });
+    const same = state.taskArtifact
+      && state.taskArtifact.path === artifact.path
+      && state.taskArtifact.pointer === artifact.pointer
+      && state.taskArtifact.sha256 === artifact.sha256
+      && state.taskArtifact.bytes === artifact.bytes;
+    return same ? state : store.save({ ...state, taskArtifact: artifact });
+  }
+
+  function planPhase(state, role, { task, user, delta } = {}) {
     if (!DELEGATION_PHASE_ROLES.has(role)) throw new Error(`cannot plan invalid workflow role ${role}`);
     const latest = store.load(state.id) ?? state;
     if (!latest.transitioning) throw new Error(`delegation ${state.id} is not transitioning`);
@@ -499,15 +682,22 @@ export function createLand({
       }
       return latest;
     }
+    if (!latest.taskArtifact) throw new Error(`delegation ${state.id} has no exact task artifact`);
     const pendingPhase = {
       sessionUuid: `session-${randomUUID()}`,
       role,
       phaseEpoch: latest.phaseEpoch + 1,
       messageId: randomUUID(),
       message: "",
+      input: {
+        schema: DELEGATION_PHASE_INPUT_SCHEMA,
+        taskArtifact: latest.taskArtifact.pointer,
+        taskSha256: latest.taskArtifact.sha256,
+        proposal: formatPacket(latest.packet),
+        delta: boundFormattedText(delta ?? task ?? user ?? "Continue the current workflow phase.", PHASE_DELTA_MAX_CHARS, "phase delta"),
+      },
       messageDelivered: false,
     };
-    pendingPhase.message = pendingPhaseMessage(latest, pendingPhase, packet);
     return store.save({ ...latest, pendingPhase });
   }
 
@@ -556,7 +746,8 @@ export function createLand({
       && left.role === right.role
       && left.phaseEpoch === right.phaseEpoch
       && left.messageId === right.messageId
-      && left.message === right.message);
+      && left.message === right.message
+      && JSON.stringify(left.input) === JSON.stringify(right.input));
   }
 
   function markPendingMessageDelivered(state, expected) {
@@ -573,7 +764,7 @@ export function createLand({
   }
 
   function activatePendingChild(owner, state, expected = state.pendingPhase) {
-    if (!owner || !expected || !expected.messageId || !expected.message) {
+    if (!owner || !expected || !expected.messageId || (!expected.message && !expected.input)) {
       throw new Error(`delegation ${state.id} pending phase has no durable work packet`);
     }
     let latest = store.load(state.id) ?? state;
@@ -590,7 +781,7 @@ export function createLand({
         owner.child.followup({
           id: pending.messageId,
           role: "user",
-          content: [{ type: "text", text: pending.message }],
+          content: [{ type: "text", text: pendingPhaseMessage(latest, pending) }],
           source: { kind: "plugin", plugin: "qq-workflows", form: "notice" },
         });
       }
@@ -1160,7 +1351,7 @@ export function createLand({
     const sessionId = sessionIdOf(child);
     if (!sessionId) return { status: "refused", reason: "adopt requires a child session", owned: false };
     const cwd = info.cwd ?? child?.session?.header?.cwd;
-    const brief = String(info.packet ?? info.brief ?? "");
+    const brief = String(info.brief ?? info.packet ?? "");
     const architectSession = info.parent?.id ?? info.parentSession ?? "";
     let git;
     try {
@@ -1173,6 +1364,16 @@ export function createLand({
       };
     }
     const delegationId = info.delegationId || randomUUID();
+    let taskArtifact;
+    try {
+      taskArtifact = await materializeTaskArtifact(run, { worktree: git.worktree, task: brief });
+    } catch (error) {
+      return {
+        status: "refused",
+        reason: `cannot materialize exact task artifact: ${error instanceof Error ? error.message : String(error)}`,
+        owned: false,
+      };
+    }
     let owner;
     let disposeBinding;
     try {
@@ -1190,6 +1391,7 @@ export function createLand({
         implementationSession: sessionId,
         originalImplementationSession: sessionId,
         brief,
+        taskArtifact,
         ...git,
       });
       try {
@@ -1305,7 +1507,7 @@ export function createLand({
     let owner;
     if (pending) {
       if (!matchesPendingHeaders(child, state, pending)) return false;
-      if (!pending.messageId || !pending.message) return false;
+      if (!pending.messageId || (!pending.message && !pending.input)) return false;
       const pendingRole = pending.role;
       owner = retainChild(retained, {
         child,
@@ -1313,6 +1515,10 @@ export function createLand({
         workflowRole: pending.role,
         delegationId: state.id,
       });
+      if (pending.input && !pending.messageDelivered) {
+        void recoverPendingDelegation(state.id);
+        return true;
+      }
       try {
         state = activatePendingChild(owner, state, pending);
       } catch (error) {
@@ -1401,9 +1607,13 @@ export function createLand({
     let state = store.load(delegationId);
     const pending = state?.pendingPhase;
     if (!state || !pending || !state.transitioning) return false;
-    if (!pending.messageId || !pending.message) {
+    if (!pending.messageId || (!pending.message && !pending.input)) {
       throw new Error(`delegation ${delegationId} pending phase has no durable work packet`);
     }
+    // Structured records depend on the host-controlled artifact. Restore exact
+    // durable bytes before recovered delivery. Legacy pre-rendered messages are
+    // replayed byte-for-byte even when no artifact can be reconstructed.
+    if (pending.input) state = await ensureTaskArtifact(state);
 
     const owned = childOwners.get(pending.sessionUuid);
     if (owned) {
@@ -1515,6 +1725,7 @@ export function createLand({
   }
 
   async function startQa(state) {
+    state = await ensureTaskArtifact(state);
     const parentSession = state.parentSessionUuid || state.architectSession;
     const prior = state.look === 2 ? state.blockedReason : "";
     const task = [
@@ -1523,7 +1734,7 @@ export function createLand({
       prior ? `Prior look-1 rejection:\n${prior}` : "",
     ].filter(Boolean).join("\n\n");
     const workflowRole = "qa";
-    const planned = planPhase(state, workflowRole, { task });
+    const planned = planPhase(state, workflowRole, { delta: task });
     const pending = planned.pendingPhase;
     const spawned = await spawnChild({
       sessionUuid: pending.sessionUuid,
@@ -1543,9 +1754,10 @@ export function createLand({
   }
 
   async function startImplementation(state, verdict) {
+    state = await ensureTaskArtifact(state);
     const parentSession = state.parentSessionUuid || state.architectSession;
-    const user = `QA rejected delegation ${state.delegationId}. ${verdict.feedback || verdict.summary} Address the findings, commit the result, then call done again with ref HEAD.`;
-    const planned = planPhase(state, "implementation", { user });
+    const user = `QA rejected the proposal. ${verdict.feedback || verdict.summary} Address the findings, commit the result, then call done again with ref HEAD.`;
+    const planned = planPhase(state, "implementation", { delta: user });
     const pending = planned.pendingPhase;
     const spawned = await spawnChild({
       sessionUuid: pending.sessionUuid,
@@ -1738,7 +1950,7 @@ export function createLand({
         return { status: "refused", reason: "worktree is not clean; commit or remove every change before done" };
       }
       const look = state.status === "revising" ? 2 : state.look;
-      const packet = await compilePacket(run, { ...state, ref: sha }, { brief: state.brief, mark: null });
+      const packet = await compilePacket(run, { ...state, ref: sha }, { mark: null });
       const priorLook1Rejection = state.status === "revising" && state.qaVerdict
         ? state.qaVerdict.feedback || state.qaVerdict.summary
         : "";
@@ -1823,6 +2035,7 @@ export function createLand({
       ...git,
     });
     if (brief && existing) state = store.save({ ...state, brief: String(brief) });
+    if (!state.taskArtifact && state.brief) state = await ensureTaskArtifact(state);
     if (state.status === "blocked" && state.qaVerdict?.verdict === "pass") {
       return land(state, sessionId);
     }
@@ -1921,7 +2134,7 @@ export function createLand({
       }));
       const report = await deliverRequiredPacket(next, "blocked", sessionId);
       next = report.state;
-      const result = { status: "ok", verdict: "fail", look: 2, outcome: formatOutcome(next, "blocked"), delegationId: next.delegationId };
+      const result = { status: "ok", verdict: "fail", look: 2, outcome: "qa look 2 rejected the proposal; the delegation is blocked and its compact report was delivered.", delegationId: next.delegationId };
       if (!report.delivered) return result;
       return settleAccepted({
         sessionId,
@@ -2004,9 +2217,7 @@ export function createLand({
       const sent = await relay.send({
         fromId: parentSessionUuid,
         to: current.sessionUuid,
-        message: `Delegation ID (authoritative): ${state.delegationId}.
-
-${message}`,
+        message,
         delivery: "default",
       });
       return {

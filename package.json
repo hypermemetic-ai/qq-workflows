@@ -35,12 +35,13 @@
     "./delegation-store": "./src/delegation-store.mjs",
     "./proposal-packet": "./src/proposal-packet.mjs",
     "./mini-code": "./src/official-mini.mjs",
-    "./mini-qa": "./src/mini-qa.mjs"
+    "./mini-qa": "./src/mini-qa.mjs",
+    "./task-artifact": "./src/task-artifact.mjs"
   },
   "files": [
     "src/"
   ],
   "scripts": {
-    "test": "node tests/fold.mjs && node tests/observation.mjs && node tests/mini-swe-v2.mjs && node tests/hide-harness.mjs && node tests/snapshots.mjs && node tests/projects-workflow.mjs && node tests/architecture-pin.mjs && node tests/settings.mjs && node tests/git-geometry.mjs && node tests/proposal-packet.mjs && node tests/architect-case-context.mjs && node tests/architect-repository-index.mjs && node tests/mini-qa.mjs && node tests/land.mjs && node tests/mini-docs.mjs && node tests/research-evidence.mjs && node tests/research-web.mjs && node tests/research-sessions.mjs && node tests/mini-research.mjs && node tests/research-oracle.mjs && node tests/research.mjs"
+    "test": "node tests/fold.mjs && node tests/observation.mjs && node tests/mini-swe-v2.mjs && node tests/hide-harness.mjs && node tests/snapshots.mjs && node tests/projects-workflow.mjs && node tests/architecture-pin.mjs && node tests/settings.mjs && node tests/git-geometry.mjs && node tests/proposal-packet.mjs && node tests/packet-lifecycle.mjs && node tests/architect-case-context.mjs && node tests/architect-repository-index.mjs && node tests/mini-qa.mjs && node tests/land.mjs && node tests/land-publication.mjs && node tests/mini-docs.mjs && node tests/research-evidence.mjs && node tests/research-web.mjs && node tests/research-sessions.mjs && node tests/mini-research.mjs && node tests/research-oracle.mjs && node tests/research.mjs"
   }
 }

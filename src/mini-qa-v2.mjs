@@ -39,11 +39,11 @@ export function renderMiniQaTask({ task } = {}) {
   return [
     `Please review this change: ${String(task ?? "")}`,
     "",
-    "The packet is a starting point: its brief, changed-file counts, and hunk pointers identify the change without inlining diffs. The look packet names the base and head revisions.",
+    "The task artifact and bounded proposal packet are the starting point: changed-file counts and hunk pointers identify the change without inlining diffs. The phase delta names the base and head revisions.",
     "",
     "Recommended Workflow",
     "",
-    "1. Analyze the packet brief, files, and pointers to understand the intended change.",
+    "1. Read the exact task artifact, then analyze the packet files and pointers to understand the intended change.",
     "2. Identify possible defects introduced by the change.",
     "3. For each possible defect, formulate the specific question that determines whether it is real.",
     "4. Use bash to inspect only the repository context needed to answer that question. Useful commands include git diff, git show, git grep, rg, and sed -n; use the packet's base and head revisions.",

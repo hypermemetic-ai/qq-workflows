@@ -6,8 +6,16 @@ import { join } from "node:path";
 
 import { createCaseStore } from "../src/casefile.mjs";
 import { createDelegationStore } from "../src/delegation-store.mjs";
-import { apply } from "../src/plugin.mjs";
+import { apply, compactActivityProjection } from "../src/plugin.mjs";
 import { createSelectionStore } from "../src/selection.mjs";
+
+assert.deepEqual(compactActivityProjection({
+  id: "delegation-id",
+  parentSessionUuid: "parent-id",
+  status: "reviewing",
+  brief: "must not be retained",
+  packet: { huge: true },
+}), { id: "delegation-id", parentSessionUuid: "parent-id", status: "reviewing" });
 
 const NONE = "session-10000000-0000-4000-8000-000000000001";
 const UNKNOWN = "session-20000000-0000-4000-8000-000000000002";

@@ -2,10 +2,10 @@ import { MINI_SWE_COMPLETION_COMMAND } from "./mini-swe-v2.mjs";
 
 export const MINI_RESEARCH_SYSTEM_PROMPT = "You are a helpful assistant that can research questions using a computer.";
 
-/** Render the Mini-SWE-style instance template for a research delegation. */
-export function renderMiniResearchTask({ task } = {}) {
+/** Render the dynamic instance data; the exact question already lives in question.md. */
+export function renderMiniResearchTask() {
   return [
-    `Please research this question: ${String(task ?? "")}`,
+    "Please research the exact question in question.md.",
     "",
     "You can execute bash commands and edit answer.md to research the question.",
     "",
@@ -38,23 +38,19 @@ export function renderMiniResearchTask({ task } = {}) {
   ].join("\n");
 }
 
-/** Render the instance task for Mini QA's fresh-context research review. */
-export function renderMiniResearchReviewTask({ question, answer, manifest } = {}) {
-  const records = Array.isArray(manifest) ? manifest : [];
-  const manifestText = records.length ? records.map((record) => JSON.stringify(record)).join("\n") : "(empty)";
+/** Fresh research QA gets pointers, never eager copies of capsule artifacts. */
+export function renderMiniResearchReviewTask() {
   return [
-    "Please review this proposed research answer.",
+    "Please review the proposed research answer using the exact capsule artifacts.",
     "",
-    "Question:",
-    String(question ?? "").trim(),
+    "Artifact pointers (relative to the capsule cwd):",
+    "- Exact question: question.md",
+    "- Proposed answer: answer.md",
+    "- Acquired evidence manifest: evidence/manifest.jsonl",
+    "- Evidence snapshots: evidence/",
+    "- Repository context: repo/",
     "",
-    "Proposed answer:",
-    String(answer ?? "").trim(),
-    "",
-    "Acquired evidence manifest:",
-    manifestText,
-    "",
-    "Use ordinary bash in this capsule to inspect only question.md, answer.md, evidence/, and repo/. Do not request or perform new web or session retrieval.",
+    "Read question.md, answer.md, and evidence/manifest.jsonl before deciding. Use ordinary bash in this capsule to inspect only question.md, answer.md, evidence/, and repo/. Do not request or perform new web or session retrieval.",
     "Find concrete answer defects: unsupported claims, citations that do not entail the claim, ignored contradictions, inference presented as fact, or conclusions stronger than the evidence.",
     "Report each defect at the relevant answer.md line. Submit only concrete defects; an empty findings array is valid.",
   ].join("\n");

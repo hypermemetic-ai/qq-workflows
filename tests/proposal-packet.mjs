@@ -6,7 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { runCommand } from "../src/git.mjs";
-import { compilePacket } from "../src/proposal-packet.mjs";
+import {
+  PACKET_FILE_PREVIEW_LIMIT,
+  PACKET_FORMAT_MAX_CHARS,
+  compilePacket,
+  formatPacket,
+} from "../src/proposal-packet.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "qq-routing."));
 const repo = join(root, "repo");
@@ -75,6 +80,19 @@ try {
   assert.equal(stoppedAtLimit, true);
   assert.deepEqual(streamedPacket.pointers, Array.from({ length: 8 }, (_, index) =>
     `file-${index}.txt:${index + 1} context ${index}`));
+
+  const manyFiles = Array.from({ length: 100 }, (_, index) => ({
+    path: `${"long-directory/".repeat(30)}file-${index}.mjs`, added: 1, deleted: 0,
+  }));
+  const boundedPacket = await compilePacket(async () => ({ code: 0, stdout: "", stderr: "" }),
+    { baseRef, ref, worktree: repo }, { files: manyFiles });
+  assert.equal(boundedPacket.fileCount, 100);
+  assert.equal(boundedPacket.files.length, PACKET_FILE_PREVIEW_LIMIT);
+  assert.equal(boundedPacket.omittedFiles, 100 - PACKET_FILE_PREVIEW_LIMIT);
+  assert.equal(Object.hasOwn(boundedPacket, "brief"), false);
+  const boundedText = formatPacket(boundedPacket);
+  assert.ok(boundedText.length <= PACKET_FORMAT_MAX_CHARS);
+  assert.match(boundedText, /100 total; 24 shown; 76 omitted/);
 
   console.log("proposal packet tests passed");
 } finally {

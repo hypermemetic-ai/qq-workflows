@@ -1,7 +1,8 @@
-import { readFile } from "node:fs/promises";
-
 export const DELEGATION_PACKET_SCHEMA = "qq.delegation-packet/v1";
-const PACKET_POINTER_LIMIT = 8;
+export const PACKET_FILE_PREVIEW_LIMIT = 24;
+export const PACKET_POINTER_LIMIT = 8;
+export const PACKET_LINE_MAX_CHARS = 240;
+export const PACKET_FORMAT_MAX_CHARS = 12_000;
 
 function reason(result, fallback) {
   return result?.stderr?.trim() || result?.stdout?.trim() || fallback;
@@ -11,6 +12,30 @@ async function checked(run, command, args, options, label) {
   const result = await run(command, args, options);
   if (result?.code !== 0) throw new Error(`${label}: ${reason(result, "command failed")}`);
   return result;
+}
+
+function singleLine(value) {
+  return String(value ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
+    .replace(/\t/g, "\\t")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "?");
+}
+
+export function boundedPacketLine(value, limit = PACKET_LINE_MAX_CHARS) {
+  const text = singleLine(value);
+  if (text.length <= limit) return text;
+  const omitted = text.length - limit;
+  const suffix = `… [${omitted} chars omitted]`;
+  return `${text.slice(0, Math.max(0, limit - suffix.length))}${suffix}`.slice(0, limit);
+}
+
+export function boundFormattedText(value, limit = PACKET_FORMAT_MAX_CHARS, label = "packet") {
+  const text = String(value ?? "");
+  if (text.length <= limit) return text;
+  const suffix = `\n[${label} omitted ${text.length - limit} chars; inspect the referenced artifacts/revisions for complete data]`;
+  return `${text.slice(0, Math.max(0, limit - suffix.length))}${suffix}`.slice(0, limit);
 }
 
 export function parseNumstat(source) {
@@ -29,7 +54,9 @@ export function parseNumstat(source) {
   return files;
 }
 
-const POINTER_HEADER_LIMIT = 64 * 1024;
+// Unified diff headers can themselves be hostile/pathological. Only enough of
+// each current header is retained to derive one bounded hunk pointer.
+const POINTER_HEADER_LIMIT = PACKET_LINE_MAX_CHARS * 2;
 
 function createDiffPointerCollector(limit = PACKET_POINTER_LIMIT) {
   const pointers = [];
@@ -37,6 +64,7 @@ function createDiffPointerCollector(limit = PACKET_POINTER_LIMIT) {
   let line = "";
   let mode = "candidate";
   let streamed = false;
+  let saturated = false;
 
   function couldBePointerHeader(value) {
     return "+++ ".startsWith(value) || value.startsWith("+++ ")
@@ -54,7 +82,8 @@ function createDiffPointerCollector(limit = PACKET_POINTER_LIMIT) {
     const hunk = source.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/);
     if (!hunk || !path) return;
     const context = hunk[2].trim();
-    pointers.push(context ? `${path}:${hunk[1]} ${context}` : `${path}:${hunk[1]}`);
+    pointers.push(boundedPacketLine(context ? `${path}:${hunk[1]} ${context}` : `${path}:${hunk[1]}`));
+    if (pointers.length >= limit) saturated = true;
   }
 
   function append(segment) {
@@ -65,8 +94,6 @@ function createDiffPointerCollector(limit = PACKET_POINTER_LIMIT) {
       line = "";
       mode = "discard";
     } else if (segment.length > available) {
-      // A pathological changed line must not become a replacement full-diff
-      // buffer. The metadata prefix remains sufficient for a hunk pointer.
       mode = "truncated";
     }
   }
@@ -78,6 +105,7 @@ function createDiffPointerCollector(limit = PACKET_POINTER_LIMIT) {
 
   return {
     get streamed() { return streamed; },
+    get saturated() { return saturated; },
     write(chunk, fromStream = false) {
       if (fromStream) streamed = true;
       const text = String(chunk ?? "");
@@ -110,7 +138,11 @@ export function parseDiffPointers(source, limit = PACKET_POINTER_LIMIT) {
 }
 
 function fileCounts(file) {
-  return { path: file.path, added: file.added ?? null, deleted: file.deleted ?? null };
+  return {
+    path: boundedPacketLine(file.path),
+    added: Number.isFinite(file.added) ? file.added : null,
+    deleted: Number.isFinite(file.deleted) ? file.deleted : null,
+  };
 }
 
 async function packFor(run, state) {
@@ -124,14 +156,11 @@ async function packFor(run, state) {
   return parseNumstat(result.stdout);
 }
 
-async function readBrief(state) {
-  if (!state?.ticketPath) return "";
-  try { return (await readFile(state.ticketPath, "utf8")).trim(); } catch { return ""; }
-}
-
 export async function compilePacket(run, state, options = {}) {
   const view = { ...state, ref: options.ref ?? state.ref };
-  const files = (options.files ?? await packFor(run, view)).map(fileCounts);
+  const allFiles = options.files ?? await packFor(run, view);
+  const fileCount = allFiles.length;
+  const files = allFiles.slice(0, PACKET_FILE_PREVIEW_LIMIT).map(fileCounts);
   const collector = createDiffPointerCollector();
   const unified = await checked(
     run,
@@ -143,27 +172,46 @@ export async function compilePacket(run, state, options = {}) {
     },
     "cannot collect packet pointers",
   );
-  // Injected runners may not implement streaming. Preserve compatibility for
-  // their bounded stdout results without duplicating streamed data.
   if (!collector.streamed) collector.write(unified.stdout);
+  const pointers = collector.finish();
   return {
     schema: DELEGATION_PACKET_SCHEMA,
-    brief: options.brief ?? await readBrief(view),
+    fileCount,
+    omittedFiles: Math.max(0, fileCount - files.length),
     files,
-    pointers: collector.finish(),
+    pointers,
+    pointersOmitted: collector.saturated,
     mark: options.mark ?? null,
   };
 }
 
 export function formatPacket(packet) {
-  const files = (packet?.files ?? []).map((file) => `${file.path} +${file.added ?? "?"}/-${file.deleted ?? "?"}`);
-  const pointers = packet?.pointers ?? [];
-  return [
-    `Mark: ${packet?.mark ?? "review"}`,
-    packet?.brief ?? "",
-    files.length ? `Files:\n${files.join("\n")}` : "Files:",
-    pointers.length ? `Pointers:\n${pointers.join("\n")}` : "Pointers:",
+  const rawFiles = Array.isArray(packet?.files) ? packet.files : [];
+  const fileCount = Number.isSafeInteger(packet?.fileCount) && packet.fileCount >= rawFiles.length
+    ? packet.fileCount
+    : rawFiles.length;
+  const files = rawFiles.slice(0, PACKET_FILE_PREVIEW_LIMIT).map((file) =>
+    `${boundedPacketLine(file?.path)} +${file?.added ?? "?"}/-${file?.deleted ?? "?"}`);
+  const omittedFiles = Number.isSafeInteger(packet?.omittedFiles) && packet.omittedFiles >= 0
+    ? Math.max(packet.omittedFiles, fileCount - files.length)
+    : Math.max(0, fileCount - files.length);
+  const pointers = (Array.isArray(packet?.pointers) ? packet.pointers : [])
+    .slice(0, PACKET_POINTER_LIMIT)
+    .map((pointer) => boundedPacketLine(pointer));
+  const pointerOmission = packet?.pointersOmitted || (packet?.pointers?.length ?? 0) > pointers.length;
+  const legacyBrief = packet?.brief
+    ? `Legacy brief preview:\n${boundFormattedText(packet.brief, 1_000, "legacy brief")}`
+    : "";
+  const body = [
+    `Mark: ${boundedPacketLine(packet?.mark ?? "review", 40)}`,
+    `Changed files: ${fileCount} total; ${files.length} shown; ${omittedFiles} omitted.`,
+    legacyBrief,
+    files.length ? `Files (bounded preview):\n${files.join("\n")}` : "Files (bounded preview): none",
+    omittedFiles ? `[${omittedFiles} changed files omitted from preview]` : "[changed-file preview complete]",
+    pointers.length ? `Hunk pointers (bounded preview):\n${pointers.join("\n")}` : "Hunk pointers (bounded preview): none",
+    pointerOmission ? `[additional hunk pointers omitted after ${pointers.length}]` : "[hunk-pointer preview complete]",
   ].filter(Boolean).join("\n\n");
+  return boundFormattedText(body, PACKET_FORMAT_MAX_CHARS, "proposal packet");
 }
 
 export function isTestPath(path) {

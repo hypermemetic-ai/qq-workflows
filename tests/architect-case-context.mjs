@@ -186,6 +186,9 @@ function createPrompt() {
   assert.match(ARCHITECT_PROMPT, /plan document/i);
   assert.match(ARCHITECT_PROMPT, /operator approv/i);
   assert.match(ARCHITECT_PROMPT, /delegate/i);
+  assert.match(ARCHITECT_PROMPT, /other architects through relay/i);
+  assert.match(ARCHITECT_PROMPT, /Never communicate directly with another architect's children/i);
+  assert.match(ARCHITECT_PROMPT, /own children only through workflow-owned tools/i);
 
   const dir = mkdtempSync(join(tmpdir(), "qq-plan-doc."));
   try {

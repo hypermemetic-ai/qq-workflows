@@ -80,18 +80,70 @@ function snapshot(record) {
 function normalizePacket(packet) {
   if (!packet || typeof packet !== "object") return null;
   if (packet.schema !== "qq.delegation-packet/v1" && packet.schema !== "qq.route-packet/v1") return null;
+  const files = Array.isArray(packet.files)
+    ? packet.files.map((file) => ({
+      path: String(file?.path ?? ""),
+      added: file?.added ?? null,
+      deleted: file?.deleted ?? null,
+    }))
+    : [];
+  const fileCount = Number.isSafeInteger(packet.fileCount) && packet.fileCount >= files.length
+    ? packet.fileCount
+    : files.length;
   return {
     schema: "qq.delegation-packet/v1",
-    brief: optionalString(packet.brief),
-    files: Array.isArray(packet.files)
-      ? packet.files.map((file) => ({
-        path: String(file?.path ?? ""),
-        added: file?.added ?? null,
-        deleted: file?.deleted ?? null,
-      }))
-      : [],
+    // Legacy packets may contain a full brief. New compilers omit this field;
+    // retaining it here keeps active/recovering legacy records lossless.
+    ...(optionalString(packet.brief) ? { brief: optionalString(packet.brief) } : {}),
+    fileCount,
+    omittedFiles: Number.isSafeInteger(packet.omittedFiles) && packet.omittedFiles >= 0
+      ? Math.max(packet.omittedFiles, fileCount - files.length)
+      : Math.max(0, fileCount - files.length),
+    files,
     pointers: Array.isArray(packet.pointers) ? packet.pointers.map((item) => String(item)) : [],
+    pointersOmitted: packet.pointersOmitted === true,
     mark: packet.mark ?? null,
+  };
+}
+
+const TASK_ARTIFACT_SCHEMA = "qq.task-artifact/v1";
+const PHASE_INPUT_SCHEMA = "qq.delegation-phase-input/v1";
+const SHA256 = /^[0-9a-f]{64}$/;
+
+function normalizeTaskArtifact(raw) {
+  if (raw == null) return null;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)
+    || raw.schema !== TASK_ARTIFACT_SCHEMA
+    || !optionalString(raw.path) || !optionalString(raw.pointer)
+    || !SHA256.test(raw.sha256 ?? "")
+    || !Number.isSafeInteger(raw.bytes) || raw.bytes < 0) {
+    throw new Error("qq-workflows: delegation task artifact is malformed");
+  }
+  return {
+    schema: TASK_ARTIFACT_SCHEMA,
+    path: raw.path,
+    pointer: raw.pointer,
+    sha256: raw.sha256,
+    bytes: raw.bytes,
+  };
+}
+
+function normalizePhaseInput(raw) {
+  if (raw == null) return null;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)
+    || raw.schema !== PHASE_INPUT_SCHEMA
+    || !optionalString(raw.taskArtifact)
+    || !SHA256.test(raw.taskSha256 ?? "")
+    || typeof raw.proposal !== "string" || raw.proposal.length > 12_000
+    || typeof raw.delta !== "string" || raw.delta.length > 4_000) {
+    throw new Error("qq-workflows: delegation pending phase input is malformed");
+  }
+  return {
+    schema: PHASE_INPUT_SCHEMA,
+    taskArtifact: raw.taskArtifact,
+    taskSha256: raw.taskSha256,
+    proposal: raw.proposal,
+    delta: raw.delta,
   };
 }
 
@@ -200,11 +252,13 @@ function normalizePendingPhase(raw, phaseEpoch) {
   }
   const messageId = optionalString(raw.messageId);
   const message = optionalString(raw.message);
-  if ((messageId || message) && (!UUID_ID.test(messageId) || !message)) {
+  const input = normalizePhaseInput(raw.input);
+  const renderable = Boolean(message || input);
+  if ((messageId || renderable) && (!UUID_ID.test(messageId) || !renderable)) {
     throw new Error("qq-workflows: delegation pending phase packet is malformed");
   }
   const messageDelivered = raw.messageDelivered === true;
-  if (messageDelivered && (!messageId || !message)) {
+  if (messageDelivered && (!messageId || !renderable)) {
     throw new Error("qq-workflows: delegation pending phase delivered packet is missing");
   }
   return {
@@ -213,6 +267,7 @@ function normalizePendingPhase(raw, phaseEpoch) {
     phaseEpoch: raw.phaseEpoch,
     messageId,
     message,
+    input,
     messageDelivered,
   };
 }
@@ -284,6 +339,7 @@ function normalize(raw) {
     baseRef: optionalString(raw.baseRef),
     ref: optionalString(raw.ref),
     brief: optionalString(raw.brief),
+    taskArtifact: normalizeTaskArtifact(raw.taskArtifact),
     packet: normalizePacket(raw.packet),
     qaVerdict: raw.qaVerdict && typeof raw.qaVerdict === "object" ? { ...raw.qaVerdict } : null,
     blockedReason: optionalString(raw.blockedReason),
@@ -389,6 +445,7 @@ export function createDelegationStore(dirPath, { onChange } = {}) {
         baseRef: fields.baseRef,
         ref: fields.ref,
         brief: fields.brief,
+        taskArtifact: fields.taskArtifact,
         packet: fields.packet,
         qaVerdict: fields.qaVerdict,
         blockedReason: fields.blockedReason,
@@ -450,7 +507,8 @@ export function createDelegationStore(dirPath, { onChange } = {}) {
           && next.pendingPhase.role === previous.pendingPhase.role
           && next.pendingPhase.phaseEpoch === previous.pendingPhase.phaseEpoch
           && next.pendingPhase.messageId === previous.pendingPhase.messageId
-          && next.pendingPhase.message === previous.pendingPhase.message;
+          && next.pendingPhase.message === previous.pendingPhase.message
+          && JSON.stringify(next.pendingPhase.input) === JSON.stringify(previous.pendingPhase.input);
         if (next.pendingPhase && !samePlan) {
           throw new Error(`qq-workflows: delegation ${next.id} pending phase is immutable`);
         }
@@ -480,13 +538,8 @@ export function createDelegationStore(dirPath, { onChange } = {}) {
 
     byDelegation(delegationId) {
       if (!DELEGATION_ID.test(delegationId ?? "")) return null;
-      let found = null;
-      for (const record of store.list()) {
-        if (record.delegationId !== delegationId.toLowerCase()) continue;
-        if (found) throw new Error(`qq-workflows: duplicate delegation id ${delegationId}`);
-        found = record;
-      }
-      return found;
+      // v2 enforces id === delegationId, so the canonical UUID is the filename.
+      return store.load(String(delegationId).toLowerCase());
     },
 
     bySession(sessionId) {

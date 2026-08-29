@@ -31,20 +31,20 @@ assert.deepEqual(MINI_RESEARCH_TOOLS, ["bash"]);
 assert.deepEqual(MINI_RESEARCH_GLOBAL_ALLOW, ["bash"]);
 assert.equal(MINI_RESEARCH_SYSTEM_PROMPT, "You are a helpful assistant that can research questions using a computer.");
 assert.equal(MINI_RESEARCH_SYSTEM_PROMPT.includes("\n"), false, "the v2 system prompt stays one line");
-const researchTask = renderMiniResearchTask({ task: "What does the fixture show?" });
-assert.match(researchTask, /^Please research this question: What does the fixture show\?/);
+const researchTask = renderMiniResearchTask({ task: "THIS QUESTION MUST NOT BE INLINED" });
+assert.match(researchTask, /^Please research the exact question in question\.md\./);
+assert.doesNotMatch(researchTask, /THIS QUESTION MUST NOT BE INLINED/);
 assert.match(researchTask, /## Recommended Workflow/);
 assert.match(researchTask, /web-search 'query'/);
 assert.match(researchTask, new RegExp(MINI_SWE_COMPLETION_COMMAND));
 const reviewTask = renderMiniResearchReviewTask({
-  question: "What does the fixture show?",
-  answer: "The fixture answers it [W001].",
-  manifest: [{ ref: "W001", path: "evidence/web/W001.md" }],
+  question: "QUESTION CONTENT MUST NOT BE INLINED",
+  answer: "ANSWER CONTENT MUST NOT BE INLINED",
+  manifest: [{ ref: "MANIFEST CONTENT MUST NOT BE INLINED" }],
 });
-assert.match(reviewTask, /^Please review this proposed research answer\./);
-assert.match(reviewTask, /Question:\nWhat does the fixture show\?/);
-assert.match(reviewTask, /Proposed answer:\nThe fixture answers it \[W001\]\./);
-assert.match(reviewTask, /"ref":"W001"/);
+assert.match(reviewTask, /^Please review the proposed research answer using the exact capsule artifacts\./);
+for (const pointer of ["question.md", "answer.md", "evidence/manifest.jsonl"]) assert.ok(reviewTask.includes(pointer));
+assert.doesNotMatch(reviewTask, /CONTENT MUST NOT BE INLINED/);
 assert.match(reviewTask, /an empty findings array is valid/);
 assert.deepEqual(parseResearchCommand("session-search 'one phrase' \"two phrase\""), {
   name: "session-search", args: ["one phrase", "two phrase"],

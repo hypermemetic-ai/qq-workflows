@@ -18,7 +18,7 @@ export const LAND_TOOL_NAME = "land";
 export function buildDoneTool({ submit } = {}) {
   return {
     name: DONE_TOOL_NAME,
-    description: "Submit this worktree for land or review. The brief is already the work order. Packet is brief plus file counts and diff pointers. Do not merge.",
+    description: "Submit this worktree for land or review. The exact task is in the Git-private task artifact. The packet is a bounded changed-file summary plus diff pointers. Do not merge.",
     parameters: {
       ref: {
         type: "string",
