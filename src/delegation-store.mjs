@@ -1,7 +1,7 @@
-// Land-run store: one JSON file per land run, beside DSH_HOME.
+// Durable implementation delegations: one JSON file per delegation UUID.
 //
-// Mode 0600, atomic write, restart-safe. Indexed by run id and by the live
-// implementer/QA session so internal completion handlers can find the handoff.
+// Mode 0600, atomic write, restart-safe. Indexed by delegation UUID and live
+// implementation/QA session so completion handlers can find the delegation.
 
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -12,25 +12,26 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 
-export const LAND_RUN_SCHEMA = "qq.land-run/v1";
-export const LAND_STATUSES = Object.freeze([
+export const DELEGATION_SCHEMA = "qq.delegation/v2";
+export const DELEGATION_STATUSES = Object.freeze([
   "running",
   "reviewing",
-  "waiting_fix",
+  "revising",
   "landing",
   "landed",
   "blocked",
 ]);
 
-const STATUS_SET = new Set(LAND_STATUSES);
+const STATUS_SET = new Set(DELEGATION_STATUSES);
 const UUID_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DELEGATION_ID = UUID_ID;
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-export const LAND_WORKFLOW_ROLES = Object.freeze(["implementer", "qa-look-1", "fixer", "qa-look-2"]);
-const WORKFLOW_ROLE_SET = new Set(LAND_WORKFLOW_ROLES);
+export const DELEGATION_PHASE_ROLES = Object.freeze(["implementation", "qa"]);
+const WORKFLOW_ROLE_SET = new Set(DELEGATION_PHASE_ROLES);
 const TERMINAL_STATUSES = new Set(["landed", "blocked"]);
 
 function requireAbsolute(path, label) {
@@ -40,17 +41,32 @@ function requireAbsolute(path, label) {
   return path;
 }
 
-/** Default land-run directory: a folder beside DSH_HOME. */
-export function defaultLandDir(env = process.env, config = {}) {
-  if (config.landDir !== undefined) {
-    return requireAbsolute(config.landDir, "landDir");
+function containsDelegationRecords(path) {
+  try {
+    return readdirSync(path).some((name) => name.endsWith(".json"));
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return false;
+    throw error;
   }
+}
+
+/** Default delegation directory: a folder beside DSH_HOME. */
+export function defaultDelegationDir(env = process.env, config = {}) {
+  const configured = config.delegationDir ?? config.landDir;
+  if (configured !== undefined) return requireAbsolute(configured, "delegationDir");
   const dshHome = env.DSH_HOME?.trim();
-  if (dshHome) {
-    return join(dirname(requireAbsolute(dshHome, "DSH_HOME")), ".qq-workflows-land");
-  }
-  const home = env.HOME || homedir();
-  return join(requireAbsolute(home, "HOME"), ".qq-workflows-land");
+  const parent = dshHome
+    ? dirname(requireAbsolute(dshHome, "DSH_HOME"))
+    : requireAbsolute(env.HOME || homedir(), "HOME");
+  const current = join(parent, ".qq-workflows-delegations");
+  const legacy = join(parent, ".qq-workflows-land");
+
+  // Existing installations may still have live qq.land-run/v1 records in the
+  // old default directory. Prefer it while the new directory has no records,
+  // including when a prior buggy startup already created the new directory.
+  return containsDelegationRecords(legacy) && !containsDelegationRecords(current)
+    ? legacy
+    : current;
 }
 
 function optionalString(value) {
@@ -63,9 +79,9 @@ function snapshot(record) {
 
 function normalizePacket(packet) {
   if (!packet || typeof packet !== "object") return null;
-  if (packet.schema !== "qq.route-packet/v1") return null;
+  if (packet.schema !== "qq.delegation-packet/v1" && packet.schema !== "qq.route-packet/v1") return null;
   return {
-    schema: packet.schema,
+    schema: "qq.delegation-packet/v1",
     brief: optionalString(packet.brief),
     files: Array.isArray(packet.files)
       ? packet.files.map((file) => ({
@@ -80,18 +96,14 @@ function normalizePacket(packet) {
 }
 
 function legacyRole(raw, sessionUuid) {
-  if (raw.qaSession === sessionUuid) return raw.look === 2 ? "qa-look-2" : "qa-look-1";
-  if (raw.implementerSession === sessionUuid) {
-    return raw.originalImplementerSession === sessionUuid ? "implementer" : "fixer";
-  }
+  if (raw.qaSession === sessionUuid) return "qa";
+  if (raw.implementationSession === sessionUuid) return "implementation";
   return "";
 }
 
 function legacyEpoch(raw, role) {
-  if (role === "implementer") return 1;
-  if (role === "qa-look-1") return 2;
-  if (role === "fixer") return 3;
-  if (role === "qa-look-2") return 4;
+  if (role === "implementation") return raw.look === 1 ? 3 : 1;
+  if (role === "qa") return raw.look === 2 ? 4 : 2;
   if (raw.look === 2) return 4;
   if (raw.look === 1 && raw.qaVerdict) return 2;
   return 0;
@@ -100,8 +112,17 @@ function legacyEpoch(raw, role) {
 function upgradeLegacy(raw) {
   const next = { ...raw };
   let changed = false;
+  const legacyMachine = next.schema === "qq.land-run/v1";
+  if (legacyMachine) { next.schema = DELEGATION_SCHEMA; changed = true; }
+  if (next.implementationSession === undefined) { next.implementationSession = optionalString(raw.implementerSession); changed = true; }
+  if (next.originalImplementationSession === undefined) { next.originalImplementationSession = optionalString(raw.originalImplementerSession) || next.implementationSession; changed = true; }
+  if (next.status === "waiting_fix") { next.status = "revising"; changed = true; }
   if (!Object.hasOwn(next, "delegationId")) {
     next.delegationId = randomUUID();
+    changed = true;
+  }
+  if (legacyMachine && next.id !== next.delegationId) {
+    next.id = next.delegationId;
     changed = true;
   }
   if (!Object.hasOwn(next, "parentSessionUuid")) {
@@ -112,8 +133,8 @@ function upgradeLegacy(raw) {
     let sessionUuid = "";
     if (!TERMINAL_STATUSES.has(next.status)) {
       if (next.status === "reviewing" && next.qaSession) sessionUuid = optionalString(next.qaSession);
-      else if (next.status === "waiting_fix" && next.implementerSession) sessionUuid = optionalString(next.implementerSession);
-      else sessionUuid = optionalString(next.implementerSession || next.qaSession);
+      else if (next.status === "revising" && next.implementationSession) sessionUuid = optionalString(next.implementationSession);
+      else sessionUuid = optionalString(next.implementationSession || next.qaSession);
     }
     const role = legacyRole(next, sessionUuid);
     const epoch = legacyEpoch(next, role);
@@ -129,7 +150,7 @@ function upgradeLegacy(raw) {
     next.transitioning = !TERMINAL_STATUSES.has(next.status) && (
       next.status === "landing"
       || (next.status === "reviewing" && !next.qaSession)
-      || (next.status === "waiting_fix" && !next.implementerSession)
+      || (next.status === "revising" && !next.implementationSession)
     );
     changed = true;
   }
@@ -147,15 +168,17 @@ function upgradeLegacy(raw) {
 function normalizeCurrent(raw, phaseEpoch) {
   if (raw == null) return null;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error("qq-workflows: land run current pointer is malformed");
+    throw new Error("qq-workflows: delegation current pointer is malformed");
   }
   const sessionUuid = optionalString(raw.sessionUuid);
-  const role = optionalString(raw.role);
+  let role = optionalString(raw.role);
+  if (role === "implementer" || role === "fixer") role = "implementation";
+  if (role === "qa-look-1" || role === "qa-look-2") role = "qa";
   if (!SESSION_ID.test(sessionUuid) || !WORKFLOW_ROLE_SET.has(role)) {
-    throw new Error("qq-workflows: land run current pointer is malformed");
+    throw new Error("qq-workflows: delegation current pointer is malformed");
   }
   if (!Number.isSafeInteger(raw.phaseEpoch) || raw.phaseEpoch < 1 || raw.phaseEpoch !== phaseEpoch) {
-    throw new Error("qq-workflows: land run current pointer epoch is invalid");
+    throw new Error("qq-workflows: delegation current pointer epoch is invalid");
   }
   return { sessionUuid, role, phaseEpoch };
 }
@@ -163,24 +186,26 @@ function normalizeCurrent(raw, phaseEpoch) {
 function normalizePendingPhase(raw, phaseEpoch) {
   if (raw == null) return null;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error("qq-workflows: land run pending phase is malformed");
+    throw new Error("qq-workflows: delegation pending phase is malformed");
   }
   const sessionUuid = optionalString(raw.sessionUuid);
-  const role = optionalString(raw.role);
+  let role = optionalString(raw.role);
+  if (role === "implementer" || role === "fixer") role = "implementation";
+  if (role === "qa-look-1" || role === "qa-look-2") role = "qa";
   if (!SESSION_ID.test(sessionUuid) || !WORKFLOW_ROLE_SET.has(role)) {
-    throw new Error("qq-workflows: land run pending phase is malformed");
+    throw new Error("qq-workflows: delegation pending phase is malformed");
   }
   if (!Number.isSafeInteger(raw.phaseEpoch) || raw.phaseEpoch !== phaseEpoch + 1) {
-    throw new Error("qq-workflows: land run pending phase epoch is invalid");
+    throw new Error("qq-workflows: delegation pending phase epoch is invalid");
   }
   const messageId = optionalString(raw.messageId);
   const message = optionalString(raw.message);
   if ((messageId || message) && (!UUID_ID.test(messageId) || !message)) {
-    throw new Error("qq-workflows: land run pending phase packet is malformed");
+    throw new Error("qq-workflows: delegation pending phase packet is malformed");
   }
   const messageDelivered = raw.messageDelivered === true;
   if (messageDelivered && (!messageId || !message)) {
-    throw new Error("qq-workflows: land run pending phase delivered packet is missing");
+    throw new Error("qq-workflows: delegation pending phase delivered packet is missing");
   }
   return {
     sessionUuid,
@@ -193,45 +218,48 @@ function normalizePendingPhase(raw, phaseEpoch) {
 }
 
 function normalize(raw) {
-  if (!raw || raw.schema !== LAND_RUN_SCHEMA || raw.version !== 1 || typeof raw.id !== "string" || !raw.id) {
-    throw new Error("qq-workflows: land run is malformed");
+  if (!raw || raw.schema !== DELEGATION_SCHEMA || raw.version !== 1 || typeof raw.id !== "string" || !raw.id) {
+    throw new Error("qq-workflows: delegation is malformed");
   }
   if (!STATUS_SET.has(raw.status)) {
-    throw new Error(`qq-workflows: land run ${raw.id} has unknown status ${raw.status}`);
+    throw new Error(`qq-workflows: delegation ${raw.id} has unknown status ${raw.status}`);
   }
   if (!Number.isSafeInteger(raw.look) || raw.look < 0 || raw.look > 2) {
-    throw new Error(`qq-workflows: land run ${raw.id} look is invalid`);
+    throw new Error(`qq-workflows: delegation ${raw.id} look is invalid`);
   }
   if (!DELEGATION_ID.test(raw.delegationId ?? "")) {
-    throw new Error(`qq-workflows: land run ${raw.id} delegation id is invalid`);
+    throw new Error(`qq-workflows: delegation ${raw.id} delegation id is invalid`);
+  }
+  if (!DELEGATION_ID.test(raw.id) || raw.id.toLowerCase() !== raw.delegationId.toLowerCase()) {
+    throw new Error("qq-workflows: delegation id must be its authoritative UUID");
   }
   if (!Number.isSafeInteger(raw.phaseEpoch) || raw.phaseEpoch < 0) {
-    throw new Error(`qq-workflows: land run ${raw.id} phase epoch is invalid`);
+    throw new Error(`qq-workflows: delegation ${raw.id} phase epoch is invalid`);
   }
   const parentSessionUuid = optionalString(raw.parentSessionUuid) || optionalString(raw.architectSession);
   if (parentSessionUuid && !SESSION_ID.test(parentSessionUuid)) {
-    throw new Error(`qq-workflows: land run ${raw.id} parent session is invalid`);
+    throw new Error(`qq-workflows: delegation ${raw.id} parent session is invalid`);
   }
   const current = normalizeCurrent(raw.current, raw.phaseEpoch);
   const pendingPhase = normalizePendingPhase(raw.pendingPhase, raw.phaseEpoch);
   if (pendingPhase && raw.transitioning !== true) {
-    throw new Error(`qq-workflows: land run ${raw.id} has a pending phase outside a transition`);
+    throw new Error(`qq-workflows: delegation ${raw.id} has a pending phase outside a transition`);
   }
   if (pendingPhase && pendingPhase.sessionUuid === current?.sessionUuid) {
-    throw new Error(`qq-workflows: land run ${raw.id} pending phase repeats the current child`);
+    throw new Error(`qq-workflows: delegation ${raw.id} pending phase repeats the current child`);
   }
   if (TERMINAL_STATUSES.has(raw.status) && (current || pendingPhase || raw.transitioning === true)) {
-    throw new Error(`qq-workflows: terminal land run ${raw.id} has an active phase pointer`);
+    throw new Error(`qq-workflows: terminal delegation ${raw.id} has an active phase pointer`);
   }
   const reportEnvelopeId = optionalString(raw.reportEnvelopeId);
   if (reportEnvelopeId && !UUID_ID.test(reportEnvelopeId)) {
-    throw new Error(`qq-workflows: land run ${raw.id} report envelope id is invalid`);
+    throw new Error(`qq-workflows: delegation ${raw.id} report envelope id is invalid`);
   }
   if (raw.reportPending === true && parentSessionUuid && !reportEnvelopeId) {
-    throw new Error(`qq-workflows: land run ${raw.id} pending report has no envelope id`);
+    throw new Error(`qq-workflows: delegation ${raw.id} pending report has no envelope id`);
   }
   return {
-    schema: LAND_RUN_SCHEMA,
+    schema: DELEGATION_SCHEMA,
     version: 1,
     id: raw.id,
     status: raw.status,
@@ -246,8 +274,8 @@ function normalize(raw) {
     taskId: optionalString(raw.taskId),
     archivedTaskId: optionalString(raw.archivedTaskId),
     archiveError: optionalString(raw.archiveError),
-    implementerSession: optionalString(raw.implementerSession),
-    originalImplementerSession: optionalString(raw.originalImplementerSession),
+    implementationSession: optionalString(raw.implementationSession),
+    originalImplementationSession: optionalString(raw.originalImplementationSession),
     qaSession: optionalString(raw.qaSession),
     worktree: optionalString(raw.worktree),
     mainRoot: optionalString(raw.mainRoot),
@@ -273,7 +301,7 @@ function normalize(raw) {
   };
 }
 
-export function createLandStore(dirPath) {
+export function createDelegationStore(dirPath) {
   mkdirSync(dirPath, { recursive: true, mode: 0o700 });
 
   function fileFor(id) {
@@ -295,11 +323,16 @@ export function createLandStore(dirPath) {
     try {
       parsed = JSON.parse(readFileSync(file, "utf8"));
     } catch (error) {
-      throw new Error(`qq-workflows: land run ${file} is malformed`, { cause: error });
+      throw new Error(`qq-workflows: delegation ${file} is malformed`, { cause: error });
     }
     const upgraded = upgradeLegacy(parsed);
     const record = normalize(upgraded.raw);
-    if (upgraded.changed) persist(record);
+    if (upgraded.changed) {
+      persist(record);
+      if (record.id !== id) {
+        try { unlinkSync(file); } catch (error) { if (error?.code !== "ENOENT") throw error; }
+      }
+    }
     return record;
   }
 
@@ -317,21 +350,21 @@ export function createLandStore(dirPath) {
 
     create(fields = {}) {
       const now = new Date().toISOString();
-      const id = optionalString(fields.id) || `land-${randomUUID().slice(0, 8)}`;
-      if (existsSync(fileFor(id))) throw new Error(`qq-workflows: land run ${id} already exists`);
-      const implementer = optionalString(fields.implementerSession);
       const delegationId = optionalString(fields.delegationId) || randomUUID();
+      const id = optionalString(fields.id) || delegationId;
+      if (existsSync(fileFor(id))) throw new Error(`qq-workflows: delegation ${id} already exists`);
+      const implementation = optionalString(fields.implementationSession);
       if (store.byDelegation(delegationId)) {
         throw new Error(`qq-workflows: delegation ${delegationId} already exists`);
       }
       const initialEpoch = Number.isSafeInteger(fields.phaseEpoch)
         ? fields.phaseEpoch
-        : (implementer ? 1 : 0);
+        : (implementation ? 1 : 0);
       const initialCurrent = fields.current === undefined
-        ? (implementer ? { sessionUuid: implementer, role: "implementer", phaseEpoch: initialEpoch } : null)
+        ? (implementation ? { sessionUuid: implementation, role: "implementation", phaseEpoch: initialEpoch } : null)
         : fields.current;
       const record = normalize({
-        schema: LAND_RUN_SCHEMA,
+        schema: DELEGATION_SCHEMA,
         version: 1,
         id,
         status: fields.status ?? "running",
@@ -346,8 +379,8 @@ export function createLandStore(dirPath) {
         taskId: fields.taskId,
         archivedTaskId: fields.archivedTaskId,
         archiveError: fields.archiveError,
-        implementerSession: implementer,
-        originalImplementerSession: fields.originalImplementerSession || implementer,
+        implementationSession: implementation,
+        originalImplementationSession: fields.originalImplementationSession || implementation,
         qaSession: fields.qaSession,
         worktree: fields.worktree,
         mainRoot: fields.mainRoot,
@@ -382,24 +415,24 @@ export function createLandStore(dirPath) {
 
     save(record) {
       const previous = readFile(record?.id);
-      if (!previous) throw new Error(`qq-workflows: land run ${String(record?.id ?? "")} does not exist`);
+      if (!previous) throw new Error(`qq-workflows: delegation ${String(record?.id ?? "")} does not exist`);
       const next = normalize({
         ...record,
-        schema: LAND_RUN_SCHEMA,
+        schema: DELEGATION_SCHEMA,
         version: 1,
         updatedAt: new Date().toISOString(),
       });
       if (next.delegationId !== previous.delegationId) {
-        throw new Error(`qq-workflows: land run ${next.id} delegation id is immutable`);
+        throw new Error(`qq-workflows: delegation ${next.id} delegation id is immutable`);
       }
       if (next.parentSessionUuid !== previous.parentSessionUuid) {
-        throw new Error(`qq-workflows: land run ${next.id} parent session is immutable`);
+        throw new Error(`qq-workflows: delegation ${next.id} parent session is immutable`);
       }
       if (previous.reportEnvelopeId && next.reportEnvelopeId !== previous.reportEnvelopeId) {
-        throw new Error(`qq-workflows: land run ${next.id} report envelope id is immutable`);
+        throw new Error(`qq-workflows: delegation ${next.id} report envelope id is immutable`);
       }
       if (next.phaseEpoch < previous.phaseEpoch) {
-        throw new Error(`qq-workflows: land run ${next.id} phase epoch cannot regress`);
+        throw new Error(`qq-workflows: delegation ${next.id} phase epoch cannot regress`);
       }
       const pointerChanged = Boolean(next.current) && (
         !previous.current
@@ -407,7 +440,7 @@ export function createLandStore(dirPath) {
         || next.current.role !== previous.current.role
       );
       if (pointerChanged && next.phaseEpoch <= previous.phaseEpoch) {
-        throw new Error(`qq-workflows: land run ${next.id} phase pointer requires a newer epoch`);
+        throw new Error(`qq-workflows: delegation ${next.id} phase pointer requires a newer epoch`);
       }
       if (previous.pendingPhase) {
         const samePlan = next.pendingPhase
@@ -417,20 +450,20 @@ export function createLandStore(dirPath) {
           && next.pendingPhase.messageId === previous.pendingPhase.messageId
           && next.pendingPhase.message === previous.pendingPhase.message;
         if (next.pendingPhase && !samePlan) {
-          throw new Error(`qq-workflows: land run ${next.id} pending phase is immutable`);
+          throw new Error(`qq-workflows: delegation ${next.id} pending phase is immutable`);
         }
         if (previous.pendingPhase.messageDelivered && next.pendingPhase && !next.pendingPhase.messageDelivered) {
-          throw new Error(`qq-workflows: land run ${next.id} pending phase delivery cannot be retracted`);
+          throw new Error(`qq-workflows: delegation ${next.id} pending phase delivery cannot be retracted`);
         }
         const promoted = next.current
           && next.current.sessionUuid === previous.pendingPhase.sessionUuid
           && next.current.role === previous.pendingPhase.role
           && next.current.phaseEpoch === previous.pendingPhase.phaseEpoch;
         if (promoted && !previous.pendingPhase.messageDelivered) {
-          throw new Error(`qq-workflows: land run ${next.id} cannot promote an unseeded pending phase`);
+          throw new Error(`qq-workflows: delegation ${next.id} cannot promote an unseeded pending phase`);
         }
         if (!next.pendingPhase && !promoted && !TERMINAL_STATUSES.has(next.status)) {
-          throw new Error(`qq-workflows: land run ${next.id} must promote its pending phase exactly`);
+          throw new Error(`qq-workflows: delegation ${next.id} must promote its pending phase exactly`);
         }
       }
       persist(next);
@@ -456,8 +489,8 @@ export function createLandStore(dirPath) {
       if (!sessionId) return null;
       for (const record of store.list()) {
         if (
-          record.implementerSession === sessionId
-          || record.originalImplementerSession === sessionId
+          record.implementationSession === sessionId
+          || record.originalImplementationSession === sessionId
           || record.qaSession === sessionId
           || record.pendingPhase?.sessionUuid === sessionId
         ) {

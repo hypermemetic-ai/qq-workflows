@@ -12,24 +12,16 @@
     "./tools": "./src/tools.mjs",
     "./architect": "./src/architect.mjs",
     "./mini": "./src/mini.mjs",
-    "./mini-coder": "./src/official-mini.mjs",
     "./git": "./src/git.mjs",
-    "./iterate": "./src/iterate.mjs",
     "./land": "./src/land.mjs",
-    "./land-store": "./src/land-store.mjs",
     "./land-tools": "./src/land-tools.mjs",
-    "./journal": "./src/journal.mjs",
-    "./wiki": "./src/wiki.mjs",
     "./wiki-index": "./src/wiki-index.mjs",
-    "./iterate-tools": "./src/iterate-tools.mjs",
     "./selection": "./src/selection.mjs",
     "./settings": "./src/settings.mjs",
     "./command": "./src/command.mjs",
     "./context": "./src/context.mjs",
     "./transition": "./src/transition.mjs",
-    "./routing": "./src/routing.mjs",
     "./qa-verdict": "./src/qa-verdict.mjs",
-    "./mini-review": "./src/mini-review.mjs",
     "./repo-oracle": "./src/repo-oracle.mjs",
     "./mini-docs": "./src/mini-docs.mjs",
     "./mini-research": "./src/mini-research.mjs",
@@ -38,12 +30,16 @@
     "./research-sessions": "./src/research-sessions.mjs",
     "./research-oracle": "./src/research-oracle.mjs",
     "./research": "./src/research.mjs",
-    "./research-store": "./src/research-store.mjs"
+    "./research-store": "./src/research-store.mjs",
+    "./delegation-store": "./src/delegation-store.mjs",
+    "./proposal-packet": "./src/proposal-packet.mjs",
+    "./mini-code": "./src/official-mini.mjs",
+    "./mini-qa": "./src/mini-qa.mjs"
   },
   "files": [
     "src/"
   ],
   "scripts": {
-    "test": "node tests/fold.mjs && node tests/observation.mjs && node tests/mini-swe-v2.mjs && node tests/hide-harness.mjs && node tests/projects-workflow.mjs && node tests/git-geometry.mjs && node tests/routing.mjs && node tests/architect-case-context.mjs && node tests/architect-wiki-index.mjs && node tests/mini-review.mjs && node tests/land.mjs && node tests/mini-docs.mjs && node tests/research-evidence.mjs && node tests/research-web.mjs && node tests/research-sessions.mjs && node tests/mini-research.mjs && node tests/research-oracle.mjs && node tests/research.mjs"
+    "test": "node tests/fold.mjs && node tests/observation.mjs && node tests/mini-swe-v2.mjs && node tests/hide-harness.mjs && node tests/projects-workflow.mjs && node tests/settings.mjs && node tests/git-geometry.mjs && node tests/proposal-packet.mjs && node tests/architect-case-context.mjs && node tests/architect-wiki-index.mjs && node tests/mini-qa.mjs && node tests/land.mjs && node tests/mini-docs.mjs && node tests/research-evidence.mjs && node tests/research-web.mjs && node tests/research-sessions.mjs && node tests/mini-research.mjs && node tests/research-oracle.mjs && node tests/research.mjs"
   }
 }

@@ -2,14 +2,18 @@
 //
 // Keep the current and previous operator+architect pair and replace the whole
 // older span. The short replacement points back to the visible working-memory
-// document instead of maintaining another standing store.
+// document instead of maintaining another standing store. A fold is forbidden
+// while working memory is empty: replacing history would otherwise erase the plan.
+
+import { isWorkingMemoryEmpty } from "./casefile.mjs";
 
 export const DEFAULT_H = 0.1;
 export const DEFAULT_Q = 256_000;
 export const GROK_Q = 200_000;
 export const MIN_PAIRS = 2;
 export const CHARS_PER_TOKEN = 4;
-export const FOLD_REPLACEMENT_TEXT = "Earlier conversation omitted. Working memory is authoritative.";
+export const FOLD_REPLACEMENT_TEXT = "Earlier conversation omitted. Non-empty working memory contains the durable plan.";
+export const EMPTY_FOLD_MESSAGE = "qq-workflows: fold refused because working memory is empty; write working memory before more history is omitted.";
 export const OVERFLOW_MESSAGE = "qq-workflows: open tail cannot fit after pruning; fold refused.";
 
 const GROK_PROVIDERS = new Set(["xai-auth", "xai"]);
@@ -279,9 +283,13 @@ export function createFolder({ tokenMeter, h = DEFAULT_H, q, now } = {}) {
     return decision;
   }
 
-  function apply(sessionId, { events, session } = {}) {
+  function apply(sessionId, { events, session, workingMemory } = {}) {
     const decision = pending.get(sessionId);
     if (!decision || decision.action !== "drop") return null;
+    if (isWorkingMemoryEmpty(workingMemory)) {
+      pending.delete(sessionId);
+      return { action: "fail", reason: "working-memory-empty", message: EMPTY_FOLD_MESSAGE };
+    }
     if (!session || typeof session.append !== "function") {
       throw new Error("qq-workflows: fold apply requires a live session.append");
     }

@@ -1,8 +1,9 @@
+import { randomUUID } from "node:crypto";
 // qq-workflows: one repository, one plugin. Cordis entry point.
 //
 // The wrapper lists registered workflows and selects which one this chair
 // is running, if any. Architect, find, and base are selectable. Land is git
-// machinery: mini-coder completion and the architect/base land tool.
+// machinery: mini-code completion and the architect/base land tool.
 // The reserved Projects chair implicitly receives its own non-selectable workflow.
 // Architect owns working memory, two-pair fold, delegate/research, and role settings.
 // Session context and awaitable leave/transition live on service.workflows;
@@ -13,26 +14,20 @@ import { DEFAULT_H, createFolder } from "./fold.mjs";
 import { buildArchitectTools } from "./tools.mjs";
 import { createArchitect, isArchitectCandidate } from "./architect.mjs";
 import { ensureMiniMounted, isMiniAgent, MINI_SWE_MIGRATION } from "./official-mini.mjs";
-import { ensureMiniReviewMounted, isMiniReviewAgent } from "./mini-review.mjs";
+import { ensureMiniQaMounted, isMiniQaAgent } from "./mini-qa.mjs";
 import { allowInherited, ARCHITECT_INHERITED_TOOLS } from "./hide-harness.mjs";
 import { runCommand } from "./git.mjs";
 import { capObservationTool } from "./observation.mjs";
 import { createLand } from "./land.mjs";
-import { createLandStore, defaultLandDir } from "./land-store.mjs";
+import { createDelegationStore, defaultDelegationDir } from "./delegation-store.mjs";
 import { createResearch } from "./research.mjs";
 import { createResearchStore } from "./research-store.mjs";
 import { defaultResearchDir } from "./research-evidence.mjs";
-import { createJournalStore, defaultJournalDir } from "./journal.mjs";
-import { createWikiStore, defaultWikiDir } from "./wiki.mjs";
 import { createSelectionStore, defaultSelectionDir } from "./selection.mjs";
 import { buildLandTool } from "./land-tools.mjs";
 import {
-  ARCHITECT_ROLES,
-  BASE_ROLES,
-  LAND_ROLES,
-  createArchitectSettings,
-  createBaseSettings,
-  createLandSettings,
+  HOST_ROLES,
+  createHostSettings,
   formatSettingsList,
 } from "./settings.mjs";
 import { completeComposerLine, formatWorkflowList, parseWorkflowsInput } from "./command.mjs";
@@ -59,12 +54,13 @@ const EXTERNAL_WORKFLOW_RESERVED = new Set([
   "off",
   "settings",
   "architect",
-  "iterate",
-  "land",
   "find",
   "base",
   "projects",
 ]);
+const DELEGATION_KIND = /^[a-z][a-z0-9-]{0,31}$/;
+const DELEGATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 const REGISTERED_WORKFLOW_METHODS = [
   "candidate",
   "ensureAttached",
@@ -100,6 +96,32 @@ function registeredWorkflowSpec(spec) {
   return Object.freeze(workflow);
 }
 
+const REGISTERED_DELEGATION_METHODS = ["invoke", "status", "send", "stop"];
+
+function registeredDelegationSpec(spec) {
+  if (!spec || typeof spec !== "object" || Array.isArray(spec) || !DELEGATION_KIND.test(spec.kind ?? "")) {
+    throw new Error("invalid delegation kind spec");
+  }
+  if (spec.kind === "implementation" || spec.kind === "research") {
+    throw new Error(`delegation kind is reserved: ${spec.kind}`);
+  }
+  for (const method of REGISTERED_DELEGATION_METHODS) {
+    if (typeof spec[method] !== "function") throw new Error(`delegation kind ${spec.kind} must define ${method}()`);
+  }
+  return Object.freeze({
+    kind: spec.kind,
+    invoke: spec.invoke,
+    status: spec.status,
+    send: spec.send,
+    stop: spec.stop,
+    owns: typeof spec.owns === "function" ? spec.owns : null,
+    resumeChild: typeof spec.resumeChild === "function" ? spec.resumeChild : null,
+    releaseChild: typeof spec.releaseChild === "function" ? spec.releaseChild : null,
+    listSettings: typeof spec.listSettings === "function" ? spec.listSettings : null,
+    writeSettings: typeof spec.writeSettings === "function" ? spec.writeSettings : null,
+  });
+}
+
 function sessionIdOf(agent) {
   return agent?.session?.id ?? agent?.id ?? "";
 }
@@ -124,24 +146,19 @@ function hostAgents(ctx) {
   return typeof ctx?.get === "function" ? ctx.get("agents") : undefined;
 }
 
-function syncLiveLandChild(land, agent) {
+function syncLiveDelegationChild(land, agent) {
   if (isMiniAgent(agent)) ensureMiniMounted(agent);
-  if (isMiniReviewAgent(agent)) ensureMiniReviewMounted(agent);
+  if (isMiniQaAgent(agent)) ensureMiniQaMounted(agent);
   return land?.resumeChild?.(agent) ?? false;
 }
 
 export function apply(ctx, config = {}) {
   const cases = createCaseStore(defaultCaseDir(process.env, config));
   const selection = createSelectionStore(defaultSelectionDir(process.env, config));
-  const architectSettings = createArchitectSettings({ settingsFile: config.settingsFile });
-  const landSettings = createLandSettings({ settingsFile: config.settingsFile });
-  const baseSettings = createBaseSettings({ settingsFile: config.settingsFile });
-  const journal = createJournalStore(defaultJournalDir(process.env, config));
-  const wiki = createWikiStore(defaultWikiDir(process.env, config));
-  const landStore = createLandStore(defaultLandDir(process.env, config));
+  const hostSettings = createHostSettings({ settingsFile: config.settingsFile });
+  const delegationStore = createDelegationStore(defaultDelegationDir(process.env, config));
   const researchDir = defaultResearchDir(process.env, config);
   const researchStore = createResearchStore(researchDir);
-  const llm = ctx.get("llm", false);
   const tokenMeter = ctx.get("tokenMeter", false);
   const agents = hostAgents(ctx);
   const folder = createFolder({
@@ -152,23 +169,25 @@ export function apply(ctx, config = {}) {
   });
   const land = createLand({
     ctx,
-    store: landStore,
-    settings: landSettings,
+    store: delegationStore,
+    settings: hostSettings,
     agents,
-    llm,
     tasks: null,
     run: config.runCommand,
     github: config.github,
   });
+  const delegationKinds = new Map();
+  const externalDelegationOwners = new Map();
+
   const research = createResearch({
     ctx,
     store: researchStore,
     agents,
     parentDir: researchDir,
     sessionQuery: config.sessionQuery ?? (() => ctx.get?.("sessionQuery", false)),
-    hands: () => architectSettings.get("hands"),
-    talking: () => architectSettings.get("talking") ?? baseSettings.get("talking"),
-    qa: () => landSettings.get("qa"),
+    implementation: () => hostSettings.get("implementation"),
+    architecture: () => hostSettings.get("architecture"),
+    qa: () => hostSettings.get("qa"),
     env: config.env ?? process.env,
     webProvider: config.webProvider,
     fetch: config.fetch,
@@ -179,11 +198,21 @@ export function apply(ctx, config = {}) {
     folder,
     agents,
     tasks: null,
-    talking: () => architectSettings.get("talking") ?? baseSettings.get("talking"),
-    hands: () => architectSettings.get("hands"),
+    architecture: () => hostSettings.get("architecture"),
+    implementation: () => hostSettings.get("implementation"),
     run: config.runCommand ?? runCommand,
-    onInvokeChild: (child, info) => land.adoptImplementer(child, info),
+    onInvokeImplementation: (child, info) => land.adoptImplementation(child, info),
     onResearch: (args) => research.invoke(args),
+    onDelegateKind: async (args) => {
+      const spec = delegationKinds.get(args.kind);
+      if (!spec) return { status: "refused", reason: `unknown delegation kind: ${args.kind}` };
+      const result = await spec.invoke(args);
+      if (result?.status === "ok") {
+        externalDelegationOwners.set(args.delegationId, spec);
+        return { ...result, delegationId: args.delegationId };
+      }
+      return result;
+    },
   });
 
   const projectsWorkflow = createProjectsWorkflow({ ctx });
@@ -226,9 +255,9 @@ export function apply(ctx, config = {}) {
         ? buildArchitectTools({
             cases,
             delegate: (args) => architect.delegate(args),
-            research: (args) => architect.research(args),
-            workflowStatus: (args) => land.workflowStatus(args),
-            workflowSend: (args) => land.workflowSend(args),
+            workflowStatus,
+            workflowSend,
+            workflowStop,
             tasks,
             land: invokeLand,
           }).map(capObservationTool)
@@ -267,7 +296,7 @@ export function apply(ctx, config = {}) {
     name: "architect",
     candidate: selectableCandidate,
     acceptedContexts: DEFAULT_ACCEPTED_CONTEXTS,
-    settings: architectSettings,
+    settings: hostSettings,
     ensureAttached(agent) {
       if (!selectableCandidate(agent)) return null;
       const handle = architect.attach(agent);
@@ -279,24 +308,14 @@ export function apply(ctx, config = {}) {
       return architect.detach(agentOrId);
     },
     listSettings() {
-      return formatSettingsList("architect", architectSettings.list());
+      return formatSettingsList("host", hostSettings.list());
     },
     writeSettings(role, binding) {
-      architectSettings.write(role, binding);
-      return formatSettingsList("architect", architectSettings.list());
+      hostSettings.write(role, binding);
+      return formatSettingsList("host", hostSettings.list());
     },
   });
   workflows.set("architect", architectWorkflow);
-
-  const landSettingsFacade = Object.freeze({
-    listSettings() {
-      return formatSettingsList("land", landSettings.list(), LAND_ROLES);
-    },
-    writeSettings(role, binding) {
-      landSettings.write(role, binding);
-      return formatSettingsList("land", landSettings.list(), LAND_ROLES);
-    },
-  });
 
   function selectedName(sessionId) {
     return selection.get(sessionId);
@@ -367,7 +386,7 @@ export function apply(ctx, config = {}) {
     name: "base",
     candidate: selectableCandidate,
     acceptedContexts: DEFAULT_ACCEPTED_CONTEXTS,
-    settings: baseSettings,
+    settings: hostSettings,
     ensureAttached(agent) {
       if (!selectableCandidate(agent)) return null;
       registerAgentTools(agent);
@@ -378,11 +397,11 @@ export function apply(ctx, config = {}) {
       return null;
     },
     listSettings() {
-      return formatSettingsList("base", baseSettings.list(), BASE_ROLES);
+      return formatSettingsList("host", hostSettings.list());
     },
     writeSettings(role, binding) {
-      baseSettings.write(role, binding);
-      return formatSettingsList("base", baseSettings.list(), BASE_ROLES);
+      hostSettings.write(role, binding);
+      return formatSettingsList("host", hostSettings.list());
     },
   });
   workflows.set("base", baseWorkflow);
@@ -420,7 +439,80 @@ export function apply(ctx, config = {}) {
     }
   }
 
-  function registerWorkflow(spec) {
+  function delegationKindNames() {
+    return ["implementation", "research", ...delegationKinds.keys()];
+  }
+
+  function controllerForDelegation(delegationId) {
+    if (land.byDelegation?.(delegationId)) return land;
+    if (research.byDelegation?.(delegationId)) return research;
+    const owned = externalDelegationOwners.get(delegationId);
+    if (owned) return owned;
+    for (const spec of delegationKinds.values()) {
+      try {
+        if (spec.owns?.(delegationId)) return spec;
+      } catch { /* one adopted kind must not hide another */ }
+    }
+    return null;
+  }
+
+  function workflowStatus(args = {}) {
+    const controller = controllerForDelegation(args.delegationId);
+    if (!controller) return { status: "refused", reason: "delegation was not found" };
+    return controller === land || controller === research
+      ? controller.workflowStatus(args)
+      : controller.status(args);
+  }
+
+  function workflowSend(args = {}) {
+    const controller = controllerForDelegation(args.delegationId);
+    if (!controller) return { status: "refused", reason: "delegation was not found" };
+    return controller === land || controller === research
+      ? controller.workflowSend(args)
+      : controller.send(args);
+  }
+
+  function workflowStop(args = {}) {
+    const controller = controllerForDelegation(args.delegationId);
+    if (!controller) return { status: "refused", reason: "delegation was not found" };
+    return controller === land || controller === research
+      ? controller.workflowStop(args)
+      : controller.stop(args);
+  }
+
+  async function invokeDelegation(args = {}) {
+    if (args.agent) return architect.delegate(args);
+    const spec = delegationKinds.get(args.kind);
+    if (!spec) return { status: "refused", reason: `delegation kind ${String(args.kind ?? "")} requires an architect chair` };
+    const delegationId = String(args.delegationId || randomUUID()).toLowerCase();
+    if (!DELEGATION_ID.test(delegationId)) return { status: "refused", reason: "delegation requires an authoritative UUID" };
+    const result = await spec.invoke({ ...args, delegationId });
+    if (result?.status === "ok") {
+      externalDelegationOwners.set(delegationId, spec);
+      return { ...result, delegationId };
+    }
+    return result;
+  }
+
+  function registerDelegationKind(input) {
+    const spec = registeredDelegationSpec(input);
+    if (delegationKinds.has(spec.kind)) throw new Error(`delegation kind already registered: ${spec.kind}`);
+    delegationKinds.set(spec.kind, spec);
+    if (typeof agents?.list === "function" && spec.resumeChild) {
+      for (const agent of agents.list()) spec.resumeChild(agent);
+    }
+    let disposed = false;
+    return () => {
+      if (disposed) return;
+      disposed = true;
+      if (delegationKinds.get(spec.kind) === spec) delegationKinds.delete(spec.kind);
+      for (const [id, owner] of externalDelegationOwners) {
+        if (owner === spec) externalDelegationOwners.delete(id);
+      }
+    };
+  }
+
+  function registerChairWorkflow(spec) {
     const workflow = registeredWorkflowSpec(spec);
     if (workflows.has(workflow.name)) {
       throw new Error(`workflow already registered: ${workflow.name}`);
@@ -451,12 +543,15 @@ export function apply(ctx, config = {}) {
     };
   }
 
+  function registerWorkflow(spec) {
+    return spec?.kind ? registerDelegationKind(spec) : registerChairWorkflow(spec);
+  }
+
   function selectWorkflow(sessionId, name) {
     const agent = liveAgent(sessionId);
     if (projectsWorkflow.candidate(agent)) {
       throw new Error("this session is not a workflow picker");
     }
-    if (name === "land") throw new Error("land is not a selectable workflow");
     const workflow = workflows.get(name);
     if (!workflow) throw new Error(`unknown workflow: ${name}`);
     if (agent && workflow.candidate(agent) !== true) {
@@ -475,10 +570,17 @@ export function apply(ctx, config = {}) {
   }
 
   function settingsOf(name) {
-    if (name === "land") return landSettingsFacade;
     const workflow = workflows.get(name);
-    if (!workflow) throw new Error(`unknown workflow: ${name}`);
-    return workflow;
+    if (workflow) return workflow;
+    const delegation = delegationKinds.get(name);
+    if (!delegation) throw new Error(`unknown workflow or delegation kind: ${name}`);
+    if (!delegation.listSettings || !delegation.writeSettings) {
+      throw new Error(`${name} has no settings`);
+    }
+    return {
+      listSettings: delegation.listSettings,
+      writeSettings: delegation.writeSettings,
+    };
   }
 
   function handleWorkflows({ agent, rawInput }) {
@@ -533,23 +635,17 @@ export function apply(ctx, config = {}) {
     },
     land,
     research,
-    journal,
-    wiki,
     selection,
-    settings: architectSettings,
-    landSettings,
-    baseSettings,
+    settings: hostSettings,
     complete: (line) => completeComposerLine(line, {
       names: userFacingNames(),
       roles: {
         ...Object.fromEntries(
           [...workflows.keys()].map((name) => {
-            if (name === "architect") return [name, [...ARCHITECT_ROLES]];
-            if (name === "base") return [name, [...BASE_ROLES]];
+            if (name === "architect" || name === "base") return [name, [...HOST_ROLES]];
             return [name, []];
           }),
         ),
-        land: [...LAND_ROLES],
       },
     }),
     workflows: Object.freeze({
@@ -558,6 +654,11 @@ export function apply(ctx, config = {}) {
       select: selectWorkflow,
       clear: clearWorkflow,
       register: registerWorkflow,
+      kinds: delegationKindNames,
+      delegate: invokeDelegation,
+      status: workflowStatus,
+      send: workflowSend,
+      stop: workflowStop,
       acceptedContexts: sessionApi.acceptedContexts,
       accepts: sessionApi.accepts,
       accepting: sessionApi.accepting,
@@ -625,27 +726,24 @@ export function apply(ctx, config = {}) {
   };
   if (typeof ctx.inject === "function") ctx.inject(["qq-relay"], syncRelayLabels);
 
-  const talkingOff = new Map();
-  function talkingBinding(sessionId) {
-    if (projectsWorkflow.candidate(liveAgent(sessionId))) return baseSettings.get("talking");
-    const selected = selectedName(sessionId);
-    if (selected === "architect") return architectSettings.get("talking") ?? baseSettings.get("talking");
-    return baseSettings.get("talking");
+  const architectureOff = new Map();
+  function architectureBinding(sessionId) {
+    return hostSettings.get("architecture");
   }
-  function unpinTalking(agentOrId) {
+  function unpinArchitecture(agentOrId) {
     const sessionId = typeof agentOrId === "string" ? agentOrId : sessionIdOf(agentOrId);
-    const off = talkingOff.get(sessionId);
+    const off = architectureOff.get(sessionId);
     if (!off) return;
-    talkingOff.delete(sessionId);
+    architectureOff.delete(sessionId);
     try { off(); } catch {}
   }
-  function pinTalking(agent) {
+  function pinArchitecture(agent) {
     const sessionId = sessionIdOf(agent);
-    if (!sessionId || talkingOff.has(sessionId) || !isArchitectCandidate(agent)) return;
+    if (!sessionId || architectureOff.has(sessionId) || !isArchitectCandidate(agent)) return;
     if (typeof agent.ctx?.on !== "function") return;
     const off = agent.ctx.on("agent/request", async (_payload, next) => {
       const result = await next();
-      const binding = talkingBinding(sessionId);
+      const binding = architectureBinding(sessionId);
       if (!binding) return result;
       const { reasoningEffort: _inherited, ...rest } = result;
       return {
@@ -655,32 +753,36 @@ export function apply(ctx, config = {}) {
         ...(binding.effort ? { reasoningEffort: binding.effort } : {}),
       };
     });
-    talkingOff.set(sessionId, typeof off === "function" ? off : () => {});
+    architectureOff.set(sessionId, typeof off === "function" ? off : () => {});
   }
 
   function syncMini(agent) {
     const researchChild = research.resumeChild?.(agent) ?? false;
-    return syncLiveLandChild(land, agent) || researchChild;
+    const implementationChild = syncLiveDelegationChild(land, agent);
+    let adopted = false;
+    for (const spec of delegationKinds.values()) adopted = spec.resumeChild?.(agent) === true || adopted;
+    return implementationChild || researchChild || adopted;
   }
 
   ctx.on("agent/created", ({ agent }) => {
-    pinTalking(agent);
+    pinArchitecture(agent);
     syncMini(agent);
     syncSession(agent);
   });
   ctx.on("agent/disposed", async ({ agent }) => {
     await research.releaseChild?.(agent);
     await land.releaseChild?.(agent);
+    for (const spec of delegationKinds.values()) await spec.releaseChild?.(agent);
     projectsWorkflow.ensureDetached(agent);
     for (const workflow of workflows.values()) workflow.ensureDetached(agent);
     const sessionId = sessionIdOf(agent);
-    unpinTalking(sessionId);
+    unpinArchitecture(sessionId);
   });
 
   if (typeof agents?.list === "function") {
     for (const agent of agents.list()) {
       try {
-        pinTalking(agent);
+        pinArchitecture(agent);
         syncMini(agent);
         syncSession(agent);
       } catch (error) {
@@ -693,18 +795,18 @@ export function apply(ctx, config = {}) {
   }
   // A true process restart has no live Agent to drive syncMini. Recover every
   // durable pending phase after adopting live handles; land.dispose owns and
-  // drains these per-run recovery promises if HMR starts immediately.
+  // drains these per-delegation recovery promises if HMR starts immediately.
   void research.recoverReports?.();
   void land.recoverPendingPhases?.().then((results) => {
     for (const result of results ?? []) {
       if (result.status !== "rejected") continue;
       ctx.logger?.warn?.(
-        `qq-workflows: pending land phase recovery failed: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+        `qq-workflows: pending delegation phase recovery failed: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
       );
     }
   }).catch((error) => {
     ctx.logger?.warn?.(
-      `qq-workflows: pending land phase recovery failed: ${error instanceof Error ? error.message : String(error)}`,
+      `qq-workflows: pending delegation phase recovery failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   });
 
@@ -719,7 +821,7 @@ export function apply(ctx, config = {}) {
     research.dispose?.();
     await land.dispose?.();
     for (const record of [...toolDisposers.values()]) record.dispose();
-    for (const sessionId of [...talkingOff.keys()]) unpinTalking(sessionId);
+    for (const sessionId of [...architectureOff.keys()]) unpinArchitecture(sessionId);
     findAttached.clear();
   }, "qq-workflows: live attachments");
 }
@@ -728,5 +830,5 @@ export const internals = Object.freeze({
   sessionIdOf,
   toolsService,
   hostAgents,
-  syncLiveLandChild,
+  syncLiveDelegationChild,
 });

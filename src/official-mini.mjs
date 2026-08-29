@@ -55,8 +55,9 @@ export {
 };
 
 // New coding children use the explicit family name; legacy persisted children remain resumable.
-export const MINI_KIND = "mini-coder";
-export const LEGACY_MINI_KIND = "mini";
+export const MINI_KIND = "mini-code";
+export const LEGACY_MINI_KIND = "mini-coder";
+const OLDEST_MINI_KIND = "mini";
 export const MINI_TOOLS = Object.freeze(["bash"]);
 export const MINI_GLOBAL_ALLOW = MINI_INHERITED_TOOLS;
 export const MINI_PERSONA_SECTION = "deployment:persona";
@@ -93,7 +94,8 @@ const FORMAT_ERROR = [
 export function isMiniAgent(agent) {
   const header = agent?.session?.header ?? agent?.header;
   return header?.kind === MINI_KIND || header?.agentPreset === MINI_KIND
-    || header?.kind === LEGACY_MINI_KIND || header?.agentPreset === LEGACY_MINI_KIND;
+    || header?.kind === LEGACY_MINI_KIND || header?.agentPreset === LEGACY_MINI_KIND
+    || header?.kind === OLDEST_MINI_KIND || header?.agentPreset === OLDEST_MINI_KIND;
 }
 
 function submitKeys(agent) {

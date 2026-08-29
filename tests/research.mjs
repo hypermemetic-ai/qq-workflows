@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createResearch } from "../src/research.mjs";
-import { createResearchStore } from "../src/research-store.mjs";
+import { createResearchStore, RESEARCH_DELEGATION_SCHEMA } from "../src/research-store.mjs";
 import { MINI_SWE_COMPLETION_COMMAND } from "../src/mini-swe-v2.mjs";
 
 const scratch = mkdtempSync(join(tmpdir(), "qq-research-run."));
@@ -65,6 +65,7 @@ function childContext() {
 }
 
 const agents = {
+  get(id) { return children.find((child) => child.session.id === id); },
   async create(options) {
     const ctx = childContext();
     const child = {
@@ -98,6 +99,133 @@ const ctx = {
     return null;
   },
 };
+// A restart/HMR must discover and re-key live v1 research children before
+// their completion handlers try to resolve the old research-* machine id.
+const restartDir = join(scratch, "legacy-restart");
+mkdirSync(restartDir);
+const legacyCapsule = join(scratch, "legacy-capsule");
+const legacyRepo = join(scratch, "legacy-repo");
+mkdirSync(join(legacyCapsule, "repo"), { recursive: true });
+mkdirSync(legacyRepo);
+const legacyResearchId = "research-a8b4e673";
+const legacyResearchSession = "session-55555555-5555-4555-8555-555555555555";
+const legacyReviewSession = "session-66666666-6666-4666-8666-666666666666";
+const legacyCreatedAt = "2026-08-29T12:12:58.375Z";
+const legacyUpdatedAt = "2026-08-29T12:54:47.769Z";
+const legacyReviewing = {
+  schema: "qq.research-run/v1",
+  id: legacyResearchId,
+  status: "reviewing",
+  parentSessionUuid: parentId,
+  root: legacyCapsule,
+  repoRoot: legacyRepo,
+  question: "Can a live reviewing child survive restart?",
+  researchSession: legacyResearchSession,
+  reviewSession: legacyReviewSession,
+  webCandidates: [{ ref: "W001", url: "https://fixture.test/restart", title: "Restart", snippet: "durable evidence" }],
+  sessionCandidates: [{ ref: "S001", sessionId: parentId, seq: 7, title: "Session", snippet: "durable context" }],
+  citationCheck: { ok: true, citations: ["W001", "S001"] },
+  reviewFindings: [{ line: 3, body: "preserve this finding" }],
+  blockedReason: "",
+  reportMessageId: "77777777-7777-4777-8777-777777777777",
+  reported: false,
+  createdAt: legacyCreatedAt,
+  updatedAt: legacyUpdatedAt,
+};
+writeFileSync(join(restartDir, `${legacyResearchId}.json`), `${JSON.stringify(legacyReviewing, null, 2)}\n`);
+
+const legacyBlockedId = "research-deadbeef";
+const blockedResearchSession = "session-88888888-8888-4888-8888-888888888888";
+writeFileSync(join(restartDir, `${legacyBlockedId}.json`), `${JSON.stringify({
+  ...legacyReviewing,
+  id: legacyBlockedId,
+  status: "blocked",
+  researchSession: blockedResearchSession,
+  reviewSession: "",
+  webCandidates: [],
+  sessionCandidates: [],
+  citationCheck: null,
+  reviewFindings: [],
+  blockedReason: "mini-research child closed before completion",
+  reportMessageId: "99999999-9999-4999-8999-999999999999",
+  reported: true,
+}, null, 2)}\n`);
+
+const legacyResearchingId = "research-feedface";
+const activeResearchSession = "session-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+writeFileSync(join(restartDir, `${legacyResearchingId}.json`), `${JSON.stringify({
+  ...legacyReviewing,
+  id: legacyResearchingId,
+  status: "researching",
+  researchSession: activeResearchSession,
+  reviewSession: "",
+  reviewFindings: [],
+  blockedReason: "",
+  reportMessageId: "",
+}, null, 2)}\n`);
+
+const restartedStore = createResearchStore(restartDir);
+const existingV2Id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+restartedStore.create({
+  id: existingV2Id,
+  status: "completed",
+  parentSessionUuid: parentId,
+  root: legacyCapsule,
+  repoRoot: legacyRepo,
+  question: "Existing v2 record",
+});
+writeFileSync(join(restartDir, "research-nothex00.json"), "ignored\n");
+writeFileSync(join(restartDir, "notes.json"), "ignored\n");
+
+const mixedRecords = restartedStore.list();
+assert.equal(mixedRecords.length, 4, "list discovers mixed v1 and v2 research files");
+assert.ok(mixedRecords.some((record) => record.id === existingV2Id));
+assert.ok(mixedRecords.every((record) => record.schema === RESEARCH_DELEGATION_SCHEMA));
+assert.ok(mixedRecords.every((record) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(record.id)));
+
+const reviewByQa = restartedStore.bySession(legacyReviewSession);
+const reviewByResearch = restartedStore.bySession(legacyResearchSession);
+assert.equal(reviewByQa.id, reviewByResearch.id, "both live child sessions resolve the upgraded delegation");
+assert.notEqual(reviewByQa.id, legacyResearchId);
+assert.equal(reviewByQa.schema, RESEARCH_DELEGATION_SCHEMA);
+for (const field of [
+  "status", "parentSessionUuid", "root", "repoRoot", "question", "researchSession", "reviewSession",
+  "webCandidates", "sessionCandidates", "citationCheck", "reviewFindings", "blockedReason",
+  "reportMessageId", "reported", "createdAt", "updatedAt",
+]) {
+  assert.deepEqual(reviewByQa[field], legacyReviewing[field], `legacy research upgrade preserves ${field}`);
+}
+assert.equal(existsSync(join(restartDir, `${legacyResearchId}.json`)), false);
+assert.equal(existsSync(restartedStore.fileFor(reviewByQa.id)), true);
+assert.equal(JSON.parse(readFileSync(restartedStore.fileFor(reviewByQa.id), "utf8")).schema, RESEARCH_DELEGATION_SCHEMA);
+assert.equal(restartedStore.load(legacyResearchId.toUpperCase()).id, reviewByQa.id, "legacy id remains an alias until child rebind");
+
+const researchingAfterRestart = restartedStore.bySession(activeResearchSession);
+assert.equal(researchingAfterRestart.status, "researching");
+assert.equal(existsSync(join(restartDir, `${legacyResearchingId}.json`)), false);
+
+const blockedAfterRestart = restartedStore.bySession(blockedResearchSession);
+assert.equal(blockedAfterRestart.status, "blocked");
+assert.equal(blockedAfterRestart.blockedReason, "mini-research child closed before completion");
+assert.equal(blockedAfterRestart.reported, true);
+assert.equal(existsSync(join(restartDir, `${legacyBlockedId}.json`)), false);
+assert.deepEqual(
+  readdirSync(restartDir).filter((name) => name.endsWith(".json") && name !== "notes.json" && name !== "research-nothex00.json").sort(),
+  [existingV2Id, reviewByQa.id, researchingAfterRestart.id, blockedAfterRestart.id].sort().map((id) => `${id}.json`),
+);
+
+const resumedReviewCtx = childContext();
+const resumedReview = {
+  session: { id: legacyReviewSession, header: { kind: "mini-qa" }, events: [] },
+  ctx: resumedReviewCtx,
+  options: {},
+};
+resumedReviewCtx.agent = resumedReview;
+const restartedResearch = createResearch({ ctx, store: restartedStore, agents, parentDir: restartDir, env: {} });
+assert.equal(restartedResearch.resumeChild(resumedReview), true, "resumeChild rebinds the upgraded reviewing child");
+assert.deepEqual(resumedReviewCtx.registered.map((tool) => tool.name), ["bash", "submit_review"]);
+restartedResearch.dispose();
+
 const parentDir = join(scratch, "research");
 const store = createResearchStore(parentDir);
 const provider = {
@@ -105,8 +233,20 @@ const provider = {
   async get(url) { return { source: url, status: 200, contentType: "text/html", content: "<p>fixture evidence supports the answer</p>" }; },
 };
 const research = createResearch({ ctx, store, agents, parentDir, webProvider: provider, env: {} });
-const started = await research.invoke({ agent: parent, question: "What does the fixture show?" });
+const delegationId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const started = await research.invoke({ agent: parent, question: "What does the fixture show?", delegationId });
 assert.equal(started.status, "ok", started.reason);
+const mixedCaseDelegationId = delegationId.toUpperCase();
+assert.equal(store.load(mixedCaseDelegationId).id, delegationId, "research filenames are addressed by canonical UUID");
+const mixedCaseStatus = research.workflowStatus({ delegationId: mixedCaseDelegationId, parentSessionUuid: parentId });
+assert.equal(mixedCaseStatus.status, "ok", mixedCaseStatus.reason);
+assert.equal(mixedCaseStatus.delegationId, delegationId);
+const mixedCaseSend = await research.workflowSend({
+  delegationId: mixedCaseDelegationId,
+  parentSessionUuid: parentId,
+  message: "Check the fixture carefully.",
+});
+assert.equal(mixedCaseSend.status, "sent", mixedCaseSend.reason);
 assert.equal(coreRootLookups, 1);
 assert.equal(children.length, 1);
 assert.equal(children[0].session.header.kind, "mini-research");
@@ -123,7 +263,7 @@ assert.equal(completed.exitCode, 0, completed.stderr?.text);
 assert.equal(concluded, 1);
 assert.equal(children.length, 2, "accepted research spawns one fresh review context");
 const review = children[1];
-assert.equal(review.session.header.kind, "mini-review");
+assert.equal(review.session.header.kind, "mini-qa");
 assert.deepEqual(review.ctx.surfaceCalls, [{ agent: review, names: ["bash"] }]);
 assert.deepEqual(review.ctx.registered.map((tool) => tool.name), ["bash", "submit_review"]);
 const reviewBash = review.ctx.registered.find((tool) => tool.name === "bash");
@@ -138,10 +278,18 @@ assert.match(review.followups[0].content[0].text, /Use ordinary bash in this cap
 const submit = review.ctx.registered.find((tool) => tool.name === "submit_review");
 const reviewResult = await submit.execute({ findings: [] }, { agent: review, concludeTurn() {} });
 assert.equal(reviewResult.status, "ok", reviewResult.reason);
-assert.equal(sent.length, 1);
-assert.equal(sent[0].to, parentId);
-assert.match(sent[0].message, /Citation check: passed/);
-assert.match(sent[0].message, /Review findings: 0/);
-assert.match(sent[0].message, /Answer path:/);
-assert.equal(store.load(started.runId).status, "completed");
+assert.equal(sent.length, 2);
+assert.equal(sent[0].to, children[0].session.id);
+assert.equal(sent[0].message, "Check the fixture carefully.");
+assert.equal(sent[1].to, parentId);
+assert.match(sent[1].message, /Citation check: passed/);
+assert.match(sent[1].message, /Review findings: 0/);
+assert.match(sent[1].message, /Answer path:/);
+assert.equal(store.load(started.delegationId).status, "completed");
+const mixedCaseStop = await research.workflowStop({
+  delegationId: mixedCaseDelegationId,
+  parentSessionUuid: parentId,
+});
+assert.equal(mixedCaseStop.status, "refused");
+assert.match(mixedCaseStop.reason, /terminal \(completed\)/);
 console.log("research fixture: ok");

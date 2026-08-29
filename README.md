@@ -1,112 +1,97 @@
 # qq-workflows
 
-`qq-workflows` provides three focused child agents: `mini-coder` for Land
-implementation and fixes, `mini-review` for Land QA and research-answer review,
-and `mini-research` for evidence-backed questions. Land completion stays on
-explicit, durable Git-worktree and GitHub pull-request boundaries.
+`qq-workflows` is the host for named DSH chairs and durable delegated work. It
+ships the `architect`, `find`, and `base` chairs, accepts additional chairs such
+as media through `workflows.register`, and accepts additional delegation kinds
+through that same registry. `projects` remains an implicit cwd-based chair.
+`land` is a tool and final git verb, not a selectable chair or a workflow
+machine.
 
-## Durable delegation identity
+## Chairs and delegations
 
-Architect `delegate` creates one full delegation UUID before the initial child
-is started. That UUID remains the operator-facing workflow address through the
-implementer, QA look 1, fixer, QA look 2, and terminal landing or blocking.
-Each role still has its own immutable physical session UUID and event history.
+Chairs are selected with `/workflows`. Delegations are addressed by one durable
+UUID and have at most one current physical child session. The host ships:
 
-The durable Land record stores:
+- `delegate({ kind: "implementation" })`: isolated worktree, `mini-code`,
+  `mini-qa`, one optional second `mini-code`/`mini-qa` pass, then land;
+- `delegate({ kind: "research" })`: evidence capsule, `mini-research`,
+  `mini-qa`, then an automatic report with no git landing; and
+- the adopted `docs` contract: qq-wiki registers and autonomously drives a
+  hosted `mini-docs` inner pass while retaining ownership of outer publication.
+  Docs is not a `/workflows` chair.
 
-- `delegationId` and its one-to-one Land `runId`;
-- the immutable `parentSessionUuid` used for automatic return;
-- a monotonic `phaseEpoch`;
-- the routable `current` `{ sessionUuid, role, phaseEpoch }` plus a durable
-  `transitioning` guard; and
-- a pending successor packet whose physical UUID, role, epoch, message ID, and
-  exact content are persisted before child creation.
+An adopted delegation plugin registers `{ kind, invoke, status, send, stop }`
+with `service.workflows.register`. It may additionally provide ownership,
+resume/release, and settings hooks. `service.workflows.kinds()` lists delegation
+kinds independently from chair names.
 
-Old v1 Land records are upgraded in place on first load. Their generated
-`delegationId` is persisted atomically and reused thereafter.
+The architect exposes one spawn tool, `delegate({ kind })`. The former separate
+research tool does not exist. Every kind is controlled through the same UUID
+surface:
 
-Architect inherits only the decided research/mailbox tools; its plugin tools are
-`case_write`, `delegate`, `research`, `workflow_status`, `workflow_send`, and
-`land`; new
-harness tools do not appear.
+- `workflow_status(delegationId)` returns kind, state, current immutable session
+  UUID, role, phase epoch, and kind-specific workspace data;
+- `workflow_send(...)` steers only the exact current owned live session, with
+  optional stale-role and stale-epoch guards; and
+- `workflow_stop(...)` terminalizes the durable delegation and stops its child.
 
-Architect sessions receive two façade tools:
+Session aliases are display-only and are never relay identities.
 
-- `workflow_status(delegationId)` reports run state, role, epoch, current
-  physical UUID and ephemeral alias, ref, and worktree.
-- `workflow_send(delegationId, message, expectedRole?, expectedEpoch?)` sends by
-  the exact durable current UUID only. Missing, terminal, transitioning,
-  expectation-mismatched, non-live, non-owned, or foreign-parent runs refuse.
+## Working memory
 
-`workflow_send` never resolves aliases or labels. The separate qq-relay
-`relay_send` tool remains strict direct-session UUID routing for diagnostics and
-emergency steering.
+Working memory is the architect's only durable plan document and the exact
+source of every delegation packet. The architect prompt requires `case_write`
+after every operator message that materially changes the plan, before replying.
+A generated empty document says that it is empty; a heading alone is also empty.
+Delegation refuses empty working memory.
 
-## Completion and recovery
+Fold retains the current and previous operator/architect pairs. It may replace
+older history only when working memory is non-empty. If memory is empty, fold
+fails visibly rather than claiming unwritten conversation is authoritative.
 
-- Architect delegation creates a fresh isolated worktree. Land adopts the child
-  after inspecting that worktree.
-- Plugin/HMR teardown detaches in-memory ownership without cancelling a live
-  Land child. Reapply discovers the same AgentHandle, inserts any missing
-  pending packet by its stable message ID, durably acknowledges delivery before
-  pointer promotion, restores run/role labels and completion ownership, and
-  resumes an armed settlement exactly once.
-- Only the exact `mini-coder` completion command is a submission sentinel. Accepted
-  submissions settle after the exact durable tool result.
-- Every child packet and lifecycle report names the delegation UUID and Land
-  run. Physical session UUIDs remain visible for diagnostics.
-- Real `agent/disposed` cancellation remains terminal and is reported exactly
-  once to the durable parent UUID. HMR detachment never impersonates
-  cancellation.
+## Bindings
 
-## Publishing and landing
+The host has exactly three model bindings:
 
-`origin/main` is the source of truth for a completed Land. After routing and QA
-accept a clean, committed proposal, Land:
+- `architecture` for the architect chair;
+- `implementation` for `mini-code`, `mini-research`, and worker-like adopted
+  children; and
+- `qa` for `mini-qa`.
 
-1. rechecks the clean local `main` checkout, clean delegated worktree, and the
-   OpenWiki generated-path guard;
-2. pushes the exact reviewed proposal commit to its branch on `origin`;
-3. opens a GitHub pull request with base `main` and that proposal branch as its
-   head;
-4. merges the pull request with a merge commit (never squash or rebase);
-5. fetches `origin/main` and advances local `main` with `--ff-only`; and
-6. only then removes the delegated capsule/worktree and local proposal branch.
+Legacy settings are read only to migrate useful model choices. The dead router
+is ignored. The next host settings write persists only these three bindings and
+removes old built-in sections while preserving adopted-plugin settings.
 
-Land never pushes local `main` and never creates a local merge commit. A push,
-pull-request creation, pull-request merge, fetch, or fast-forward failure makes
-the run blocked and retains the capsule for diagnosis or retry. In particular,
-a publish failure cannot silently report a local-only landing.
+## Implementation QA and land
 
-## mini-review Land QA
+`done` is the implementation child's submission command. Every accepted `done`
+compiles a bounded proposal packet and starts `mini-qa`; there is no paint skip,
+router model hop, or evidence stamp. A first QA failure starts a fresh
+`mini-code` child on the same implementation binding. A second QA failure blocks
+the delegation. Public phase roles are only `implementation` and `qa`; look
+count remains internal.
 
-Land review looks use the `mini-review` preset. The reviewer starts from the
-architect's approved plan plus bounded changed-file counts and up to eight hunk
-pointers; unified diffs and file bodies are not inlined into the packet. It uses
-wrapped host `bash` with Mini's 10k observation window to retrieve focused
-evidence with commands such as `git diff`, `git show`, `git grep`, `rg`, and
-`sed -n`. It finishes with `submit_review`; zero findings passes, while any
-finding starts the one allowed fixer after look 1 or blocks after look 2.
+After QA passes, the host performs the final `land` verb:
 
-The reviewer must not mutate the worktree, edit files, or commit. Land rejects a
-dirty QA worktree or a QA production commit as a backstop. Submitted findings
-must still identify HEAD-side lines changed between the packet's base and head
-revisions.
+1. recheck clean main and delegated worktrees plus generated-path guards;
+2. push the exact reviewed proposal commit;
+3. open a pull request against `main`;
+4. merge it with a merge commit;
+5. fetch and fast-forward local `main`; and
+6. remove the capsule/worktree and local proposal branch.
 
-## Mini-RA research
+The chair `land` tool is only a fallback for an existing linked worktree or a
+retry of a QA-passed but unlanded delegation. It never bypasses QA for a new
+submission. Failures retain the capsule for diagnosis or retry.
 
-Architect `research` sends the approved working-memory question to one
-`mini-research` child in a private capsule outside the project Git tree. The
-child has only `bash`; standalone host commands discover web/session leads and
-materialize bounded, provenance-tagged snapshots under `evidence/`, while
-`repo/` remains a symlink to native project files. Search leads are not evidence
-until fetched, and submission requires `answer.md` with only acquired `W###` or
-`S###` refs and resolving `repo/` paths.
+## Mini adapters
 
-An accepted answer receives one fresh-context `mini-review` pass with its cwd at
-the research capsule. The reviewer uses wrapped host `bash` to inspect
-`question.md`, `answer.md`, `evidence/`, and `repo/`, then finishes with
-`submit_review`. It has no `web-search`, `web-get`, `session-search`, or
-`session-get` command interception and cannot retrieve new evidence. The answer
-path, citation check, and review findings return once to the architect; research
-never enters Land, creates a worktree, or opens a pull request.
+- `mini-code` is the implementation preset. The old preset names are recognized
+  only when resuming legacy live children.
+- `mini-qa` is a read-only fresh-context reviewer with wrapped bash and
+  `submit_review`.
+- `mini-research` intercepts standalone evidence acquisition commands inside a
+  private capsule. Search leads are not evidence until materialized.
+- `mini-docs` is an inner adapter exported for an adopted docs controller. It no
+  longer exports a standalone Cordis `apply`; qq-wiki must register and drive
+  docs through the host.

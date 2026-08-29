@@ -10,7 +10,7 @@ import {
   WIKI_INDEX_HEADER,
 } from "../src/wiki-index.mjs";
 import { miniSetup } from "../src/official-mini.mjs";
-import { miniReviewSetup } from "../src/mini-review.mjs";
+import { miniQaSetup } from "../src/mini-qa.mjs";
 
 const architectId = "session-63a11000-0000-4000-8000-000000000009";
 
@@ -104,7 +104,7 @@ function createArchitectHarness(indexOrError = "") {
 }
 
 // Mini implementer and QA mounts own complete personas and never mount wiki index.
-for (const setup of [miniSetup, miniReviewSetup]) {
+for (const setup of [miniSetup, miniQaSetup]) {
   const prompt = createPrompt();
   let wikiLoads = 0;
   const agent = { id: "mini-wiki-test" };

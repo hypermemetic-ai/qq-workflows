@@ -1,7 +1,7 @@
 // Architect working memory: one markdown file per DSH session.
 // One durable pointer binds fresh sessions to the sole unconsumed qq-task;
 // dispatch clears the pointer while land keeps the task live until merge.
-// The operator sees this document. The talking model edits it in place.
+// The operator sees this document. The architecture model edits it in place.
 
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
@@ -19,7 +19,16 @@ export const CASE_CONTEXT_NAME = "qq-workflows:case";
 /** DSH prompt variable for the case body. Substituted values are not re-scanned. */
 export const CASE_VARIABLE_NAME = "working_memory";
 
-export const EMPTY_CASE = "# Working memory\n";
+export const WORKING_MEMORY_EMPTY_NOTICE = "> Empty: no plan has been recorded. Use `case_write` before relying on working memory or delegating.";
+export const EMPTY_CASE = `# Working memory\n\n${WORKING_MEMORY_EMPTY_NOTICE}\n`;
+
+/** A heading or the generated empty marker is not durable plan knowledge. */
+export function isWorkingMemoryEmpty(raw) {
+  const text = String(raw ?? "").replace(/\r\n/g, "\n").trim();
+  if (!text) return true;
+  const withoutHeading = text.replace(/^#\s+[^\n]*(?:\n|$)/, "").trim();
+  return !withoutHeading || withoutHeading === WORKING_MEMORY_EMPTY_NOTICE;
+}
 
 /** Context template. The body is {{working_memory}}, never inlined, so DSH will not interpolate case prose. */
 export function renderCaseContext({ body, taskId } = {}) {

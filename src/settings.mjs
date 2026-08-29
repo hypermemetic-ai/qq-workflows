@@ -1,41 +1,15 @@
-// Architect-owned role bindings. The wrapper never opens this file.
-//
-// Attach config requires an absolute settingsFile. Missing or relative path,
-// or a missing file at a declared path, is unbound. Writes create the file.
-// This is not ~/.config/qq/execution-profiles.json.
+// Host-wide model bindings. Chairs and delegation kinds consume the same three
+// seats; adopted plugins may expose additional settings through their own
+// listSettings/writeSettings methods.
 
 import { dirname, isAbsolute } from "node:path";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 
-export const ARCHITECT_SETTINGS_SCHEMA = "qq.workflows-architect-settings/v1";
-export const ITERATE_SETTINGS_SCHEMA = "qq.workflows-iterate-settings/v1";
-export const LAND_SETTINGS_SCHEMA = "qq.workflows-land-settings/v1";
-export const BASE_SETTINGS_SCHEMA = "qq.workflows-base-settings/v1";
-export const ARCHITECT_ROLES = Object.freeze(["talking", "hands"]);
-export const ITERATE_ROLES = Object.freeze(["desk", "hands", "reviewer"]);
-export const LAND_ROLES = Object.freeze(["router", "qa", "implementer"]);
-export const BASE_ROLES = Object.freeze(["talking"]);
+export const WORKFLOW_SETTINGS_SCHEMA = "qq.workflows-settings/v2";
+export const HOST_ROLES = Object.freeze(["architecture", "implementation", "qa"]);
 
-function emptyArchitectRoles() {
-  return { talking: null, hands: null };
-}
-
-function emptyIterateRoles() {
-  return { desk: null, hands: null, reviewer: null };
-}
-
-function emptyLandRoles() {
-  return { router: null, qa: null, implementer: null };
-}
-
-function emptyBaseRoles() {
-  return { talking: null };
+function emptyRoles() {
+  return { architecture: null, implementation: null, qa: null };
 }
 
 function normalizeBinding(value) {
@@ -49,31 +23,32 @@ function normalizeBinding(value) {
   };
 }
 
-function normalize(raw) {
-  if (!raw || raw.schema !== ARCHITECT_SETTINGS_SCHEMA || !raw.roles || typeof raw.roles !== "object") {
-    throw new Error("qq-workflows: architect settings are malformed");
+function readRaw(path) {
+  if (!path || !existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("expected an object");
+    return parsed;
+  } catch (error) {
+    throw new Error(`qq-workflows: settings ${path} are malformed`, { cause: error });
   }
-  return {
-    schema: ARCHITECT_SETTINGS_SCHEMA,
-    roles: {
-      talking: normalizeBinding(raw.roles.talking),
-      hands: normalizeBinding(raw.roles.hands),
-    },
-  };
 }
 
-function normalizeIterateSection(raw) {
-  if (!raw || typeof raw !== "object") return { schema: ITERATE_SETTINGS_SCHEMA, roles: emptyIterateRoles() };
-  if (raw.schema && raw.schema !== ITERATE_SETTINGS_SCHEMA) {
-    throw new Error("qq-workflows: iterate settings are malformed");
-  }
-  const roles = raw.roles && typeof raw.roles === "object" ? raw.roles : raw;
+/** Read legacy seat names once without continuing to expose them publicly. */
+function normalize(raw) {
+  const roles = raw?.roles && typeof raw.roles === "object" ? raw.roles : {};
+  const oldLand = raw?.land?.roles && typeof raw.land.roles === "object"
+    ? raw.land.roles
+    : (raw?.land && typeof raw.land === "object" ? raw.land : {});
+  const oldBase = raw?.base?.roles && typeof raw.base.roles === "object"
+    ? raw.base.roles
+    : (raw?.base && typeof raw.base === "object" ? raw.base : {});
   return {
-    schema: ITERATE_SETTINGS_SCHEMA,
+    schema: WORKFLOW_SETTINGS_SCHEMA,
     roles: {
-      desk: normalizeBinding(roles.desk),
-      hands: normalizeBinding(roles.hands),
-      reviewer: normalizeBinding(roles.reviewer),
+      architecture: normalizeBinding(roles.architecture ?? roles.talking ?? oldBase.talking),
+      implementation: normalizeBinding(roles.implementation ?? roles.hands ?? oldLand.implementer),
+      qa: normalizeBinding(roles.qa ?? oldLand.qa),
     },
   };
 }
@@ -85,36 +60,14 @@ function persist(path, record) {
   renameSync(temporary, path);
 }
 
-function readRaw(path) {
-  if (!path || !existsSync(path)) return null;
-  try {
-    return JSON.parse(readFileSync(path, "utf8"));
-  } catch (error) {
-    throw new Error(`qq-workflows: settings ${path} are malformed`, { cause: error });
-  }
-}
-
-/** Keep unknown keys (iterate section) when architect rewrites roles. */
-function persistArchitect(path, record) {
-  const previous = readRaw(path) ?? {};
-  persist(path, { ...previous, schema: record.schema, roles: record.roles });
-}
-
-/** Workflow-owned settings for the architect talking and hands roles. */
-export function createArchitectSettings({ settingsFile } = {}) {
+export function createHostSettings({ settingsFile } = {}) {
   const path = typeof settingsFile === "string" && isAbsolute(settingsFile) ? settingsFile : null;
 
   function load() {
     if (!path || !existsSync(path)) {
-      return { schema: ARCHITECT_SETTINGS_SCHEMA, roles: emptyArchitectRoles(), unbound: true };
+      return { schema: WORKFLOW_SETTINGS_SCHEMA, roles: emptyRoles(), unbound: true };
     }
-    let parsed;
-    try {
-      parsed = JSON.parse(readFileSync(path, "utf8"));
-    } catch (error) {
-      throw new Error(`qq-workflows: architect settings ${path} are malformed`, { cause: error });
-    }
-    return { ...normalize(parsed), unbound: false };
+    return { ...normalize(readRaw(path)), unbound: false };
   }
 
   return Object.freeze({
@@ -122,223 +75,31 @@ export function createArchitectSettings({ settingsFile } = {}) {
     unbound: () => path === null || !existsSync(path),
     list() {
       const loaded = load();
-      return {
-        unbound: loaded.unbound,
-        roles: {
-          talking: loaded.roles.talking,
-          hands: loaded.roles.hands,
-        },
-      };
+      return { unbound: loaded.unbound, roles: { ...loaded.roles } };
     },
     get(role) {
-      if (!ARCHITECT_ROLES.includes(role)) return null;
+      if (!HOST_ROLES.includes(role)) return null;
       return load().roles[role];
     },
     write(role, binding) {
-      if (!path) {
-        throw new Error("qq-workflows: architect settings are unbound (no settingsFile)");
-      }
-      if (!ARCHITECT_ROLES.includes(role)) {
-        throw new Error(`qq-workflows: unknown architect role ${role}`);
-      }
+      if (!path) throw new Error("qq-workflows: host settings are unbound (no settingsFile)");
+      if (!HOST_ROLES.includes(role)) throw new Error(`qq-workflows: unknown host binding ${role}`);
       const next = normalizeBinding(binding);
-      if (!next) {
-        throw new Error("qq-workflows: role binding requires provider and model");
-      }
-      const current = existsSync(path) ? load() : { schema: ARCHITECT_SETTINGS_SCHEMA, roles: emptyArchitectRoles() };
+      if (!next) throw new Error("qq-workflows: binding requires provider and model");
+      const previous = readRaw(path) ?? {};
+      const current = normalize(previous);
       current.roles[role] = next;
-      persistArchitect(path, { schema: ARCHITECT_SETTINGS_SCHEMA, roles: current.roles });
+      // Preserve adopted-plugin settings but remove dead built-in workflow sections.
+      const { iterate: _iterate, land: _land, base: _base, ...extensions } = previous;
+      persist(path, { ...extensions, schema: WORKFLOW_SETTINGS_SCHEMA, roles: current.roles });
       return next;
     },
   });
 }
 
-/** Workflow-owned settings for iterate: desk + hands + reviewer. Same settingsFile. */
-export function createIterateSettings({ settingsFile } = {}) {
-  const path = typeof settingsFile === "string" && isAbsolute(settingsFile) ? settingsFile : null;
-
-  function load() {
-    if (!path || !existsSync(path)) {
-      return { schema: ITERATE_SETTINGS_SCHEMA, roles: emptyIterateRoles(), unbound: true };
-    }
-    const parsed = readRaw(path);
-    const section = parsed?.iterate;
-    return { ...normalizeIterateSection(section), unbound: false };
-  }
-
-  return Object.freeze({
-    path,
-    unbound: () => path === null || !existsSync(path),
-    list() {
-      const loaded = load();
-      return {
-        unbound: loaded.unbound,
-        roles: {
-          desk: loaded.roles.desk,
-          hands: loaded.roles.hands,
-          reviewer: loaded.roles.reviewer,
-        },
-      };
-    },
-    get(role) {
-      if (!ITERATE_ROLES.includes(role)) return null;
-      return load().roles[role];
-    },
-    write(role, binding) {
-      if (!path) {
-        throw new Error("qq-workflows: iterate settings are unbound (no settingsFile)");
-      }
-      if (!ITERATE_ROLES.includes(role)) {
-        throw new Error(`qq-workflows: unknown iterate role ${role}`);
-      }
-      const next = normalizeBinding(binding);
-      if (!next) {
-        throw new Error("qq-workflows: role binding requires provider and model");
-      }
-      const previous = readRaw(path) ?? {
-        schema: ARCHITECT_SETTINGS_SCHEMA,
-        roles: emptyArchitectRoles(),
-      };
-      const iterate = normalizeIterateSection(previous.iterate);
-      iterate.roles[role] = next;
-      persist(path, { ...previous, iterate });
-      return next;
-    },
-  });
-}
-
-function normalizeLandSection(raw) {
-  if (!raw || typeof raw !== "object") return { schema: LAND_SETTINGS_SCHEMA, roles: emptyLandRoles() };
-  if (raw.schema && raw.schema !== LAND_SETTINGS_SCHEMA) {
-    throw new Error("qq-workflows: land settings are malformed");
-  }
-  const roles = raw.roles && typeof raw.roles === "object" ? raw.roles : raw;
-  return {
-    schema: LAND_SETTINGS_SCHEMA,
-    roles: {
-      router: normalizeBinding(roles.router),
-      qa: normalizeBinding(roles.qa),
-      implementer: normalizeBinding(roles.implementer),
-    },
-  };
-}
-
-/** Workflow-owned settings for land: router + qa + implementer. Same settingsFile. */
-export function createLandSettings({ settingsFile } = {}) {
-  const path = typeof settingsFile === "string" && isAbsolute(settingsFile) ? settingsFile : null;
-
-  function load() {
-    if (!path || !existsSync(path)) {
-      return { schema: LAND_SETTINGS_SCHEMA, roles: emptyLandRoles(), unbound: true };
-    }
-    const parsed = readRaw(path);
-    const section = parsed?.land;
-    return { ...normalizeLandSection(section), unbound: false };
-  }
-
-  return Object.freeze({
-    path,
-    unbound: () => path === null || !existsSync(path),
-    list() {
-      const loaded = load();
-      return {
-        unbound: loaded.unbound,
-        roles: {
-          router: loaded.roles.router,
-          qa: loaded.roles.qa,
-          implementer: loaded.roles.implementer,
-        },
-      };
-    },
-    get(role) {
-      if (!LAND_ROLES.includes(role)) return null;
-      return load().roles[role];
-    },
-    write(role, binding) {
-      if (!path) {
-        throw new Error("qq-workflows: land settings are unbound (no settingsFile)");
-      }
-      if (!LAND_ROLES.includes(role)) {
-        throw new Error(`qq-workflows: unknown land role ${role}`);
-      }
-      const next = normalizeBinding(binding);
-      if (!next) {
-        throw new Error("qq-workflows: role binding requires provider and model");
-      }
-      const previous = readRaw(path) ?? {
-        schema: ARCHITECT_SETTINGS_SCHEMA,
-        roles: emptyArchitectRoles(),
-      };
-      const land = normalizeLandSection(previous.land);
-      land.roles[role] = next;
-      persist(path, { ...previous, land });
-      return next;
-    },
-  });
-}
-
-function normalizeBaseSection(raw) {
-  if (!raw || typeof raw !== "object") return { schema: BASE_SETTINGS_SCHEMA, roles: emptyBaseRoles() };
-  if (raw.schema && raw.schema !== BASE_SETTINGS_SCHEMA) {
-    throw new Error("qq-workflows: base settings are malformed");
-  }
-  const roles = raw.roles && typeof raw.roles === "object" ? raw.roles : raw;
-  return {
-    schema: BASE_SETTINGS_SCHEMA,
-    roles: { talking: normalizeBinding(roles.talking) },
-  };
-}
-
-/** Workflow-owned settings for the floor chair: one talking seat. Same settingsFile. */
-export function createBaseSettings({ settingsFile } = {}) {
-  const path = typeof settingsFile === "string" && isAbsolute(settingsFile) ? settingsFile : null;
-
-  function load() {
-    if (!path || !existsSync(path)) {
-      return { schema: BASE_SETTINGS_SCHEMA, roles: emptyBaseRoles(), unbound: true };
-    }
-    const parsed = readRaw(path);
-    const section = parsed?.base;
-    return { ...normalizeBaseSection(section), unbound: false };
-  }
-
-  return Object.freeze({
-    path,
-    unbound: () => path === null || !existsSync(path),
-    list() {
-      const loaded = load();
-      return { unbound: loaded.unbound, roles: { talking: loaded.roles.talking } };
-    },
-    get(role) {
-      if (!BASE_ROLES.includes(role)) return null;
-      return load().roles[role];
-    },
-    write(role, binding) {
-      if (!path) {
-        throw new Error("qq-workflows: base settings are unbound (no settingsFile)");
-      }
-      if (!BASE_ROLES.includes(role)) {
-        throw new Error(`qq-workflows: unknown base role ${role}`);
-      }
-      const next = normalizeBinding(binding);
-      if (!next) {
-        throw new Error("qq-workflows: role binding requires provider and model");
-      }
-      const previous = readRaw(path) ?? {
-        schema: ARCHITECT_SETTINGS_SCHEMA,
-        roles: emptyArchitectRoles(),
-      };
-      const base = normalizeBaseSection(previous.base);
-      base.roles[role] = next;
-      persist(path, { ...previous, base });
-      return next;
-    },
-  });
-}
-
-export function formatSettingsList(name, snapshot, roles = ARCHITECT_ROLES) {
-  if (!snapshot || snapshot.unbound) return `${name} roles: unbound`;
-  const lines = [`${name} roles:`];
+export function formatSettingsList(name, snapshot, roles = HOST_ROLES) {
+  if (!snapshot || snapshot.unbound) return `${name} bindings: unbound`;
+  const lines = [`${name} bindings:`];
   for (const role of roles) {
     const binding = snapshot.roles?.[role];
     if (!binding) {
