@@ -21,6 +21,8 @@ const FOREIGN_CURRENT = LIVE_CURRENT;
 const QA_CURRENT = "session-20000000-0000-4000-8000-000000000007";
 const QA_IMPLEMENTATION = "session-20000000-0000-4000-8000-000000000008";
 const WAKE_FAILED_CURRENT = "session-20000000-0000-4000-8000-000000000009";
+const CLOSING_RESUME_CURRENT = "session-20000000-0000-4000-8000-000000000010";
+const CLOSING_LIVE_CURRENT = "session-20000000-0000-4000-8000-000000000011";
 const DELEGATION = "30000000-0000-4000-8000-000000000001";
 const LIVE_DELEGATION = "30000000-0000-4000-8000-000000000002";
 const FAILED_DELEGATION = "30000000-0000-4000-8000-000000000003";
@@ -30,6 +32,8 @@ const CORRUPT_DELEGATION = "30000000-0000-4000-8000-000000000006";
 const FOREIGN_DELEGATION = "30000000-0000-4000-8000-000000000007";
 const QA_DELEGATION = "30000000-0000-4000-8000-000000000008";
 const WAKE_FAILED_DELEGATION = "30000000-0000-4000-8000-000000000009";
+const CLOSING_RESUME_DELEGATION = "30000000-0000-4000-8000-000000000010";
+const CLOSING_LIVE_DELEGATION = "30000000-0000-4000-8000-000000000011";
 
 function toolHarness() {
   const definitions = new Map([["bash", {
@@ -172,6 +176,8 @@ try {
   createRunning(store, { delegationId: TERMINAL_DELEGATION, child: TERMINAL_CURRENT, status: "blocked" });
   createReviewing(store, { delegationId: QA_DELEGATION, child: QA_CURRENT });
   createRunning(store, { delegationId: WAKE_FAILED_DELEGATION, child: WAKE_FAILED_CURRENT });
+  createRunning(store, { delegationId: CLOSING_RESUME_DELEGATION, child: CLOSING_RESUME_CURRENT });
+  createRunning(store, { delegationId: CLOSING_LIVE_DELEGATION, child: CLOSING_LIVE_CURRENT });
 
   const live = new Map();
   const resumedChildren = new Map();
@@ -401,6 +407,116 @@ try {
   assert.deepEqual(replacementLand.ownedChildren(), [CURRENT]);
   assert.equal(recovered.definitions.has("run_tests"), true, "replacement controller restores child tools");
   await replacementLand.dispose();
+
+  // If HMR starts while DSH is restoring an inactive exact session, disposal
+  // waits for the accepted recovery transition. The transition may retain and
+  // wake that handle while closing; teardown then only detaches controller-local
+  // ownership, leaving the same DSH session live for the replacement controller.
+  const closingLive = new Map();
+  let closingResumeCalls = 0;
+  let closingFixture;
+  let signalResumeEntered;
+  let releaseClosingResume;
+  const closingResumeEntered = new Promise((resolve) => { signalResumeEntered = resolve; });
+  const closingResumeGate = new Promise((resolve) => { releaseClosingResume = resolve; });
+  const closingAgents = {
+    get(id) { return closingLive.get(id) ?? null; },
+    list() { return [...closingLive.values()]; },
+    async create() { throw new Error("closing recovery must never create"); },
+    async resume(options) {
+      closingResumeCalls += 1;
+      signalResumeEntered();
+      await closingResumeGate;
+      const state = store.bySession(options.resumeSessionId);
+      closingFixture = fakeChild({
+        id: options.resumeSessionId,
+        delegationId: state.delegationId,
+        parent: state.parentSessionUuid,
+        role: state.current.role,
+        epoch: state.current.phaseEpoch,
+        cwd: workspace,
+      });
+      await options.setup?.(closingFixture.agent.ctx);
+      const originalDispose = closingFixture.handle.dispose;
+      closingFixture.handle.dispose = async () => {
+        closingLive.delete(options.resumeSessionId);
+        await originalDispose();
+      };
+      closingLive.set(options.resumeSessionId, closingFixture.agent);
+      return closingFixture.handle;
+    },
+  };
+  const closingBytes = readFileSync(store.fileFor(CLOSING_RESUME_DELEGATION), "utf8");
+  const closingLand = createLand({ ctx, store, agents: closingAgents, env: {} });
+  const closingRecovery = closingLand.workflowResume({
+    delegationId: CLOSING_RESUME_DELEGATION,
+    parentSessionUuid: PARENT,
+  });
+  await closingResumeEntered;
+  let closingDisposed = false;
+  const closingDisposal = closingLand.dispose().then((result) => {
+    closingDisposed = true;
+    return result;
+  });
+  await Promise.resolve();
+  assert.equal(closingDisposed, false, "HMR disposal waits for the in-flight DSH resume");
+  releaseClosingResume();
+  const [closingResult, closingDisposeResult] = await Promise.all([closingRecovery, closingDisposal]);
+  assert.equal(closingResult.status, "resumed");
+  assert.equal(closingDisposeResult.detached, 1);
+  assert.equal(closingFixture.disposed(), 0, "accepted recovery never disposes the exact DSH handle");
+  assert.equal(closingLive.get(CLOSING_RESUME_CURRENT), closingFixture.agent);
+  assert.equal(closingResumeCalls, 1);
+  assert.equal(readFileSync(store.fileFor(CLOSING_RESUME_DELEGATION), "utf8"), closingBytes);
+
+  const closingReplacement = createLand({ ctx, store, agents: closingAgents, env: {} });
+  const closingRebound = await closingReplacement.workflowResume({
+    delegationId: CLOSING_RESUME_DELEGATION,
+    parentSessionUuid: PARENT,
+  });
+  assert.equal(closingRebound.status, "already-live");
+  assert.equal(closingResumeCalls, 1, "replacement adopts the restored handle without resuming again");
+  await closingReplacement.dispose();
+
+  // The already-live branch has the same accepted-transition shutdown contract.
+  // Start disposal before its deferred recovery microtask runs and verify it can
+  // still retain, then detach, the exact shared handle without refusing it.
+  const closingLiveFixture = fakeChild({
+    id: CLOSING_LIVE_CURRENT,
+    delegationId: CLOSING_LIVE_DELEGATION,
+    cwd: workspace,
+  });
+  Object.defineProperty(closingLiveFixture.agent, AGENT_HANDLE, {
+    value: closingLiveFixture.handle,
+    configurable: true,
+  });
+  closingLive.set(CLOSING_LIVE_CURRENT, closingLiveFixture.agent);
+  const closingLiveBytes = readFileSync(store.fileFor(CLOSING_LIVE_DELEGATION), "utf8");
+  const closingLiveLand = createLand({ ctx, store, agents: closingAgents, env: {} });
+  const closingLiveRecovery = closingLiveLand.workflowResume({
+    delegationId: CLOSING_LIVE_DELEGATION,
+    parentSessionUuid: PARENT,
+  });
+  const closingLiveDisposal = closingLiveLand.dispose();
+  const [closingLiveResult, closingLiveDisposeResult] = await Promise.all([
+    closingLiveRecovery,
+    closingLiveDisposal,
+  ]);
+  assert.equal(closingLiveResult.status, "already-live");
+  assert.equal(closingLiveDisposeResult.detached, 1);
+  assert.equal(closingLiveFixture.disposed(), 0);
+  assert.equal(closingLive.get(CLOSING_LIVE_CURRENT), closingLiveFixture.agent);
+  assert.equal(closingResumeCalls, 1, "already-live HMR adoption never calls DSH resume");
+  assert.equal(readFileSync(store.fileFor(CLOSING_LIVE_DELEGATION), "utf8"), closingLiveBytes);
+
+  const closingLiveReplacement = createLand({ ctx, store, agents: closingAgents, env: {} });
+  const closingLiveRebound = await closingLiveReplacement.workflowResume({
+    delegationId: CLOSING_LIVE_DELEGATION,
+    parentSessionUuid: PARENT,
+  });
+  assert.equal(closingLiveRebound.status, "already-live");
+  assert.equal(closingResumeCalls, 1);
+  await closingLiveReplacement.dispose();
 
   // Corrupt durable persistence reports the concrete parse error and is not
   // normalized, replaced, stopped, or rewritten by the refusal path.

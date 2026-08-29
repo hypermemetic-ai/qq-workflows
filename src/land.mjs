@@ -2580,7 +2580,7 @@ export function createLand({
     try {
       await validatePersistedCurrentChild(child, state, current);
       mountCurrentChild(child, current.role);
-      if (!resumeChild(child)) {
+      if (!resumeChild(child, { allowClosing: true })) {
         throw new Error(`current session ${current.sessionUuid} is live but its exact AgentHandle cannot be adopted`);
       }
       const owner = currentOwner(state, current);
@@ -2653,7 +2653,7 @@ export function createLand({
       const child = handle?.agent ?? handle;
       await validatePersistedCurrentChild(child, state, current);
       mountCurrentChild(child, current.role);
-      if (!resumeChild(child)) {
+      if (!resumeChild(child, { allowClosing: true })) {
         throw new Error(`DSH resumed exact current session ${current.sessionUuid}, but land could not adopt its AgentHandle`);
       }
       owned = Boolean(currentOwner(state, current));
