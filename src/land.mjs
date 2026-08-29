@@ -561,7 +561,6 @@ export async function runRequiredTests(run, state, { testCommand = DEFAULT_REQUI
   const preTree = await stageDelegatedWorkspace(run, state);
   const isolated = isolatedCommand({
     workspace: state.workspace,
-    gitDir: join(state.worktree, ".git"),
     command: suite.command,
     args: suite.args,
     writable: true,

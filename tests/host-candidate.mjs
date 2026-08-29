@@ -36,6 +36,14 @@ try {
   });
   assert.equal(pass.status, "pass");
   assert.equal(pass.preTree, pass.postTree);
+  const scratchGit = await runRequiredTests(runCommand, state, {
+    testCommand: {
+      command: "bash",
+      args: ["-c", "test -z \"${GIT_DIR+x}\" && test -z \"${GIT_WORK_TREE+x}\" && scratch=$(mktemp -d) && trap 'rm -rf \"$scratch\"' EXIT && git init -q \"$scratch\" && test \"$(git -C \"$scratch\" rev-parse --git-dir)\" = .git"],
+    },
+  });
+  assert.equal(scratchGit.status, "pass", `required tests use their own scratch Git repositories: ${scratchGit.output}`);
+  assert.equal(scratchGit.preTree, scratchGit.postTree);
   assert.equal(testEvidenceMatches(pass, pass.postTree, { command: "node", args: ["-e", "if(require('fs').readFileSync('value.txt','utf8').trim()!=='new')process.exit(2)"] }), true, "done reuses exact matching pass evidence");
   assert.equal(testEvidenceMatches(pass, "f".repeat(40), { command: "node", args: [] }), false, "workspace or suite change invalidates evidence");
   const candidate = await commitDelegatedWorkspace(runCommand, state, pass.postTree);
