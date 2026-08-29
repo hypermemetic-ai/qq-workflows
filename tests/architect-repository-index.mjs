@@ -61,7 +61,11 @@ function createArchitectHarness({ service = MISSING, lookupError = null, loadInd
       id: architectId,
       events: [],
       header: { cwd: sessionCwd },
-      append(type, data) { notices.push({ type, data }); },
+      append(type, data) {
+        const event = { type, data };
+        this.events.push(event);
+        if (type === "user/message") notices.push(event);
+      },
     },
     ctx: {
       systemPrompt: prompt,
