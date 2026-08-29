@@ -24,7 +24,8 @@ export function pinChildSandbox(agentOrSession, role) {
 }
 
 function serviceOf(ctx, name) {
-  return ctx?.[name] ?? ctx?.get?.(name, false) ?? null;
+  if (typeof ctx?.get === "function") return ctx.get(name, false) ?? null;
+  return ctx?.[name] ?? null;
 }
 
 /** Require DSH's kernel-backed file boundary for the child session root. */

@@ -66,19 +66,27 @@ function recoveryAgent({ id, delegationId, role, epoch, cwd }) {
     },
     followup(message) { this.inbox.nextTurn.push(message); },
   };
-  agent.ctx = {
+  const sandboxLookups = [];
+  const rawCtx = {
     agent,
     tools,
     systemPrompt,
-    get(name) {
+    get(name, optional) {
       if (name === "tools") return tools;
       if (name === "systemPrompt") return systemPrompt;
       if (name === "qq-core") return { surface: { allow() {} } };
-      if (name === "sandboxPolicy") return {
-        resolve() { return { mode: role === "qa" ? "read-only" : "workspace-write", workspaceRoot: cwd }; },
-      };
-      if (name === "shell") return { sandboxMode: "workspace-write" };
-      if (name === "sandbox") return { confine() { return { enforcement: "full" }; } };
+      if (name === "sandboxPolicy") {
+        sandboxLookups.push([name, optional]);
+        return { resolve() { return { mode: role === "qa" ? "read-only" : "workspace-write", workspaceRoot: cwd }; } };
+      }
+      if (name === "shell") {
+        sandboxLookups.push([name, optional]);
+        return { sandboxMode: "workspace-write" };
+      }
+      if (name === "sandbox") {
+        sandboxLookups.push([name, optional]);
+        return { confine() { return { enforcement: "full" }; } };
+      }
       return null;
     },
     on(type, listener) {
@@ -87,9 +95,15 @@ function recoveryAgent({ id, delegationId, role, epoch, cwd }) {
       return () => listeners.splice(listeners.indexOf(record), 1);
     },
   };
+  agent.ctx = new Proxy(rawCtx, {
+    get(target, prop, receiver) {
+      if (prop in target || typeof prop === "symbol") return Reflect.get(target, prop, receiver);
+      throw new Error(`cannot get property "${String(prop)}" without inject`);
+    },
+  });
   const handle = { agent, async dispose() {} };
   Object.defineProperty(agent, AGENT_HANDLE, { value: handle, configurable: true });
-  return { agent, definitions, handle };
+  return { agent, definitions, handle, sandboxLookups };
 }
 
 const taskMarker = "MAXIMUM_TASK_UNIQUE_MARKER";
@@ -236,6 +250,11 @@ try {
     parentSession: adoptedParentId,
   });
   assert.equal(adopted.status, "ok", adopted.reason);
+  assert.deepEqual(adoptedLive.sandboxLookups, [
+    ["sandboxPolicy", false],
+    ["shell", false],
+    ["sandbox", false],
+  ], "architect implementation adoption resolves sandbox dependencies through strict-context injection");
   const adoptedRecord = adoptionStore.load(adoptedId);
   assert.equal(adoptedRecord.brief, task, "adoption persists only semantic task bytes");
   assert.equal(readFileSync(adoptedRecord.taskArtifact.path, "utf8"), task, "adoption creates exact task artifact before first prompt");
