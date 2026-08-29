@@ -4,7 +4,13 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createGitHubClient, githubRepositoryFromOrigin, landWorktree, publishCandidate } from "../src/land.mjs";
+import {
+  createGitHubClient,
+  githubRepositoryFromOrigin,
+  landWorktree,
+  publishCandidate,
+  reconcileReviewBase,
+} from "../src/land.mjs";
 
 assert.equal(githubRepositoryFromOrigin("git@github.com:owner/repo.git"), "owner/repo");
 assert.equal(githubRepositoryFromOrigin("https://github.com/owner/repo.git"), "owner/repo");
@@ -23,6 +29,53 @@ const state = {
   branch: "feat/exact-candidate",
   ref: CANDIDATE,
 };
+
+async function reviewBaseFixture({ contained = 1, descends = 0 } = {}) {
+  const originHead = "d".repeat(40);
+  const calls = [];
+  const run = async (command, args, options = {}) => {
+    calls.push({ command, args: [...args], cwd: options.cwd });
+    const key = args.join(" ");
+    if (key === "fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main") return { code: 0, stdout: "", stderr: "" };
+    if (key === "rev-parse --verify origin/main^{commit}") return { code: 0, stdout: `${originHead}\n`, stderr: "" };
+    if (key === `merge-base --is-ancestor ${CANDIDATE} ${originHead}`) return { code: contained, stdout: "", stderr: "" };
+    if (key === `merge-base --is-ancestor ${originHead} ${CANDIDATE}`) return { code: descends, stdout: "", stderr: "" };
+    throw new Error(`unexpected review-base command: ${command} ${key}`);
+  };
+  return { run, calls, originHead };
+}
+
+{
+  const fixture = await reviewBaseFixture();
+  const reconciled = await reconcileReviewBase(fixture.run, state, CANDIDATE);
+  assert.deepEqual(reconciled, { baseRef: fixture.originHead, baseBranch: "main" });
+  assert.notEqual(reconciled.baseRef, state.baseRef, "stale delegated base is replaced by actual origin/main");
+  assert.deepEqual(fixture.calls.map(({ args }) => args.slice(0, 2).join(" ")), [
+    "fetch --no-tags",
+    "rev-parse --verify",
+    "merge-base --is-ancestor",
+    "merge-base --is-ancestor",
+  ]);
+  assert.deepEqual(fixture.calls.map(({ cwd }) => cwd), ["/main", "/main", "/worktree", "/worktree"]);
+}
+
+for (const label of ["equal head", "candidate already merged before QA"]) {
+  const fixture = await reviewBaseFixture({ contained: 0 });
+  await assert.rejects(
+    reconcileReviewBase(fixture.run, state, CANDIDATE),
+    /candidate is pre-landed: .* already contained by origin\/main \(ahead=0\)/,
+    label,
+  );
+  assert.equal(fixture.calls.some(({ args }) => args[0] === "diff"), false, `${label} is rejected before QA packet work`);
+}
+
+{
+  const fixture = await reviewBaseFixture({ contained: 1, descends: 1 });
+  await assert.rejects(
+    reconcileReviewBase(fixture.run, state, CANDIDATE),
+    /candidate diverges from origin\/main/,
+  );
+}
 
 function publicationFixture({ localType = "commit", rows, fetchedOid = CANDIDATE, remoteType = "commit" } = {}) {
   const calls = [];

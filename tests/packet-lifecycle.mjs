@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { AGENT_HANDLE } from "../src/agent-handle.mjs";
 import { createDelegationStore } from "../src/delegation-store.mjs";
 import { runCommand, slugFor } from "../src/git.mjs";
 import {
@@ -24,12 +25,75 @@ import {
 } from "../src/proposal-packet.mjs";
 import { materializeTaskArtifact, taskDigest } from "../src/task-artifact.mjs";
 
+function recoveryAgent({ id, delegationId, role, epoch, cwd }) {
+  const definitions = new Map([["bash", {
+    name: "bash",
+    description: "test bash",
+    parameters: { type: "object", properties: {} },
+    async execute() { return { output: "" }; },
+  }]]);
+  const tools = {
+    get(name) { return definitions.get(name); },
+    schemas() { return [...definitions.values()].map(({ name }) => ({ name })); },
+    register(definition) {
+      const prior = definitions.get(definition.name);
+      definitions.set(definition.name, definition);
+      return () => prior ? definitions.set(definition.name, prior) : definitions.delete(definition.name);
+    },
+  };
+  const systemPrompt = {
+    section() { return () => {}; },
+    suppressRuntimeContext() {},
+  };
+  const listeners = [];
+  const agent = {
+    id,
+    status: "idle",
+    inbox: { nextTurn: [], nextStep: [] },
+    session: {
+      id,
+      events: [],
+      header: {
+        cwd,
+        origin: "subagent",
+        delegationRole: role,
+        delegationPhaseRole: role,
+        delegationId,
+        delegationPhaseEpoch: epoch,
+        ...(role === "qa" ? { kind: "mini-qa" } : {}),
+      },
+      append(type, data) { this.events.push({ type, data }); },
+    },
+    followup(message) { this.inbox.nextTurn.push(message); },
+  };
+  agent.ctx = {
+    agent,
+    tools,
+    systemPrompt,
+    get(name) {
+      if (name === "tools") return tools;
+      if (name === "systemPrompt") return systemPrompt;
+      if (name === "qq-core") return { surface: { allow() {} } };
+      return null;
+    },
+    on(type, listener) {
+      const record = { type, listener };
+      listeners.push(record);
+      return () => listeners.splice(listeners.indexOf(record), 1);
+    },
+  };
+  const handle = { agent, async dispose() {} };
+  Object.defineProperty(agent, AGENT_HANDLE, { value: handle, configurable: true });
+  return { agent, definitions, handle };
+}
+
 const taskMarker = "MAXIMUM_TASK_UNIQUE_MARKER";
 const task = `# Lifecycle redesign\n\n${taskMarker}\n${"T".repeat(24_000 - taskMarker.length - 23)}`;
 assert.equal(task.length, 24_000);
 const firstPrompt = renderMiniSweTask(task, { system: "Test", release: "1", version: "1", machine: "x" });
 assert.equal(firstPrompt.split(taskMarker).length - 1, 1, "the first implementation prompt contains the exact task once");
 assert.doesNotMatch(firstPrompt, /Delegation ID \(authoritative\)|Authoritative parent session UUID|auto-return/i);
+assert.match(firstPrompt, /Do not push branches, open or merge pull requests, or merge into the base branch/);
 assert.ok(slugFor(task, "session-12345678").startsWith("lifecycle-redesign-"), "slug derives from the semantic title");
 assert.ok(!slugFor(task, "session-12345678").startsWith("delegation-id-"));
 
@@ -77,6 +141,7 @@ for (const role of ["qa", "implementation"]) {
   assert.match(prompt, /QA_FEEDBACK_MARKER/);
   assert.doesNotMatch(prompt, new RegExp(taskMarker));
   assert.doesNotMatch(prompt, /Delegation ID \(authoritative\)|parent session|child session/i);
+  if (role === "implementation") assert.match(prompt, /Do not push branches, open or merge pull requests, or merge into the base branch/);
 }
 const legacyMessage = `legacy pending bytes\n${taskMarker}\nunchanged`;
 assert.equal(renderDelegationPhaseTask({ role: "qa", message: legacyMessage }), legacyMessage);
@@ -119,6 +184,7 @@ try {
   execFileSync("git", ["-C", repo, "add", "README.md"], { env });
   execFileSync("git", ["-C", repo, "commit", "-m", "fixture"], { env, stdio: "ignore" });
   const run = (command, args, options = {}) => runCommand(command, args, { ...options, env });
+  const repositoryHead = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { env, encoding: "utf8" }).trim();
   let artifact = await materializeTaskArtifact(run, { worktree: repo, task });
   assert.equal(readFileSync(artifact.path, "utf8"), task);
   assert.equal(artifact.sha256, taskDigest(task));
@@ -171,6 +237,72 @@ try {
   assert.deepEqual(adoptionStore.load(adoptedId).pendingPhase.input, phaseInput, "structured phase input survives a durable round trip");
   assert.equal(adoptionStore.load(adoptedId).pendingPhase.message, "");
   await land.dispose();
+
+  async function assertStructuredLiveRecovery({ role, createCollision = false, suffix }) {
+    const recoveryStore = createDelegationStore(join(root, `recovery-${suffix}`));
+    const delegationId = `${suffix.repeat(8)}-${suffix.repeat(4)}-4${suffix.repeat(3)}-8${suffix.repeat(3)}-${suffix.repeat(12)}`;
+    const originalSession = `session-${suffix.repeat(8)}-${suffix.repeat(4)}-4${suffix.repeat(3)}-9${suffix.repeat(3)}-${suffix.repeat(11)}1`;
+    const childSession = `session-${suffix.repeat(8)}-${suffix.repeat(4)}-4${suffix.repeat(3)}-a${suffix.repeat(3)}-${suffix.repeat(11)}2`;
+    const messageId = `${suffix.repeat(8)}-${suffix.repeat(4)}-4${suffix.repeat(3)}-b${suffix.repeat(3)}-${suffix.repeat(11)}3`;
+    const live = recoveryAgent({ id: childSession, delegationId, role, epoch: 2, cwd: repo });
+    recoveryStore.create({
+      id: delegationId,
+      delegationId,
+      parentSessionUuid: adoptedParentId,
+      implementationSession: originalSession,
+      brief: task,
+      taskArtifact: artifact,
+      worktree: repo,
+      mainRoot: repo,
+      branch: "feat/recovery",
+      baseBranch: "main",
+      baseRef: repositoryHead,
+      ref: repositoryHead,
+      transitioning: true,
+      pendingPhase: {
+        sessionUuid: childSession,
+        role,
+        phaseEpoch: 2,
+        messageId,
+        message: "",
+        input: phaseInput,
+        messageDelivered: false,
+      },
+    });
+    let visible = !createCollision;
+    let creates = 0;
+    const recoveryLand = createLand({
+      ctx: { get() { return null; }, logger: { info() {}, warn() {} } },
+      store: recoveryStore,
+      run,
+      agents: {
+        get(id) { return visible && id === childSession ? live.agent : null; },
+        list() { return visible ? [live.agent] : []; },
+        async create() {
+          creates++;
+          visible = true;
+          throw new Error("planned session already exists");
+        },
+      },
+    });
+    const recovered = await recoveryLand.recoverPendingPhases();
+    assert.equal(recovered.length, 1);
+    assert.deepEqual(recovered[0], { status: "fulfilled", value: true });
+    assert.equal(creates, createCollision ? 1 : 0, "live HMR recovery does not create, while collision recovery retries by adoption");
+    const promoted = recoveryStore.load(delegationId);
+    assert.equal(promoted.transitioning, false);
+    assert.equal(promoted.pendingPhase, null);
+    assert.deepEqual(promoted.current, { sessionUuid: childSession, role, phaseEpoch: 2 });
+    assert.equal(live.agent.inbox.nextTurn.length, 1, "structured pointer prompt is delivered exactly once");
+    assert.equal(live.agent.inbox.nextTurn[0].id, messageId);
+    assert.match(live.agent.inbox.nextTurn[0].content[0].text, /Exact task artifact: \.git\/qq-workflows\/task\.md/);
+    assert.doesNotMatch(live.agent.inbox.nextTurn[0].content[0].text, new RegExp(taskMarker));
+    assert.equal(live.definitions.has(role === "qa" ? "submit_review" : "done"), true, `${role} completion tool is installed before recovery succeeds`);
+    await recoveryLand.dispose();
+  }
+
+  await assertStructuredLiveRecovery({ role: "qa", suffix: "a" });
+  await assertStructuredLiveRecovery({ role: "implementation", createCollision: true, suffix: "b" });
 
   const store = createDelegationStore(storeDir);
   const id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";

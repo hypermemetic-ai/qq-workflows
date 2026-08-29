@@ -50,6 +50,7 @@ export function renderMiniSweTask(task, info) {
     `Please solve this issue: ${String(task ?? "")}`,
     "",
     "You can execute bash commands and edit files to implement the necessary changes.",
+    "Do not push branches, open or merge pull requests, or merge into the base branch. The host Land workflow exclusively owns publication after QA.",
     "",
     "## Recommended Workflow",
     "",

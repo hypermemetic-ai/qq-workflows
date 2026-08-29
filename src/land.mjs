@@ -264,6 +264,55 @@ ${packet}`,
   ].filter(Boolean).join("\n\n"), DELEGATION_OUTCOME_MAX_CHARS, "implementation outcome");
 }
 
+export async function reconcileReviewBase(run, state, candidateRef) {
+  const baseBranch = String(state?.baseBranch || "main");
+  const worktree = state?.worktree;
+  const mainRoot = state?.mainRoot;
+  if (!worktree || !mainRoot) throw new Error("cannot reconcile review base without its main and delegated worktrees");
+  await checked(
+    run,
+    "git",
+    ["fetch", "--no-tags", "origin", `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`],
+    { cwd: mainRoot },
+    `cannot fetch origin/${baseBranch} before QA`,
+  );
+  const remote = await checked(
+    run,
+    "git",
+    ["rev-parse", "--verify", `origin/${baseBranch}^{commit}`],
+    { cwd: mainRoot },
+    `cannot resolve origin/${baseBranch} before QA`,
+  );
+  const baseRef = remote.stdout.trim();
+  if (!/^[0-9a-f]{40}$/i.test(baseRef)) {
+    throw new Error(`cannot resolve origin/${baseBranch} before QA: expected a full commit SHA`);
+  }
+  const candidate = String(candidateRef ?? "").trim();
+  const contained = await run(
+    "git",
+    ["merge-base", "--is-ancestor", candidate, baseRef],
+    { cwd: worktree },
+  );
+  if (contained?.code === 0) {
+    throw new Error(`candidate is pre-landed: ${candidate} is already contained by origin/${baseBranch} (ahead=0)`);
+  }
+  if (contained?.code !== 1) {
+    throw new Error(`cannot compare candidate with origin/${baseBranch}: ${reason(contained, "git merge-base failed")}`);
+  }
+  const descends = await run(
+    "git",
+    ["merge-base", "--is-ancestor", baseRef, candidate],
+    { cwd: worktree },
+  );
+  if (descends?.code === 1) {
+    throw new Error(`candidate diverges from origin/${baseBranch}; rebase it before QA`);
+  }
+  if (descends?.code !== 0) {
+    throw new Error(`cannot compare origin/${baseBranch} with candidate: ${reason(descends, "git merge-base failed")}`);
+  }
+  return { baseRef, baseBranch };
+}
+
 export async function enforceQaWorktree(run, state, verdict) {
   const dirty = await checked(
     run, "git", ["status", "--porcelain", "--untracked-files=all"], { cwd: state.worktree }, "cannot inspect qa worktree",
@@ -801,6 +850,17 @@ export function createLand({
       if (!childTools.has(owner.sessionId)) installDone(owner.child, latest.id);
     }
     return latest;
+  }
+
+  function activateRecoveredPendingChild(owner, state, pending) {
+    const next = activatePendingChild(owner, state, pending);
+    if (next.current?.sessionUuid !== pending.sessionUuid
+      || next.current.role !== pending.role
+      || next.current.phaseEpoch !== pending.phaseEpoch
+      || next.pendingPhase) {
+      throw new Error(`delegation ${state.id} recovery did not promote its pending phase`);
+    }
+    return next;
   }
 
   function matchesPendingHeaders(child, state, pending) {
@@ -1489,32 +1549,36 @@ export function createLand({
     return true;
   }
 
+  function retainPendingChild(child, state, pending) {
+    if (!matchesPendingHeaders(child, state, pending)) return null;
+    if (!pending.messageId || (!pending.message && !pending.input)) return null;
+    const retained = child?.[CHILD_AGENT_HANDLE] ?? child?.[AGENT_HANDLE];
+    if (!retained) return null;
+    pinNonInteractiveApproval(child, { delegated: true });
+    return retainChild(retained, {
+      child,
+      role: pending.role,
+      workflowRole: pending.role,
+      delegationId: state.id,
+    });
+  }
+
   function resumeChild(child, { allowClosing = false } = {}) {
     if (closing && !allowClosing) return false;
     const sessionId = sessionIdOf(child);
     if (!sessionId) return false;
     let state = store.bySession(sessionId);
     if (!state) return false;
-    pinNonInteractiveApproval(child, { delegated: true });
     const pending = state.pendingPhase?.sessionUuid === sessionId ? state.pendingPhase : null;
     const recoverable = state.current?.sessionUuid === sessionId
       || state.settlementSession === sessionId
       || pending
       || (state.reportPending && state.reportFromSession === sessionId);
     if (!recoverable) return false;
-    const retained = child?.[CHILD_AGENT_HANDLE] ?? child?.[AGENT_HANDLE];
-    if (!retained) return false;
     let owner;
     if (pending) {
-      if (!matchesPendingHeaders(child, state, pending)) return false;
-      if (!pending.messageId || (!pending.message && !pending.input)) return false;
-      const pendingRole = pending.role;
-      owner = retainChild(retained, {
-        child,
-        role: pendingRole,
-        workflowRole: pending.role,
-        delegationId: state.id,
-      });
+      owner = retainPendingChild(child, state, pending);
+      if (!owner) return false;
       if (pending.input && !pending.messageDelivered) {
         void recoverPendingDelegation(state.id);
         return true;
@@ -1526,7 +1590,11 @@ export function createLand({
         throw error;
       }
       if (state.pendingPhase) return true;
+    } else {
+      pinNonInteractiveApproval(child, { delegated: true });
     }
+    const retained = child?.[CHILD_AGENT_HANDLE] ?? child?.[AGENT_HANDLE];
+    if (!retained) return false;
     const role = state.qaSession === sessionId ? "qa" : "implementation";
     const workflowRole = workflowRoleForState(state, sessionId, child?.session?.header?.delegationPhaseRole || role);
     owner ??= retainChild(retained, { child, role, workflowRole, delegationId: state.id });
@@ -1620,15 +1688,20 @@ export function createLand({
       if (owned.delegationId !== state.id || owned.workflowRole !== pending.role) {
         throw new Error(`delegation ${delegationId} intended child is owned by another phase`);
       }
-      activatePendingChild(owned, state, pending);
+      activateRecoveredPendingChild(owned, state, pending);
       return true;
     }
 
-    // Same-process HMR leaves the AgentHandle capability on a live child. Use
-    // it instead of touching agents.create, including pending packet recovery.
+    // Same-process HMR leaves the AgentHandle capability on a live child. Adopt
+    // and activate it directly: re-entering resumeChild here would coalesce its
+    // structured-packet recovery onto this in-flight promise and falsely report
+    // success without delivering or promoting the pending phase.
     let child = liveAgent(pending.sessionUuid);
     if (child) {
-      return resumeChild(child, { allowClosing: true });
+      const owner = retainPendingChild(child, state, pending);
+      if (!owner) throw new Error(`delegation ${delegationId} cannot retain its intended live child`);
+      activateRecoveredPendingChild(owner, state, pending);
+      return true;
     }
 
     const role = pending.role;
@@ -1648,7 +1721,21 @@ export function createLand({
       // exact endpoint when its retained capability is visible; never choose a
       // fresh UUID or issue a second create for this recovery attempt.
       child = liveAgent(pending.sessionUuid);
-      if (child && resumeChild(child, { allowClosing: true })) return true;
+      if (child) {
+        const latest = store.load(delegationId) ?? state;
+        if (latest.current?.sessionUuid === pending.sessionUuid
+          && latest.current.role === pending.role
+          && latest.current.phaseEpoch === pending.phaseEpoch
+          && !latest.pendingPhase
+          && resumeChild(child, { allowClosing: true })) {
+          return true;
+        }
+        const owner = retainPendingChild(child, latest, pending);
+        if (owner) {
+          activateRecoveredPendingChild(owner, latest, pending);
+          return true;
+        }
+      }
       throw error;
     }
 
@@ -1659,7 +1746,7 @@ export function createLand({
       && !state.pendingPhase) {
       return true;
     }
-    activatePendingChild(spawned.owner, state, pending);
+    activateRecoveredPendingChild(spawned.owner, state, pending);
     return true;
   }
 
@@ -1949,14 +2036,17 @@ export function createLand({
       if (status.stdout.trim()) {
         return { status: "refused", reason: "worktree is not clean; commit or remove every change before done" };
       }
+      const reviewBase = await reconcileReviewBase(run, state, sha);
+      const reviewState = { ...state, baseRef: reviewBase.baseRef };
       const look = state.status === "revising" ? 2 : state.look;
-      const packet = await compilePacket(run, { ...state, ref: sha }, { mark: null });
+      const packet = await compilePacket(run, { ...reviewState, ref: sha }, { mark: null });
       const priorLook1Rejection = state.status === "revising" && state.qaVerdict
         ? state.qaVerdict.feedback || state.qaVerdict.summary
         : "";
       packet.mark = "review";
       let next = store.save(beginPhaseTransition(state, {
         ref: sha,
+        baseRef: reviewBase.baseRef,
         look,
         packet,
         status: "reviewing",

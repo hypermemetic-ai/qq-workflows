@@ -100,8 +100,12 @@ removes old built-in sections while preserving adopted-plugin settings.
 ## Implementation QA and land
 
 `done` is the implementation child's submission command. Every accepted `done`
+first fetches the actual origin base, rejects candidates already contained by or
+diverged from it, persists that remote commit as the effective review base, then
 compiles a bounded proposal packet and starts `mini-qa`; there is no paint skip,
-router model hop, or evidence stamp. A first QA failure starts a fresh
+router model hop, or evidence stamp. Implementation children are explicitly told
+not to push, create or merge pull requests, or merge into the base branch; host
+Land exclusively owns publication. A first QA failure starts a fresh
 `mini-code` child on the same implementation binding. A second QA failure blocks
 the delegation. Public phase roles are only `implementation` and `qa`; look
 count remains internal.
