@@ -105,7 +105,8 @@ const provider = {
   async get(url) { return { source: url, status: 200, contentType: "text/html", content: "<p>fixture evidence supports the answer</p>" }; },
 };
 const research = createResearch({ ctx, store, agents, parentDir, webProvider: provider, env: {} });
-const started = await research.invoke({ agent: parent, question: "What does the fixture show?" });
+const delegationId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const started = await research.invoke({ agent: parent, question: "What does the fixture show?", delegationId });
 assert.equal(started.status, "ok", started.reason);
 assert.equal(coreRootLookups, 1);
 assert.equal(children.length, 1);
@@ -123,7 +124,7 @@ assert.equal(completed.exitCode, 0, completed.stderr?.text);
 assert.equal(concluded, 1);
 assert.equal(children.length, 2, "accepted research spawns one fresh review context");
 const review = children[1];
-assert.equal(review.session.header.kind, "mini-review");
+assert.equal(review.session.header.kind, "mini-qa");
 assert.deepEqual(review.ctx.surfaceCalls, [{ agent: review, names: ["bash"] }]);
 assert.deepEqual(review.ctx.registered.map((tool) => tool.name), ["bash", "submit_review"]);
 const reviewBash = review.ctx.registered.find((tool) => tool.name === "bash");
@@ -143,5 +144,5 @@ assert.equal(sent[0].to, parentId);
 assert.match(sent[0].message, /Citation check: passed/);
 assert.match(sent[0].message, /Review findings: 0/);
 assert.match(sent[0].message, /Answer path:/);
-assert.equal(store.load(started.runId).status, "completed");
+assert.equal(store.load(started.delegationId).status, "completed");
 console.log("research fixture: ok");

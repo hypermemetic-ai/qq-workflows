@@ -1,5 +1,5 @@
-// Land-path tools. `done` sits on the implementer child. The architect/base
-// chair may call `land` to publish an existing worktree; GitHub PR publication
+// Land-path tools. `done` sits on the implementation child. The architect/base
+// chair may call `land` to land an existing worktree; GitHub PR landing
 // never registers as a user-facing workflow.
 
 import { armChildSettlement, childToolOutput } from "./child-settlement.mjs";

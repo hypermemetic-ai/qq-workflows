@@ -13,18 +13,18 @@ import {
   renderMiniResearchTask,
 } from "./mini-research.mjs";
 import {
-  bindMiniReviewSubmit,
-  isMiniReviewAgent,
-  MINI_REVIEW_KIND,
-  miniReviewSetup,
-} from "./mini-review.mjs";
+  bindMiniQaSubmit,
+  isMiniQaAgent,
+  MINI_QA_KIND,
+  miniQaSetup,
+} from "./mini-qa.mjs";
 import { createResearchWorkspace, checkAnswerCitations, readManifest, workspacePaths } from "./research-evidence.mjs";
 import { createResearchOracle } from "./research-oracle.mjs";
 import { createResearchSessions } from "./research-sessions.mjs";
 import { createResearchWeb } from "./research-web.mjs";
 
 export const RESEARCH_REVIEW_PROMPT = [
-  "You are mini-review performing a fresh-context quality review of a proposed research answer.",
+  "You are Mini QA performing a fresh-context quality review of a proposed research answer.",
   "Use ordinary bash from the research capsule to inspect only question.md, answer.md, evidence/, and repo/. You cannot retrieve new web or session evidence; web-search, web-get, session-search, and session-get are unavailable.",
   "Find concrete answer defects: unsupported claims, citations that do not entail the claim, ignored contradictions, inference presented as fact, or conclusions stronger than the evidence.",
   "Report each defect at the relevant answer.md line. Zero findings is valid. Finish with submit_review.",
@@ -75,7 +75,7 @@ function reviewTask({ question, answer, manifest }) {
 function reportText(state, answer) {
   const findings = state.reviewFindings ?? [];
   return [
-    `Research run ${state.id} completed.`,
+    `Research delegation ${state.id} completed.`,
     `Answer path: ${state.root}/answer.md`,
     `Citation check: ${state.citationCheck?.ok === true ? "passed" : "failed"}`,
     `Review findings: ${findings.length}`,
@@ -92,8 +92,8 @@ export function createResearch({
   agents,
   sessionQuery,
   parentDir,
-  hands,
-  talking,
+  implementation,
+  architecture,
   qa,
   env = process.env,
   webProvider,
@@ -121,8 +121,8 @@ export function createResearch({
     return valueOf(sessionQuery) ?? ctx?.get?.("sessionQuery", false) ?? null;
   }
 
-  function persistCandidates(runId, field, candidates) {
-    const current = store.load(runId);
+  function persistCandidates(delegationId, field, candidates) {
+    const current = store.load(delegationId);
     if (!current || current.status !== "researching") return;
     store.save({ ...current, [field]: candidates });
   }
@@ -170,7 +170,7 @@ export function createResearch({
       to: state.parentSessionUuid,
       message: state.status === "completed"
         ? reportText(state, answer)
-        : `Research run ${state.id} blocked: ${state.blockedReason || "child closed before completion"}\nAnswer path: ${state.root}/answer.md`,
+        : `Research delegation ${state.id} blocked: ${state.blockedReason || "child closed before completion"}\nAnswer path: ${state.root}/answer.md`,
       delivery: "default",
       messageId,
     });
@@ -190,10 +190,10 @@ export function createResearch({
     return promise;
   }
 
-  async function completeReview(runId, { agent, findings } = {}) {
-    let state = store.load(runId);
+  async function completeReview(delegationId, { agent, findings } = {}) {
+    let state = store.load(delegationId);
     const id = sessionIdOf(agent);
-    if (!state) return { status: "refused", reason: "submit_review has no research run" };
+    if (!state) return { status: "refused", reason: "submit_review has no research delegation" };
     if (state.status === "completed") return { status: "ok", verdict: findings?.length ? "fail" : "pass", alreadySubmitted: true };
     if (state.status !== "reviewing" || state.reviewSession !== id) {
       return { status: "refused", reason: "submit_review requires the owned research review session" };
@@ -202,7 +202,7 @@ export function createResearch({
     state = store.save({ ...state, status: "completed", reviewFindings: normalized });
     try { await deliver(state); }
     catch (error) {
-      log(ctx, "warn", `qq-workflows: research report pending for ${runId}: ${error instanceof Error ? error.message : String(error)}`);
+      log(ctx, "warn", `qq-workflows: research report pending for ${delegationId}: ${error instanceof Error ? error.message : String(error)}`);
     }
     return {
       status: "ok",
@@ -212,10 +212,10 @@ export function createResearch({
   }
 
   function bindReview(child, state) {
-    miniReviewSetup(child?.ctx ?? child, { prompt: RESEARCH_REVIEW_PROMPT });
+    miniQaSetup(child?.ctx ?? child, { prompt: RESEARCH_REVIEW_PROMPT });
     const oracle = createResearchOracle(state.root);
     clearBinding(sessionIdOf(child));
-    const dispose = bindMiniReviewSubmit(child, {
+    const dispose = bindMiniQaSubmit(child, {
       oracle,
       submit: (args) => completeReview(state.id, args),
       isCompleted: () => store.load(state.id)?.status === "completed",
@@ -228,7 +228,7 @@ export function createResearch({
     const reviewId = state.reviewSession || `session-${randomUUID()}`;
     const planned = store.save({ ...state, status: "reviewing", reviewSession: reviewId });
     const route = childRoute({
-      binding: valueOf(qa) ?? valueOf(talking),
+      binding: valueOf(qa) ?? valueOf(architecture),
       env,
     });
     let created;
@@ -239,11 +239,11 @@ export function createResearch({
           cwd: planned.root,
           parentSession: planned.parentSessionUuid,
           origin: CHILD_ORIGIN,
-          kind: MINI_REVIEW_KIND,
-          agentPreset: MINI_REVIEW_KIND,
-          researchRun: planned.id,
+          kind: MINI_QA_KIND,
+          agentPreset: MINI_QA_KIND,
+          delegationId: planned.id,
         },
-        ...childCreateOptions(route, { setup: (agentCtx) => miniReviewSetup(agentCtx, { prompt: RESEARCH_REVIEW_PROMPT }) }),
+        ...childCreateOptions(route, { setup: (agentCtx) => miniQaSetup(agentCtx, { prompt: RESEARCH_REVIEW_PROMPT }) }),
       }));
       const child = retain(created, created?.agent ?? created);
       bindReview(child, planned);
@@ -268,20 +268,20 @@ export function createResearch({
     }
   }
 
-  async function submitResearch(runId, { agent } = {}) {
-    const state = store.load(runId);
+  async function submitResearch(delegationId, { agent } = {}) {
+    const state = store.load(delegationId);
     const id = sessionIdOf(agent);
     if (!state) return { status: "refused", reason: "research submission has no run" };
     if (state.researchSession !== id) return { status: "refused", reason: "research submission requires the owned mini-research session" };
     if (state.status === "reviewing" || state.status === "completed") return { status: "ok", alreadySubmitted: true };
-    if (state.status !== "researching") return { status: "refused", reason: `research run is ${state.status}` };
+    if (state.status !== "researching") return { status: "refused", reason: `research delegation is ${state.status}` };
     try {
       const [persistedQuestion, actualRepo] = await Promise.all([
         readFile(`${state.root}/question.md`, "utf8"),
         realpath(`${state.root}/repo`),
       ]);
       if (persistedQuestion !== `${state.question.trimEnd()}\n`) {
-        return { status: "refused", reason: "question.md was modified after the research run started" };
+        return { status: "refused", reason: "question.md was modified after the research delegation started" };
       }
       if (actualRepo !== state.repoRoot) {
         return { status: "refused", reason: "repo symlink no longer targets the approved project root" };
@@ -308,11 +308,15 @@ export function createResearch({
     bindings.set(sessionIdOf(child), dispose);
   }
 
-  async function invoke({ agent, question } = {}) {
+  async function invoke({ agent, question, delegationId } = {}) {
     if (closing) return { status: "refused", reason: "research is shutting down" };
     if (!isArchitectCandidate(agent)) return { status: "refused", reason: "research requires a root architect session" };
     if (!agents || typeof agents.create !== "function") return { status: "refused", reason: "research requires ctx.agents.create" };
     const parent = agent.session;
+    const durableId = String(delegationId ?? "").toLowerCase();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(durableId)) {
+      return { status: "refused", reason: "research requires an authoritative delegation UUID" };
+    }
     const text = String(question ?? "").trim();
     if (!text) return { status: "refused", reason: "research requires settled working memory" };
     let workspace;
@@ -324,14 +328,14 @@ export function createResearch({
     }
     const childId = `session-${randomUUID()}`;
     let state = store.create({
-      id: workspace.id,
+      id: durableId,
       parentSessionUuid: parent.id,
       root: workspace.root,
       repoRoot: workspace.repoRoot,
       question: text,
       researchSession: childId,
     });
-    const route = childRoute({ binding: valueOf(hands) ?? valueOf(talking), options: agent?.options, env });
+    const route = childRoute({ binding: valueOf(implementation) ?? valueOf(architecture), options: agent?.options, env });
     let created;
     try {
       created = adoptAgentHandle(await agents.create({
@@ -342,7 +346,7 @@ export function createResearch({
           origin: CHILD_ORIGIN,
           kind: MINI_RESEARCH_KIND,
           agentPreset: MINI_RESEARCH_KIND,
-          researchRun: state.id,
+          delegationId: state.id,
         },
         ...childCreateOptions(route, { setup: miniResearchSetup }),
       }));
@@ -354,11 +358,11 @@ export function createResearch({
         content: [{ type: "text", text: renderMiniResearchTask() }],
         source: { kind: "plugin", plugin: "qq-workflows", form: "notice" },
       });
-      return { status: "ok", runId: state.id, child: sessionIdOf(child), workspace: state.root };
+      return { status: "ok", delegationId: state.id, child: sessionIdOf(child), role: "mini-research", phaseEpoch: 1, workspace: state.root };
     } catch (error) {
       state = store.save({ ...state, status: "blocked", blockedReason: error instanceof Error ? error.message : String(error) });
       try { await created?.dispose?.(); } catch { /* rollback */ }
-      return { status: "refused", reason: `research child: ${state.blockedReason}`, runId: state.id };
+      return { status: "refused", reason: `research child: ${state.blockedReason}`, delegationId: state.id };
     }
   }
 
@@ -369,7 +373,7 @@ export function createResearch({
       bindResearch(agent, state);
       return true;
     }
-    if (isMiniReviewAgent(agent) && state.reviewSession === sessionIdOf(agent) && state.status === "reviewing") {
+    if (isMiniQaAgent(agent) && state.reviewSession === sessionIdOf(agent) && state.status === "reviewing") {
       bindReview(agent, state);
       return true;
     }
@@ -385,7 +389,7 @@ export function createResearch({
     const isCurrent = (state.status === "researching" && state.researchSession === id)
       || (state.status === "reviewing" && state.reviewSession === id);
     if (!isCurrent) return false;
-    const blocked = store.save({ ...state, status: "blocked", blockedReason: `${state.status === "reviewing" ? "mini-review" : "mini-research"} child closed before completion` });
+    const blocked = store.save({ ...state, status: "blocked", blockedReason: `${state.status === "reviewing" ? "mini-qa" : "mini-research"} child closed before completion` });
     try { await deliver(blocked); } catch (error) {
       log(ctx, "warn", `qq-workflows: blocked research report pending for ${state.id}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -396,6 +400,72 @@ export function createResearch({
     for (const state of store.list().filter((run) => ["completed", "blocked"].includes(run.status) && !run.reported)) {
       try { await deliver(state); } catch { /* relay may mount later */ }
     }
+  }
+
+  function currentPhase(state) {
+    if (state?.status === "researching") return { sessionUuid: state.researchSession, role: "mini-research", phaseEpoch: 1 };
+    if (state?.status === "reviewing") return { sessionUuid: state.reviewSession, role: "qa", phaseEpoch: 2 };
+    return { sessionUuid: "", role: "", phaseEpoch: state?.reviewSession ? 2 : 1 };
+  }
+
+  function ownedDelegation(delegationId, parentSessionUuid) {
+    const state = store.byDelegation(delegationId);
+    if (!state) return { refusal: { status: "refused", reason: "delegation was not found" } };
+    if (state.parentSessionUuid !== parentSessionUuid) {
+      return { refusal: { status: "refused", reason: "delegation belongs to a different parent session" } };
+    }
+    return { state };
+  }
+
+  function workflowStatus({ delegationId, parentSessionUuid } = {}) {
+    const found = ownedDelegation(delegationId, parentSessionUuid);
+    if (found.refusal) return found.refusal;
+    const phase = currentPhase(found.state);
+    const relay = relayOf(ctx);
+    return {
+      status: "ok",
+      kind: "research",
+      delegationId: found.state.id,
+      delegationStatus: found.state.status,
+      ...phase,
+      alias: phase.sessionUuid && typeof relay?.alias === "function" ? (relay.alias(phase.sessionUuid) ?? "") : "",
+      transitioning: false,
+      terminal: found.state.status === "completed" || found.state.status === "blocked",
+      workspace: found.state.root,
+      parentSessionUuid: found.state.parentSessionUuid,
+    };
+  }
+
+  async function workflowSend({ delegationId, message, expectedRole, expectedEpoch, parentSessionUuid } = {}) {
+    const found = ownedDelegation(delegationId, parentSessionUuid);
+    if (found.refusal) return found.refusal;
+    const phase = currentPhase(found.state);
+    if (!phase.sessionUuid) return { status: "refused", reason: `delegation is terminal (${found.state.status})` };
+    if (expectedRole !== undefined && expectedRole !== phase.role) return { status: "refused", reason: `stale workflow role: expected ${expectedRole}, current is ${phase.role}` };
+    if (expectedEpoch !== undefined && expectedEpoch !== phase.phaseEpoch) return { status: "refused", reason: `stale phase epoch: expected ${expectedEpoch}, current is ${phase.phaseEpoch}` };
+    if (typeof message !== "string" || !message.trim()) return { status: "refused", reason: "workflow_send requires a non-empty message" };
+    const child = agents?.get?.(phase.sessionUuid);
+    if (!child) return { status: "refused", reason: "current workflow child is not live" };
+    const relay = relayOf(ctx);
+    if (!relay || typeof relay.send !== "function") return { status: "refused", reason: "workflow_send requires qq-relay" };
+    const sent = await relay.send({ fromId: parentSessionUuid, to: phase.sessionUuid, message, delivery: "default" });
+    return { ...sent, delegationId: found.state.id, ...phase, alias: sent?.to_alias ?? "" };
+  }
+
+  async function workflowStop({ delegationId, reason, parentSessionUuid } = {}) {
+    const found = ownedDelegation(delegationId, parentSessionUuid);
+    if (found.refusal) return found.refusal;
+    const phase = currentPhase(found.state);
+    if (!phase.sessionUuid) return { status: "refused", reason: `delegation is terminal (${found.state.status})` };
+    const blocked = store.save({ ...found.state, status: "blocked", blockedReason: String(reason || "stopped by parent") });
+    clearBinding(phase.sessionUuid);
+    const handle = handles.get(phase.sessionUuid);
+    handles.delete(phase.sessionUuid);
+    try { await handle?.dispose?.(); } catch { /* state is already terminal */ }
+    try { await deliver(blocked); } catch (error) {
+      log(ctx, "warn", `qq-workflows: stopped research report pending for ${blocked.id}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return { status: "ok", delegationId: blocked.id, delegationStatus: "blocked", terminal: true };
   }
 
   function dispose() {
@@ -411,8 +481,12 @@ export function createResearch({
     resumeChild,
     releaseChild,
     recoverReports,
+    workflowStatus,
+    workflowSend,
+    workflowStop,
     dispose,
-    run: (id) => store.load(id),
+    delegation: (id) => store.load(id),
+    byDelegation: (id) => store.byDelegation(id),
     bySession: (id) => store.bySession(id),
   });
 }

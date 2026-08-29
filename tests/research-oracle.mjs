@@ -9,7 +9,7 @@ import {
   createResearchOracle,
   RESEARCH_ORACLE_ENUMERATION_LIMIT,
 } from "../src/research-oracle.mjs";
-import { MINI_REVIEW_TOOL_NAMES } from "../src/mini-review.mjs";
+import { MINI_QA_TOOL_NAMES } from "../src/mini-qa.mjs";
 
 function flood(dir, count, contents = "flood") {
   mkdirSync(dir, { recursive: true });
@@ -27,7 +27,7 @@ await materializeEvidence(workspace, {
 const oracle = createResearchOracle(workspace.root);
 assert.equal(typeof oracle.webSearch, "undefined");
 assert.equal(typeof oracle.sessionSearch, "undefined");
-assert.deepEqual(MINI_REVIEW_TOOL_NAMES, ["bash", "submit_review"]);
+assert.deepEqual(MINI_QA_TOOL_NAMES, ["bash", "submit_review"]);
 assert.match(await oracle.glob({ pattern: "**/*.md" }), /answer\.md/);
 assert.match(await oracle.glob({ pattern: "answer.md" }), /^MATCHES 1\nanswer\.md$/);
 assert.match(await oracle.grep({ query: "materialized truth", path: "evidence" }), /evidence\/web\/W001\.md/);

@@ -105,8 +105,8 @@ function docsAgent(id, ctx, header = { kind: miniDocs.MINI_DOCS_KIND }) {
   return agent;
 }
 
-assert.equal(miniDocs.name, "qq-mini-docs");
-assert.deepEqual(miniDocs.inject, ["agents"]);
+assert.equal(miniDocs.name, undefined, "mini-docs is an adapter, not a Cordis plugin");
+assert.equal(miniDocs.apply, undefined, "docs must be mounted by an adopted host kind");
 assert.equal(miniDocs.MINI_DOCS_KIND, "mini-docs");
 assert.equal(miniDocs.MINI_DOCS_COMPLETION_COMMAND, "echo COMPLETE_DOCS_AND_EXIT");
 assert.equal(miniDocs.isMiniDocsCompletionCommand("  echo COMPLETE_DOCS_AND_EXIT\n"), true);
@@ -266,37 +266,14 @@ assert.equal(failedLookups, 0);
 assert.equal(failedRegistrations, 0);
 assert.equal(failedSurfaceMount.sections.length, 0);
 
-// apply() mounts only live/new mini-docs agents, including agentPreset detection.
-const candidates = [
-  ["live-kind", { kind: "mini-docs" }],
-  ["live-preset", { agentPreset: "mini-docs" }],
-  ["live-mini", { kind: "mini" }],
-  ["live-review", { kind: "mini-review" }],
-  ["live-architect", { kind: "architect" }],
-  ["live-chair", {}],
-].map(([id, header]) => {
-  const harness = createAgentContext();
-  return { agent: docsAgent(id, harness.ctx, header), harness };
-});
-const applyListeners = [];
-const applyCtx = {
-  get(service) {
-    if (service === "agents") return { list: () => candidates.map(({ agent }) => agent) };
-    return undefined;
-  },
-  on(type, fn) { applyListeners.push({ type, fn }); return () => {}; },
-};
-miniDocs.apply(applyCtx, { env: { QQ_WIKI_WRITER_PROMPT: WRITER_PROMPT } });
-assert.deepEqual(candidates.map(({ harness }) => harness.registeredTools.length), [1, 1, 0, 0, 0, 0]);
-assert.deepEqual(candidates.map(({ harness }) => harness.sections.length), [1, 1, 0, 0, 0, 0]);
-
-const createdListener = applyListeners.find((record) => record.type === "agent/created").fn;
-const createdDocsHarness = createAgentContext();
-createdListener({ agent: docsAgent("created-docs", createdDocsHarness.ctx) });
-assert.deepEqual(createdDocsHarness.registeredTools.map((tool) => tool.name), ["bash"]);
-const createdChairHarness = createAgentContext();
-createdListener({ agent: docsAgent("created-chair", createdChairHarness.ctx, {}) });
-assert.equal(createdChairHarness.registeredTools.length, 0);
+// The adopted docs kind owns lifecycle and calls this adapter explicitly.
+const adoptedHarness = createAgentContext();
+const adoptedAgent = docsAgent("adopted-docs", adoptedHarness.ctx);
+assert.equal(miniDocs.ensureMiniDocsMounted(adoptedAgent, { env: { QQ_WIKI_WRITER_PROMPT: WRITER_PROMPT } }), true);
+assert.deepEqual(adoptedHarness.registeredTools.map((tool) => tool.name), ["bash"]);
+const unrelatedHarness = createAgentContext();
+assert.equal(miniDocs.ensureMiniDocsMounted(docsAgent("not-docs", unrelatedHarness.ctx, { kind: "mini-code" }), { env: { QQ_WIKI_WRITER_PROMPT: WRITER_PROMPT } }), false);
+assert.equal(unrelatedHarness.registeredTools.length, 0);
 
 // Keep the no-Land/no-submit/no-commit fence explicit in this adapter.
 const source = readFileSync(new URL("../src/mini-docs.mjs", import.meta.url), "utf8");

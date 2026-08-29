@@ -17,9 +17,11 @@ import {
 import { MINI_SWE_COMPLETION_COMMAND } from "../src/mini-swe-v2.mjs";
 import { isMiniAgent, LEGACY_MINI_KIND, MINI_KIND } from "../src/official-mini.mjs";
 
-assert.equal(MINI_KIND, "mini-coder");
-assert.equal(LEGACY_MINI_KIND, "mini");
+assert.equal(MINI_KIND, "mini-code");
+assert.equal(LEGACY_MINI_KIND, "mini-coder");
+assert.equal(isMiniAgent({ header: { kind: "mini-code" } }), true);
 assert.equal(isMiniAgent({ header: { kind: "mini-coder" } }), true);
+assert.equal(isMiniAgent({ header: { kind: "mini" } }), true);
 assert.equal(isMiniAgent({ header: { kind: "mini" } }), true, "legacy coding sessions still resume");
 assert.equal(MINI_RESEARCH_KIND, "mini-research");
 assert.deepEqual(MINI_RESEARCH_TOOLS, ["bash"]);

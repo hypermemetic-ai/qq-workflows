@@ -34,9 +34,8 @@ export function parseWorkflowsInput(rawInput) {
 }
 
 export const SETTINGS_ROLES = Object.freeze({
-  architect: Object.freeze(["talking", "hands"]),
-  land: Object.freeze(["router", "qa", "implementer"]),
-  base: Object.freeze(["talking"]),
+  architect: Object.freeze(["architecture", "implementation", "qa"]),
+  base: Object.freeze(["architecture", "implementation", "qa"]),
 });
 
 export const SETTINGS_PROVIDERS = Object.freeze(["openai-codex", "xai-auth"]);

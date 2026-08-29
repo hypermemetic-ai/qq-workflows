@@ -5,21 +5,22 @@ import { allowInherited, MINI_INHERITED_TOOLS } from "./hide-harness.mjs";
 import { createQaVerdict } from "./qa-verdict.mjs";
 import { wrapMiniBash } from "./official-mini.mjs";
 import {
-  MINI_REVIEW_KIND,
-  MINI_REVIEW_SUBMIT_SCHEMA,
-  MINI_REVIEW_SYSTEM_PROMPT,
-  MINI_REVIEW_TOOL_NAMES,
-  renderMiniReviewTask,
-} from "./mini-review-v2.mjs";
+  MINI_QA_KIND,
+  LEGACY_MINI_QA_KIND,
+  MINI_QA_SUBMIT_SCHEMA,
+  MINI_QA_SYSTEM_PROMPT,
+  MINI_QA_TOOL_NAMES,
+  renderMiniQaTask,
+} from "./mini-qa-v2.mjs";
 
-export * from "./mini-review-v2.mjs";
+export * from "./mini-qa-v2.mjs";
 
-export const MINI_REVIEW_PERSONA_SECTION = "deployment:persona";
-export const MINI_REVIEW_PERSONA_ORDER = 0;
+export const MINI_QA_PERSONA_SECTION = "deployment:persona";
+export const MINI_QA_PERSONA_ORDER = 0;
 
-const MINI_REVIEW_BINDING = Symbol.for("qq.miniReviewBinding");
-const MINI_REVIEW_COMPLETED = Symbol.for("qq.miniReviewCompleted");
-const MINI_REVIEW_MOUNT = Symbol.for("qq.miniReviewMount");
+const MINI_QA_BINDING = Symbol.for("qq.miniQaBinding");
+const MINI_QA_COMPLETED = Symbol.for("qq.miniQaCompleted");
+const MINI_QA_MOUNT = Symbol.for("qq.miniQaMount");
 const MOUNT_GENERATION = Object.freeze({});
 const bindings = new WeakMap();
 const completed = new WeakSet();
@@ -44,14 +45,15 @@ function keysOf(agent) {
   return [agent, agent?.session, agent?.ctx].filter((value) => value && typeof value === "object");
 }
 
-export function isMiniReviewAgent(agent) {
+export function isMiniQaAgent(agent) {
   const header = agent?.session?.header ?? agent?.header;
-  return header?.kind === MINI_REVIEW_KIND || header?.agentPreset === MINI_REVIEW_KIND;
+  return header?.kind === MINI_QA_KIND || header?.agentPreset === MINI_QA_KIND
+    || header?.kind === LEGACY_MINI_QA_KIND || header?.agentPreset === LEGACY_MINI_QA_KIND;
 }
 
 /** Bind one look findings validator and its durable verdict sink. */
-export function bindMiniReviewSubmit(agent, oracleOrBinding, maybeSubmit) {
-  if (!agent) throw new Error("mini-review binding requires an agent");
+export function bindMiniQaSubmit(agent, oracleOrBinding, maybeSubmit) {
+  if (!agent) throw new Error("mini-qa binding requires an agent");
   const binding = typeof oracleOrBinding === "object" && oracleOrBinding?.oracle
     ? {
         oracle: oracleOrBinding.oracle,
@@ -60,18 +62,18 @@ export function bindMiniReviewSubmit(agent, oracleOrBinding, maybeSubmit) {
       }
     : { oracle: oracleOrBinding, submit: maybeSubmit };
   if (!binding.oracle || typeof binding.submit !== "function") {
-    throw new Error("mini-review binding requires an oracle and submit function");
+    throw new Error("mini-qa binding requires an oracle and submit function");
   }
   const keys = keysOf(agent);
   for (const key of keys) {
     bindings.set(key, binding);
-    try { key[MINI_REVIEW_BINDING] = binding; } catch { /* WeakMap fallback */ }
+    try { key[MINI_QA_BINDING] = binding; } catch { /* WeakMap fallback */ }
   }
   return () => {
     for (const key of keys) {
       if (bindings.get(key) === binding) bindings.delete(key);
       try {
-        if (key[MINI_REVIEW_BINDING] === binding) key[MINI_REVIEW_BINDING] = undefined;
+        if (key[MINI_QA_BINDING] === binding) key[MINI_QA_BINDING] = undefined;
       } catch { /* frozen object */ }
     }
   };
@@ -79,7 +81,7 @@ export function bindMiniReviewSubmit(agent, oracleOrBinding, maybeSubmit) {
 
 function bindingFor(agent) {
   for (const key of keysOf(agent)) {
-    const binding = key[MINI_REVIEW_BINDING] ?? bindings.get(key);
+    const binding = key[MINI_QA_BINDING] ?? bindings.get(key);
     if (binding?.oracle && typeof binding.submit === "function") return binding;
   }
   return null;
@@ -88,20 +90,20 @@ function bindingFor(agent) {
 function markCompleted(agent) {
   if (agent && typeof agent === "object") completed.add(agent);
   for (const key of keysOf(agent)) {
-    try { key[MINI_REVIEW_COMPLETED] = true; } catch { /* WeakSet fallback */ }
+    try { key[MINI_QA_COMPLETED] = true; } catch { /* WeakSet fallback */ }
   }
 }
 
 function clearCompleted(agent) {
   if (agent && typeof agent === "object") completed.delete(agent);
   for (const key of keysOf(agent)) {
-    try { key[MINI_REVIEW_COMPLETED] = undefined; } catch { /* WeakSet fallback */ }
+    try { key[MINI_QA_COMPLETED] = undefined; } catch { /* WeakSet fallback */ }
   }
 }
 
 function isCompleted(agent) {
   if (completed.has(agent)) return true;
-  return keysOf(agent).some((key) => key[MINI_REVIEW_COMPLETED] === true);
+  return keysOf(agent).some((key) => key[MINI_QA_COMPLETED] === true);
 }
 
 function bindingIsCompleted(binding, agent) {
@@ -121,7 +123,7 @@ function messageHasReviewTool(event) {
   if (event?.type !== "assistant/message") return undefined;
   const content = event?.data?.message?.content ?? event?.message?.content;
   if (!Array.isArray(content)) return false;
-  return content.some((block) => block?.type === "tool-call" && MINI_REVIEW_TOOL_NAMES.includes(block?.name));
+  return content.some((block) => block?.type === "tool-call" && MINI_QA_TOOL_NAMES.includes(block?.name));
 }
 
 function installFormatRecovery(agentCtx) {
@@ -172,11 +174,11 @@ export function reviewFindingsToVerdictInput(findings) {
   };
 }
 
-export function buildMiniReviewTools() {
+export function buildMiniQaTools() {
   const submit = {
     name: "submit_review",
-    description: MINI_REVIEW_SUBMIT_SCHEMA.description,
-    parameters: structuredClone(MINI_REVIEW_SUBMIT_SCHEMA.parameters),
+    description: MINI_QA_SUBMIT_SCHEMA.description,
+    parameters: structuredClone(MINI_QA_SUBMIT_SCHEMA.parameters),
     output: {
       schema: {
         type: "object",
@@ -232,13 +234,13 @@ function toolsOf(holder) {
   return holder?.tools ?? holder?.get?.("tools", false) ?? null;
 }
 
-function installPersona(holder, persona = MINI_REVIEW_SYSTEM_PROMPT) {
+function installPersona(holder, persona = MINI_QA_SYSTEM_PROMPT) {
   const prompt = promptOf(holder);
-  if (!prompt || typeof prompt.section !== "function") throw new Error("mini-review requires systemPrompt.section");
-  if (typeof prompt.suppressRuntimeContext !== "function") throw new Error("mini-review requires systemPrompt.suppressRuntimeContext");
+  if (!prompt || typeof prompt.section !== "function") throw new Error("mini-qa requires systemPrompt.section");
+  if (typeof prompt.suppressRuntimeContext !== "function") throw new Error("mini-qa requires systemPrompt.suppressRuntimeContext");
   const lift = prompt.section({
-    name: MINI_REVIEW_PERSONA_SECTION,
-    order: MINI_REVIEW_PERSONA_ORDER,
+    name: MINI_QA_PERSONA_SECTION,
+    order: MINI_QA_PERSONA_ORDER,
     text: persona,
     complete: true,
   });
@@ -249,13 +251,13 @@ function installPersona(holder, persona = MINI_REVIEW_SYSTEM_PROMPT) {
 function installTools(holder) {
   const tools = toolsOf(holder);
   if (!tools || typeof tools.get !== "function" || typeof tools.register !== "function") {
-    throw new Error("mini-review requires tools.get and tools.register");
+    throw new Error("mini-qa requires tools.get and tools.register");
   }
   const wrappedBash = wrapMiniBash(tools.get("bash"), { interceptCompletion: false });
   const lifts = [];
   const bashLift = tools.register(wrappedBash);
   if (typeof bashLift === "function") lifts.push(bashLift);
-  for (const tool of buildMiniReviewTools()) {
+  for (const tool of buildMiniQaTools()) {
     const lift = tools.register(tool);
     if (typeof lift === "function") lifts.push(lift);
   }
@@ -274,28 +276,28 @@ function ownMount(agentCtx, lifts) {
         try { lift?.(); } catch { /* best effort */ }
       }
       try {
-        if (agentCtx[MINI_REVIEW_MOUNT] === record) agentCtx[MINI_REVIEW_MOUNT] = undefined;
+        if (agentCtx[MINI_QA_MOUNT] === record) agentCtx[MINI_QA_MOUNT] = undefined;
       } catch { /* context disposal */ }
     },
   };
   try {
-    agentCtx[MINI_REVIEW_MOUNT] = record;
+    agentCtx[MINI_QA_MOUNT] = record;
   } catch (error) {
     record.dispose();
-    throw new Error("mini-review requires an extensible agent context for HMR ownership", { cause: error });
+    throw new Error("mini-qa requires an extensible agent context for HMR ownership", { cause: error });
   }
   return record;
 }
 
-export function miniReviewSetup(agentCtx, options = {}) {
-  if (!agentCtx) throw new Error("mini-review setup requires an agent context");
-  const previous = agentCtx[MINI_REVIEW_MOUNT];
+export function miniQaSetup(agentCtx, options = {}) {
+  if (!agentCtx) throw new Error("mini-qa setup requires an agent context");
+  const previous = agentCtx[MINI_QA_MOUNT];
   if (previous?.generation === MOUNT_GENERATION) return;
   previous?.dispose?.();
   allowInherited(agentCtx, agentCtx.agent, MINI_INHERITED_TOOLS);
   const lifts = [];
   try {
-    lifts.push(installPersona(agentCtx, options.prompt ?? MINI_REVIEW_SYSTEM_PROMPT));
+    lifts.push(installPersona(agentCtx, options.prompt ?? MINI_QA_SYSTEM_PROMPT));
     lifts.push(installTools(agentCtx));
     lifts.push(installFormatRecovery(agentCtx));
     ownMount(agentCtx, lifts);
@@ -307,15 +309,15 @@ export function miniReviewSetup(agentCtx, options = {}) {
   }
 }
 
-export function ensureMiniReviewMounted(agent) {
-  if (!isMiniReviewAgent(agent)) return false;
-  miniReviewSetup(agent?.ctx ?? agent);
+export function ensureMiniQaMounted(agent) {
+  if (!isMiniQaAgent(agent)) return false;
+  miniQaSetup(agent?.ctx ?? agent);
   return true;
 }
 
-export function assembleMiniReviewPrompt(sections, { runtimeSuppressed = false } = {}) {
+export function assembleMiniQaPrompt(sections, { runtimeSuppressed = false } = {}) {
   const complete = [...sections].reverse().find((section) => section?.complete === true);
-  if (!complete) throw new Error("mini-review persona was not mounted complete");
-  if (!runtimeSuppressed) throw new Error("mini-review requires runtime context suppression");
+  if (!complete) throw new Error("mini-qa persona was not mounted complete");
+  if (!runtimeSuppressed) throw new Error("mini-qa requires runtime context suppression");
   return complete.text;
 }

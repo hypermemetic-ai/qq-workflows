@@ -65,10 +65,10 @@ function editCaseText(args, current) {
 function buildCaseWriteTool(cases, tasks) {
   return {
     name: "case_write",
-    description: "Edit the plan document without ending the turn. Fully rewrite it with text, or patch a unique old_string to new_string (optionally replace_all).",
+    description: "Write working memory, the architect's only durable plan document and the exact delegation packet. Call after every operator message that materially changes the plan, before replying. Fully rewrite with text or patch a unique old_string (optionally replace_all).",
     parameters: {
-      text: { type: "string", description: "Complete markdown plan for a full rewrite. Mutually exclusive with patch fields." },
-      old_string: { type: "string", description: "Exact text to replace in the persisted plan." },
+      text: { type: "string", description: "Complete working-memory markdown for a full rewrite. Mutually exclusive with patch fields." },
+      old_string: { type: "string", description: "Exact text to replace in persisted working memory." },
       new_string: { type: "string", description: "Replacement text for old_string." },
       replace_all: { type: "boolean", description: "Replace every match instead of requiring old_string to be unique." },
     },
@@ -105,12 +105,12 @@ function buildCaseWriteTool(cases, tasks) {
 
 
 const DELEGATION_PATTERN = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$";
-const WORKFLOW_ROLES = ["implementer", "qa-look-1", "fixer", "qa-look-2"];
+const WORKFLOW_ROLES = ["implementation", "qa", "mini-research", "mini-docs"];
 
 function buildWorkflowStatusTool(workflowStatus) {
   return {
     name: "workflow_status",
-    description: "Inspect one durable delegation by its full delegation UUID. Returns the Land run state and the exact current physical role session, epoch, ref, and worktree. Session aliases are display-only.",
+    description: "Inspect one durable delegation by its full delegation UUID. Returns delegation state and the exact current physical role session, epoch, ref, and worktree. Session aliases are display-only.",
     parameters: {
       delegationId: {
         type: "string",
@@ -127,7 +127,7 @@ function buildWorkflowStatusTool(workflowStatus) {
           ? `current session ${value.sessionUuid}${value.alias ? ` (alias ${value.alias}, ephemeral)` : ""}; role ${value.role}; epoch ${value.phaseEpoch}`
           : `no current session; epoch ${value.phaseEpoch}`;
         return [textBlock(
-          `delegation ${value.delegationId}\nland run ${value.runId}; state ${value.runStatus}${value.transitioning ? "; transitioning" : ""}${value.terminal ? "; terminal" : ""}\n${current}\nref ${value.ref || "(none)"}\nworktree ${value.worktree || "(none)"}`,
+          `delegation ${value.delegationId}\nstate ${value.delegationStatus}${value.transitioning ? "; transitioning" : ""}${value.terminal ? "; terminal" : ""}\n${current}\nref ${value.ref || "(none)"}\nworktree ${value.worktree || "(none)"}`,
         )];
       },
     },
@@ -194,11 +194,52 @@ function buildWorkflowSendTool(workflowSend) {
   };
 }
 
-export function buildArchitectTools({ delegate, research, workflowStatus, workflowSend, tasks, cases, land } = {}) {
+function buildWorkflowStopTool(workflowStop) {
+  return {
+    name: "workflow_stop",
+    description: "Stop the exact durable delegation owned by this parent. The host terminates its current child and records a terminal blocked result.",
+    parameters: {
+      delegationId: {
+        type: "string",
+        required: true,
+        pattern: DELEGATION_PATTERN,
+        description: "Full durable delegation UUID returned by delegate.",
+      },
+      reason: { type: "string", description: "Optional reason recorded with the stopped delegation." },
+    },
+    output: {
+      schema: { type: "object", additionalProperties: true },
+      render: (_args, value) => [textBlock(value.status === "refused"
+        ? `Workflow stop refused: ${value.reason}`
+        : `delegation ${value.delegationId} stopped; state ${value.delegationStatus || "blocked"}`)],
+    },
+    async execute(args, exec) {
+      try {
+        if (typeof workflowStop !== "function") return refusal("workflow_stop is unavailable");
+        return await workflowStop({
+          delegationId: args?.delegationId,
+          reason: args?.reason,
+          parentSessionUuid: exec?.agent?.session?.id,
+        });
+      } catch (error) {
+        return refusal(error instanceof Error ? error.message : String(error));
+      }
+    },
+  };
+}
+
+export function buildArchitectTools({ delegate, workflowStatus, workflowSend, workflowStop, tasks, cases, land } = {}) {
   const tools = [{
     name: "delegate",
-    description: "Start one workflow from working memory. The result renders the authoritative durable delegation UUID first, followed by the current immutable physical session UUID, role, epoch, and informational ephemeral alias. Workflow-owned results return automatically.",
-    parameters: {},
+    description: "Start one delegation kind from working memory. The result renders the authoritative durable delegation UUID first, followed by the current immutable physical session UUID, role, epoch, and informational ephemeral alias. Workflow-owned results return automatically.",
+    parameters: {
+      kind: {
+        type: "string",
+        required: true,
+        enum: ["implementation", "research", "docs"],
+        description: "Delegation kind. implementation and research ship with the host; docs is available when adopted.",
+      },
+    },
     output: {
       schema: {
         type: "object",
@@ -206,7 +247,6 @@ export function buildArchitectTools({ delegate, research, workflowStatus, workfl
         properties: {
           status: { type: "string" },
           delegationId: { type: "string" },
-          runId: { type: "string" },
           child: { type: "string" },
           alias: { type: "string" },
           role: { type: "string" },
@@ -216,36 +256,18 @@ export function buildArchitectTools({ delegate, research, workflowStatus, workfl
       },
       render: (_args, value) => [textBlock(value.status === "refused"
         ? `Delegate refused: ${value.reason}`
-        : `delegation ${value.delegationId}\ncurrent session ${value.child}${value.alias ? ` (alias ${value.alias}, ephemeral)` : ""}; role ${value.role}; epoch ${value.phaseEpoch}${value.runId ? `; land run ${value.runId}` : ""}`)],
+        : `delegation ${value.delegationId}\ncurrent session ${value.child}${value.alias ? ` (alias ${value.alias}, ephemeral)` : ""}; role ${value.role}; epoch ${value.phaseEpoch}`)],
     },
-    async execute(_args, exec) {
+    async execute(args, exec) {
       try {
         if (!delegate) return refusal("delegate is unavailable");
-        return await delegate({ agent: exec?.agent });
-      } catch (error) {
-        return refusal(error instanceof Error ? error.message : String(error));
-      }
-    },
-  }, {
-    name: "research",
-    description: "Start one evidence-backed research run from the approved working-memory document. The run gathers immutable evidence, writes answer.md, and receives one fresh-context mini-review before returning automatically.",
-    parameters: {},
-    output: {
-      schema: { type: "object", additionalProperties: true },
-      render: (_args, value) => [textBlock(value.status === "refused"
-        ? `Research refused: ${value.reason}`
-        : `research run ${value.runId}; child ${value.child}; workspace ${value.workspace}`)],
-    },
-    async execute(_args, exec) {
-      try {
-        if (!research) return refusal("research is unavailable");
-        return await research({ agent: exec?.agent });
+        return await delegate({ agent: exec?.agent, kind: args?.kind });
       } catch (error) {
         return refusal(error instanceof Error ? error.message : String(error));
       }
     },
   }];
-  tools.push(buildWorkflowStatusTool(workflowStatus), buildWorkflowSendTool(workflowSend));
+  tools.push(buildWorkflowStatusTool(workflowStatus), buildWorkflowSendTool(workflowSend), buildWorkflowStopTool(workflowStop));
   if (typeof land === "function") tools.push(buildLandTool({ invoke: land }));
   if (cases && typeof cases.write === "function") tools.push(buildCaseWriteTool(cases, tasks));
   return tools;

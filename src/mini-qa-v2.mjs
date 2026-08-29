@@ -1,7 +1,8 @@
-export const MINI_REVIEW_SYSTEM_PROMPT = "You are a helpful assistant that can review code changes in a repository.";
+export const MINI_QA_SYSTEM_PROMPT = "You are a helpful assistant that can review code changes in a repository.";
 
-export const MINI_REVIEW_KIND = "mini-review";
-export const MINI_REVIEW_TOOL_NAMES = Object.freeze(["bash", "submit_review"]);
+export const MINI_QA_KIND = "mini-qa";
+export const LEGACY_MINI_QA_KIND = "mini-review";
+export const MINI_QA_TOOL_NAMES = Object.freeze(["bash", "submit_review"]);
 
 function deepFreeze(value) {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
@@ -9,7 +10,7 @@ function deepFreeze(value) {
   return Object.freeze(value);
 }
 
-export const MINI_REVIEW_SUBMIT_SCHEMA = deepFreeze({
+export const MINI_QA_SUBMIT_SCHEMA = deepFreeze({
   description: "Submit the concrete defects introduced by this change. Submit an empty findings array when there are none.",
   parameters: {
     type: "object",
@@ -34,7 +35,7 @@ export const MINI_REVIEW_SUBMIT_SCHEMA = deepFreeze({
   },
 });
 
-export function renderMiniReviewTask({ task } = {}) {
+export function renderMiniQaTask({ task } = {}) {
   return [
     `Please review this change: ${String(task ?? "")}`,
     "",

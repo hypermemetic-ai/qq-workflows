@@ -174,12 +174,37 @@ try {
   assert.deepEqual(service.workflows.names(), ["architect", "find", "base"]);
   assert.equal(service.workflows.names().includes("projects"), false);
   assert.equal(service.complete("/workflows proj").candidates.includes("projects"), false);
+  assert.deepEqual(service.workflows.kinds(), ["implementation", "research"]);
+  const docsCalls = [];
+  const docsRecords = new Set();
+  const disposeDocs = service.workflows.register({
+    kind: "docs",
+    async invoke(args) {
+      docsCalls.push(["invoke", args]);
+      docsRecords.add(args.delegationId);
+      return { status: "ok", delegationId: args.delegationId, child: "session-docs", role: "mini-docs", phaseEpoch: 1 };
+    },
+    status(args) { docsCalls.push(["status", args]); return { status: "ok", delegationId: args.delegationId, delegationStatus: "writing" }; },
+    send(args) { docsCalls.push(["send", args]); return { status: "sent", delegationId: args.delegationId }; },
+    stop(args) { docsCalls.push(["stop", args]); return { status: "ok", delegationId: args.delegationId, delegationStatus: "blocked" }; },
+    owns(id) { return docsRecords.has(id); },
+  });
+  assert.deepEqual(service.workflows.names(), ["architect", "find", "base"], "docs is not a chair");
+  assert.deepEqual(service.workflows.kinds(), ["implementation", "research", "docs"]);
+  const docsStarted = await service.workflows.delegate({ kind: "docs", parentSessionUuid: ORDINARY_ID, packet: "docs packet" });
+  assert.equal(docsStarted.status, "ok");
+  assert.match(docsStarted.delegationId, /^[0-9a-f-]{36}$/);
+  assert.equal(service.workflows.status({ delegationId: docsStarted.delegationId }).delegationStatus, "writing");
+  assert.equal((await service.workflows.send({ delegationId: docsStarted.delegationId, message: "focus" })).status, "sent");
+  assert.equal((await service.workflows.stop({ delegationId: docsStarted.delegationId })).delegationStatus, "blocked");
+  disposeDocs();
+  assert.deepEqual(service.workflows.kinds(), ["implementation", "research"]);
 
   assert.deepEqual(allowed, [
     { agent: projects.agent, names: [...PROJECTS_INHERITED_TOOLS] },
     { agent: ordinary.agent, names: [...ARCHITECT_INHERITED_TOOLS] },
   ]);
-  for (const name of ["case_write", "delegate", "land", "workflow_status", "workflow_send"]) {
+  for (const name of ["case_write", "delegate", "land", "workflow_status", "workflow_send", "workflow_stop"]) {
     assert.equal(projects.tools.registered.includes(name), false, `${name} must not be registered on Projects`);
   }
   assert.ok(ordinary.tools.registered.includes("case_write"), "ordinary architect still receives architect tools");

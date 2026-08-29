@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { runCommand } from "../src/git.mjs";
-import { compilePacket } from "../src/routing.mjs";
+import { compilePacket } from "../src/proposal-packet.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "qq-routing."));
 const repo = join(root, "repo");
@@ -76,7 +76,7 @@ try {
   assert.deepEqual(streamedPacket.pointers, Array.from({ length: 8 }, (_, index) =>
     `file-${index}.txt:${index + 1} context ${index}`));
 
-  console.log("routing tests passed");
+  console.log("proposal packet tests passed");
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

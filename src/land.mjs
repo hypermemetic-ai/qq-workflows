@@ -3,7 +3,6 @@
 // worktree. Both paths stamp land or review, run the land worker or an isolated
 // QA child, and packet the architect session through qq-relay default steer.
 //
-// This is not iterate's pixel reviewer. QA is a read-only Mini-review look.
 // Paint-only changes may land; control paths default to review. An optional
 // external task record archives only after the merge/cleanup succeeds.
 
@@ -18,16 +17,13 @@ import {
 } from "./git.mjs";
 
 import {
+  DELEGATION_PACKET_SCHEMA,
   compilePacket,
   formatPacket,
   isTestPath,
-  look1FixPrompt,
-  routePacket,
-  stampFromEvidence,
-} from "./routing.mjs";
+} from "./proposal-packet.mjs";
 import { createQaVerdict } from "./qa-verdict.mjs";
 import { RepoOracle } from "./repo-oracle.mjs";
-import { oneShot } from "./ask.mjs";
 import { AGENT_HANDLE, adoptAgentHandle } from "./agent-handle.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
 import { withChildSettlement } from "./child-settlement.mjs";
@@ -40,31 +36,23 @@ import {
 } from "./official-mini.mjs";
 import { buildDoneTool } from "./land-tools.mjs";
 import {
-  bindMiniReviewSubmit,
-  ensureMiniReviewMounted,
-  MINI_REVIEW_KIND,
-  miniReviewSetup,
-  renderMiniReviewTask,
-} from "./mini-review.mjs";
+  bindMiniQaSubmit,
+  ensureMiniQaMounted,
+  MINI_QA_KIND,
+  miniQaSetup,
+  renderMiniQaTask,
+} from "./mini-qa.mjs";
 
-export const LAND_LABEL = "workflows:land";
-export const LAND_RUN_LABEL_PREFIX = "workflows:land-run/";
-export const LAND_ROLE_LABEL_PREFIX = "workflows:land-role/";
-const LAND_WORKFLOW_ROLES = new Set(["implementer", "fixer", "qa-look-1", "qa-look-2"]);
+export const DELEGATION_LABEL_PREFIX = "workflows:delegation/";
+export const DELEGATION_PHASE_LABEL_PREFIX = "workflows:delegation-phase/";
+const DELEGATION_PHASE_ROLES = new Set(["implementation", "qa"]);
 export const CHILD_ORIGIN = "subagent";
-export const ROUTE_PACKET_SCHEMA = "qq.route-packet/v1";
+export { DELEGATION_PACKET_SCHEMA };
 
+const DELEGATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CHILD_AGENT_HANDLE = Symbol.for("@hypermemetic-ai/qq-workflows/child-agent-handle");
-const SETTLEMENT_TRANSITIONS = new Set(["dispose", "finish_land", "start_qa", "start_fixer"]);
-
-export const ROUTE_SYSTEM = [
-  "You stamp a completion packet land or review.",
-  "Return exactly land or review. Nothing else.",
-  "Default to review when uncertain.",
-  "Control paths or words involving session, store, identity, review, land, run, handoff, or relay route to review even when the diff is small.",
-  "The land fast path is paint — copy, comments, color, or stylesheet-only changes — not a line-count threshold.",
-].join("\n");
+const SETTLEMENT_TRANSITIONS = new Set(["dispose", "finish_land", "start_qa", "start_implementation"]);
 
 /** A chair that may invoke land. Children never are. */
 export function isLandCandidate(agent) {
@@ -89,49 +77,21 @@ function logLine(ctx, level, message) {
   if (level === "warn") console.warn(message);
 }
 
-function hangLabel(ctx, sessionId) {
-  const relay = relayOf(ctx);
-  if (!relay || typeof relay.hang !== "function") return false;
-  try {
-    relay.hang(sessionId, LAND_LABEL);
-    logLine(ctx, "info", `qq-workflows: hung ${LAND_LABEL} on ${sessionId}`);
-    return true;
-  } catch (error) {
-    logLine(
-      ctx,
-      "warn",
-      `qq-workflows: failed to hang ${LAND_LABEL} on ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    return false;
+function childWorkflowLabels(delegationId, workflowRole) {
+  const id = String(delegationId ?? "").toLowerCase();
+  if (!DELEGATION_ID.test(id)) {
+    throw new Error("land child label requires a bounded delegation id");
   }
-}
-
-function clearLabel(ctx, sessionId) {
-  const relay = relayOf(ctx);
-  if (!relay || typeof relay.clear !== "function") return false;
-  try {
-    relay.clear(sessionId, LAND_LABEL);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function childWorkflowLabels(runId, workflowRole) {
-  const run = String(runId ?? "").toLowerCase();
-  if (!/^land-[a-z0-9-]{1,48}$/.test(run)) {
-    throw new Error("land child label requires a bounded land run id");
-  }
-  if (!LAND_WORKFLOW_ROLES.has(workflowRole)) {
+  if (!DELEGATION_PHASE_ROLES.has(workflowRole)) {
     throw new Error(`land child label has unknown role ${workflowRole}`);
   }
-  return [`${LAND_RUN_LABEL_PREFIX}${run}`, `${LAND_ROLE_LABEL_PREFIX}${workflowRole}`];
+  return [`${DELEGATION_LABEL_PREFIX}${id}`, `${DELEGATION_PHASE_LABEL_PREFIX}${workflowRole}`];
 }
 
 function hangChildLabels(ctx, owner) {
   const relay = relayOf(ctx);
   if (!owner || !relay || typeof relay.hang !== "function") return false;
-  const labels = childWorkflowLabels(owner.runId, owner.workflowRole);
+  const labels = childWorkflowLabels(owner.delegationId, owner.workflowRole);
   owner.workflowLabels ??= new Set();
   let complete = true;
   for (const label of labels) {
@@ -162,12 +122,12 @@ function beginPhaseTransition(state, fields = {}) {
 }
 
 function advancePhase(state, sessionUuid, role, fields = {}) {
-  if (!SESSION_ID.test(sessionUuid) || !LAND_WORKFLOW_ROLES.has(role)) {
-    throw new Error("cannot advance land run to an invalid workflow phase");
+  if (!SESSION_ID.test(sessionUuid) || !DELEGATION_PHASE_ROLES.has(role)) {
+    throw new Error("cannot advance delegation to an invalid workflow phase");
   }
   const pending = state.pendingPhase;
   if (pending && (pending.sessionUuid !== sessionUuid || pending.role !== role)) {
-    throw new Error("cannot advance land run to a child other than its pending phase");
+    throw new Error("cannot advance delegation to a child other than its pending phase");
   }
   if (state.current?.sessionUuid === sessionUuid && state.current?.role === role) {
     return { ...state, ...fields, current: state.current, transitioning: false, pendingPhase: null };
@@ -187,13 +147,10 @@ function finishWorkflow(state, fields = {}) {
   return { ...state, ...fields, current: null, transitioning: false, pendingPhase: null };
 }
 
-function workflowRoleForState(state, sessionId, fallback = "implementer") {
-  if (state?.qaSession === sessionId) return `qa-look-${state.look === 2 ? 2 : 1}`;
-  if (state?.implementerSession === sessionId) {
-    return state.originalImplementerSession === sessionId ? "implementer" : "fixer";
-  }
-  if (LAND_WORKFLOW_ROLES.has(fallback)) return fallback;
-  return fallback === "qa" ? `qa-look-${state?.look === 2 ? 2 : 1}` : "implementer";
+function workflowRoleForState(state, sessionId, fallback = "implementation") {
+  if (state?.qaSession === sessionId) return "qa";
+  if (state?.implementationSession === sessionId) return "implementation";
+  return DELEGATION_PHASE_ROLES.has(fallback) ? fallback : "implementation";
 }
 
 function toolsService(holder) {
@@ -248,12 +205,11 @@ export function formatOutcome(state, kind) {
   const body = packet ? formatPacket(packet) : state?.brief ?? "";
   // Terminal runs clear the routable pointer, but retain the last immutable
   // phase UUID as diagnostics in lifecycle reports.
-  const activeChild = state?.current?.sessionUuid || state?.qaSession || state?.implementerSession || "";
+  const activeChild = state?.current?.sessionUuid || state?.qaSession || state?.implementationSession || "";
   const role = state?.current?.role || (activeChild ? workflowRoleForState(state, activeChild) : "none");
   const topology = [
     `Delegation ID (authoritative): ${state?.delegationId || "unknown"}`,
-    `Land run: ${state?.id || "unknown"}`,
-    state?.parentSessionUuid ? `Parent session (authoritative UUID): ${state.parentSessionUuid}` : "",
+        state?.parentSessionUuid ? `Parent session (authoritative UUID): ${state.parentSessionUuid}` : "",
     activeChild ? `Workflow child session (stable UUID): ${activeChild}` : "",
     `Workflow role: ${role}`,
     Number.isSafeInteger(state?.phaseEpoch) ? `Phase epoch: ${state.phaseEpoch}` : "",
@@ -314,7 +270,7 @@ export async function enforceQaWorktree(run, state, verdict) {
 }
 
 /** GitHub PR operations used by Land. Kept behind the injected command runner so
- * tests can exercise the complete publish sequence without network access. */
+ * tests can exercise the complete land sequence without network access. */
 export function createGitHubClient(run = runCommand) {
   return Object.freeze({
     async openPullRequest({ mainRoot, baseBranch, headBranch, title, body = "" }) {
@@ -456,8 +412,8 @@ export async function landWorktree(run, state, { github = createGitHubClient(run
     throw new Error("local main does not match origin/main after fast-forward");
   }
 
-  // No cleanup is allowed until publication and the local fast-forward have
-  // both succeeded. A failed publish remains inspectable and retryable.
+  // No cleanup is allowed until landing and the local fast-forward have
+  // both succeeded. A failed land remains inspectable and retryable.
   const isWorktree = existsSync(join(worktree, ".git")) && !existsSync(join(worktree, ".git", "HEAD"));
   if (isWorktree) {
     await checked(
@@ -491,13 +447,10 @@ export function createLand({
   settings,
   agents,
   tasks,
-  llm,
   run = runCommand,
   github = createGitHubClient(run),
-  complete,
   env = process.env,
 } = {}) {
-  const attached = new Map();
   const childTools = new Map();
   const childOwners = new Map();
   const settlementPromises = new Map();
@@ -522,26 +475,26 @@ export function createLand({
   function pendingPhaseMessage(state, pending, { system, user, task } = {}) {
     const parentSession = state.parentSessionUuid || state.architectSession;
     const identity = [
-      `Delegation ID (authoritative): ${state.delegationId}. Land run: ${state.id}.`,
+      `Delegation ID (authoritative): ${state.delegationId}.`,
       `Workflow phase: role ${pending.role}; epoch ${pending.phaseEpoch}; child session ${pending.sessionUuid}.`,
       `Authoritative parent session UUID: ${parentSession}. Session aliases are informational and ephemeral.`,
       "Workflow completion is returned automatically; do not manually relay a duplicate report.",
     ].join(" ");
     const compiled = state.packet ? `Packet:\n${formatPacket(state.packet)}` : "";
     const seed = [identity, system, task ?? user, compiled].filter(Boolean).join("\n\n");
-    if (pending.role === "qa-look-1" || pending.role === "qa-look-2") {
-      return renderMiniReviewTask({ task: seed });
+    if (pending.role === "qa") {
+      return renderMiniQaTask({ task: seed });
     }
-    return pending.role === "fixer" ? renderMiniSweTask(seed) : seed;
+    return pending.role === "implementation" ? renderMiniSweTask(seed) : seed;
   }
 
   function planPhase(state, role, packet = {}) {
-    if (!LAND_WORKFLOW_ROLES.has(role)) throw new Error(`cannot plan invalid workflow role ${role}`);
+    if (!DELEGATION_PHASE_ROLES.has(role)) throw new Error(`cannot plan invalid workflow role ${role}`);
     const latest = store.load(state.id) ?? state;
-    if (!latest.transitioning) throw new Error(`land run ${state.id} is not transitioning`);
+    if (!latest.transitioning) throw new Error(`delegation ${state.id} is not transitioning`);
     if (latest.pendingPhase) {
       if (latest.pendingPhase.role !== role) {
-        throw new Error(`land run ${state.id} already plans ${latest.pendingPhase.role}`);
+        throw new Error(`delegation ${state.id} already plans ${latest.pendingPhase.role}`);
       }
       return latest;
     }
@@ -558,14 +511,14 @@ export function createLand({
   }
 
   function phaseFields(pending) {
-    if (pending.role === "fixer") {
+    if (pending.role === "implementation") {
       return {
-        status: "waiting_fix",
-        implementerSession: pending.sessionUuid,
+        status: "revising",
+        implementationSession: pending.sessionUuid,
         qaSession: "",
       };
     }
-    if (pending.role === "qa-look-1" || pending.role === "qa-look-2") {
+    if (pending.role === "qa") {
       return {
         status: "reviewing",
         qaSession: pending.sessionUuid,
@@ -576,7 +529,7 @@ export function createLand({
   }
 
   function promotePendingPhase(state, expected = state.pendingPhase) {
-    if (!expected) throw new Error(`land run ${state.id} has no pending phase`);
+    if (!expected) throw new Error(`delegation ${state.id} has no pending phase`);
     const latest = store.load(state.id) ?? state;
     if (latest.current?.sessionUuid === expected.sessionUuid
       && latest.current.role === expected.role
@@ -586,7 +539,7 @@ export function createLand({
     const pending = latest.pendingPhase;
     if (!pending || pending.sessionUuid !== expected.sessionUuid
       || pending.role !== expected.role || pending.phaseEpoch !== expected.phaseEpoch) {
-      throw new Error(`land run ${state.id} pending phase changed before promotion`);
+      throw new Error(`delegation ${state.id} pending phase changed before promotion`);
     }
     return store.save(advancePhase(latest, pending.sessionUuid, pending.role, {
       ...phaseFields(pending),
@@ -609,7 +562,7 @@ export function createLand({
     const latest = store.load(state.id) ?? state;
     const pending = latest.pendingPhase;
     if (!pendingPhaseMatches(pending, expected)) {
-      throw new Error(`land run ${state.id} pending packet changed before delivery acknowledgement`);
+      throw new Error(`delegation ${state.id} pending packet changed before delivery acknowledgement`);
     }
     if (pending.messageDelivered) return latest;
     return store.save({
@@ -620,12 +573,12 @@ export function createLand({
 
   function activatePendingChild(owner, state, expected = state.pendingPhase) {
     if (!owner || !expected || !expected.messageId || !expected.message) {
-      throw new Error(`land run ${state.id} pending phase has no durable work packet`);
+      throw new Error(`delegation ${state.id} pending phase has no durable work packet`);
     }
     let latest = store.load(state.id) ?? state;
     let pending = latest.pendingPhase;
     if (!pendingPhaseMatches(pending, expected)) {
-      throw new Error(`land run ${state.id} pending phase changed before packet delivery`);
+      throw new Error(`delegation ${state.id} pending phase changed before packet delivery`);
     }
     if (!pending.messageDelivered) {
       if (childOwners.get(owner.sessionId) !== owner) return latest;
@@ -649,7 +602,7 @@ export function createLand({
     }
     if (childOwners.get(owner.sessionId) !== owner) return latest;
     latest = promotePendingPhase(latest, pending);
-    if (pending.role === "qa-look-1" || pending.role === "qa-look-2") {
+    if (pending.role === "qa") {
       if (!childTools.has(owner.sessionId)) installQa(owner.child, latest.id);
       watchQaSettle(owner.child, latest.id);
     } else {
@@ -660,18 +613,12 @@ export function createLand({
 
   function matchesPendingHeaders(child, state, pending) {
     const header = child?.session?.header;
-    return header?.landRun === state.id
-      && header?.landDelegation === state.delegationId
-      && header?.landWorkflowRole === pending.role
-      && header?.landPhaseEpoch === pending.phaseEpoch;
+    return header?.delegationId === state.delegationId
+      && header?.delegationPhaseRole === pending.role
+      && header?.delegationPhaseEpoch === pending.phaseEpoch;
   }
 
-  async function stamp(packet) {
-    const hop = complete ?? (binding("router")
-      ? async ({ system, user }) => oneShot(llm, binding("router"), { system, user })
-      : undefined);
-    return routePacket(packet, { complete: hop, prompt: ROUTE_SYSTEM });
-  }
+
 
   function sessionsOf() {
     return ctx.get?.("sessions", false) ?? null;
@@ -704,7 +651,7 @@ export function createLand({
     const parentSessionUuid = state.parentSessionUuid || state.architectSession;
     if (!parentSessionUuid) return true;
     const relay = relayOf(ctx);
-    const sender = fromId || state.qaSession || state.implementerSession || attached.keys().next().value || state.id;
+    const sender = fromId || state.qaSession || state.implementationSession || state.id;
     if (!directOnly && relay && typeof relay.send === "function") {
       try {
         await relay.send({
@@ -745,14 +692,14 @@ export function createLand({
   }
 
   function blockOwnedWork(owner, blockedReason) {
-    if (!owner?.runId) return { state: null, changed: false };
-    const state = store.load(owner.runId);
+    if (!owner?.delegationId) return { state: null, changed: false };
+    const state = store.load(owner.delegationId);
     if (!state || state.status === "blocked" || state.status === "landed") {
       return { state, changed: false };
     }
     const ownsCurrent = owner.role === "qa"
       ? state.qaSession === owner.sessionId
-      : state.implementerSession === owner.sessionId;
+      : state.implementationSession === owner.sessionId;
     if (!ownsCurrent) return { state, changed: false };
     const blocked = store.save(finishWorkflow(state, {
       status: "blocked",
@@ -766,18 +713,18 @@ export function createLand({
     return reason?.kind === "aborted" && reason.reason?.kind === "hook";
   }
 
-  function watchImplementerCancel(child, runId) {
+  function watchImplementationCancel(child, delegationId) {
     const sessionId = sessionIdOf(child);
     const off = child.ctx?.on?.("session/event", async (_session, event) => {
       if (event?.type !== "turn/end") return;
       const reason = event.data?.reason;
       if (reason?.kind !== "aborted" || isHookInterruption(reason)) return;
       const owner = childOwners.get(sessionId);
-      if (!owner || owner.runId !== runId || owner.disposePromise) return;
-      const blocked = blockOwnedWork(owner, "implementer child was cancelled before done");
+      if (!owner || owner.delegationId !== delegationId || owner.disposePromise) return;
+      const blocked = blockOwnedWork(owner, "implementation child was cancelled before done");
       if (!blocked.changed) return;
       const report = await deliverRequiredPacket(blocked.state, "blocked", sessionId);
-      if (report.delivered) await disposeChild(sessionId, "implementer cancellation reported");
+      if (report.delivered) await disposeChild(sessionId, "implementation cancellation reported");
     });
     return typeof off === "function" ? off : () => {};
   }
@@ -809,8 +756,8 @@ export function createLand({
     if (!SETTLEMENT_TRANSITIONS.has(transition)) {
       throw new Error(`unknown child settlement transition ${transition}`);
     }
-    const state = store.load(owner.runId);
-    if (!state) throw new Error(`child settlement has no land run ${owner.runId}`);
+    const state = store.load(owner.delegationId);
+    if (!state) throw new Error(`child settlement has no delegation ${owner.delegationId}`);
     return store.save({
       ...state,
       settlementSession: owner.sessionId,
@@ -820,7 +767,7 @@ export function createLand({
   }
 
   function clearRememberedSettlement(owner, callId = "") {
-    const state = store.load(owner.runId);
+    const state = store.load(owner.delegationId);
     if (!state || state.settlementSession !== owner.sessionId) return state;
     if (callId && state.settlementCallId && state.settlementCallId !== callId) return state;
     return store.save({
@@ -890,7 +837,7 @@ export function createLand({
 
   function errorEnvelopeCommitsPass(owner, pending) {
     if (pending.transition !== "finish_land") return false;
-    return store.load(owner.runId)?.qaVerdict?.verdict === "pass";
+    return store.load(owner.delegationId)?.qaVerdict?.verdict === "pass";
   }
 
   function failArmedSettlement(owner, pending) {
@@ -937,7 +884,7 @@ export function createLand({
       const currentOwner = childOwners.get(owner.sessionId);
       if (!currentOwner) return true;
       const blocked = blockOwnedWork(currentOwner, `${reason} failed before settlement`);
-      const state = blocked.state ?? store.load(currentOwner.runId);
+      const state = blocked.state ?? store.load(currentOwner.delegationId);
       if (!state) return true;
       if (!blocked.changed && !state.reportPending) return true;
       const report = await deliverRequiredPacket(
@@ -1027,7 +974,7 @@ export function createLand({
     }
   }
 
-  function retainChild(handle, { child = handle?.agent ?? handle, role, workflowRole, runId } = {}) {
+  function retainChild(handle, { child = handle?.agent ?? handle, role, workflowRole, delegationId } = {}) {
     // Accepted controller transitions may finish while closing, but no caller
     // can establish ownership after the controller has drained those promises.
     if (closing && activeTransitions.size === 0) {
@@ -1045,7 +992,7 @@ export function createLand({
     if (existing) {
       if (existing.handle !== handle) throw new Error(`land already owns child ${sessionId}`);
       if (workflowRole) existing.workflowRole = workflowRole;
-      if (runId) existing.runId = runId;
+      if (delegationId) existing.delegationId = delegationId;
       hangChildLabels(ctx, existing);
       return existing;
     }
@@ -1053,9 +1000,9 @@ export function createLand({
       sessionId,
       child,
       handle,
-      role: role || child?.session?.header?.landRole || "implementer",
-      workflowRole: workflowRole || child?.session?.header?.landWorkflowRole || (role === "qa" ? "qa-look-1" : "implementer"),
-      runId: runId || child?.session?.header?.landRun || "",
+      role: role || child?.session?.header?.delegationRole || "implementation",
+      workflowRole: workflowRole || child?.session?.header?.delegationPhaseRole || (role === "qa" ? "qa" : "implementation"),
+      delegationId: delegationId || child?.session?.header?.delegationId || "",
       workflowLabels: new Set(),
       disposePromise: null,
       externalDisposed: false,
@@ -1104,7 +1051,7 @@ export function createLand({
     settledQa.delete(owner.sessionId);
     // The AgentHandle capability deliberately remains on the live child. A
     // replacement controller discovers that child through agents.list() and
-    // re-retains this exact handle from the durable land run.
+    // re-retains this exact handle from the durable delegation.
     return true;
   }
 
@@ -1142,7 +1089,7 @@ export function createLand({
     if (!owner.disposePromise) {
       owner.externalDisposed = true;
       const blocked = blockOwnedWork(owner, `${owner.role} child closed before completion`);
-      const state = blocked.state ?? store.load(owner.runId);
+      const state = blocked.state ?? store.load(owner.delegationId);
       if (state && (blocked.changed || state.reportPending)) {
         const report = await deliverRequiredPacket(
           state,
@@ -1157,23 +1104,6 @@ export function createLand({
     return true;
   }
 
-  function attach(agent) {
-    if (!isLandCandidate(agent)) return null;
-    const session = agent.session;
-    const sessionId = session.id;
-    if (attached.has(sessionId)) return attached.get(sessionId);
-    hangLabel(ctx, sessionId);
-    const handle = {
-      sessionId,
-      detach() {
-        clearLabel(ctx, sessionId);
-        attached.delete(sessionId);
-      },
-    };
-    attached.set(sessionId, handle);
-    return handle;
-  }
-
   function refreshLabels() {
     let refreshed = 0;
     for (const owner of childOwners.values()) {
@@ -1182,24 +1112,15 @@ export function createLand({
     return refreshed;
   }
 
-  function detach(agentOrId) {
-    const sessionId = typeof agentOrId === "string" ? agentOrId : agentOrId?.session?.id ?? agentOrId?.id;
-    const handle = attached.get(sessionId);
-    handle?.detach();
-    const hadTools = childTools.has(sessionId);
-    clearChildTools(sessionId);
-    return Boolean(handle) || hadTools;
-  }
-
-  function installDone(child, runId) {
+  function installDone(child, delegationId) {
     const sessionId = sessionIdOf(child);
     childTools.get(sessionId)?.();
     const submit = (args) => trackChildSubmission(sessionId, (submission) =>
-      done({ ...args, runId, postTool: true, submission }));
+      done({ ...args, delegationId, postTool: true, submission }));
     const disposeSubmit = isMiniAgent(child)
       ? bindMiniSubmit(child, submit)
       : registerTools(child, [buildDoneTool({ submit })]);
-    const disposeCancel = watchImplementerCancel(child, runId);
+    const disposeCancel = watchImplementationCancel(child, delegationId);
     const dispose = () => {
       try { disposeCancel(); } finally { disposeSubmit(); }
     };
@@ -1207,12 +1128,12 @@ export function createLand({
     return dispose;
   }
 
-  function installQa(child, runId) {
+  function installQa(child, delegationId) {
     const sessionId = sessionIdOf(child);
     childTools.get(sessionId)?.();
-    const state = store.load(runId);
-    if (!state) throw new Error(`cannot install mini-review for missing land run ${runId}`);
-    ensureMiniReviewMounted(child);
+    const state = store.load(delegationId);
+    if (!state) throw new Error(`cannot install mini-qa for missing delegation ${delegationId}`);
+    ensureMiniQaMounted(child);
     const capsuleGitDir = join(state.worktree, ".git");
     const oracle = new RepoOracle(state.baseRef, state.ref, {
       // Delegated shared clones keep proposal objects in their internal .git.
@@ -1221,12 +1142,12 @@ export function createLand({
         ? capsuleGitDir
         : join(state.mainRoot, ".git"),
     });
-    const dispose = bindMiniReviewSubmit(child, {
+    const dispose = bindMiniQaSubmit(child, {
       oracle,
       submit: (args) => trackChildSubmission(sessionId, (submission) =>
-        submitVerdict({ ...args, runId, postTool: true, submission })),
+        submitVerdict({ ...args, delegationId, postTool: true, submission })),
       isCompleted: () => {
-        const current = store.load(runId);
+        const current = store.load(delegationId);
         return current?.qaSession === sessionId && Boolean(current.qaVerdict);
       },
     });
@@ -1234,7 +1155,7 @@ export function createLand({
     return dispose;
   }
 
-  async function adoptImplementer(child, info = {}) {
+  async function adoptImplementation(child, info = {}) {
     const sessionId = sessionIdOf(child);
     if (!sessionId) return { status: "refused", reason: "adopt requires a child session", owned: false };
     const cwd = info.cwd ?? child?.session?.header?.cwd;
@@ -1250,36 +1171,33 @@ export function createLand({
         owned: false,
       };
     }
-    const runId = `land-${randomUUID().slice(0, 8)}`;
+    const delegationId = info.delegationId || randomUUID();
     let owner;
     let disposeBinding;
     try {
-      if (info.handle) owner = retainChild(info.handle, { child, role: "implementer", workflowRole: "implementer", runId });
-      disposeBinding = installDone(child, runId);
+      if (info.handle) owner = retainChild(info.handle, { child, role: "implementation", workflowRole: "implementation", delegationId });
+      disposeBinding = installDone(child, delegationId);
       try {
-        child.session.header.landRun = runId;
-        child.session.header.landRole = "implementer";
-        child.session.header.landWorkflowRole = "implementer";
+        child.session.header.delegationPhaseRole = "implementation";
       } catch { /* durable store and labels remain authoritative */ }
       const record = store.create({
-        id: runId,
-        delegationId: info.delegationId,
+        id: delegationId,
+        delegationId,
         parentSessionUuid: architectSession,
         architectSession,
         taskId: info.taskId,
-        implementerSession: sessionId,
-        originalImplementerSession: sessionId,
+        implementationSession: sessionId,
+        originalImplementationSession: sessionId,
         brief,
         ...git,
       });
       try {
-        child.session.header.landDelegation = record.delegationId;
-        child.session.header.landPhaseEpoch = record.phaseEpoch;
+        child.session.header.delegationId = record.delegationId;
+        child.session.header.delegationPhaseEpoch = record.phaseEpoch;
       } catch { /* durable store remains authoritative */ }
       return {
         status: "ok",
         delegationId: record.delegationId,
-        run: record.id,
         child: sessionId,
         role: record.current.role,
         phaseEpoch: record.phaseEpoch,
@@ -1341,8 +1259,8 @@ export function createLand({
     if (owner.settlements.has(callId) || owner.activeTransitions.size > 0) return true;
     const waiting = Promise.withResolvers();
     const reason = state.settlementTransition === "start_qa"
-      ? "implementer done result committed"
-      : state.settlementTransition === "start_fixer"
+      ? "implementation done result committed"
+      : state.settlementTransition === "start_implementation"
         ? "qa look 1 result committed"
         : state.settlementTransition === "finish_land"
           ? "qa pass result committed"
@@ -1353,7 +1271,7 @@ export function createLand({
       transition: state.settlementTransition,
       action: () => applyPostResultTransition({
         sessionId: owner.sessionId,
-        runId: owner.runId,
+        delegationId: owner.delegationId,
         transition: state.settlementTransition,
       }),
       resolve: waiting.resolve,
@@ -1386,12 +1304,12 @@ export function createLand({
     if (pending) {
       if (!matchesPendingHeaders(child, state, pending)) return false;
       if (!pending.messageId || !pending.message) return false;
-      const pendingRole = pending.role.startsWith("qa-") ? "qa" : "implementer";
+      const pendingRole = pending.role;
       owner = retainChild(retained, {
         child,
         role: pendingRole,
         workflowRole: pending.role,
-        runId: state.id,
+        delegationId: state.id,
       });
       try {
         state = activatePendingChild(owner, state, pending);
@@ -1401,15 +1319,15 @@ export function createLand({
       }
       if (state.pendingPhase) return true;
     }
-    const role = state.qaSession === sessionId ? "qa" : "implementer";
-    const workflowRole = workflowRoleForState(state, sessionId, child?.session?.header?.landWorkflowRole || role);
-    owner ??= retainChild(retained, { child, role, workflowRole, runId: state.id });
+    const role = state.qaSession === sessionId ? "qa" : "implementation";
+    const workflowRole = workflowRoleForState(state, sessionId, child?.session?.header?.delegationPhaseRole || role);
+    owner ??= retainChild(retained, { child, role, workflowRole, delegationId: state.id });
     if (state.reportPending) {
       void retryPendingReport(owner, state);
       return true;
     }
     if (resumeRememberedSettlement(owner, state)) return true;
-    if (role === "implementer" && (state.status === "running" || state.status === "waiting_fix")) {
+    if (role === "implementation" && (state.status === "running" || state.status === "revising")) {
       if (!childTools.has(sessionId)) installDone(child, state.id);
       return true;
     }
@@ -1421,11 +1339,11 @@ export function createLand({
     return true;
   }
 
-  function resumeImplementer(child) {
+  function resumeImplementation(child) {
     return isMiniAgent(child) && resumeChild(child);
   }
 
-  async function spawnChild({ sessionUuid, role, workflowRole, runId, delegationId, phaseEpoch, cwd, parentSession }) {
+  async function spawnChild({ sessionUuid, role, workflowRole, delegationId, phaseEpoch, cwd, parentSession }) {
     if (!agents || typeof agents.create !== "function") {
       throw new Error("land requires ctx.agents.create");
     }
@@ -1435,30 +1353,29 @@ export function createLand({
     });
     if (!SESSION_ID.test(sessionUuid)) throw new Error("land child requires its preplanned session UUID");
     const childId = sessionUuid;
-    const mini = role === "implementer";
-    const miniReview = role === "qa";
+    const mini = role === "implementation";
+    const miniQa = role === "qa";
     const handle = adoptAgentHandle(await agents.create({
       sessionId: childId,
       meta: {
         cwd,
         parentSession,
         origin: CHILD_ORIGIN,
-        landRole: role,
-        landWorkflowRole: workflowRole,
-        landRun: runId,
-        landDelegation: delegationId,
-        landPhaseEpoch: phaseEpoch,
+        delegationRole: role,
+        delegationPhaseRole: workflowRole,
+        delegationId: delegationId,
+        delegationPhaseEpoch: phaseEpoch,
         ...(mini ? { kind: MINI_KIND, agentPreset: MINI_KIND } : {}),
-        ...(miniReview ? { kind: MINI_REVIEW_KIND, agentPreset: MINI_REVIEW_KIND } : {}),
+        ...(miniQa ? { kind: MINI_QA_KIND, agentPreset: MINI_QA_KIND } : {}),
       },
       ...childCreateOptions(route, mini
         ? { setup: miniSetup }
-        : miniReview ? { setup: miniReviewSetup } : {}),
+        : miniQa ? { setup: miniQaSetup } : {}),
     }));
     const child = handle?.agent ?? handle;
     let retained = false;
     try {
-      const owner = retainChild(handle, { child, role, workflowRole, runId });
+      const owner = retainChild(handle, { child, role, workflowRole, delegationId });
       retained = true;
       return { child, owner };
     } catch (error) {
@@ -1477,18 +1394,18 @@ export function createLand({
     return agents.list().find((agent) => sessionIdOf(agent) === sessionId) ?? null;
   }
 
-  async function recoverPendingPhase(runId) {
-    let state = store.load(runId);
+  async function recoverPendingPhase(delegationId) {
+    let state = store.load(delegationId);
     const pending = state?.pendingPhase;
     if (!state || !pending || !state.transitioning) return false;
     if (!pending.messageId || !pending.message) {
-      throw new Error(`land run ${runId} pending phase has no durable work packet`);
+      throw new Error(`delegation ${delegationId} pending phase has no durable work packet`);
     }
 
     const owned = childOwners.get(pending.sessionUuid);
     if (owned) {
-      if (owned.runId !== state.id || owned.workflowRole !== pending.role) {
-        throw new Error(`land run ${runId} intended child is owned by another phase`);
+      if (owned.delegationId !== state.id || owned.workflowRole !== pending.role) {
+        throw new Error(`delegation ${delegationId} intended child is owned by another phase`);
       }
       activatePendingChild(owned, state, pending);
       return true;
@@ -1501,14 +1418,13 @@ export function createLand({
       return resumeChild(child, { allowClosing: true });
     }
 
-    const role = pending.role.startsWith("qa-") ? "qa" : "implementer";
+    const role = pending.role;
     let spawned;
     try {
       spawned = await spawnChild({
         sessionUuid: pending.sessionUuid,
         role,
         workflowRole: pending.role,
-        runId: state.id,
         delegationId: state.delegationId,
         phaseEpoch: pending.phaseEpoch,
         cwd: state.worktree,
@@ -1523,7 +1439,7 @@ export function createLand({
       throw error;
     }
 
-    state = store.load(runId) ?? state;
+    state = store.load(delegationId) ?? state;
     if (state.current?.sessionUuid === pending.sessionUuid
       && state.current.role === pending.role
       && state.current.phaseEpoch === pending.phaseEpoch
@@ -1534,17 +1450,17 @@ export function createLand({
     return true;
   }
 
-  function recoverPendingRun(runId) {
-    const existing = pendingRecoveries.get(runId);
+  function recoverPendingDelegation(delegationId) {
+    const existing = pendingRecoveries.get(delegationId);
     if (existing) return existing;
     if (closing) return Promise.resolve(false);
     // Register before executing recovery so plugin teardown sees the promise
     // even if apply and dispose occur in the same turn.
-    const promise = Promise.resolve().then(() => recoverPendingPhase(runId));
-    pendingRecoveries.set(runId, promise);
+    const promise = Promise.resolve().then(() => recoverPendingPhase(delegationId));
+    pendingRecoveries.set(delegationId, promise);
     trackControllerTransition(promise);
     void promise.finally(() => {
-      if (pendingRecoveries.get(runId) === promise) pendingRecoveries.delete(runId);
+      if (pendingRecoveries.get(delegationId) === promise) pendingRecoveries.delete(delegationId);
     }).catch(() => {});
     return promise;
   }
@@ -1553,17 +1469,17 @@ export function createLand({
     if (closing) return [];
     const pending = store.list()
       .filter((state) => state.transitioning && state.pendingPhase)
-      .map((state) => recoverPendingRun(state.id));
+      .map((state) => recoverPendingDelegation(state.id));
     return Promise.allSettled(pending);
   }
 
-  function watchQaSettle(child, runId) {
+  function watchQaSettle(child, delegationId) {
     const childId = sessionIdOf(child);
     const owner = childOwners.get(childId);
     if (!childId || owner?.qaSettleOff) return owner?.qaSettleOff ?? null;
     const finish = async () => {
       if (settledQa.has(childId)) return;
-      const state = store.load(runId);
+      const state = store.load(delegationId);
       if (!state || state.qaSession !== childId || state.status !== "reviewing") return;
       if (state.qaVerdict) {
         settledQa.add(childId);
@@ -1572,7 +1488,7 @@ export function createLand({
       settledQa.add(childId);
       await submitVerdict({
         agent: child,
-        runId,
+        delegationId,
         postTool: false,
         verdict: createQaVerdict({
           verdict: "fail",
@@ -1603,14 +1519,13 @@ export function createLand({
       `Review ref ${state.ref} against base ${state.baseRef}.`,
       prior ? `Prior look-1 rejection:\n${prior}` : "",
     ].filter(Boolean).join("\n\n");
-    const workflowRole = `qa-look-${state.look}`;
+    const workflowRole = "qa";
     const planned = planPhase(state, workflowRole, { task });
     const pending = planned.pendingPhase;
     const spawned = await spawnChild({
       sessionUuid: pending.sessionUuid,
       role: "qa",
       workflowRole,
-      runId: planned.id,
       delegationId: planned.delegationId,
       phaseEpoch: pending.phaseEpoch,
       cwd: planned.worktree,
@@ -1624,16 +1539,15 @@ export function createLand({
     }
   }
 
-  async function startFixer(state, verdict) {
+  async function startImplementation(state, verdict) {
     const parentSession = state.parentSessionUuid || state.architectSession;
-    const user = look1FixPrompt({ ...state, task: { id: state.id } }, verdict);
-    const planned = planPhase(state, "fixer", { user });
+    const user = `QA rejected delegation ${state.delegationId}. ${verdict.feedback || verdict.summary} Address the findings, commit the result, then call done again with ref HEAD.`;
+    const planned = planPhase(state, "implementation", { user });
     const pending = planned.pendingPhase;
     const spawned = await spawnChild({
       sessionUuid: pending.sessionUuid,
-      role: "implementer",
+      role: "implementation",
       workflowRole: pending.role,
-      runId: planned.id,
       delegationId: planned.delegationId,
       phaseEpoch: pending.phaseEpoch,
       cwd: planned.worktree,
@@ -1642,18 +1556,18 @@ export function createLand({
     try {
       return activatePendingChild(spawned.owner, planned, pending);
     } catch (error) {
-      await disposeChild(pending.sessionUuid, "fixer phase promotion rollback");
+      await disposeChild(pending.sessionUuid, "implementation phase promotion rollback");
       throw error;
     }
   }
 
-  async function applyPostResultTransition({ sessionId, runId, transition, result }) {
+  async function applyPostResultTransition({ sessionId, delegationId, transition, result }) {
     if (transition === "dispose") {
       await disposeChild(sessionId, "tool result settled");
       return;
     }
     if (transition === "finish_land") {
-      const current = store.load(runId);
+      const current = store.load(delegationId);
       if (!current) return;
       if (current.status === "landed"
         || (current.status === "blocked" && current.qaVerdict?.verdict !== "pass")) {
@@ -1663,12 +1577,12 @@ export function createLand({
       if (current.qaSession !== sessionId || current.qaVerdict?.verdict !== "pass") {
         throw new Error("qa pass settlement has no owning pass verdict");
       }
-      await finishLand(current, sessionId);
+      await land(current, sessionId);
       return;
     }
     if (transition === "start_qa") {
-      await disposeChild(sessionId, "implementer done tool result settled");
-      const current = store.load(runId);
+      await disposeChild(sessionId, "implementation done tool result settled");
+      const current = store.load(delegationId);
       if (!current || current.status !== "reviewing") return;
       if (current.qaSession) {
         if (result) result.qa = current.qaSession;
@@ -1678,7 +1592,7 @@ export function createLand({
         const reviewing = await startQa(current);
         if (result) result.qa = reviewing.qaSession;
       } catch (error) {
-        const latest = store.load(runId) ?? current;
+        const latest = store.load(delegationId) ?? current;
         const blockedState = store.save(finishWorkflow(latest, {
           status: "blocked",
           blockedReason: `qa child startup failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -1688,22 +1602,22 @@ export function createLand({
       }
       return;
     }
-    if (transition === "start_fixer") {
+    if (transition === "start_implementation") {
       await disposeChild(sessionId, "qa look 1 tool result settled");
-      const current = store.load(runId);
-      if (!current || current.status !== "waiting_fix") return;
-      if (current.implementerSession) {
-        if (result) result.implementer = current.implementerSession;
+      const current = store.load(delegationId);
+      if (!current || current.status !== "revising") return;
+      if (current.implementationSession) {
+        if (result) result.implementation = current.implementationSession;
         return;
       }
       try {
-        const fixing = await startFixer(current, current.qaVerdict);
-        if (result) result.implementer = fixing.implementerSession;
+        const fixing = await startImplementation(current, current.qaVerdict);
+        if (result) result.implementation = fixing.implementationSession;
       } catch (error) {
-        const latest = store.load(runId) ?? current;
+        const latest = store.load(delegationId) ?? current;
         const blockedState = store.save(finishWorkflow(latest, {
           status: "blocked",
-          blockedReason: `fixer child startup failed: ${error instanceof Error ? error.message : String(error)}`,
+          blockedReason: `implementation child startup failed: ${error instanceof Error ? error.message : String(error)}`,
           packet: latest.packet ? { ...latest.packet, mark: "fail" } : latest.packet,
         }));
         await deliverRequiredPacket(blockedState, "blocked", sessionId, { directOnly: true });
@@ -1722,7 +1636,7 @@ export function createLand({
     return result;
   }
 
-  async function finishLand(state, fromId, { postTool = false, submission } = {}) {
+  async function land(state, fromId, { postTool = false, submission } = {}) {
     let next = store.save(beginPhaseTransition(state, { status: "landing" }));
     let kind = "landed";
     try {
@@ -1761,8 +1675,8 @@ export function createLand({
     const report = await deliverRequiredPacket(next, kind, fromId);
     next = report.state;
     const result = kind === "landed"
-      ? { status: "ok", mark: "land", outcome: formatOutcome(next, kind), run: next.id }
-      : { status: "ok", mark: "fail", outcome: formatOutcome(next, kind), run: next.id };
+      ? { status: "ok", mark: "land", outcome: formatOutcome(next, kind), delegationId: next.delegationId }
+      : { status: "ok", mark: "fail", outcome: formatOutcome(next, kind), delegationId: next.delegationId };
     if (!report.delivered) return result;
     return settleAccepted({
       sessionId: fromId,
@@ -1770,28 +1684,28 @@ export function createLand({
       reason: `${kind} result committed`,
       postTool,
       transition: "dispose",
-      action: () => applyPostResultTransition({ sessionId: fromId, runId: next.id, transition: "dispose", result }),
+      action: () => applyPostResultTransition({ sessionId: fromId, delegationId: next.id, transition: "dispose", result }),
       submission,
     });
   }
 
   function notReady(state) {
     if (state.status === "blocked" || state.status === "landed") {
-      return `handoff is ${state.status}, not ready for done`;
+      return `delegation is ${state.status}, not ready for done`;
     }
     if (state.status === "reviewing" || state.status === "landing") {
-      return `handoff is ${state.status}, not ready for done`;
+      return `delegation is ${state.status}, not ready for done`;
     }
-    if (state.status === "waiting_fix") {
+    if (state.status === "revising") {
       if (state.look !== 1) return "qa already used both looks";
       return "";
     }
-    if (state.status !== "running") return `handoff is ${state.status}, not ready for done`;
+    if (state.status !== "running") return `delegation is ${state.status}, not ready for done`;
     if (state.look !== 0) return "qa already used both looks";
     return "";
   }
 
-  function runForWorktree(path) {
+  function delegationForWorktree(path) {
     if (!path) return null;
     const records = store.list().filter((record) => record.worktree === path);
     const active = records.find((record) => record.status !== "landed" && record.status !== "blocked");
@@ -1820,20 +1734,18 @@ export function createLand({
       if (status.stdout.trim()) {
         return { status: "refused", reason: "worktree is not clean; commit or remove every change before done" };
       }
-      const look = state.status === "waiting_fix" ? 2 : state.look;
+      const look = state.status === "revising" ? 2 : state.look;
       const packet = await compilePacket(run, { ...state, ref: sha }, { brief: state.brief, mark: null });
-      const priorLook1Rejection = state.status === "waiting_fix" && state.qaVerdict
+      const priorLook1Rejection = state.status === "revising" && state.qaVerdict
         ? state.qaVerdict.feedback || state.qaVerdict.summary
         : "";
-      const mark = await stamp(packet);
-      packet.mark = mark;
+      packet.mark = "review";
       let next = store.save(beginPhaseTransition(state, {
         ref: sha,
         look,
         packet,
-        status: mark === "land" ? "landing" : "reviewing",
+        status: "reviewing",
       }));
-      if (mark === "land") return finishLand(next, fromId, { postTool, submission });
       next = store.save(beginPhaseTransition(next, {
         look: look === 0 ? 1 : look,
         status: "reviewing",
@@ -1841,16 +1753,16 @@ export function createLand({
         qaVerdict: null,
         ...(priorLook1Rejection ? { blockedReason: priorLook1Rejection } : {}),
       }));
-      const result = { status: "ok", mark: "review", look: next.look, run: next.id, qa: "" };
+      const result = { status: "ok", mark: "review", look: next.look, delegationId: next.delegationId, qa: "" };
       return settleAccepted({
         sessionId: fromId,
         result,
-        reason: "implementer done result committed",
+        reason: "implementation done result committed",
         postTool,
         transition: "start_qa",
         action: () => applyPostResultTransition({
           sessionId: fromId,
-          runId: next.id,
+          delegationId: next.id,
           transition: "start_qa",
           result,
         }),
@@ -1861,17 +1773,17 @@ export function createLand({
     }
   }
 
-  async function done({ agent, ref = "HEAD", runId, postTool = false, submission } = {}) {
+  async function done({ agent, ref = "HEAD", delegationId, postTool = false, submission } = {}) {
     const sessionId = sessionIdOf(agent);
-    const state = (runId ? store.load(runId) : null) ?? store.bySession(sessionId);
-    if (!state) return { status: "refused", reason: "done has no land run for this session" };
+    const state = (delegationId ? store.load(delegationId) : null) ?? store.bySession(sessionId);
+    if (!state) return { status: "refused", reason: "done has no delegation for this session" };
     const parentSessionUuid = state.parentSessionUuid || state.architectSession;
     const chair = parentSessionUuid ? agents?.get?.(parentSessionUuid) : null;
     if (chair && !isLandCandidate(chair)) {
       return { status: "refused", reason: "done requires a root chair parent" };
     }
-    if (state.implementerSession && state.implementerSession !== sessionId) {
-      return { status: "refused", reason: "done requires the owned implementer session" };
+    if (state.implementationSession && state.implementationSession !== sessionId) {
+      return { status: "refused", reason: "done requires the owned implementation session" };
     }
     if (!state.worktree) return { status: "refused", reason: "done requires a worktree" };
     try {
@@ -1899,25 +1811,25 @@ export function createLand({
     if (git.worktree === git.mainRoot) {
       return { status: "refused", reason: "land refuses the primary checkout; use a branch worktree" };
     }
-    const existing = runForWorktree(git.worktree);
+    const existing = delegationForWorktree(git.worktree);
     let state = existing ?? store.create({
       parentSessionUuid: sessionId,
       architectSession: sessionId,
-      implementerSession: sessionId,
+      implementationSession: sessionId,
       brief: String(brief ?? ""),
       ...git,
     });
     if (brief && existing) state = store.save({ ...state, brief: String(brief) });
     if (state.status === "blocked" && state.qaVerdict?.verdict === "pass") {
-      return finishLand(state, sessionId);
+      return land(state, sessionId);
     }
     return submitRef(state, { ref, fromId: sessionId });
   }
 
-  async function submitVerdict({ agent, verdict, runId, postTool = false, submission } = {}) {
+  async function submitVerdict({ agent, verdict, delegationId, postTool = false, submission } = {}) {
     const sessionId = sessionIdOf(agent);
-    const state = (runId ? store.load(runId) : null) ?? store.bySession(sessionId);
-    if (!state) return { status: "refused", reason: "submit_review has no land run for this session" };
+    const state = (delegationId ? store.load(delegationId) : null) ?? store.bySession(sessionId);
+    if (!state) return { status: "refused", reason: "submit_review has no delegation for this session" };
     if (!sessionId || state.qaSession !== sessionId) {
       return { status: "refused", reason: "submit_review requires the owned QA session" };
     }
@@ -1926,16 +1838,16 @@ export function createLand({
         status: "ok",
         verdict: state.qaVerdict.verdict,
         look: state.look,
-        run: state.id,
+        delegationId: state.delegationId,
         alreadySubmitted: true,
         outcome: `qa look ${state.look} verdict was already submitted.`,
       };
     }
     if (state.status !== "reviewing") {
-      return { status: "refused", reason: `handoff is ${state.status}, not ready for qa` };
+      return { status: "refused", reason: `delegation is ${state.status}, not ready for qa` };
     }
     if (state.look !== 1 && state.look !== 2) {
-      return { status: "refused", reason: "handoff is not ready for qa" };
+      return { status: "refused", reason: "delegation is not ready for qa" };
     }
     const working = { ...verdict };
     let next;
@@ -1952,7 +1864,7 @@ export function createLand({
           status: "ok",
           verdict: "pass",
           look: state.look,
-          run: next.id,
+          delegationId: next.delegationId,
           outcome: `qa look ${state.look} accepted ${state.id}. landing after the review result settles.`,
         };
         return settleAccepted({
@@ -1963,7 +1875,7 @@ export function createLand({
           transition: "finish_land",
           action: () => applyPostResultTransition({
             sessionId,
-            runId: next.id,
+            delegationId: next.id,
             transition: "finish_land",
             result,
           }),
@@ -1972,28 +1884,28 @@ export function createLand({
       }
       if (state.look === 1) {
         next = store.save(beginPhaseTransition(next, {
-          status: "waiting_fix",
-          implementerSession: "",
+          status: "revising",
+          implementationSession: "",
           qaSession: sessionId,
         }));
         const result = {
           status: "ok",
           verdict: "fail",
           look: 1,
-          run: next.id,
-          implementer: "",
-          outcome: `qa look 1 rejected ${state.id}. one fresh implementer.`,
+          delegationId: next.delegationId,
+          implementation: "",
+          outcome: `qa look 1 rejected ${state.id}. one fresh implementation.`,
         };
         return settleAccepted({
           sessionId,
           result,
           reason: "qa look 1 result committed",
           postTool,
-          transition: "start_fixer",
+          transition: "start_implementation",
           action: () => applyPostResultTransition({
             sessionId,
-            runId: next.id,
-            transition: "start_fixer",
+            delegationId: next.id,
+            transition: "start_implementation",
             result,
           }),
           submission,
@@ -2006,7 +1918,7 @@ export function createLand({
       }));
       const report = await deliverRequiredPacket(next, "blocked", sessionId);
       next = report.state;
-      const result = { status: "ok", verdict: "fail", look: 2, outcome: formatOutcome(next, "blocked"), run: next.id };
+      const result = { status: "ok", verdict: "fail", look: 2, outcome: formatOutcome(next, "blocked"), delegationId: next.delegationId };
       if (!report.delivered) return result;
       return settleAccepted({
         sessionId,
@@ -2014,7 +1926,7 @@ export function createLand({
         reason: "qa look 2 result committed",
         postTool,
         transition: "dispose",
-        action: () => applyPostResultTransition({ sessionId, runId: next.id, transition: "dispose", result }),
+        action: () => applyPostResultTransition({ sessionId, delegationId: next.id, transition: "dispose", result }),
         submission,
       });
     } catch (error) {
@@ -2044,8 +1956,8 @@ export function createLand({
     return {
       status: "ok",
       delegationId: state.delegationId,
-      runId: state.id,
-      runStatus: state.status,
+      kind: "implementation",
+      delegationStatus: state.status,
       role: state.current?.role || "",
       phaseEpoch: state.phaseEpoch,
       sessionUuid,
@@ -2076,7 +1988,7 @@ export function createLand({
     }
     const owner = childOwners.get(current.sessionUuid);
     const live = agents?.get?.(current.sessionUuid);
-    if (!owner || owner.runId !== state.id || owner.workflowRole !== current.role
+    if (!owner || owner.delegationId !== state.id || owner.workflowRole !== current.role
       || !live || sessionIdOf(live) !== current.sessionUuid) {
       return delegationRefusal("current workflow child is not owned and live");
     }
@@ -2089,7 +2001,7 @@ export function createLand({
       const sent = await relay.send({
         fromId: parentSessionUuid,
         to: current.sessionUuid,
-        message: `Delegation ID (authoritative): ${state.delegationId}. Land run: ${state.id}.
+        message: `Delegation ID (authoritative): ${state.delegationId}.
 
 ${message}`,
         delivery: "default",
@@ -2097,7 +2009,6 @@ ${message}`,
       return {
         ...sent,
         delegationId: state.delegationId,
-        runId: state.id,
         sessionUuid: current.sessionUuid,
         alias: sent?.to_alias ?? (typeof relay.alias === "function" ? (relay.alias(current.sessionUuid) ?? "") : ""),
         role: current.role,
@@ -2108,11 +2019,34 @@ ${message}`,
     }
   }
 
+  async function workflowStop({ delegationId, reason, parentSessionUuid } = {}) {
+    const found = ownedDelegation(delegationId, parentSessionUuid);
+    if (found.refusal) return found.refusal;
+    const state = found.state;
+    if (state.status === "landed" || state.status === "blocked") {
+      return delegationRefusal(`delegation is terminal (${state.status})`);
+    }
+    const childIds = new Set([
+      state.current?.sessionUuid,
+      state.pendingPhase?.sessionUuid,
+      state.implementationSession,
+      state.qaSession,
+    ].filter(Boolean));
+    let blocked = store.save(finishWorkflow(state, {
+      status: "blocked",
+      blockedReason: String(reason || "stopped by parent"),
+      packet: state.packet ? { ...state.packet, mark: "fail" } : state.packet,
+    }));
+    const report = await deliverRequiredPacket(blocked, "blocked", state.current?.sessionUuid || "");
+    blocked = report.state;
+    for (const childId of childIds) await disposeChild(childId, "delegation stopped");
+    return { status: "ok", delegationId: blocked.delegationId, delegationStatus: blocked.status, terminal: true };
+  }
+
   function dispose() {
     if (disposePromise) return disposePromise;
     closing = true;
     disposePromise = (async () => {
-      for (const handle of [...attached.values()]) handle.detach();
       let detached = 0;
 
       // Controller work is the teardown authority. In particular it remains
@@ -2147,26 +2081,24 @@ ${message}`,
   }
 
   return Object.freeze({
-    attach,
-    detach,
     dispose,
-    adoptImplementer,
-    resumeImplementer,
+    adoptImplementation,
+    resumeImplementation,
     resumeChild,
     recoverPendingPhases,
     releaseChild,
     refreshLabels,
     workflowStatus,
     workflowSend,
+    workflowStop,
     done,
     invoke,
     submitVerdict,
-    attached: (sessionId) => attached.get(sessionId),
-    run: (id) => store.load(id),
+    delegation: (id) => store.load(id),
+    byDelegation: (id) => store.byDelegation(id),
     bySession: (sessionId) => store.bySession(sessionId),
     ownedChildren: () => [...childOwners.keys()],
     whenSettled: (sessionId) => settlementPromises.get(sessionId) ?? Promise.resolve(false),
-    label: LAND_LABEL,
   });
 }
 
@@ -2176,6 +2108,4 @@ export const internals = Object.freeze({
   landWorktree,
   formatOutcome,
   runCommand,
-  stampFromEvidence,
-  ROUTE_SYSTEM,
 });

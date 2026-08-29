@@ -15,7 +15,7 @@ import {
 
 export const RESEARCH_MANIFEST_SCHEMA = "qq.research-evidence/v1";
 export const RESEARCH_REF = /^[WS]\d{3}$/;
-export const RESEARCH_RUN_PREFIX = "research-";
+export const RESEARCH_CAPSULE_PREFIX = "research-";
 export const MAX_ANSWER_BYTES = 256 * 1024;
 
 function requireAbsolute(path, label) {
@@ -25,7 +25,7 @@ function requireAbsolute(path, label) {
   return path;
 }
 
-/** Default durable metadata/capsule parent, beside DSH_HOME like Land runs. */
+/** Default durable metadata/capsule parent, beside DSH_HOME like delegation state. */
 export function defaultResearchDir(env = process.env, config = {}) {
   if (config.researchDir !== undefined) return requireAbsolute(config.researchDir, "researchDir");
   // Test deployments and embedders commonly relocate all workflow state by
@@ -37,10 +37,10 @@ export function defaultResearchDir(env = process.env, config = {}) {
   return join(requireAbsolute(env.HOME || homedir(), "HOME"), ".qq-workflows-research");
 }
 
-function assertRunId(value) {
-  const runId = String(value ?? "");
-  if (!/^research-[0-9a-f]{8}$/i.test(runId)) throw new Error("invalid research run id");
-  return runId;
+function assertCapsuleId(value) {
+  const capsuleId = String(value ?? "");
+  if (!/^research-[0-9a-f]{8}$/i.test(capsuleId)) throw new Error("invalid research capsule id");
+  return capsuleId;
 }
 
 async function privateDirectory(path) {
@@ -79,12 +79,12 @@ export function workspacePaths(root) {
 }
 
 /** Create one private capsule. repo is a symlink; no project files are copied. */
-export async function createResearchWorkspace({ parentDir, repoRoot, question, runId } = {}) {
+export async function createResearchWorkspace({ parentDir, repoRoot, question, capsuleId } = {}) {
   const parent = requireAbsolute(parentDir, "researchDir");
   const repository = await realpath(requireAbsolute(repoRoot, "repoRoot"));
   const repoInfo = await lstat(repository);
   if (!repoInfo.isDirectory()) throw new Error("research repoRoot must be a directory");
-  const id = assertRunId(runId ?? `${RESEARCH_RUN_PREFIX}${randomUUID().slice(0, 8)}`);
+  const id = assertCapsuleId(capsuleId ?? `${RESEARCH_CAPSULE_PREFIX}${randomUUID().slice(0, 8)}`);
   await privateDirectory(parent);
   const paths = workspacePaths(join(parent, id));
   await mkdir(paths.root, { mode: 0o700 });

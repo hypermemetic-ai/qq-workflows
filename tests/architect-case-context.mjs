@@ -7,11 +7,22 @@ import {
   CASE_CONTEXT_NAME,
   CASE_MAX_CHARS,
   CASE_VARIABLE_NAME,
+  EMPTY_CASE,
+  WORKING_MEMORY_EMPTY_NOTICE,
   createCaseStore,
+  isWorkingMemoryEmpty,
   renderCaseContext,
 } from "../src/casefile.mjs";
 import { ARCHITECT_PROMPT, ARCHITECT_PROMPT_NAME, createArchitect } from "../src/architect.mjs";
 import { buildArchitectTools } from "../src/tools.mjs";
+
+
+assert.equal(isWorkingMemoryEmpty(""), true);
+assert.equal(isWorkingMemoryEmpty("# Working memory\n"), true);
+assert.equal(isWorkingMemoryEmpty(EMPTY_CASE), true);
+assert.match(EMPTY_CASE, /Empty: no plan has been recorded/);
+assert.equal(isWorkingMemoryEmpty(`# Working memory\n\n${WORKING_MEMORY_EMPTY_NOTICE}\n\nReal plan.`), false);
+assert.equal(isWorkingMemoryEmpty("# Plan\n\nDo the work."), false);
 
 const architectId = "session-63a11000-0000-4000-8000-000000000001";
 const VARIABLE_NAME = /^[a-z][a-z0-9_]*$/;
@@ -224,6 +235,7 @@ function createPrompt() {
 {
   const listeners = [];
   const followups = [];
+  const appended = [];
   const event = { type: "turn/end", data: { turn: 1, reason: "complete" } };
   const session = {
     id: architectId,
@@ -233,6 +245,7 @@ function createPrompt() {
       { type: "user/message", data: { turn: 1, source: { kind: "operator" } } },
       event,
     ],
+    append(type, data) { appended.push({ type, data }); },
   };
   const architect = createArchitect({
     ctx: { get: () => null },
@@ -256,5 +269,11 @@ function createPrompt() {
     await listener.fn(session, event);
   }
   assert.equal(followups.length, 0, "turns without plan writes must not receive a write gate followup");
+  const request = listeners.find((record) => record.type === "agent/request");
+  assert.ok(request, "architect installs the context guard");
+  assert.equal(await request.fn({ turn: 1, step: 1 }, async () => "assembled"), "assembled");
+  const mark = appended.find((entry) => entry.type === "hook/result");
+  assert.ok(Number.isSafeInteger(mark?.data?.talking), "assemble mark retains the measured token count");
+  assert.ok(Number.isSafeInteger(mark?.data?.q));
   architect.detach(agent);
 }

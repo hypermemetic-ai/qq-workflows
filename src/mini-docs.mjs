@@ -3,8 +3,7 @@ import { randomUUID } from "node:crypto";
 import { wrapMiniBash } from "./official-mini.mjs";
 import { allowInherited, MINI_INHERITED_TOOLS } from "./hide-harness.mjs";
 
-export const name = "qq-mini-docs";
-export const inject = ["agents"];
+const ADAPTER_NAME = "qq-workflows:mini-docs";
 
 export const MINI_DOCS_KIND = "mini-docs";
 export const MINI_DOCS_COMPLETION_COMMAND = "echo COMPLETE_DOCS_AND_EXIT";
@@ -95,7 +94,7 @@ function installFormatRecovery(agentCtx) {
       id: randomUUID(),
       role: "user",
       content: [{ type: "text", text: FORMAT_ERROR }],
-      source: { kind: "plugin", plugin: name, form: "notice" },
+      source: { kind: "plugin", plugin: ADAPTER_NAME, form: "notice" },
     });
   });
   return () => {
@@ -224,20 +223,4 @@ export function ensureMiniDocsMounted(agent, config = {}) {
   if (!isMiniDocsAgent(agent)) return false;
   miniDocsSetup(agent?.ctx ?? agent, config);
   return true;
-}
-
-function agentsOf(ctx) {
-  const host = ctx?.root && typeof ctx.root.get === "function" ? ctx.root : ctx;
-  return host?.get?.("agents", false) ?? ctx?.agents ?? ctx?.get?.("agents", false) ?? null;
-}
-
-export function apply(ctx, config = {}) {
-  if (!ctx || typeof ctx.on !== "function") throw new Error("mini-docs requires a Cordis context");
-  const agents = agentsOf(ctx);
-  if (!agents || typeof agents.list !== "function") throw new Error("mini-docs requires the agents service");
-
-  ctx.on("agent/created", ({ agent } = {}) => {
-    ensureMiniDocsMounted(agent, config);
-  });
-  for (const agent of agents.list()) ensureMiniDocsMounted(agent, config);
 }

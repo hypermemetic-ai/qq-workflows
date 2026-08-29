@@ -5,15 +5,15 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import * as miniReviewModuleForHmr from "../src/mini-review.mjs";
+import * as miniQaModuleForHmr from "../src/mini-qa.mjs";
 import {
-  bindMiniReviewSubmit,
-  buildMiniReviewTools,
-  MINI_REVIEW_SYSTEM_PROMPT,
-  MINI_REVIEW_TOOL_NAMES,
-  renderMiniReviewTask,
+  bindMiniQaSubmit,
+  buildMiniQaTools,
+  MINI_QA_SYSTEM_PROMPT,
+  MINI_QA_TOOL_NAMES,
+  renderMiniQaTask,
   reviewFindingsToVerdictInput,
-} from "../src/mini-review.mjs";
+} from "../src/mini-qa.mjs";
 import {
   MINI_PAGER_EXPORT,
   MINI_SWE_COMPLETION_COMMAND,
@@ -22,22 +22,22 @@ import {
 import { RepoOracle } from "../src/repo-oracle.mjs";
 import { withChildSettlement } from "../src/child-settlement.mjs";
 
-const root = mkdtempSync(join(tmpdir(), "qq-mini-review."));
+const root = mkdtempSync(join(tmpdir(), "qq-mini-qa."));
 const repo = join(root, "repo");
 mkdirSync(repo);
 const env = {
   ...process.env,
-  GIT_AUTHOR_NAME: "mini-review-test",
-  GIT_AUTHOR_EMAIL: "mini-review@test",
-  GIT_COMMITTER_NAME: "mini-review-test",
-  GIT_COMMITTER_EMAIL: "mini-review@test",
+  GIT_AUTHOR_NAME: "mini-qa-test",
+  GIT_AUTHOR_EMAIL: "mini-qa@test",
+  GIT_COMMITTER_NAME: "mini-qa-test",
+  GIT_COMMITTER_EMAIL: "mini-qa@test",
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_CONFIG_GLOBAL: "/dev/null",
 };
 const git = (...args) => execFileSync("git", args, { cwd: repo, env, encoding: "utf8" }).trim();
 git("init", "-b", "main");
-git("config", "user.name", "mini-review-test");
-git("config", "user.email", "mini-review@test");
+git("config", "user.name", "mini-qa-test");
+git("config", "user.email", "mini-qa@test");
 mkdirSync(join(repo, "src"));
 writeFileSync(join(repo, "src/auth.py"), "def authorize(user):\n    return False\nunchanged = True\n");
 writeFileSync(join(repo, "src/delete.txt"), "anchor\nremove me\ntail\n");
@@ -91,8 +91,8 @@ await assert.rejects(
   /must not contain \.\./,
 );
 
-assert.equal(MINI_REVIEW_SYSTEM_PROMPT, "You are a helpful assistant that can review code changes in a repository.");
-const rendered = renderMiniReviewTask({
+assert.equal(MINI_QA_SYSTEM_PROMPT, "You are a helpful assistant that can review code changes in a repository.");
+const rendered = renderMiniQaTask({
   task: `look 1 packet\n\nBase: ${base}\nHead: ${head}\n\nFiles:\nsrc/auth.py +1/-1\n\nPointers:\nsrc/auth.py:2`,
   diff: "diff --git a/src/auth.py b/src/auth.py\n+changed",
 });
@@ -107,18 +107,18 @@ assert.match(rendered, /Do not run the Mini completion command/);
 assert.match(rendered, /Every response must call bash or submit_review/);
 assert.doesNotMatch(rendered, /sed -i|COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT/);
 assert.ok(rendered.endsWith('- Finish with "submit_review".'));
-assert.deepEqual(MINI_REVIEW_TOOL_NAMES, ["bash", "submit_review"]);
+assert.deepEqual(MINI_QA_TOOL_NAMES, ["bash", "submit_review"]);
 for (const removed of [
-  "MINI_REVIEW_GREP_SCHEMA",
-  "MINI_REVIEW_GLOB_SCHEMA",
-  "MINI_REVIEW_VIEW_SCHEMA",
-  "MINI_REVIEW_GREP_LIMIT",
-  "MINI_REVIEW_GLOB_LIMIT",
-  "MINI_REVIEW_VIEW_LINE_LIMIT",
-  "MINI_REVIEW_VIEW_BYTE_LIMIT",
-]) assert.equal(miniReviewModuleForHmr[removed], undefined);
-assert.equal(Object.isFrozen(miniReviewModuleForHmr.MINI_REVIEW_SUBMIT_SCHEMA), true);
-assert.equal(Object.isFrozen(miniReviewModuleForHmr.MINI_REVIEW_SUBMIT_SCHEMA.parameters), true);
+  "MINI_QA_GREP_SCHEMA",
+  "MINI_QA_GLOB_SCHEMA",
+  "MINI_QA_VIEW_SCHEMA",
+  "MINI_QA_GREP_LIMIT",
+  "MINI_QA_GLOB_LIMIT",
+  "MINI_QA_VIEW_LINE_LIMIT",
+  "MINI_QA_VIEW_BYTE_LIMIT",
+]) assert.equal(miniQaModuleForHmr[removed], undefined);
+assert.equal(Object.isFrozen(miniQaModuleForHmr.MINI_QA_SUBMIT_SCHEMA), true);
+assert.equal(Object.isFrozen(miniQaModuleForHmr.MINI_QA_SUBMIT_SCHEMA.parameters), true);
 
 assert.deepEqual(reviewFindingsToVerdictInput([]), {
   verdict: "pass",
@@ -134,13 +134,13 @@ assert.equal(mapped.feedback, findings.map((finding) => `${finding.path}:${findi
 assert.equal(reviewFindingsToVerdictInput([{ ...findings[0], body: "z".repeat(300) }]).summary.length, 240);
 
 // The plugin owns only typed completion. Bash is the wrapped host catalog tool.
-const tools = buildMiniReviewTools();
+const tools = buildMiniQaTools();
 assert.deepEqual(tools.map((tool) => tool.name), ["submit_review"]);
 assert.equal(tools[0].isConcurrencySafe(), false);
-const fakeAgent = { session: { id: "session-review", header: { kind: "mini-review" } }, ctx: {} };
+const fakeAgent = { session: { id: "session-review", header: { kind: "mini-qa" } }, ctx: {} };
 const order = [];
 let submitCount = 0;
-bindMiniReviewSubmit(fakeAgent, {
+bindMiniQaSubmit(fakeAgent, {
   oracle: { validateFindings: async (value) => value },
   submit: async ({ verdict }) => {
     assert.equal(verdict.verdict, "pass");
@@ -168,9 +168,9 @@ assert.equal(submittedAgain.status, "ok");
 assert.equal(submittedAgain.alreadySubmitted, true);
 assert.deepEqual(order, ["arm", "conclude", "conclude-again"]);
 
-const persistedAgent = { session: { id: "session-persisted-review", header: { kind: "mini-review" } }, ctx: {} };
+const persistedAgent = { session: { id: "session-persisted-review", header: { kind: "mini-qa" } }, ctx: {} };
 let persistedConcluded = 0;
-bindMiniReviewSubmit(persistedAgent, {
+bindMiniQaSubmit(persistedAgent, {
   oracle: { validateFindings: async () => assert.fail("idempotent closer must not revalidate findings") },
   isCompleted: () => true,
   submit: async ({ verdict }) => {
@@ -178,7 +178,7 @@ bindMiniReviewSubmit(persistedAgent, {
     return { status: "ok", verdict: "pass", alreadySubmitted: true };
   },
 });
-const persistedSubmit = await buildMiniReviewTools()[0].execute({ findings: [] }, {
+const persistedSubmit = await buildMiniQaTools()[0].execute({ findings: [] }, {
   agent: persistedAgent,
   concludeTurn() { persistedConcluded++; },
 });
@@ -186,16 +186,16 @@ assert.equal(persistedSubmit.status, "ok");
 assert.equal(persistedSubmit.alreadySubmitted, true);
 assert.equal(persistedConcluded, 1);
 
-const invalidAgent = { session: { id: "session-invalid-review", header: { kind: "mini-review" } }, ctx: {} };
-bindMiniReviewSubmit(invalidAgent, {
+const invalidAgent = { session: { id: "session-invalid-review", header: { kind: "mini-qa" } }, ctx: {} };
+bindMiniQaSubmit(invalidAgent, {
   oracle: { validateFindings: async () => assert.fail("unknown submit fields must refuse before validation") },
   submit: async () => assert.fail("unknown submit fields must not settle"),
 });
-const invalidSubmit = await buildMiniReviewTools()[0].execute({ findings: [], extra: true }, { agent: invalidAgent });
+const invalidSubmit = await buildMiniQaTools()[0].execute({ findings: [], extra: true }, { agent: invalidAgent });
 assert.equal(invalidSubmit.status, "refused");
 assert.match(invalidSubmit.reason, /only the findings field/);
 assert.throws(
-  () => bindMiniReviewSubmit({ session: {} }, { submit() {} }),
+  () => bindMiniQaSubmit({ session: {} }, { submit() {} }),
   /requires an oracle and submit function/,
 );
 
@@ -226,7 +226,7 @@ const hostBash = {
   },
 };
 let runtimeSuppressed = false;
-const mountAgent = { id: "mini-review-mount" };
+const mountAgent = { id: "mini-qa-mount" };
 const mountCtx = {
   agent: mountAgent,
   get(name) {
@@ -264,17 +264,17 @@ const mountCtx = {
     return () => mountedListeners.splice(mountedListeners.indexOf(record), 1);
   },
 };
-miniReviewModuleForHmr.miniReviewSetup(mountCtx);
+miniQaModuleForHmr.miniQaSetup(mountCtx);
 assert.equal(runtimeSuppressed, true);
 assert.equal(mountedSections.length, 1);
 assert.equal(mountedSections[0].complete, true);
-assert.equal(mountedSections[0].text, MINI_REVIEW_SYSTEM_PROMPT);
-assert.deepEqual(mountedTools.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
+assert.equal(mountedSections[0].text, MINI_QA_SYSTEM_PROMPT);
+assert.deepEqual(mountedTools.map((tool) => tool.name), MINI_QA_TOOL_NAMES);
 assert.deepEqual(surfaceCalls, [{ agent: mountAgent, names: ["bash"] }]);
 assert.deepEqual(mountOperations.slice(0, 3), ["allow", "register:bash", "register:submit_review"]);
 assert.equal(mountedTools[0].isConcurrencySafe(), false);
 assert.equal(mountedListeners.length, 2);
-assert.equal(miniReviewModuleForHmr.assembleMiniReviewPrompt(mountedSections, { runtimeSuppressed }), MINI_REVIEW_SYSTEM_PROMPT);
+assert.equal(miniQaModuleForHmr.assembleMiniQaPrompt(mountedSections, { runtimeSuppressed }), MINI_QA_SYSTEM_PROMPT);
 
 const bashResult = await mountedTools[0].execute({ command: "long-output" }, {});
 assert.equal(hostCalls.length, 1);
@@ -295,7 +295,7 @@ assert.equal(hostCalls[1].command, `${MINI_PAGER_EXPORT}; ${MINI_SWE_COMPLETION_
 
 const steers = [];
 const formatAgent = {
-  session: { id: "session-format-review", header: { kind: "mini-review" } },
+  session: { id: "session-format-review", header: { kind: "mini-qa" } },
   ctx: mountCtx,
   steer(message) { steers.push(message); },
 };
@@ -306,20 +306,20 @@ assert.match(steerText, /bash or submit_review/);
 assert.doesNotMatch(steerText, /\b(?:grep|glob|view)\b|COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT/);
 
 const durablyCompletedAgent = {
-  session: { id: "session-durable-review", header: { kind: "mini-review" } },
+  session: { id: "session-durable-review", header: { kind: "mini-qa" } },
   ctx: mountCtx,
   steer() { assert.fail("format recovery must not steer after a verdict is durably persisted"); },
 };
-bindMiniReviewSubmit(durablyCompletedAgent, {
+bindMiniQaSubmit(durablyCompletedAgent, {
   oracle: { validateFindings: async (value) => value },
   submit: async () => ({ status: "ok", verdict: "pass" }),
   isCompleted: () => true,
 });
 mountedListeners.find((item) => item.type === "agent/turn-stopping").fn({ agent: durablyCompletedAgent });
-const nextGeneration = await import(`../src/mini-review.mjs?hmr=${Date.now()}`);
-nextGeneration.miniReviewSetup(mountCtx);
+const nextGeneration = await import(`../src/mini-qa.mjs?hmr=${Date.now()}`);
+nextGeneration.miniQaSetup(mountCtx);
 assert.equal(mountedSections.length, 1);
-assert.deepEqual(mountedTools.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
+assert.deepEqual(mountedTools.map((tool) => tool.name), MINI_QA_TOOL_NAMES);
 assert.deepEqual(surfaceCalls, [
   { agent: mountAgent, names: ["bash"] },
   { agent: mountAgent, names: ["bash"] },
@@ -339,7 +339,7 @@ const missingBashCtx = {
     register() { return () => {}; },
   },
 };
-assert.throws(() => miniReviewModuleForHmr.miniReviewSetup(missingBashCtx), /requires a bash tool to wrap/);
+assert.throws(() => miniQaModuleForHmr.miniQaSetup(missingBashCtx), /requires a bash tool to wrap/);
 
 // Surface assignment is mandatory and fails before bash lookup or registration.
 let lookupsAfterSurfaceFailure = 0;
@@ -364,10 +364,10 @@ const failedSurfaceCtx = {
   },
 };
 assert.throws(
-  () => miniReviewModuleForHmr.miniReviewSetup(failedSurfaceCtx),
+  () => miniQaModuleForHmr.miniQaSetup(failedSurfaceCtx),
   /inherited surface assignment failed/,
 );
 assert.equal(lookupsAfterSurfaceFailure, 0);
 assert.equal(registrationsAfterSurfaceFailure, 0);
 
-console.log("mini-review tests passed");
+console.log("mini-qa tests passed");

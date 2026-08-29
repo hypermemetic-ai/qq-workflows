@@ -6,7 +6,7 @@ import { pluginUserMessage } from "./tools.mjs";
 import { createDelegatedWorktree, repoRootFor, runCommand } from "./git.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
 import { MINI_KIND, miniSetup, renderMiniSweTask } from "./official-mini.mjs";
-import { CASE_CONTEXT_NAME, CASE_VARIABLE_NAME, EMPTY_CASE, renderCaseContext } from "./casefile.mjs";
+import { CASE_CONTEXT_NAME, CASE_VARIABLE_NAME, isWorkingMemoryEmpty, renderCaseContext } from "./casefile.mjs";
 import { guardContext, OVERFLOW_MESSAGE } from "./fold.mjs";
 import { markAssemble } from "./assemble-mark.mjs";
 import { truncateObservationContent } from "./observation.mjs";
@@ -16,7 +16,13 @@ import { loadWikiIndexContext } from "./wiki-index.mjs";
 export const ARCHITECT_LABEL = "workflows:architect";
 export const CHILD_ORIGIN = "subagent";
 export const ARCHITECT_PROMPT_NAME = "qq-workflows:architect";
-export const ARCHITECT_PROMPT = "You are the architect. Use the current turn, last turn, and standing plan document to maintain a concise operator-visible work order. Edit it freely and get operator approval. Use delegate for implementation work and research for evidence-backed questions; either action sends the approved plan document as its complete packet.";
+export const ARCHITECT_PROMPT = [
+  "You are the architect. Working memory is your only durable plan document and plan knowledge: fold can erase earlier conversation, and an empty document means you remember nothing.",
+  "There is one document and one name: working memory. `case_write` edits working memory; delegation sends those same bytes as the complete packet.",
+  "After every operator message that materially changes the plan, call `case_write` before replying. Do not wait for a final plan and do not claim unwritten conversation is authoritative.",
+  "Keep working memory concise and operator-visible, edit it freely, and obtain operator approval before delegation.",
+  "Use `delegate({ kind: \"implementation\" })` for implementation or `delegate({ kind: \"research\" })` for evidence-backed questions. Delegation requires approved, settled, non-empty working memory.",
+].join("\n");
 
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CHILD_AGENT_HANDLE = Symbol.for("@hypermemetic-ai/qq-workflows/child-agent-handle");
@@ -123,7 +129,7 @@ export async function capArchitectToolObservation(_exec, result, next) {
   return capped === content ? decision : { ...decision, content: capped };
 }
 
-export function createArchitect({ ctx, cases, folder, agents, tasks, talking, hands, onInvokeChild, onResearch, loadIndex, run = runCommand, env = process.env } = {}) {
+export function createArchitect({ ctx, cases, folder, agents, tasks, architecture, implementation, onInvokeImplementation, onResearch, onDelegateKind, loadIndex, run = runCommand, env = process.env } = {}) {
   const attached = new Map();
   const delegatedHandles = new Map();
   const tasksOf = () => (typeof tasks === "function" ? tasks() : tasks ?? null);
@@ -242,7 +248,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
         try {
           folder?.decide?.(sessionId, { events: session.events, session, route: agent.options });
         } catch {
-          // Fold decisions never block the talking loop.
+          // Fold decisions never block the architecture loop.
         }
       });
       disposeAssemble = agent.ctx?.on?.("agent/request", async (payload, next) => {
@@ -256,7 +262,16 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
           }
           const pending = folder?.pending?.(sessionId);
           if (pending?.action === "fail") folder.clear(sessionId);
-          else if (pending?.action === "drop") folder.apply(sessionId, { events: session.events, session });
+          else if (pending?.action === "drop") {
+            const applied = folder.apply(sessionId, {
+              events: session.events,
+              session,
+              workingMemory: cases?.load?.(sessionId)?.text ?? "",
+            });
+            if (applied?.action === "fail" && applied.reason === "working-memory-empty") {
+              failVisibly(session, applied.message);
+            }
+          }
           const after = guardContext({ ctx, session, route: agent.options });
           talkingTokens = after.talking;
           q = after.q;
@@ -283,7 +298,16 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
       try { guardContext({ ctx, session, route: agent.options }); } catch { /* attach must not fail */ }
       try {
         const decision = folder?.decide?.(sessionId, { events: session.events ?? [], session, route: agent.options });
-        if (decision?.action === "drop") folder.apply(sessionId, { events: session.events ?? [], session });
+        if (decision?.action === "drop") {
+          const applied = folder.apply(sessionId, {
+            events: session.events ?? [],
+            session,
+            workingMemory: cases?.load?.(sessionId)?.text ?? "",
+          });
+          if (applied?.action === "fail" && applied.reason === "working-memory-empty") {
+            failVisibly(session, applied.message);
+          }
+        }
       } catch {
         try { folder?.clear?.(sessionId); } catch { /* attach must not fail */ }
       }
@@ -316,7 +340,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
     return Boolean(handle);
   }
 
-  async function delegate({ agent } = {}) {
+  async function delegateImplementation({ agent } = {}) {
     const relay = relayOf(ctx);
     if (!relay) return { status: "refused", reason: "delegate requires qq-relay" };
     const parent = agent?.session;
@@ -327,7 +351,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
       return { status: "refused", reason: "delegate requires ctx.agents.create" };
     }
     const brief = String(cases?.load?.(parent.id)?.text ?? "");
-    if (!brief.trim() || brief.trim() === EMPTY_CASE.trim()) {
+    if (isWorkingMemoryEmpty(brief)) {
       return { status: "refused", reason: "delegate requires settled working memory" };
     }
     const delegationId = randomUUID();
@@ -370,10 +394,10 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
         return { status: "refused", reason: `delegate worktree: ${message}` };
       }
     }
-    const handsBinding = typeof hands === "function" ? hands() : hands;
-    const talkingBinding = typeof talking === "function" ? talking() : talking;
+    const implementationBinding = typeof implementation === "function" ? implementation() : implementation;
+    const architectureBinding = typeof architecture === "function" ? architecture() : architecture;
     const route = childRoute({
-      binding: handsBinding ?? talkingBinding,
+      binding: implementationBinding ?? architectureBinding,
       options: agent?.options,
       env,
     });
@@ -408,9 +432,9 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
       };
     };
     let adoption;
-    if (typeof onInvokeChild === "function") {
+    if (typeof onInvokeImplementation === "function") {
       try {
-        adoption = await onInvokeChild(child, {
+        adoption = await onInvokeImplementation(child, {
           handle: created,
           packet,
           delegationId,
@@ -440,8 +464,8 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
         onDelivered: () => disposeDelegated(childSessionId),
       });
     }
-    const workflowPacket = adoption?.run
-      ? `${packet}\n\nDelegation ID (authoritative): ${adoption.delegationId || delegationId}. Land run: ${adoption.run}. Workflow phase: role ${adoption.role || "implementer"}; epoch ${adoption.phaseEpoch || 1}; child session ${childSessionId}.`
+    const workflowPacket = adoption?.delegationId
+      ? `${packet}\n\nDelegation ID (authoritative): ${adoption.delegationId || delegationId}. Workflow phase: role ${adoption.role || "implementation"}; epoch ${adoption.phaseEpoch || 1}; child session ${childSessionId}.`
       : packet;
     try {
       child.followup({
@@ -463,26 +487,51 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
     return {
       status: "ok",
       delegationId: adoption?.delegationId || delegationId,
-      runId: adoption?.run || "",
-      child: child.session?.id ?? childId,
+            child: child.session?.id ?? childId,
       alias: alias ?? "",
-      role: adoption?.role || "implementer",
+      role: adoption?.role || "implementation",
       phaseEpoch: adoption?.phaseEpoch || 1,
       delivery: "default",
     };
   }
 
-  async function research({ agent } = {}) {
+  async function delegate({ agent, kind } = {}) {
+    if (kind === "implementation") return delegateImplementation({ agent });
+    if (kind !== "research" && typeof onDelegateKind !== "function") {
+      return { status: "refused", reason: `unknown delegation kind: ${String(kind ?? "")}` };
+    }
     const parent = agent?.session;
     if (!parent?.id || !isArchitectCandidate(agent) || !attached.has(parent.id)) {
-      return { status: "refused", reason: "research requires a live architect session" };
+      return { status: "refused", reason: "delegate requires a live architect session" };
     }
-    if (typeof onResearch !== "function") return { status: "refused", reason: "research is unavailable" };
-    const question = String(cases?.load?.(parent.id)?.text ?? "");
-    if (!question.trim() || question.trim() === EMPTY_CASE.trim()) {
-      return { status: "refused", reason: "research requires settled working memory" };
+    const memory = String(cases?.load?.(parent.id)?.text ?? "");
+    if (isWorkingMemoryEmpty(memory)) {
+      return { status: "refused", reason: "delegate requires settled working memory" };
     }
-    const result = await onResearch({ agent, question: question.trimEnd() });
+    const delegationId = randomUUID();
+    const relay = relayOf(ctx);
+    const parentAlias = typeof relay?.alias === "function" ? relay.alias(parent.id) : undefined;
+    const aliasNotice = parentAlias
+      ? ` Alias ${parentAlias} is informational and ephemeral; never use it as relay identity.`
+      : "";
+    const packet = [
+      `Delegation ID (authoritative): ${delegationId}.`,
+      `Authoritative parent session UUID: ${parent.id}.${aliasNotice} Workflow completion is returned automatically; do not manually relay a duplicate report.`,
+      "",
+      memory.trimEnd(),
+    ].join("\n");
+    const invoke = kind === "research" ? onResearch : onDelegateKind;
+    if (typeof invoke !== "function") return { status: "refused", reason: `${kind} is unavailable` };
+    const result = await invoke({
+      kind,
+      agent,
+      parent,
+      parentSessionUuid: parent.id,
+      delegationId,
+      packet,
+      question: memory.trimEnd(),
+      taskId: cases?.taskId?.(parent.id) ?? null,
+    });
     if (result?.status === "ok") cases?.consume?.(parent.id);
     return result;
   }
@@ -497,7 +546,6 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
     detach,
     dispose,
     delegate,
-    research,
     attached: (sessionId) => attached.get(sessionId),
     label: ARCHITECT_LABEL,
   });

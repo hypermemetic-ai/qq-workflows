@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 
-export const ROUTE_PACKET_SCHEMA = "qq.route-packet/v1";
+export const DELEGATION_PACKET_SCHEMA = "qq.delegation-packet/v1";
 const PACKET_POINTER_LIMIT = 8;
 
 function reason(result, fallback) {
@@ -147,7 +147,7 @@ export async function compilePacket(run, state, options = {}) {
   // their bounded stdout results without duplicating streamed data.
   if (!collector.streamed) collector.write(unified.stdout);
   return {
-    schema: ROUTE_PACKET_SCHEMA,
+    schema: DELEGATION_PACKET_SCHEMA,
     brief: options.brief ?? await readBrief(view),
     files,
     pointers: collector.finish(),
@@ -164,51 +164,6 @@ export function formatPacket(packet) {
     files.length ? `Files:\n${files.join("\n")}` : "Files:",
     pointers.length ? `Pointers:\n${pointers.join("\n")}` : "Pointers:",
   ].filter(Boolean).join("\n\n");
-}
-
-export function parseRouteStamp(source) {
-  const first = String(source ?? "").trim().split(/\s+/)[0]?.toLowerCase();
-  return first === "land" || first === "review" ? first : undefined;
-}
-
-const REVIEW_PATH = /(^|\/)(?:session|store|identity|review|land|run|dsh)[^/]*\.(?:mjs|ts|js)$/i;
-const REVIEW_WORD = /\b(?:session|store|identity|review|land|run|handoff|relay)\b/i;
-const PAINT_PATH = /\.(?:css|scss|less|svg)$/i;
-const PAINT_WORD = /\b(?:paint|css|stylesheet|copy|comment|color|typo)\b/i;
-
-export function stampFromEvidence(packet) {
-  const files = packet?.files ?? [];
-  const brief = String(packet?.brief ?? "");
-  const evidence = `${brief}\n${files.map((file) => file.path).join("\n")}`;
-  if (files.some((file) => REVIEW_PATH.test(file.path)) || REVIEW_WORD.test(evidence)) return "review";
-  if (files.length > 0 && files.every((file) => PAINT_PATH.test(file.path)) && PAINT_WORD.test(brief)) return "land";
-  return "review";
-}
-
-export function formatRouteEvidence(packet) {
-  const files = (packet?.files ?? []).map((file) => `${file.path} +${file.added ?? "?"}/-${file.deleted ?? "?"}`);
-  return [
-    "Original brief:", packet?.brief ?? "", "", "Files touched:", files.join("\n") || "(none)",
-    "", "Pointers:", (packet?.pointers ?? []).join("\n") || "(none)",
-  ].join("\n");
-}
-
-export async function routePacket(packet, options = {}) {
-  const fallback = stampFromEvidence(packet);
-  if (typeof options.complete !== "function") return fallback;
-  try {
-    const source = await options.complete({
-      system: options.prompt ?? "Return exactly land or review. Default to review when uncertain.",
-      user: formatRouteEvidence(packet),
-    });
-    return parseRouteStamp(typeof source === "string" ? source : "") ?? fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-export function look1FixPrompt(state, verdict) {
-  return `qa look 1 rejected ${state.task?.id ?? state.id}. ${verdict.feedback || verdict.summary} Fix once, commit the result, then call done again with ref HEAD.`;
 }
 
 export function isTestPath(path) {
