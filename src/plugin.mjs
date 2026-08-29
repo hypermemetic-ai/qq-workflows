@@ -741,19 +741,61 @@ export function apply(ctx, config = {}) {
     const sessionId = sessionIdOf(agent);
     if (!sessionId || architectureOff.has(sessionId) || !isArchitectCandidate(agent)) return;
     if (typeof agent.ctx?.on !== "function") return;
-    const off = agent.ctx.on("agent/request", async (_payload, next) => {
-      const result = await next();
-      const binding = architectureBinding(sessionId);
-      if (!binding) return result;
-      const { reasoningEffort: _inherited, ...rest } = result;
-      return {
-        ...rest,
-        provider: binding.provider,
-        model: binding.model,
-        ...(binding.effort ? { reasoningEffort: binding.effort } : {}),
-      };
-    });
-    architectureOff.set(sessionId, typeof off === "function" ? off : () => {});
+    let assembled = null;
+    const offs = [];
+    const dispose = () => {
+      while (offs.length) {
+        try { offs.pop()?.(); } catch {}
+      }
+    };
+    try {
+      offs.push(agent.ctx.on(
+        "system-prompt/assemble",
+        async (_assembly, _context, next) => {
+          const result = await next();
+          assembled = architectureBinding(sessionId);
+          if (!assembled) return result;
+          return {
+            ...result,
+            variables: {
+              ...result.variables,
+              provider: assembled.provider,
+              model: assembled.model,
+            },
+          };
+        },
+        { prepend: true },
+      ));
+      offs.push(agent.ctx.on(
+        "agent/request",
+        async (_payload, next) => {
+          let result;
+          try {
+            result = await next();
+          } catch (error) {
+            assembled = null;
+            throw error;
+          }
+          // Consume the route snapshotted by the matching prompt assembly. A
+          // request without an assembly must not reuse an earlier binding.
+          const binding = assembled;
+          assembled = null;
+          if (!binding) return result;
+          const { reasoningEffort: _inherited, ...rest } = result;
+          return {
+            ...rest,
+            provider: binding.provider,
+            model: binding.model,
+            ...(binding.effort ? { reasoningEffort: binding.effort } : {}),
+          };
+        },
+        { prepend: true },
+      ));
+    } catch (error) {
+      dispose();
+      throw error;
+    }
+    architectureOff.set(sessionId, dispose);
   }
 
   function syncMini(agent) {
