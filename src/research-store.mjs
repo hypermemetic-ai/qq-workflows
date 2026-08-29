@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { mkdirSync, existsSync, readFileSync, readdirSync, renameSync, writeFileSync, chmodSync, lstatSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync, chmodSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 
 export { defaultResearchDir } from "./research-evidence.mjs";
@@ -10,6 +10,26 @@ export const RESEARCH_DELEGATION_STATUSES = Object.freeze(["researching", "revie
 const STATUS = new Set(RESEARCH_DELEGATION_STATUSES);
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DELEGATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const LEGACY_RESEARCH_SCHEMA = "qq.research-run/v1";
+const LEGACY_RESEARCH_ID = /^research-[0-9a-f]{8}$/i;
+
+function canonicalId(value) { return String(value ?? "").toLowerCase(); }
+
+function upgradeLegacy(raw, sourceId, mintId) {
+  const rawId = canonicalId(raw?.id);
+  const legacy = raw?.schema === LEGACY_RESEARCH_SCHEMA
+    || LEGACY_RESEARCH_ID.test(rawId)
+    || LEGACY_RESEARCH_ID.test(sourceId);
+  if (!legacy) return { raw, changed: false, aliases: [] };
+  const id = mintId();
+  const aliases = [...new Set([sourceId, rawId])].filter((candidate) =>
+    (DELEGATION_ID.test(candidate) || LEGACY_RESEARCH_ID.test(candidate)) && candidate !== id);
+  return {
+    raw: { ...raw, schema: RESEARCH_DELEGATION_SCHEMA, id },
+    changed: true,
+    aliases,
+  };
+}
 
 function clone(value) { return structuredClone(value); }
 function optionalString(value) { return typeof value === "string" ? value : ""; }
@@ -70,7 +90,13 @@ export function createResearchStore(dirPath) {
   if (typeof process.getuid === "function" && info.uid !== process.getuid()) throw new Error("research store directory is not owned by this user");
   if ((info.mode & 0o077) !== 0) chmodSync(dirPath, 0o700);
 
-  const fileFor = (id) => join(dirPath, `${String(id ?? "").toLowerCase()}.json`);
+  const fileFor = (id) => join(dirPath, `${canonicalId(id)}.json`);
+  const aliases = new Map();
+  function mintId() {
+    let id;
+    do { id = randomUUID(); } while (existsSync(fileFor(id)));
+    return id;
+  }
   function persist(record, { exclusive = false } = {}) {
     const normalized = normalize(record);
     const path = fileFor(normalized.id);
@@ -113,13 +139,36 @@ export function createResearchStore(dirPath) {
       return persist({ ...normalized, updatedAt: new Date().toISOString() });
     },
     load(id) {
-      if (!DELEGATION_ID.test(String(id ?? ""))) return null;
-      try { return clone(normalize(JSON.parse(readFileSync(fileFor(id), "utf8")))); }
-      catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+      const requestedId = canonicalId(id);
+      if (!DELEGATION_ID.test(requestedId) && !LEGACY_RESEARCH_ID.test(requestedId)) return null;
+      const sourceId = aliases.get(requestedId) ?? requestedId;
+      let raw;
+      try { raw = JSON.parse(readFileSync(fileFor(sourceId), "utf8")); }
+      catch (error) {
+        if (error?.code === "ENOENT") {
+          if (sourceId !== requestedId) aliases.delete(requestedId);
+          return null;
+        }
+        throw error;
+      }
+      const upgraded = upgradeLegacy(raw, sourceId, mintId);
+      const normalized = normalize(upgraded.raw);
+      if (upgraded.changed) {
+        persist(normalized, { exclusive: true });
+        if (normalized.id !== sourceId) {
+          try { unlinkSync(fileFor(sourceId)); }
+          catch (error) { if (error?.code !== "ENOENT") throw error; }
+        }
+        for (const alias of upgraded.aliases) aliases.set(alias, normalized.id);
+      }
+      return clone(normalized);
     },
     list() {
-      return readdirSync(dirPath).filter((name) => /^[0-9a-f-]{36}\.json$/i.test(name))
-        .sort().map((name) => store.load(name.slice(0, -5))).filter(Boolean);
+      return readdirSync(dirPath).filter((name) => {
+        if (!name.endsWith(".json")) return false;
+        const id = name.slice(0, -5);
+        return DELEGATION_ID.test(id) || LEGACY_RESEARCH_ID.test(id);
+      }).sort().map((name) => store.load(name.slice(0, -5))).filter(Boolean);
     },
     byDelegation(delegationId) {
       return store.load(delegationId);
