@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createDelegationStore, DELEGATION_PHASE_ROLES, DELEGATION_SCHEMA } from "../src/delegation-store.mjs";
+import { createDelegationStore, defaultDelegationDir, DELEGATION_PHASE_ROLES, DELEGATION_SCHEMA } from "../src/delegation-store.mjs";
 import { createLand, isLandCandidate } from "../src/land.mjs";
 import { buildArchitectTools } from "../src/tools.mjs";
 import { MINI_KIND } from "../src/official-mini.mjs";
@@ -44,16 +44,24 @@ try {
     /authoritative UUID/,
   );
 
-  // A legacy machine-keyed file is atomically re-keyed to its generated UUID.
+  // Restart adopts the old default directory and then atomically re-keys its
+  // legacy machine file, even if the renamed directory was already created empty.
+  const defaultParent = join(root, "default-path");
+  const dshHome = join(defaultParent, "dsh-home");
+  const legacyDir = join(defaultParent, ".qq-workflows-land");
+  const currentDir = join(defaultParent, ".qq-workflows-delegations");
+  assert.equal(defaultDelegationDir({ DSH_HOME: dshHome }), currentDir, "clean installs use the renamed directory");
+
+  const legacyStore = createDelegationStore(legacyDir);
   const legacyUuid = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
   const legacySession = "session-44444444-4444-4444-8444-444444444444";
-  const legacyCurrent = store.create({
+  legacyStore.create({
     delegationId: legacyUuid,
     parentSessionUuid: parentId,
     implementationSession: legacySession,
   });
-  const legacyPath = store.fileFor("land-deadbeef");
-  const legacyRaw = JSON.parse(readFileSync(store.fileFor(legacyUuid), "utf8"));
+  const legacyPath = legacyStore.fileFor("land-deadbeef");
+  const legacyRaw = JSON.parse(readFileSync(legacyStore.fileFor(legacyUuid), "utf8"));
   legacyRaw.schema = "qq.land-run/v1";
   legacyRaw.id = "land-deadbeef";
   legacyRaw.implementerSession = legacyRaw.implementationSession;
@@ -61,13 +69,19 @@ try {
   delete legacyRaw.implementationSession;
   delete legacyRaw.originalImplementationSession;
   legacyRaw.current.role = "implementer";
-  writeFileSync(store.fileFor(legacyUuid), `${JSON.stringify(legacyRaw, null, 2)}\n`);
-  renameSync(store.fileFor(legacyUuid), legacyPath);
-  const migrated = store.load("land-deadbeef");
+  writeFileSync(legacyStore.fileFor(legacyUuid), `${JSON.stringify(legacyRaw, null, 2)}\n`);
+  renameSync(legacyStore.fileFor(legacyUuid), legacyPath);
+  mkdirSync(currentDir, { recursive: true });
+
+  assert.equal(defaultDelegationDir({ DSH_HOME: dshHome }), legacyDir);
+  assert.equal(defaultDelegationDir({ DSH_HOME: dshHome }, { delegationDir: currentDir }), currentDir);
+  assert.equal(defaultDelegationDir({ DSH_HOME: dshHome }, { landDir: legacyDir }), legacyDir);
+  const restartedStore = createDelegationStore(defaultDelegationDir({ DSH_HOME: dshHome }));
+  const migrated = restartedStore.bySession(legacySession);
   assert.equal(migrated.id, legacyUuid);
   assert.equal(migrated.current.role, "implementation");
   assert.equal(existsSync(legacyPath), false);
-  assert.equal(store.load(legacyUuid).schema, DELEGATION_SCHEMA);
+  assert.equal(restartedStore.load(legacyUuid).schema, DELEGATION_SCHEMA);
 
   const relayed = [];
   const agentsById = new Map();

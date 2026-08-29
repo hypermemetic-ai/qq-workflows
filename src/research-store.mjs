@@ -41,7 +41,7 @@ export function validateResearchRun(raw) {
 function normalize(raw) {
   const value = {
     schema: RESEARCH_DELEGATION_SCHEMA,
-    id: raw.id,
+    id: String(raw.id ?? "").toLowerCase(),
     status: raw.status,
     parentSessionUuid: raw.parentSessionUuid,
     root: raw.root,
@@ -70,7 +70,7 @@ export function createResearchStore(dirPath) {
   if (typeof process.getuid === "function" && info.uid !== process.getuid()) throw new Error("research store directory is not owned by this user");
   if ((info.mode & 0o077) !== 0) chmodSync(dirPath, 0o700);
 
-  const fileFor = (id) => join(dirPath, `${id}.json`);
+  const fileFor = (id) => join(dirPath, `${String(id ?? "").toLowerCase()}.json`);
   function persist(record, { exclusive = false } = {}) {
     const normalized = normalize(record);
     const path = fileFor(normalized.id);
@@ -104,12 +104,13 @@ export function createResearchStore(dirPath) {
       }, { exclusive: true });
     },
     save(input) {
-      const previous = store.load(input?.id);
+      const normalized = normalize(input);
+      const previous = store.load(normalized.id);
       if (!previous) throw new Error(`research delegation does not exist: ${String(input?.id ?? "")}`);
       for (const field of ["id", "parentSessionUuid", "root", "repoRoot", "question", "researchSession", "createdAt"]) {
-        if (input?.[field] !== previous[field]) throw new Error(`research delegation ${field} is immutable`);
+        if (normalized[field] !== previous[field]) throw new Error(`research delegation ${field} is immutable`);
       }
-      return persist({ ...input, updatedAt: new Date().toISOString() });
+      return persist({ ...normalized, updatedAt: new Date().toISOString() });
     },
     load(id) {
       if (!DELEGATION_ID.test(String(id ?? ""))) return null;

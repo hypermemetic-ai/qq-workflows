@@ -41,16 +41,32 @@ function requireAbsolute(path, label) {
   return path;
 }
 
+function containsDelegationRecords(path) {
+  try {
+    return readdirSync(path).some((name) => name.endsWith(".json"));
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return false;
+    throw error;
+  }
+}
+
 /** Default delegation directory: a folder beside DSH_HOME. */
 export function defaultDelegationDir(env = process.env, config = {}) {
   const configured = config.delegationDir ?? config.landDir;
   if (configured !== undefined) return requireAbsolute(configured, "delegationDir");
   const dshHome = env.DSH_HOME?.trim();
-  if (dshHome) {
-    return join(dirname(requireAbsolute(dshHome, "DSH_HOME")), ".qq-workflows-delegations");
-  }
-  const home = env.HOME || homedir();
-  return join(requireAbsolute(home, "HOME"), ".qq-workflows-delegations");
+  const parent = dshHome
+    ? dirname(requireAbsolute(dshHome, "DSH_HOME"))
+    : requireAbsolute(env.HOME || homedir(), "HOME");
+  const current = join(parent, ".qq-workflows-delegations");
+  const legacy = join(parent, ".qq-workflows-land");
+
+  // Existing installations may still have live qq.land-run/v1 records in the
+  // old default directory. Prefer it while the new directory has no records,
+  // including when a prior buggy startup already created the new directory.
+  return containsDelegationRecords(legacy) && !containsDelegationRecords(current)
+    ? legacy
+    : current;
 }
 
 function optionalString(value) {

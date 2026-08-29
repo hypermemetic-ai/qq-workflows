@@ -65,6 +65,7 @@ function childContext() {
 }
 
 const agents = {
+  get(id) { return children.find((child) => child.session.id === id); },
   async create(options) {
     const ctx = childContext();
     const child = {
@@ -108,6 +109,17 @@ const research = createResearch({ ctx, store, agents, parentDir, webProvider: pr
 const delegationId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const started = await research.invoke({ agent: parent, question: "What does the fixture show?", delegationId });
 assert.equal(started.status, "ok", started.reason);
+const mixedCaseDelegationId = delegationId.toUpperCase();
+assert.equal(store.load(mixedCaseDelegationId).id, delegationId, "research filenames are addressed by canonical UUID");
+const mixedCaseStatus = research.workflowStatus({ delegationId: mixedCaseDelegationId, parentSessionUuid: parentId });
+assert.equal(mixedCaseStatus.status, "ok", mixedCaseStatus.reason);
+assert.equal(mixedCaseStatus.delegationId, delegationId);
+const mixedCaseSend = await research.workflowSend({
+  delegationId: mixedCaseDelegationId,
+  parentSessionUuid: parentId,
+  message: "Check the fixture carefully.",
+});
+assert.equal(mixedCaseSend.status, "sent", mixedCaseSend.reason);
 assert.equal(coreRootLookups, 1);
 assert.equal(children.length, 1);
 assert.equal(children[0].session.header.kind, "mini-research");
@@ -139,10 +151,18 @@ assert.match(review.followups[0].content[0].text, /Use ordinary bash in this cap
 const submit = review.ctx.registered.find((tool) => tool.name === "submit_review");
 const reviewResult = await submit.execute({ findings: [] }, { agent: review, concludeTurn() {} });
 assert.equal(reviewResult.status, "ok", reviewResult.reason);
-assert.equal(sent.length, 1);
-assert.equal(sent[0].to, parentId);
-assert.match(sent[0].message, /Citation check: passed/);
-assert.match(sent[0].message, /Review findings: 0/);
-assert.match(sent[0].message, /Answer path:/);
+assert.equal(sent.length, 2);
+assert.equal(sent[0].to, children[0].session.id);
+assert.equal(sent[0].message, "Check the fixture carefully.");
+assert.equal(sent[1].to, parentId);
+assert.match(sent[1].message, /Citation check: passed/);
+assert.match(sent[1].message, /Review findings: 0/);
+assert.match(sent[1].message, /Answer path:/);
 assert.equal(store.load(started.delegationId).status, "completed");
+const mixedCaseStop = await research.workflowStop({
+  delegationId: mixedCaseDelegationId,
+  parentSessionUuid: parentId,
+});
+assert.equal(mixedCaseStop.status, "refused");
+assert.match(mixedCaseStop.reason, /terminal \(completed\)/);
 console.log("research fixture: ok");
