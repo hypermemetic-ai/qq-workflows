@@ -127,6 +127,11 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
   const attached = new Map();
   const delegatedHandles = new Map();
   const tasksOf = () => (typeof tasks === "function" ? tasks() : tasks ?? null);
+  const liveTalkingRoute = (agent) => childRoute({
+    binding: typeof talking === "function" ? talking() : talking,
+    options: agent?.options,
+    env,
+  });
 
   function retainDelegated(handle, child) {
     const sessionId = child?.session?.id ?? child?.id;
@@ -240,7 +245,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
       disposeTurn = agent.ctx?.on?.("session/event", (_session, event) => {
         if (event?.type !== "turn/end") return;
         try {
-          folder?.decide?.(sessionId, { events: session.events, session, route: agent.options });
+          folder?.decide?.(sessionId, { events: session.events, session, route: liveTalkingRoute(agent) });
         } catch {
           // Fold decisions never block the talking loop.
         }
@@ -250,14 +255,14 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
         let talkingTokens;
         let q;
         try {
-          const guard = guardContext({ ctx, session, route: agent.options });
+          const guard = guardContext({ ctx, session, route: liveTalkingRoute(agent) });
           if (guard.pruneError) {
             failVisibly(session, `qq-workflows: tool-result prune refused (${guard.pruneError instanceof Error ? guard.pruneError.message : String(guard.pruneError)}).`);
           }
           const pending = folder?.pending?.(sessionId);
           if (pending?.action === "fail") folder.clear(sessionId);
           else if (pending?.action === "drop") folder.apply(sessionId, { events: session.events, session });
-          const after = guardContext({ ctx, session, route: agent.options });
+          const after = guardContext({ ctx, session, route: liveTalkingRoute(agent) });
           talkingTokens = after.talking;
           q = after.q;
           if ((after.talking ?? 0) > (after.q ?? 0)) {
@@ -280,9 +285,9 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
     }
 
     if (agent.status !== "running") {
-      try { guardContext({ ctx, session, route: agent.options }); } catch { /* attach must not fail */ }
+      try { guardContext({ ctx, session, route: liveTalkingRoute(agent) }); } catch { /* attach must not fail */ }
       try {
-        const decision = folder?.decide?.(sessionId, { events: session.events ?? [], session, route: agent.options });
+        const decision = folder?.decide?.(sessionId, { events: session.events ?? [], session, route: liveTalkingRoute(agent) });
         if (decision?.action === "drop") folder.apply(sessionId, { events: session.events ?? [], session });
       } catch {
         try { folder?.clear?.(sessionId); } catch { /* attach must not fail */ }
