@@ -15,6 +15,7 @@ import { buildArchitectTools } from "./tools.mjs";
 import { createArchitect, isArchitectCandidate } from "./architect.mjs";
 import { ensureMiniMounted, isMiniAgent, MINI_SWE_MIGRATION } from "./official-mini.mjs";
 import { ensureMiniQaMounted, isMiniQaAgent } from "./mini-qa.mjs";
+import { ensureMiniDocsMounted, isMiniDocsAgent } from "./mini-docs.mjs";
 import { allowInherited, ARCHITECT_INHERITED_TOOLS } from "./hide-harness.mjs";
 import { runCommand } from "./git.mjs";
 import { capObservationTool } from "./observation.mjs";
@@ -149,6 +150,7 @@ function hostAgents(ctx) {
 function syncLiveDelegationChild(land, agent) {
   if (isMiniAgent(agent)) ensureMiniMounted(agent);
   if (isMiniQaAgent(agent)) ensureMiniQaMounted(agent);
+  if (isMiniDocsAgent(agent)) ensureMiniDocsMounted(agent);
   return land?.resumeChild?.(agent) ?? false;
 }
 

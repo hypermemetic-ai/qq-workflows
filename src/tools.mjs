@@ -236,8 +236,8 @@ export function buildArchitectTools({ delegate, workflowStatus, workflowSend, wo
       kind: {
         type: "string",
         required: true,
-        enum: ["implementation", "research", "docs"],
-        description: "Delegation kind. implementation and research ship with the host; docs is available when adopted.",
+        enum: ["implementation", "research"],
+        description: "Delegation kind shipped with the host.",
       },
     },
     output: {

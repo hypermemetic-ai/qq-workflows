@@ -13,21 +13,18 @@ Chairs are selected with `/workflows`. Delegations are addressed by one durable
 UUID and have at most one current physical child session. The host ships:
 
 - `delegate({ kind: "implementation" })`: isolated worktree, `mini-code`,
-  `mini-qa`, one optional second `mini-code`/`mini-qa` pass, then land;
+  `mini-qa`, one optional second `mini-code`/`mini-qa` pass, then land; and
 - `delegate({ kind: "research" })`: evidence capsule, `mini-research`,
-  `mini-qa`, then an automatic report with no git landing; and
-- the adopted `docs` contract: qq-wiki registers and autonomously drives a
-  hosted `mini-docs` inner pass while retaining ownership of outer publication.
-  Docs is not a `/workflows` chair.
+  `mini-qa`, then an automatic report with no git landing.
 
 An adopted delegation plugin registers `{ kind, invoke, status, send, stop }`
 with `service.workflows.register`. It may additionally provide ownership,
 resume/release, and settings hooks. `service.workflows.kinds()` lists delegation
 kinds independently from chair names.
 
-The architect exposes one spawn tool, `delegate({ kind })`. The former separate
-research tool does not exist. Every kind is controlled through the same UUID
-surface:
+The architect exposes one spawn tool, `delegate({ kind })`, for the two shipped
+kinds: `implementation` and `research`. The former separate research tool does
+not exist. Durable delegations are controlled through the same UUID surface:
 
 - `workflow_status(delegationId)` returns kind, state, current immutable session
   UUID, role, phase epoch, and kind-specific workspace data;
@@ -36,6 +33,15 @@ surface:
 - `workflow_stop(...)` terminalizes the durable delegation and stops its child.
 
 Session aliases are display-only and are never relay identities.
+
+Documentation publication remains owned by qq-wiki's timer: it harvests,
+performs README-only validation, commits, and fast-forwards. The inner writer is
+a headless DSH process that overlay-loads this plugin on a profile that may omit
+`qq-core`. The host mounts the `mini-docs` adapter when the agent's `header.kind`
+or `agentPreset` is
+`mini-docs`; qq-wiki supplies `QQ_WIKI_WRITER_PROMPT` to that one-shot process.
+Completion is the DSH process exit. This inner pass is neither a `/workflows`
+chair nor a `delegate` kind, and it does not use the hosted workflow lifecycle.
 
 ## Working memory
 
@@ -92,6 +98,6 @@ submission. Failures retain the capsule for diagnosis or retry.
   `submit_review`.
 - `mini-research` intercepts standalone evidence acquisition commands inside a
   private capsule. Search leads are not evidence until materialized.
-- `mini-docs` is an inner adapter exported for an adopted docs controller. It no
-  longer exports a standalone Cordis `apply`; qq-wiki must register and drive
-  docs through the host.
+- `mini-docs` is the inner headless writer adapter. It has no standalone Cordis
+  `apply`; this host plugin mounts it from the agent header, while qq-wiki's timer
+  retains the outer publication lifecycle.

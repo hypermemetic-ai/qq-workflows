@@ -3,17 +3,20 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import * as miniDocs from "../src/mini-docs.mjs";
+import { internals as pluginInternals } from "../src/plugin.mjs";
 import { MINI_SWE_COMPLETION_COMMAND, MINI_PAGER_EXPORT } from "../src/official-mini.mjs";
 
 const WRITER_PROMPT = "You are the unattended architect-orientation wiki writer.";
 
-function createAgentContext() {
+function createAgentContext({ withCore = true } = {}) {
   const sections = [];
   const registeredTools = [];
   const surfaceCalls = [];
   const listeners = [];
   const operations = [];
   const hostCalls = [];
+  const provided = new Map();
+  const provideCalls = [];
   let runtimeSuppressed = false;
 
   const hostBash = {
@@ -42,14 +45,20 @@ function createAgentContext() {
   };
 
   const agent = { id: "mini-docs-mount" };
+  const qqCore = withCore ? { surface: { allow(actualAgent, names) {
+    operations.push("allow");
+    surfaceCalls.push({ agent: actualAgent, names: [...names] });
+  } } } : undefined;
   const ctx = {
     agent,
     get(name) {
       assert.equal(name, "qq-core");
-      return { surface: { allow(actualAgent, names) {
-        operations.push("allow");
-        surfaceCalls.push({ agent: actualAgent, names: [...names] });
-      } } };
+      return provided.get(name) ?? qqCore;
+    },
+    provide(name, value) {
+      operations.push(`provide:${name}`);
+      provideCalls.push({ name, value });
+      provided.set(name, value);
     },
     systemPrompt: {
       section(section) {
@@ -92,6 +101,7 @@ function createAgentContext() {
     hostCalls,
     listeners,
     operations,
+    provideCalls,
     registeredTools,
     surfaceCalls,
     sections,
@@ -106,7 +116,7 @@ function docsAgent(id, ctx, header = { kind: miniDocs.MINI_DOCS_KIND }) {
 }
 
 assert.equal(miniDocs.name, undefined, "mini-docs is an adapter, not a Cordis plugin");
-assert.equal(miniDocs.apply, undefined, "docs must be mounted by an adopted host kind");
+assert.equal(miniDocs.apply, undefined, "mini-docs stays an adapter mounted by the host plugin");
 assert.equal(miniDocs.MINI_DOCS_KIND, "mini-docs");
 assert.equal(miniDocs.MINI_DOCS_COMPLETION_COMMAND, "echo COMPLETE_DOCS_AND_EXIT");
 assert.equal(miniDocs.isMiniDocsCompletionCommand("  echo COMPLETE_DOCS_AND_EXIT\n"), true);
@@ -132,6 +142,19 @@ assert.deepEqual(Object.keys(mounted.registeredTools[0].parameters.properties), 
 assert.equal("sandbox_permissions" in mounted.registeredTools[0].parameters.properties, false);
 assert.equal(mounted.registeredTools[0].isConcurrencySafe(), false);
 assert.equal(mounted.listeners.length, 2);
+
+// A headless writer profile without qq-core receives a frozen no-op surface
+// before inherited-tool setup, then mounts the persona and bash wrapper.
+const headlessMount = createAgentContext({ withCore: false });
+miniDocs.miniDocsSetup(headlessMount.ctx, { env: { QQ_WIKI_WRITER_PROMPT: WRITER_PROMPT } });
+assert.equal(headlessMount.provideCalls.length, 1);
+assert.equal(headlessMount.provideCalls[0].name, "qq-core");
+assert.equal(Object.isFrozen(headlessMount.provideCalls[0].value), true);
+assert.equal(Object.isFrozen(headlessMount.provideCalls[0].value.surface), true);
+assert.equal(typeof headlessMount.provideCalls[0].value.surface.allow, "function");
+assert.deepEqual(headlessMount.operations.slice(0, 2), ["provide:qq-core", "register:bash"]);
+assert.equal(headlessMount.sections[0].text, WRITER_PROMPT);
+assert.deepEqual(headlessMount.registeredTools.map((tool) => tool.name), ["bash"]);
 
 // The docs sentinel concludes successfully without reaching host bash or Land.
 const completionAgent = docsAgent("session-docs-complete", mounted.ctx);
@@ -264,16 +287,47 @@ assert.throws(
 );
 assert.equal(failedLookups, 0);
 assert.equal(failedRegistrations, 0);
+assert.equal(failedSurfaceMount.provideCalls.length, 0, "an existing real core is never replaced");
 assert.equal(failedSurfaceMount.sections.length, 0);
 
-// The adopted docs kind owns lifecycle and calls this adapter explicitly.
-const adoptedHarness = createAgentContext();
-const adoptedAgent = docsAgent("adopted-docs", adoptedHarness.ctx);
-assert.equal(miniDocs.ensureMiniDocsMounted(adoptedAgent, { env: { QQ_WIKI_WRITER_PROMPT: WRITER_PROMPT } }), true);
-assert.deepEqual(adoptedHarness.registeredTools.map((tool) => tool.name), ["bash"]);
+// Host apply/sync owns lifecycle; the adapter entry remains available explicitly.
+const explicitHarness = createAgentContext();
+const explicitAgent = docsAgent("explicit-docs", explicitHarness.ctx);
+assert.equal(miniDocs.ensureMiniDocsMounted(explicitAgent, { env: { QQ_WIKI_WRITER_PROMPT: WRITER_PROMPT } }), true);
+assert.deepEqual(explicitHarness.registeredTools.map((tool) => tool.name), ["bash"]);
 const unrelatedHarness = createAgentContext();
 assert.equal(miniDocs.ensureMiniDocsMounted(docsAgent("not-docs", unrelatedHarness.ctx, { kind: "mini-code" }), { env: { QQ_WIKI_WRITER_PROMPT: WRITER_PROMPT } }), false);
 assert.equal(unrelatedHarness.registeredTools.length, 0);
+
+// The plugin's live-child synchronization path mounts mini-docs by either
+// header marker. A mini-code child receives its own adapter, never mini-docs.
+const syncPrompt = process.env.QQ_WIKI_WRITER_PROMPT;
+try {
+  process.env.QQ_WIKI_WRITER_PROMPT = WRITER_PROMPT;
+  const pluginDocsHarness = createAgentContext();
+  const pluginDocsAgent = docsAgent("plugin-docs", pluginDocsHarness.ctx, { agentPreset: "mini-docs" });
+  assert.equal(pluginInternals.syncLiveDelegationChild(null, pluginDocsAgent), false);
+  assert.equal(pluginDocsHarness.sections[0].text, WRITER_PROMPT);
+  assert.deepEqual(pluginDocsHarness.registeredTools.map((tool) => tool.name), ["bash"]);
+  await pluginDocsHarness.registeredTools[0].execute(
+    { command: miniDocs.MINI_DOCS_COMPLETION_COMMAND },
+    { agent: pluginDocsAgent },
+  );
+  assert.equal(pluginDocsHarness.hostCalls.length, 0, "plugin-mounted docs bash intercepts docs completion");
+
+  const pluginCodeHarness = createAgentContext();
+  const pluginCodeAgent = docsAgent("plugin-code", pluginCodeHarness.ctx, { kind: "mini-code" });
+  assert.equal(pluginInternals.syncLiveDelegationChild(null, pluginCodeAgent), false);
+  assert.equal(pluginCodeHarness.sections.some(({ text }) => text === WRITER_PROMPT), false);
+  await pluginCodeHarness.registeredTools[0].execute(
+    { command: miniDocs.MINI_DOCS_COMPLETION_COMMAND },
+    { agent: pluginCodeAgent },
+  );
+  assert.equal(pluginCodeHarness.hostCalls.length, 1, "mini-code does not receive the docs completion wrapper");
+} finally {
+  if (syncPrompt === undefined) delete process.env.QQ_WIKI_WRITER_PROMPT;
+  else process.env.QQ_WIKI_WRITER_PROMPT = syncPrompt;
+}
 
 // Keep the no-Land/no-submit/no-commit fence explicit in this adapter.
 const source = readFileSync(new URL("../src/mini-docs.mjs", import.meta.url), "utf8");
