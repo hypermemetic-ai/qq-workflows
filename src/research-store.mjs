@@ -54,6 +54,9 @@ export function validateResearchRun(raw) {
   if (raw.reviewSession && !SESSION_ID.test(raw.reviewSession)) throw new Error("research delegation has invalid review session");
   if (!Array.isArray(raw.webCandidates) || !Array.isArray(raw.sessionCandidates)) throw new Error("research candidate state is malformed");
   if (!Array.isArray(raw.reviewFindings)) throw new Error("research review findings are malformed");
+  if (raw.answerSha256 && !/^[0-9a-f]{64}$/.test(raw.answerSha256)) throw new Error("research answer digest is malformed");
+  if (!Number.isSafeInteger(raw.answerBytes) || raw.answerBytes < 0) throw new Error("research answer size is malformed");
+  if (raw.manifestSha256 && !/^[0-9a-f]{64}$/.test(raw.manifestSha256)) throw new Error("research manifest digest is malformed");
   if (typeof raw.reported !== "boolean") throw new Error("research reported flag is malformed");
   return raw;
 }
@@ -72,6 +75,9 @@ function normalize(raw) {
     webCandidates: candidates(raw.webCandidates, "W"),
     sessionCandidates: candidates(raw.sessionCandidates, "S"),
     citationCheck: raw.citationCheck && typeof raw.citationCheck === "object" ? clone(raw.citationCheck) : null,
+    answerSha256: optionalString(raw.answerSha256),
+    answerBytes: Number.isSafeInteger(raw.answerBytes) && raw.answerBytes >= 0 ? raw.answerBytes : 0,
+    manifestSha256: optionalString(raw.manifestSha256),
     reviewFindings: Array.isArray(raw.reviewFindings) ? clone(raw.reviewFindings) : [],
     blockedReason: optionalString(raw.blockedReason),
     reportMessageId: optionalString(raw.reportMessageId),
@@ -120,6 +126,9 @@ export function createResearchStore(dirPath, { onChange } = {}) {
         webCandidates: [],
         sessionCandidates: [],
         citationCheck: null,
+        answerSha256: "",
+        answerBytes: 0,
+        manifestSha256: "",
         reviewFindings: [],
         blockedReason: "",
         reportMessageId: "",
@@ -137,6 +146,11 @@ export function createResearchStore(dirPath, { onChange } = {}) {
       if (!previous) throw new Error(`research delegation does not exist: ${String(input?.id ?? "")}`);
       for (const field of ["id", "parentSessionUuid", "root", "repoRoot", "question", "researchSession", "createdAt"]) {
         if (normalized[field] !== previous[field]) throw new Error(`research delegation ${field} is immutable`);
+      }
+      for (const field of ["answerSha256", "answerBytes", "manifestSha256"]) {
+        if (previous.answerSha256 && normalized[field] !== previous[field]) {
+          throw new Error(`research delegation ${field} is immutable after submission`);
+        }
       }
       const result = persist({ ...normalized, updatedAt: new Date().toISOString() });
       onChange?.(result);

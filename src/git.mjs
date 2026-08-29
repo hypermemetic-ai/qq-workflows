@@ -2,7 +2,7 @@
 // clone capsule; the primary repository stays on the base branch.
 
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 
@@ -186,6 +186,54 @@ export function worktreePathFor(mainRoot, slug, env = process.env) {
   return join(worktreesRootFor(mainRoot, env), slug);
 }
 
+export function workspacePathFor(worktree) {
+  return `${worktree}.workspace`;
+}
+
+function requireOrdinaryTree(root, { metadataFree = false } = {}) {
+  const top = lstatSync(root);
+  if (!top.isDirectory() || top.isSymbolicLink()) throw new Error("delegation workspace must be an ordinary directory");
+  if (metadataFree && existsSync(join(root, ".git"))) {
+    throw new Error("delegation workspace must not contain Git metadata");
+  }
+  const visit = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) visit(path);
+      else if (!entry.isFile() && !entry.isSymbolicLink()) {
+        throw new Error(`delegation workspace contains unsupported entry ${path}`);
+      }
+    }
+  };
+  visit(root);
+}
+
+function copyTree(source, destination, { omitGit = false } = {}) {
+  mkdirSync(destination, { recursive: true });
+  for (const entry of readdirSync(destination, { withFileTypes: true })) {
+    if (omitGit && entry.name === ".git") continue;
+    rmSync(join(destination, entry.name), { recursive: true, force: true });
+  }
+  for (const entry of readdirSync(source, { withFileTypes: true })) {
+    if (entry.name === ".git") continue;
+    cpSync(join(source, entry.name), join(destination, entry.name), {
+      recursive: true,
+      force: true,
+      preserveTimestamps: true,
+      verbatimSymlinks: true,
+    });
+  }
+}
+
+/** Copy child-owned ordinary files into the host-owned Git capsule. */
+export function syncDelegatedWorkspace({ workspace, worktree } = {}) {
+  if (!workspace || !worktree) throw new Error("delegation synchronization requires workspace and worktree");
+  requireOrdinaryTree(workspace, { metadataFree: true });
+  requireOrdinaryTree(worktree);
+  if (!existsSync(join(worktree, ".git", "HEAD"))) throw new Error("delegation capsule has no internal Git metadata");
+  copyTree(workspace, worktree, { omitGit: true });
+}
+
 export async function inspectWorktree(run, cwd) {
   if (!cwd || typeof cwd !== "string") throw new Error("not a git worktree");
   const top = await checked(run, "git", ["rev-parse", "--show-toplevel"], { cwd }, "not a git worktree");
@@ -232,17 +280,19 @@ export async function createDelegatedWorktree(run, { cwd, brief, id, env = proce
   let slug = seed;
   let branch = branchNameFor(slug);
   let worktree = worktreePathFor(git.mainRoot, slug, env);
+  let workspace = workspacePathFor(worktree);
   for (let n = 2; n <= 51; n += 1) {
     const branchExists = await run("git", ["rev-parse", "--verify", `refs/heads/${branch}`], { cwd: git.mainRoot });
-    if ((branchExists?.code ?? 1) !== 0 && !existsSync(worktree)) break;
+    if ((branchExists?.code ?? 1) !== 0 && !existsSync(worktree) && !existsSync(workspace)) break;
     if (n > 50) throw new Error("could not allocate a unique worktree");
     slug = `${seed}-${n}`;
     branch = branchNameFor(slug);
     worktree = worktreePathFor(git.mainRoot, slug, env);
+    workspace = workspacePathFor(worktree);
   }
   mkdirSync(dirname(worktree), { recursive: true });
-  // Task-local capsule: clone with shared object alternates for speed while
-  // retaining an ordinary .git directory inside the writable capsule.
+  // Git metadata and object/ref mutation stay in this host-owned sibling
+  // capsule. The child receives only the ordinary-file workspace below.
   const clone = await run("git", ["clone", "--shared", "--no-checkout", git.mainRoot, worktree]);
   if (clone?.code !== 0) {
     rmSync(worktree, { recursive: true, force: true });
@@ -254,8 +304,12 @@ export async function createDelegatedWorktree(run, { cwd, brief, id, env = proce
       throw new Error("delegation capsule clone did not create an internal .git directory");
     }
     await stampGitIdentity(run, git.worktree, worktree);
-    return await inspectWorktree(run, worktree);
+    mkdirSync(workspace, { recursive: false });
+    copyTree(worktree, workspace);
+    requireOrdinaryTree(workspace, { metadataFree: true });
+    return { ...await inspectWorktree(run, worktree), workspace };
   } catch (error) {
+    rmSync(workspace, { recursive: true, force: true });
     rmSync(worktree, { recursive: true, force: true });
     throw error;
   }

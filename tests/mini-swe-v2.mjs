@@ -15,12 +15,13 @@ const task = renderMiniSweTask("Fix the issue", {
   version: "test",
   machine: "test-machine",
 });
-const submitInstruction = `Commit your changes, then submit and finish your work by issuing the following command: \`${MINI_SWE_COMPLETION_COMMAND}\`.`;
 const completionWarning = "Do not combine it with any other command. <important>After this command, you cannot continue working on this task.</important>";
+assert.match(task, /Optionally call run_tests once/);
+assert.match(task, /host stages and commits/);
+assert.match(task, /no writable Git metadata or network credentials/);
+assert.equal(task.split(MINI_SWE_COMPLETION_COMMAND).length - 1, 2);
+assert.equal(task.split(completionWarning).length - 1, 2);
 
-assert.ok(task.includes(`6. ${submitInstruction}\n   ${completionWarning}`));
-assert.ok(task.includes(`- ${submitInstruction}\n  ${completionWarning}`));
-assert.equal(task.split(submitInstruction).length - 1, 2);
 
 const operations = [];
 const miniAgent = { id: "official-mini-setup" };

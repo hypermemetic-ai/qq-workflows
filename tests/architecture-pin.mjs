@@ -340,8 +340,10 @@ try {
       },
     },
     run: async () => ({ code: 1, stdout: "", stderr: "not a git worktree" }),
-    onInvokeImplementation(child) {
+    onInvokeImplementation(child, info) {
       delegationEvents.push(...child.session.events);
+      assert.equal(info.brief, "# Approved plan\n\nImplement the change.\n");
+      assert.equal(Object.hasOwn(info, "packet"), false, "adoption receives semantic task, not a routing envelope");
       assert.equal(effectiveApprovalPolicy(child.session.events), "never", "child is pinned before workflow adoption");
       return { status: "ok", owned: true, delegationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", role: "implementation", phaseEpoch: 1 };
     },
@@ -362,6 +364,9 @@ try {
   const delegated = await delegationArchitect.delegate({ agent: delegationParent, kind: "implementation" });
   assert.equal(delegated.status, "ok", delegated.reason);
   assert.ok(delegatedChild?.message, "delegated child receives its work packet");
+  const delegatedText = delegatedChild.message.content[0].text;
+  assert.equal(delegatedText.split("# Approved plan").length - 1, 1);
+  assert.doesNotMatch(delegatedText, /Delegation ID \(authoritative\)|Authoritative parent session UUID|Workflow phase|auto-return/i);
   assert.deepEqual(
     delegationEvents.filter((event) => event.type === "approval/policy"),
     [{ type: "approval/policy", data: { policy: "never", source: "delegation" } }],

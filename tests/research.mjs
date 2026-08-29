@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { AGENT_HANDLE } from "../src/agent-handle.mjs";
-import { createResearch } from "../src/research.mjs";
+import {
+  RESEARCH_INLINE_ANSWER_MAX_CHARS,
+  RESEARCH_REPORT_MAX_CHARS,
+  createResearch,
+  reportText,
+} from "../src/research.mjs";
 import { createResearchStore, RESEARCH_DELEGATION_SCHEMA } from "../src/research-store.mjs";
 import { MINI_QA_SYSTEM_PROMPT } from "../src/mini-qa-v2.mjs";
 import { MINI_SWE_COMPLETION_COMMAND } from "../src/mini-swe-v2.mjs";
@@ -274,9 +279,10 @@ assert.equal(resumedReview[AGENT_HANDLE], resumedReviewHandle, "HMR detaches wit
 const completedLegacy = restartedStore.load(reviewByQa.id);
 restartedStore.save({ ...completedLegacy, status: "completed" });
 const replacementResearch = createResearch({ ctx, store: restartedStore, agents, parentDir: restartDir, env: {} });
-assert.equal(replacementResearch.resumeChild(resumedReview), true, "replacement controller recognizes a stale completed phase child");
+assert.equal(replacementResearch.resumeChild(resumedReview), true, "replacement controller recognizes a completed but unreported review child");
 await new Promise((resolve) => setTimeout(resolve, 0));
-assert.equal(resumedReviewDisposed, 1, "replacement controller recovers and disposes the stale retained handle");
+assert.equal(resumedReviewDisposed, 0, "unreported review child stays retained until report delivery and durable tool-result settlement");
+assert.equal(resumedReview[AGENT_HANDLE], resumedReviewHandle);
 replacementResearch.dispose();
 
 const parentDir = join(scratch, "research");
@@ -310,7 +316,8 @@ assert.deepEqual(
 );
 assert.equal(children[0].session.events.some((event) => event.type === "sandbox/mode"), false, "approval pin does not replace the child sandbox");
 const spawnedResearchTask = children[0].followups[0].content[0].text;
-assert.match(spawnedResearchTask, /^Please research this question: What does the fixture show\?/);
+assert.match(spawnedResearchTask, /^Please research the exact question in question\.md\./);
+assert.doesNotMatch(spawnedResearchTask, /What does the fixture show\?/);
 assert.match(spawnedResearchTask, /## Recommended Workflow/);
 assert.deepEqual(children[0].ctx.surfaceCalls, [{ agent: children[0], names: ["bash"] }]);
 const researchBash = children[0].ctx.registered.find((tool) => tool.name === "bash");
@@ -356,9 +363,13 @@ assert.equal(
   "research review uses the standard Mini QA persona",
 );
 const spawnedReviewTask = review.followups[0].content[0].text;
-assert.match(spawnedReviewTask, /^Please review this proposed research answer\./);
-assert.match(spawnedReviewTask, /Question:\nWhat does the fixture show\?/);
-assert.match(spawnedReviewTask, /Proposed answer:\nThe fixture supports the answer \[W001\]\./);
+assert.match(spawnedReviewTask, /^Please review the proposed research answer using the exact capsule artifacts\./);
+assert.ok(spawnedReviewTask.includes("question.md"));
+assert.ok(spawnedReviewTask.includes("answer.md"));
+assert.ok(spawnedReviewTask.includes("evidence/manifest.jsonl"));
+assert.doesNotMatch(spawnedReviewTask, /What does the fixture show\?/);
+assert.doesNotMatch(spawnedReviewTask, /The fixture supports the answer/);
+assert.doesNotMatch(spawnedReviewTask, /"ref":"W001"/);
 assert.match(spawnedReviewTask, /Use ordinary bash in this capsule/);
 assert.match(spawnedReviewTask, /unsupported claims/);
 const submit = review.ctx.registered.find((tool) => tool.name === "submit_review");
@@ -378,7 +389,7 @@ assert.equal(sent[0].message, "Check the fixture carefully.");
 assert.equal(sent[1].to, parentId);
 assert.match(sent[1].message, /Citation check: passed/);
 assert.match(sent[1].message, /Review findings: 0/);
-assert.match(sent[1].message, /Answer path:/);
+assert.match(sent[1].message, /Immutable answer path:/);
 assert.equal(store.load(started.delegationId).status, "completed");
 const mixedCaseStop = await research.workflowStop({
   delegationId: mixedCaseDelegationId,
@@ -386,4 +397,21 @@ const mixedCaseStop = await research.workflowStop({
 });
 assert.equal(mixedCaseStop.status, "refused");
 assert.match(mixedCaseStop.reason, /terminal \(completed\)/);
+const maximumAnswer = "A".repeat(256 * 1024);
+const largeReport = reportText({
+  id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+  root: "/private/research-capsule",
+  answerBytes: Buffer.byteLength(maximumAnswer),
+  answerSha256: "f".repeat(64),
+  citationCheck: { ok: true },
+  reviewFindings: [],
+}, maximumAnswer);
+assert.ok(maximumAnswer.length > RESEARCH_INLINE_ANSWER_MAX_CHARS);
+assert.ok(largeReport.length <= RESEARCH_REPORT_MAX_CHARS);
+assert.match(largeReport, /BOUNDED PREVIEW ONLY/);
+assert.match(largeReport, /Answer bytes: 262144/);
+assert.match(largeReport, /Answer SHA-256: f{64}/);
+assert.match(largeReport, /Immutable answer path:/);
+assert.ok(!largeReport.includes("A".repeat(RESEARCH_INLINE_ANSWER_MAX_CHARS)));
+
 console.log("research fixture: ok");

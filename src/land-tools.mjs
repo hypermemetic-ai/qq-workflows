@@ -13,12 +13,13 @@ function refusal(reason) {
 }
 
 export const DONE_TOOL_NAME = "done";
+export const RUN_TESTS_TOOL_NAME = "run_tests";
 export const LAND_TOOL_NAME = "land";
 
 export function buildDoneTool({ submit } = {}) {
   return {
     name: DONE_TOOL_NAME,
-    description: "Submit this worktree for land or review. The brief is already the work order. Packet is brief plus file counts and diff pointers. Do not merge.",
+    description: "Submit this worktree for land or review. The exact task is in the Git-private task artifact. The packet is a bounded changed-file summary plus diff pointers. Do not merge.",
     parameters: {
       ref: {
         type: "string",
@@ -53,6 +54,41 @@ export function buildDoneTool({ submit } = {}) {
           return output;
         }
         return result;
+      } catch (error) {
+        return refusal(error instanceof Error ? error.message : String(error));
+      }
+    },
+  };
+}
+
+
+export function buildRunTestsTool({ runTests } = {}) {
+  return {
+    name: RUN_TESTS_TOOL_NAME,
+    description: "Run the repository-configured required test suite once and durably bind its host-observed result to the exact workspace tree.",
+    parameters: {},
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: true,
+        properties: {
+          status: { type: "string" },
+          command: { type: "string" },
+          exitCode: { type: "number" },
+          output: { type: "string" },
+          reason: { type: "string" },
+        },
+      },
+      render: (_args, value) => [textBlock(value?.status === "pass"
+        ? `${value.command} passed for workspace tree ${value.tree}.`
+        : `${value?.command || "required tests"} failed${Number.isInteger(value?.exitCode) ? ` (exit ${value.exitCode})` : ""}.
+${value?.output || value?.reason || ""}`)],
+    },
+    isConcurrencySafe() { return false; },
+    async execute(_args, exec) {
+      try {
+        if (typeof runTests !== "function") return refusal("run_tests is unavailable");
+        return await runTests({ agent: exec?.agent });
       } catch (error) {
         return refusal(error instanceof Error ? error.message : String(error));
       }

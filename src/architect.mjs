@@ -12,6 +12,7 @@ import { markAssemble } from "./assemble-mark.mjs";
 import { truncateObservationContent } from "./observation.mjs";
 import { adoptAgentHandle } from "./agent-handle.mjs";
 import { pinNonInteractiveApproval } from "./approval-policy.mjs";
+import { pinChildSandbox } from "./child-isolation.mjs";
 import { loadRepositoryIndexContext } from "./repository-index.mjs";
 
 export const ARCHITECT_LABEL = "workflows:architect";
@@ -25,6 +26,7 @@ export const ARCHITECT_PROMPT = [
   "Work autonomously on routine in-domain actions; do not ask for routine permission approvals. Your current sandbox is the complete execution boundary for this session.",
   "Never request sandbox escalation or retry with `sandbox_permissions`. If a required action genuinely cannot be performed, stop and explain the limitation instead of auto-escalating. Surface manual approval only for useful exceptional work clearly outside the normal domain.",
   "Use `delegate({ kind: \"implementation\" })` for implementation or `delegate({ kind: \"research\" })` for evidence-backed questions. Delegation requires approved, settled, non-empty working memory.",
+  "Communicate with other architects through relay. Never communicate directly with another architect's children; communicate with your own children only through workflow-owned tools.",
 ].join("\n");
 
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -364,16 +366,15 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, architectur
       return { status: "refused", reason: "delegate requires settled working memory" };
     }
     const delegationId = randomUUID();
-    const parentAlias = typeof relay.alias === "function" ? relay.alias(parent.id) : undefined;
-    const aliasNotice = parentAlias
-      ? ` Alias ${parentAlias} is informational and ephemeral; never use it as relay identity.`
-      : "";
-    const returnAddress = `Authoritative parent session UUID: ${parent.id}.${aliasNotice}`;
-    const packet = `Delegation ID (authoritative): ${delegationId}.\n${returnAddress} Workflow completion is returned automatically; do not manually relay a duplicate report.\n\n${brief.trimEnd()}`;
+    // Topology belongs in child headers and durable workflow state. The first
+    // implementation prompt receives the semantic working-memory bytes once;
+    // routing IDs and auto-return notices are not part of the task.
+    const task = brief;
     const taskId = cases?.taskId?.(parent.id) ?? null;
     const childId = `session-${randomUUID()}`;
     const parentCwd = parent.header?.cwd;
     let targetCwd = repoRootFor(parentCwd);
+    let preparedGit = null;
     let gitRootResolved = false;
     const qq = ctx?.get?.("qq-core", false) ?? ctx?.get?.("qq", false) ?? null;
     if (typeof qq?.gitRootForDelegate === "function") {
@@ -392,11 +393,12 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, architectur
     try {
       const prepared = await createDelegatedWorktree(run, {
         cwd: targetCwd,
-        brief: packet,
+        brief: task,
         id: childId,
         env,
       });
-      targetCwd = prepared.worktree;
+      preparedGit = prepared;
+      targetCwd = prepared.workspace || prepared.worktree;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (gitRootResolved || !/not a git worktree/i.test(message)) {
@@ -423,6 +425,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, architectur
     }));
     const child = created?.agent ?? created;
     pinNonInteractiveApproval(child, { delegated: true });
+    pinChildSandbox(child, "implementation");
     const childSessionId = child.session?.id ?? childId;
     retainDelegated(created, child);
     const refuseAdoption = async (reason, { dispose = true } = {}) => {
@@ -447,12 +450,13 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, architectur
       try {
         adoption = await invokeImplementation(child, {
           handle: created,
-          packet,
+          brief: task,
           delegationId,
           taskId,
           parent,
           parentSession: parent.id,
           cwd: targetCwd,
+          git: preparedGit,
         });
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
@@ -475,14 +479,11 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, architectur
         onDelivered: () => disposeDelegated(childSessionId),
       });
     }
-    const workflowPacket = adoption?.delegationId
-      ? `${packet}\n\nDelegation ID (authoritative): ${adoption.delegationId || delegationId}. Workflow phase: role ${adoption.role || "implementation"}; epoch ${adoption.phaseEpoch || 1}; child session ${childSessionId}.`
-      : packet;
     try {
       child.followup({
         id: randomUUID(),
         role: "user",
-        content: [{ type: "text", text: renderMiniSweTask(workflowPacket) }],
+        content: [{ type: "text", text: renderMiniSweTask(task) }],
         source: { kind: "plugin", plugin: "qq-workflows", form: "notice" },
       });
     } catch (error) {
@@ -520,17 +521,9 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, architectur
       return { status: "refused", reason: "delegate requires settled working memory" };
     }
     const delegationId = randomUUID();
-    const relay = relayOf(ctx);
-    const parentAlias = typeof relay?.alias === "function" ? relay.alias(parent.id) : undefined;
-    const aliasNotice = parentAlias
-      ? ` Alias ${parentAlias} is informational and ephemeral; never use it as relay identity.`
-      : "";
-    const packet = [
-      `Delegation ID (authoritative): ${delegationId}.`,
-      `Authoritative parent session UUID: ${parent.id}.${aliasNotice} Workflow completion is returned automatically; do not manually relay a duplicate report.`,
-      "",
-      memory.trimEnd(),
-    ].join("\n");
+    // Non-implementation delegation kinds receive semantic task data only.
+    // The authoritative UUID/parent live in invoke arguments and child headers.
+    const packet = memory.trimEnd();
     const invoke = kind === "research" ? onResearch : onDelegateKind;
     if (typeof invoke !== "function") return { status: "refused", reason: `${kind} is unavailable` };
     const result = await invoke({

@@ -28,6 +28,20 @@ try {
     implementationSession: childId,
     originalImplementationSession: childId,
     brief: "change the product",
+    taskArtifact: {
+      schema: "qq.task-artifact/v1",
+      path: "/tmp/worktree/.git/qq-workflows/task.md",
+      pointer: ".git/qq-workflows/task.md",
+      sha256: "a".repeat(64),
+      bytes: 18,
+    },
+    packet: {
+      schema: "qq.delegation-packet/v1",
+      brief: "change the product",
+      files: [],
+      pointers: [],
+      mark: null,
+    },
     worktree: "/tmp/worktree",
     mainRoot: "/tmp/main",
     branch: "feat/change",
@@ -113,6 +127,8 @@ try {
   assert.equal(terminal.status, "blocked");
   assert.equal(terminal.blockedReason, "operator cancelled");
   assert.equal(terminal.current, null);
+  assert.equal(terminal.brief, "", "artifact-backed terminal records drop duplicate task bodies");
+  assert.equal(Object.hasOwn(terminal.packet, "brief"), false, "terminal packets drop legacy duplicate briefs");
   assert.equal(relayed.length, 1, "stopping reports through the normal completion path");
   assert.equal(relayed[0].to, parentId);
   assert.doesNotMatch(relayed[0].message, /Land run|land run/);
@@ -136,6 +152,7 @@ try {
 
   const source = readFileSync(new URL("../src/land.mjs", import.meta.url), "utf8");
   assert.doesNotMatch(source, /stampFromEvidence|routePacket|oneShot|startFixer|qa-look-|"fixer"/);
+  assert.doesNotMatch(source, /message: `Delegation ID \(authoritative\)/, "workflow_send does not prefix model-inert routing metadata");
   assert.match(source, /packet\.mark = "review"/);
   assert.match(source, /land\(current, sessionId\)/, "chair land fallback may retry only a QA-passed delegation");
 
