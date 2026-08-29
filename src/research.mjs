@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 
-import { adoptAgentHandle } from "./agent-handle.mjs";
+import { AGENT_HANDLE, adoptAgentHandle } from "./agent-handle.mjs";
+import { pinNonInteractiveApproval } from "./approval-policy.mjs";
+import { withChildSettlement } from "./child-settlement.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
 import { CHILD_ORIGIN, isArchitectCandidate } from "./architect.mjs";
 import {
@@ -79,7 +81,8 @@ export function createResearch({
 } = {}) {
   if (!store || typeof store.create !== "function") throw new Error("research requires a durable store");
   const bindings = new Map();
-  const handles = new Map();
+  const owners = new Map();
+  const settlementPromises = new Map();
   const reportPromises = new Map();
   let closing = false;
 
@@ -89,10 +92,157 @@ export function createResearch({
     try { dispose?.(); } catch { /* best effort */ }
   }
 
+  function clearOwnerLifecycle(owner, { notifyFailure = true } = {}) {
+    for (const pending of owner?.settlements?.values?.() ?? []) {
+      if (notifyFailure) {
+        try { pending.onFailure?.(); } catch { /* best effort */ }
+      }
+      pending.resolve(false);
+    }
+    owner?.settlements?.clear?.();
+    for (const off of owner?.lifecycleOffs ?? []) {
+      try { off?.(); } catch { /* best effort */ }
+    }
+    if (owner) owner.lifecycleOffs = [];
+  }
+
+  function resultCallId(message) {
+    const sourceCallId = message?.source?.kind === "tool" ? message.source.callId : undefined;
+    if (typeof sourceCallId === "string" && sourceCallId) return sourceCallId;
+    return (Array.isArray(message?.content) ? message.content : []).find((block) =>
+      block?.type === "tool-result" && typeof block.toolCallId === "string" && block.toolCallId)?.toolCallId;
+  }
+
+  function resultBlocksFor(message, callId) {
+    return (Array.isArray(message?.content) ? message.content : []).filter((block) =>
+      block?.type === "tool-result" && block.toolCallId === callId);
+  }
+
+  async function disposeOwned(agentOrId, reason = "settled") {
+    const id = typeof agentOrId === "string" ? agentOrId : sessionIdOf(agentOrId);
+    const owner = owners.get(id);
+    if (!owner) return false;
+    if (!owner.disposePromise) {
+      clearBinding(id);
+      clearOwnerLifecycle(owner, { notifyFailure: false });
+      owner.disposePromise = (async () => {
+        let disposed = false;
+        try {
+          if (!owner.handle || typeof owner.handle.dispose !== "function") {
+            throw new Error("owned child has no recoverable AgentHandle");
+          }
+          await owner.handle.dispose();
+          disposed = true;
+        } catch (error) {
+          log(ctx, "warn", `qq-workflows: failed to dispose research child ${id} (${reason}): ${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+          if (disposed) {
+            try { if (owner.child?.[AGENT_HANDLE] === owner.handle) delete owner.child[AGENT_HANDLE]; } catch { /* non-extensible Agent */ }
+            if (owners.get(id) === owner) owners.delete(id);
+          } else {
+            // Keep the handle capability recoverable for a later stop or HMR
+            // retry instead of turning one disposal failure into a live leak.
+            owner.disposePromise = null;
+          }
+        }
+        return disposed;
+      })();
+    }
+    return owner.disposePromise;
+  }
+
+  function runSettlement(owner, pending) {
+    if (pending.started || !pending.resultCommitted || !pending.idle) return;
+    pending.started = true;
+    owner.settlements.delete(pending.callId);
+    const promise = Promise.resolve().then(async () => {
+      const disposed = await disposeOwned(owner.sessionId, pending.reason);
+      pending.resolve(disposed);
+      return disposed;
+    }).catch((error) => {
+      log(ctx, "warn", `qq-workflows: post-result research child settlement failed for ${owner.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+      pending.resolve(false);
+      return false;
+    });
+    settlementPromises.set(owner.sessionId, promise);
+  }
+
+  function installOwnerLifecycle(owner) {
+    const offs = [];
+    const eventOff = owner.child.ctx?.on?.("session/event", (_session, event) => {
+      if (event?.type !== "tool/result") return;
+      const message = event.data?.message;
+      const callId = resultCallId(message);
+      const pending = owner.settlements.get(callId);
+      if (!pending || pending.started) return;
+      const blocks = resultBlocksFor(message, callId);
+      if (blocks.length === 0) return;
+      if (blocks.some((block) => block.isError === true)) {
+        owner.settlements.delete(callId);
+        try { pending.onFailure?.(); } catch { /* best effort */ }
+        pending.resolve(false);
+        return;
+      }
+      pending.resultCommitted = true;
+      runSettlement(owner, pending);
+    });
+    if (typeof eventOff === "function") offs.push(eventOff);
+    const statusOff = owner.child.ctx?.on?.("agent/status", ({ status } = {}) => {
+      if (status !== "idle") return;
+      for (const pending of owner.settlements.values()) {
+        pending.idle = true;
+        runSettlement(owner, pending);
+      }
+    });
+    if (typeof statusOff === "function") offs.push(statusOff);
+    owner.lifecycleOffs = offs;
+  }
+
   function retain(created, child) {
     const id = sessionIdOf(child);
-    if (id) handles.set(id, created);
+    if (!id) throw new Error("research AgentHandle has no child session");
+    const handle = created && typeof created.dispose === "function" ? created : child?.[AGENT_HANDLE];
+    const existing = owners.get(id);
+    if (existing) {
+      if (handle && existing.handle !== handle) throw new Error(`research already owns child ${id}`);
+      return child;
+    }
+    if (!handle) return child;
+    const owner = {
+      sessionId: id,
+      child,
+      handle,
+      settlements: new Map(),
+      lifecycleOffs: [],
+      disposePromise: null,
+    };
+    owners.set(id, owner);
+    installOwnerLifecycle(owner);
     return child;
+  }
+
+  function postToolSettlement(sessionId, result, reason) {
+    const owner = owners.get(sessionId);
+    if (!owner) return result;
+    const waiting = Promise.withResolvers();
+    const settlement = {
+      settled: waiting.promise,
+      arm({ callId, onFailure } = {}) {
+        if (typeof callId !== "string" || !callId) throw new Error("research child settlement requires a tool call id");
+        if (owner.settlements.has(callId)) throw new Error(`research child settlement already armed for ${callId}`);
+        owner.settlements.set(callId, {
+          callId,
+          reason,
+          onFailure,
+          resolve: waiting.resolve,
+          resultCommitted: false,
+          idle: owner.child.status === "idle",
+          started: false,
+        });
+      },
+    };
+    settlementPromises.set(sessionId, waiting.promise);
+    return withChildSettlement(result, settlement);
   }
 
   function liveSessionQuery() {
@@ -172,8 +322,13 @@ export function createResearch({
     let state = store.load(delegationId);
     const id = sessionIdOf(agent);
     if (!state) return { status: "refused", reason: "submit_review has no research delegation" };
-    if (state.status === "completed") return { status: "ok", verdict: findings?.length ? "fail" : "pass", alreadySubmitted: true };
-    if (state.status !== "reviewing" || state.reviewSession !== id) {
+    if (state.reviewSession !== id) {
+      return { status: "refused", reason: "submit_review requires the owned research review session" };
+    }
+    if (state.status === "completed") {
+      return postToolSettlement(id, { status: "ok", verdict: findings?.length ? "fail" : "pass", alreadySubmitted: true }, "research review result committed");
+    }
+    if (state.status !== "reviewing") {
       return { status: "refused", reason: "submit_review requires the owned research review session" };
     }
     const normalized = Array.isArray(findings) ? findings : [];
@@ -182,11 +337,11 @@ export function createResearch({
     catch (error) {
       log(ctx, "warn", `qq-workflows: research report pending for ${delegationId}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    return {
+    return postToolSettlement(id, {
       status: "ok",
       verdict: normalized.length ? "fail" : "pass",
       outcome: normalized.length ? `${normalized.length} research answer defect(s) found` : "research answer review passed",
-    };
+    }, "research review result committed");
   }
 
   function bindReview(child, state) {
@@ -223,7 +378,9 @@ export function createResearch({
         },
         ...childCreateOptions(route, { setup: miniQaSetup }),
       }));
-      const child = retain(created, created?.agent ?? created);
+      const child = created?.agent ?? created;
+      pinNonInteractiveApproval(child, { delegated: true });
+      retain(created, child);
       bindReview(child, planned);
       const [answer, manifest] = await Promise.all([
         readFile(`${planned.root}/answer.md`, "utf8"),
@@ -241,7 +398,8 @@ export function createResearch({
       if (current?.status === "reviewing" && current.reviewSession === reviewId) {
         store.save({ ...current, status: "researching", reviewSession: "" });
       }
-      try { await created?.dispose?.(); } catch { /* rollback */ }
+      if (owners.has(reviewId)) await disposeOwned(reviewId, "research review startup rollback");
+      else try { await created?.dispose?.(); } catch { /* rollback */ }
       throw error;
     }
   }
@@ -251,7 +409,9 @@ export function createResearch({
     const id = sessionIdOf(agent);
     if (!state) return { status: "refused", reason: "research submission has no run" };
     if (state.researchSession !== id) return { status: "refused", reason: "research submission requires the owned mini-research session" };
-    if (state.status === "reviewing" || state.status === "completed") return { status: "ok", alreadySubmitted: true };
+    if (state.status === "reviewing" || state.status === "completed") {
+      return postToolSettlement(id, { status: "ok", alreadySubmitted: true }, "research result committed");
+    }
     if (state.status !== "researching") return { status: "refused", reason: `research delegation is ${state.status}` };
     try {
       const [persistedQuestion, actualRepo] = await Promise.all([
@@ -272,7 +432,11 @@ export function createResearch({
     const checked = store.save({ ...state, citationCheck });
     try { await spawnReview(checked); }
     catch (error) { return { status: "refused", reason: `cannot start research review: ${error instanceof Error ? error.message : String(error)}` }; }
-    return { status: "ok", answerPath: `${state.root}/answer.md`, citationCheck };
+    return postToolSettlement(id, {
+      status: "ok",
+      answerPath: `${state.root}/answer.md`,
+      citationCheck,
+    }, "research result committed");
   }
 
   function bindResearch(child, state) {
@@ -328,7 +492,9 @@ export function createResearch({
         },
         ...childCreateOptions(route, { setup: miniResearchSetup }),
       }));
-      const child = retain(created, created?.agent ?? created);
+      const child = created?.agent ?? created;
+      pinNonInteractiveApproval(child, { delegated: true });
+      retain(created, child);
       bindResearch(child, state);
       child.followup({
         id: randomUUID(),
@@ -339,34 +505,51 @@ export function createResearch({
       return { status: "ok", delegationId: state.id, child: sessionIdOf(child), role: "mini-research", phaseEpoch: 1, workspace: state.root };
     } catch (error) {
       state = store.save({ ...state, status: "blocked", blockedReason: error instanceof Error ? error.message : String(error) });
-      try { await created?.dispose?.(); } catch { /* rollback */ }
+      if (owners.has(childId)) await disposeOwned(childId, "research child startup rollback");
+      else try { await created?.dispose?.(); } catch { /* rollback */ }
       return { status: "refused", reason: `research child: ${state.blockedReason}`, delegationId: state.id };
     }
   }
 
   function resumeChild(agent) {
-    const state = store.bySession(sessionIdOf(agent));
+    const id = sessionIdOf(agent);
+    const state = store.bySession(id);
     if (!state) return false;
-    if (isMiniResearchAgent(agent) && state.researchSession === sessionIdOf(agent) && state.status === "researching") {
+    pinNonInteractiveApproval(agent, { delegated: true });
+    retain(agent?.[AGENT_HANDLE], agent);
+    if (isMiniResearchAgent(agent) && state.researchSession === id && state.status === "researching") {
       bindResearch(agent, state);
       return true;
     }
-    if (isMiniQaAgent(agent) && state.reviewSession === sessionIdOf(agent) && state.status === "reviewing") {
+    if (isMiniQaAgent(agent) && state.reviewSession === id && state.status === "reviewing") {
       bindReview(agent, state);
       return true;
     }
-    return false;
+    // A durable phase transition can outlive its old live Agent during HMR.
+    // Reclaim its retained handle and retire it instead of leaving a completed
+    // research/review child visible forever.
+    clearBinding(id);
+    if (owners.has(id)) void disposeOwned(id, `stale ${state.status} research phase`);
+    return true;
   }
 
   async function releaseChild(agent) {
     const id = sessionIdOf(agent);
     clearBinding(id);
-    handles.delete(id);
+    const owner = owners.get(id);
+    const disposing = Boolean(owner?.disposePromise);
+    if (owner) {
+      clearOwnerLifecycle(owner, { notifyFailure: !disposing });
+      owners.delete(id);
+      if (!disposing) {
+        try { if (agent?.[AGENT_HANDLE] === owner.handle) delete agent[AGENT_HANDLE]; } catch { /* non-extensible Agent */ }
+      }
+    }
     const state = store.bySession(id);
-    if (!state || ["completed", "blocked"].includes(state.status)) return false;
+    if (disposing || !state || ["completed", "blocked"].includes(state.status)) return Boolean(owner);
     const isCurrent = (state.status === "researching" && state.researchSession === id)
       || (state.status === "reviewing" && state.reviewSession === id);
-    if (!isCurrent) return false;
+    if (!isCurrent) return Boolean(owner);
     const blocked = store.save({ ...state, status: "blocked", blockedReason: `${state.status === "reviewing" ? "mini-qa" : "mini-research"} child closed before completion` });
     try { await deliver(blocked); } catch (error) {
       log(ctx, "warn", `qq-workflows: blocked research report pending for ${state.id}: ${error instanceof Error ? error.message : String(error)}`);
@@ -437,9 +620,7 @@ export function createResearch({
     if (!phase.sessionUuid) return { status: "refused", reason: `delegation is terminal (${found.state.status})` };
     const blocked = store.save({ ...found.state, status: "blocked", blockedReason: String(reason || "stopped by parent") });
     clearBinding(phase.sessionUuid);
-    const handle = handles.get(phase.sessionUuid);
-    handles.delete(phase.sessionUuid);
-    try { await handle?.dispose?.(); } catch { /* state is already terminal */ }
+    await disposeOwned(phase.sessionUuid, "research stopped");
     try { await deliver(blocked); } catch (error) {
       log(ctx, "warn", `qq-workflows: stopped research report pending for ${blocked.id}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -450,8 +631,9 @@ export function createResearch({
     closing = true;
     for (const id of [...bindings.keys()]) clearBinding(id);
     // HMR detaches ownership only. Live DSH handles remain on their Agents and
-    // the next controller rebinds them from durable run JSON.
-    handles.clear();
+    // the next controller reclaims them from the shared AGENT_HANDLE capability.
+    for (const owner of owners.values()) clearOwnerLifecycle(owner);
+    owners.clear();
   }
 
   return Object.freeze({
@@ -462,6 +644,7 @@ export function createResearch({
     workflowStatus,
     workflowSend,
     workflowStop,
+    whenSettled: (sessionId) => settlementPromises.get(sessionId) ?? Promise.resolve(false),
     dispose,
     delegation: (id) => store.load(id),
     byDelegation: (id) => store.byDelegation(id),

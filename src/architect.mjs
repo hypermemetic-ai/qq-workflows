@@ -11,6 +11,7 @@ import { guardContext, OVERFLOW_MESSAGE } from "./fold.mjs";
 import { markAssemble } from "./assemble-mark.mjs";
 import { truncateObservationContent } from "./observation.mjs";
 import { adoptAgentHandle } from "./agent-handle.mjs";
+import { pinNonInteractiveApproval } from "./approval-policy.mjs";
 import { loadRepositoryIndexContext } from "./repository-index.mjs";
 
 export const ARCHITECT_LABEL = "workflows:architect";
@@ -20,7 +21,9 @@ export const ARCHITECT_PROMPT = [
   "You are the architect. Working memory is your only durable plan document and plan knowledge: fold can erase earlier conversation, and an empty document means you remember nothing.",
   "There is one document and one name: working memory. `case_write` edits working memory; delegation sends those same bytes as the complete packet.",
   "After every operator message that materially changes the plan, call `case_write` before replying. Do not wait for a final plan and do not claim unwritten conversation is authoritative.",
-  "Keep working memory concise and operator-visible, edit it freely, and obtain operator approval before delegation.",
+  "Keep working memory concise and operator-visible, edit it freely, and obtain operator approval of the plan before delegation; plan approval is not a tool permission prompt.",
+  "Work autonomously on routine in-domain actions; do not ask for routine permission approvals. Your current sandbox is the complete execution boundary for this session.",
+  "Never request sandbox escalation or retry with `sandbox_permissions`. If a required action genuinely cannot be performed, stop and explain the limitation instead of auto-escalating. Surface manual approval only for useful exceptional work clearly outside the normal domain.",
   "Use `delegate({ kind: \"implementation\" })` for implementation or `delegate({ kind: \"research\" })` for evidence-backed questions. Delegation requires approved, settled, non-empty working memory.",
 ].join("\n");
 
@@ -183,6 +186,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, architectur
     if (!isArchitectCandidate(agent)) return null;
     const session = agent.session;
     const sessionId = session.id;
+    pinNonInteractiveApproval(session);
     if (attached.has(sessionId)) return attached.get(sessionId);
     cases?.open?.(sessionId, tasksOf());
     cases?.ensure?.(sessionId);
@@ -418,6 +422,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, architectur
       ...childCreateOptions(route, { setup: miniSetup }),
     }));
     const child = created?.agent ?? created;
+    pinNonInteractiveApproval(child, { delegated: true });
     const childSessionId = child.session?.id ?? childId;
     retainDelegated(created, child);
     const refuseAdoption = async (reason, { dispose = true } = {}) => {

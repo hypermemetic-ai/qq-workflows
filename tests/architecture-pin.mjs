@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createArchitect } from "../src/architect.mjs";
+import { effectiveApprovalPolicy, pinNonInteractiveApproval } from "../src/approval-policy.mjs";
 import { DEFAULT_Q } from "../src/fold.mjs";
 import { apply } from "../src/plugin.mjs";
 import { createSelectionStore } from "../src/selection.mjs";
@@ -107,7 +108,7 @@ function hostSelectedAgent(cwd) {
 
   const session = {
     id: SESSION_ID,
-    events: [],
+    events: [{ type: "sandbox/mode", data: { mode: "workspace-write" } }],
     header: { cwd },
     append(type, data) {
       this.events.push({ type, data });
@@ -193,6 +194,15 @@ try {
 
   apply(ctx, config);
 
+  assert.equal(effectiveApprovalPolicy(agent.session.events), "never");
+  assert.deepEqual(
+    agent.session.events.filter((event) => event.type === "sandbox/mode"),
+    [{ type: "sandbox/mode", data: { mode: "workspace-write" } }],
+    "architect approval pin preserves the sandbox override",
+  );
+  assert.equal(agent.session.events.filter((event) => event.type === "approval/policy").length, 1);
+  assert.equal(pinNonInteractiveApproval(agent), false, "approval pin is idempotent");
+
   const pinned = await agent.ctx.request();
   assertPrompt(pinned.prompt, ARCHITECTURE);
   assertRoute(pinned.request, ARCHITECTURE);
@@ -232,6 +242,7 @@ try {
   apply(ctx, config);
   assert.equal(effects.length, 2);
   const repinned = await agent.ctx.request();
+  assert.equal(agent.session.events.filter((event) => event.type === "approval/policy").length, 1, "HMR does not duplicate the approval pin");
   assertPrompt(repinned.prompt, ARCHITECTURE);
   assertRoute(repinned.request, ARCHITECTURE);
   await effects[1]?.();
@@ -261,6 +272,7 @@ try {
     id: "session-d0000000-0000-4000-8000-000000000004",
     header: { cwd: ordinaryRoot },
     events: [],
+    append(type, data) { this.events.push({ type, data }); },
   };
   const foldAgent = {
     status: "running",
@@ -294,6 +306,72 @@ try {
   }
   assertRoute(foldRoutes.at(-1), ALTERNATE);
   directArchitect.detach(foldAgent);
+
+  // The architect's direct ctx.agents.create path bypasses native subagent
+  // composition, so it must stamp the child before Land adoption or followup.
+  const delegationParentId = "session-e0000000-0000-4000-8000-000000000005";
+  const delegationEvents = [];
+  let delegatedChild = null;
+  const relay = { hang() {}, clear() {}, alias() { return undefined; } };
+  const delegationArchitect = createArchitect({
+    ctx: { get(name) { return name === "qq-relay" ? relay : null; } },
+    cases: {
+      open() {},
+      ensure() {},
+      load() { return { text: "# Approved plan\n\nImplement the change.\n" }; },
+      consume() {},
+    },
+    folder: { decide: () => ({ action: "keep" }) },
+    agents: {
+      async create(options) {
+        const session = {
+          id: options.sessionId,
+          header: { ...options.meta },
+          events: [{ type: "sandbox/mode", data: { mode: "workspace-write" } }],
+          append(type, data) { this.events.push({ type, data }); },
+        };
+        delegatedChild = {
+          status: "running",
+          session,
+          ctx: { on() { return () => {}; } },
+          followup(message) { this.message = message; },
+        };
+        return { agent: delegatedChild, async dispose() {} };
+      },
+    },
+    run: async () => ({ code: 1, stdout: "", stderr: "not a git worktree" }),
+    onInvokeImplementation(child) {
+      delegationEvents.push(...child.session.events);
+      assert.equal(effectiveApprovalPolicy(child.session.events), "never", "child is pinned before workflow adoption");
+      return { status: "ok", owned: true, delegationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", role: "implementation", phaseEpoch: 1 };
+    },
+    env: {},
+  });
+  const delegationParent = {
+    status: "running",
+    options: { ...HOST },
+    session: {
+      id: delegationParentId,
+      header: { cwd: ordinaryRoot },
+      events: [],
+      append(type, data) { this.events.push({ type, data }); },
+    },
+    ctx: { on() { return () => {}; } },
+  };
+  delegationArchitect.attach(delegationParent);
+  const delegated = await delegationArchitect.delegate({ agent: delegationParent, kind: "implementation" });
+  assert.equal(delegated.status, "ok", delegated.reason);
+  assert.ok(delegatedChild?.message, "delegated child receives its work packet");
+  assert.deepEqual(
+    delegationEvents.filter((event) => event.type === "approval/policy"),
+    [{ type: "approval/policy", data: { policy: "never", source: "delegation" } }],
+  );
+  assert.deepEqual(
+    delegationEvents.filter((event) => event.type === "sandbox/mode"),
+    [{ type: "sandbox/mode", data: { mode: "workspace-write" } }],
+    "child approval pin preserves its sandbox policy",
+  );
+  await delegationArchitect.dispose();
 
   console.log("architecture pin: ok");
 } finally {

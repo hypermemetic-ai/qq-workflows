@@ -135,7 +135,12 @@ function createPrompt() {
     cases,
   });
   const agent = {
-    session: { id: architectId, events: [], header: { cwd: "/tmp" } },
+    session: {
+      id: architectId,
+      events: [],
+      header: { cwd: "/tmp" },
+      append(type, data) { this.events.push({ type, data }); },
+    },
     ctx: {
       systemPrompt: prompt,
       inject(_deps, fn) {
@@ -271,7 +276,11 @@ function createPrompt() {
       { type: "user/message", data: { turn: 1, source: { kind: "operator" } } },
       event,
     ],
-    append(type, data) { appended.push({ type, data }); },
+    append(type, data) {
+      const appendedEvent = { type, data };
+      this.events.push(appendedEvent);
+      appended.push(appendedEvent);
+    },
   };
   const architect = createArchitect({
     ctx: { get: () => null },

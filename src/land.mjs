@@ -25,6 +25,7 @@ import {
 import { createQaVerdict } from "./qa-verdict.mjs";
 import { RepoOracle } from "./repo-oracle.mjs";
 import { AGENT_HANDLE, adoptAgentHandle } from "./agent-handle.mjs";
+import { pinNonInteractiveApproval } from "./approval-policy.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
 import { withChildSettlement } from "./child-settlement.mjs";
 import {
@@ -1292,6 +1293,7 @@ export function createLand({
     if (!sessionId) return false;
     let state = store.bySession(sessionId);
     if (!state) return false;
+    pinNonInteractiveApproval(child, { delegated: true });
     const pending = state.pendingPhase?.sessionUuid === sessionId ? state.pendingPhase : null;
     const recoverable = state.current?.sessionUuid === sessionId
       || state.settlementSession === sessionId
@@ -1375,6 +1377,7 @@ export function createLand({
     const child = handle?.agent ?? handle;
     let retained = false;
     try {
+      pinNonInteractiveApproval(child, { delegated: true });
       const owner = retainChild(handle, { child, role, workflowRole, delegationId });
       retained = true;
       return { child, owner };

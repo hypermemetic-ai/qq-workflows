@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { AGENT_HANDLE } from "../src/agent-handle.mjs";
 import { createResearch } from "../src/research.mjs";
 import { createResearchStore, RESEARCH_DELEGATION_SCHEMA } from "../src/research-store.mjs";
 import { MINI_QA_SYSTEM_PROMPT } from "../src/mini-qa-v2.mjs";
@@ -52,7 +53,17 @@ function childContext() {
       register(tool) { registered.push(tool); return () => {}; },
     },
     effect(fn) { return fn(); },
-    on(type, fn) { listeners.push({ type, fn }); return () => {}; },
+    on(type, fn) {
+      const record = { type, fn };
+      listeners.push(record);
+      return () => {
+        const index = listeners.indexOf(record);
+        if (index >= 0) listeners.splice(index, 1);
+      };
+    },
+    async emit(type, ...args) {
+      for (const { fn } of [...listeners].filter((record) => record.type === type)) await fn(...args);
+    },
     get(name) {
       if (name === "tools") return this.tools;
       if (name === "systemPrompt") return this.systemPrompt;
@@ -70,19 +81,43 @@ const agents = {
   async create(options) {
     const ctx = childContext();
     const child = {
-      session: { id: options.sessionId, header: { ...options.meta }, events: [] },
+      status: "running",
+      session: {
+        id: options.sessionId,
+        header: { ...options.meta },
+        events: [],
+        append(type, data) { this.events.push({ type, data }); },
+      },
       ctx,
       options: options.agentOptions ?? {},
       followups: [],
+      disposeCount: 0,
       followup(message) { this.followups.push(message); },
     };
     ctx.agent = child;
     options.setup?.(ctx);
-    const handle = { agent: child, async dispose() {} };
+    const handle = { agent: child, async dispose() { child.disposeCount++; child.disposed = true; } };
     children.push(child);
     return handle;
   },
 };
+
+async function commitToolResult(child, callId, { isError = false } = {}) {
+  const message = {
+    role: "user",
+    source: { kind: "tool", callId },
+    content: [{ type: "tool-result", toolCallId: callId, isError, content: [] }],
+  };
+  const event = { type: "tool/result", data: { message } };
+  child.session.events.push(event);
+  await child.ctx.emit("session/event", child.session, event);
+}
+
+async function setAgentStatus(child, status) {
+  child.status = status;
+  await child.ctx.emit("agent/status", { agent: child, status });
+}
+
 let coreRootLookups = 0;
 const ctx = {
   get(name) {
@@ -217,15 +252,32 @@ assert.deepEqual(
 
 const resumedReviewCtx = childContext();
 const resumedReview = {
-  session: { id: legacyReviewSession, header: { kind: "mini-qa" }, events: [] },
+  status: "idle",
+  session: {
+    id: legacyReviewSession,
+    header: { kind: "mini-qa" },
+    events: [],
+    append(type, data) { this.events.push({ type, data }); },
+  },
   ctx: resumedReviewCtx,
   options: {},
 };
 resumedReviewCtx.agent = resumedReview;
+let resumedReviewDisposed = 0;
+const resumedReviewHandle = { agent: resumedReview, async dispose() { resumedReviewDisposed++; } };
+Object.defineProperty(resumedReview, AGENT_HANDLE, { value: resumedReviewHandle, configurable: true });
 const restartedResearch = createResearch({ ctx, store: restartedStore, agents, parentDir: restartDir, env: {} });
 assert.equal(restartedResearch.resumeChild(resumedReview), true, "resumeChild rebinds the upgraded reviewing child");
 assert.deepEqual(resumedReviewCtx.registered.map((tool) => tool.name), ["bash", "submit_review"]);
 restartedResearch.dispose();
+assert.equal(resumedReview[AGENT_HANDLE], resumedReviewHandle, "HMR detaches without dropping the live handle capability");
+const completedLegacy = restartedStore.load(reviewByQa.id);
+restartedStore.save({ ...completedLegacy, status: "completed" });
+const replacementResearch = createResearch({ ctx, store: restartedStore, agents, parentDir: restartDir, env: {} });
+assert.equal(replacementResearch.resumeChild(resumedReview), true, "replacement controller recognizes a stale completed phase child");
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(resumedReviewDisposed, 1, "replacement controller recovers and disposes the stale retained handle");
+replacementResearch.dispose();
 
 const parentDir = join(scratch, "research");
 const store = createResearchStore(parentDir);
@@ -251,6 +303,12 @@ assert.equal(mixedCaseSend.status, "sent", mixedCaseSend.reason);
 assert.equal(coreRootLookups, 1);
 assert.equal(children.length, 1);
 assert.equal(children[0].session.header.kind, "mini-research");
+assert.deepEqual(
+  children[0].session.events.filter((event) => event.type === "approval/policy"),
+  [{ type: "approval/policy", data: { policy: "never", source: "delegation" } }],
+  "custom research child starts non-interactive",
+);
+assert.equal(children[0].session.events.some((event) => event.type === "sandbox/mode"), false, "approval pin does not replace the child sandbox");
 const spawnedResearchTask = children[0].followups[0].content[0].text;
 assert.match(spawnedResearchTask, /^Please research this question: What does the fixture show\?/);
 assert.match(spawnedResearchTask, /## Recommended Workflow/);
@@ -260,14 +318,29 @@ assert.equal((await researchBash.execute({ command: "web-search 'fixture'" }, { 
 assert.equal((await researchBash.execute({ command: "web-get W001" }, { agent: children[0] })).exitCode, 0);
 writeFileSync(join(started.workspace, "answer.md"), "The fixture supports the answer [W001].\n");
 let concluded = 0;
+const researchCallId = "research-complete-call";
 const completed = await researchBash.execute({ command: MINI_SWE_COMPLETION_COMMAND }, {
-  agent: children[0], concludeTurn() { concluded++; },
+  agent: children[0], callId: researchCallId, concludeTurn() { concluded++; },
 });
 assert.equal(completed.exitCode, 0, completed.stderr?.text);
 assert.equal(concluded, 1);
 assert.equal(children.length, 2, "accepted research spawns one fresh review context");
+assert.equal(children[0].disposeCount, 0, "accepted handler does not dispose before its tool result commits");
+await commitToolResult(children[0], "unrelated-call");
+assert.equal(children[0].disposeCount, 0, "unrelated tool results cannot settle the child");
+await commitToolResult(children[0], researchCallId);
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(children[0].disposeCount, 0, "matching result alone does not dispose a running child");
+await setAgentStatus(children[0], "idle");
+assert.equal(await research.whenSettled(children[0].session.id), true);
+assert.equal(children[0].disposeCount, 1, "research child disposes after exact result commit and idle");
 const review = children[1];
 assert.equal(review.session.header.kind, "mini-qa");
+assert.deepEqual(
+  review.session.events.filter((event) => event.type === "approval/policy"),
+  [{ type: "approval/policy", data: { policy: "never", source: "delegation" } }],
+  "custom QA child starts non-interactive",
+);
 assert.deepEqual(review.ctx.surfaceCalls, [{ agent: review, names: ["bash"] }]);
 assert.deepEqual(review.ctx.registered.map((tool) => tool.name), ["bash", "submit_review"]);
 const reviewBash = review.ctx.registered.find((tool) => tool.name === "bash");
@@ -289,8 +362,16 @@ assert.match(spawnedReviewTask, /Proposed answer:\nThe fixture supports the answ
 assert.match(spawnedReviewTask, /Use ordinary bash in this capsule/);
 assert.match(spawnedReviewTask, /unsupported claims/);
 const submit = review.ctx.registered.find((tool) => tool.name === "submit_review");
-const reviewResult = await submit.execute({ findings: [] }, { agent: review, concludeTurn() {} });
+const reviewCallId = "research-review-call";
+const reviewResult = await submit.execute({ findings: [] }, { agent: review, callId: reviewCallId, concludeTurn() {} });
 assert.equal(reviewResult.status, "ok", reviewResult.reason);
+assert.equal(review.disposeCount, 0, "QA remains live until its result is durable and idle");
+await setAgentStatus(review, "idle");
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(review.disposeCount, 0, "idle alone cannot settle QA before the matching result");
+await commitToolResult(review, reviewCallId);
+assert.equal(await research.whenSettled(review.session.id), true);
+assert.equal(review.disposeCount, 1, "QA child settles after exact result commit and idle");
 assert.equal(sent.length, 2);
 assert.equal(sent[0].to, children[0].session.id);
 assert.equal(sent[0].message, "Check the fixture carefully.");

@@ -84,7 +84,12 @@ assert.equal(truncateMiniObservation, truncateObservation, "Mini re-exports the 
   const agent = {
     status: "running",
     options: {},
-    session: { id: sessionId, header: {}, events: [] },
+    session: {
+      id: sessionId,
+      header: {},
+      events: [],
+      append(type, data) { this.events.push({ type, data }); },
+    },
     ctx: {
       on(type, fn) {
         listeners.push({ type, fn });
