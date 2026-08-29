@@ -6,7 +6,7 @@ import * as miniDocs from "../src/mini-docs.mjs";
 import { internals as pluginInternals } from "../src/plugin.mjs";
 import { MINI_SWE_COMPLETION_COMMAND, MINI_PAGER_EXPORT } from "../src/official-mini.mjs";
 
-const WRITER_PROMPT = "You are the unattended architect-orientation wiki writer.";
+const WRITER_PROMPT = "You are the unattended repository-index writer.";
 
 function createAgentContext({ withCore = true } = {}) {
   const sections = [];
@@ -127,7 +127,7 @@ assert.equal(miniDocs.isMiniDocsAgent({ session: { header: { kind: "mini" } } })
 
 // Persona, bash-only catalog, and Mini's model-visible command-only schema.
 const mounted = createAgentContext();
-miniDocs.miniDocsSetup(mounted.ctx, { env: { QQ_WIKI_WRITER_PROMPT: WRITER_PROMPT } });
+miniDocs.miniDocsSetup(mounted.ctx, { env: { QQ_INDEX_WRITER_PROMPT: WRITER_PROMPT } });
 assert.equal(mounted.runtimeSuppressed(), true);
 assert.deepEqual(mounted.sections, [{
   name: "deployment:persona",
@@ -146,7 +146,7 @@ assert.equal(mounted.listeners.length, 2);
 // A headless writer profile without qq-core receives a frozen no-op surface
 // before inherited-tool setup, then mounts the persona and bash wrapper.
 const headlessMount = createAgentContext({ withCore: false });
-miniDocs.miniDocsSetup(headlessMount.ctx, { env: { QQ_WIKI_WRITER_PROMPT: WRITER_PROMPT } });
+miniDocs.miniDocsSetup(headlessMount.ctx, { env: { QQ_INDEX_WRITER_PROMPT: WRITER_PROMPT } });
 assert.equal(headlessMount.provideCalls.length, 1);
 assert.equal(headlessMount.provideCalls[0].name, "qq-core");
 assert.equal(Object.isFrozen(headlessMount.provideCalls[0].value), true);
@@ -187,7 +187,7 @@ assert.equal(mounted.hostCalls[1].command, `${MINI_PAGER_EXPORT}; echo COMPLETE_
 
 // Tool-less responses get Mini-style retries, capped when the third miss occurs.
 const formatMount = createAgentContext();
-miniDocs.miniDocsSetup(formatMount.ctx, { env: { QQ_WIKI_WRITER_PROMPT: WRITER_PROMPT } });
+miniDocs.miniDocsSetup(formatMount.ctx, { env: { QQ_INDEX_WRITER_PROMPT: WRITER_PROMPT } });
 const formatSessionEvent = formatMount.listeners.find((record) => record.type === "session/event").fn;
 const formatTurnStopping = formatMount.listeners.find((record) => record.type === "agent/turn-stopping").fn;
 const formatAgent = docsAgent("session-docs-format", formatMount.ctx);
@@ -208,7 +208,7 @@ for (const steer of formatAgent.steers) {
 
 // A bash response resets misses and does not steer.
 const validFormatMount = createAgentContext();
-miniDocs.miniDocsSetup(validFormatMount.ctx, { env: { QQ_WIKI_WRITER_PROMPT: WRITER_PROMPT } });
+miniDocs.miniDocsSetup(validFormatMount.ctx, { env: { QQ_INDEX_WRITER_PROMPT: WRITER_PROMPT } });
 const validSessionEvent = validFormatMount.listeners.find((record) => record.type === "session/event").fn;
 const validTurnStopping = validFormatMount.listeners.find((record) => record.type === "agent/turn-stopping").fn;
 const validFormatAgent = docsAgent("session-docs-valid-format", validFormatMount.ctx);
@@ -231,7 +231,7 @@ assert.equal(completionAgent.steers.length, 0);
 
 // A new module generation replaces all lifts instead of stacking them.
 const nextGeneration = await import(`../src/mini-docs.mjs?hmr=${Date.now()}`);
-nextGeneration.miniDocsSetup(mounted.ctx, { env: { QQ_WIKI_WRITER_PROMPT: "replacement writer" } });
+nextGeneration.miniDocsSetup(mounted.ctx, { env: { QQ_INDEX_WRITER_PROMPT: "replacement writer" } });
 assert.equal(mounted.sections.length, 1);
 assert.equal(mounted.sections[0].text, "replacement writer");
 assert.deepEqual(mounted.registeredTools.map((tool) => tool.name), ["bash"]);
@@ -242,34 +242,34 @@ assert.deepEqual(mounted.surfaceCalls, [
 assert.equal(mounted.listeners.length, 2);
 
 // Config env wins; process env is the fallback; blank config env fails loudly.
-const originalPrompt = process.env.QQ_WIKI_WRITER_PROMPT;
+const originalPrompt = process.env.QQ_INDEX_WRITER_PROMPT;
 try {
-  delete process.env.QQ_WIKI_WRITER_PROMPT;
+  delete process.env.QQ_INDEX_WRITER_PROMPT;
   const missingEnvMount = createAgentContext();
   assert.throws(
     () => miniDocs.miniDocsSetup(missingEnvMount.ctx),
-    /non-blank QQ_WIKI_WRITER_PROMPT/,
+    /non-blank QQ_INDEX_WRITER_PROMPT/,
   );
 
-  process.env.QQ_WIKI_WRITER_PROMPT = "process writer";
+  process.env.QQ_INDEX_WRITER_PROMPT = "process writer";
   const processEnvMount = createAgentContext();
   miniDocs.miniDocsSetup(processEnvMount.ctx);
   assert.equal(processEnvMount.sections[0].text, "process writer");
 
   const configEnvMount = createAgentContext();
-  miniDocs.miniDocsSetup(configEnvMount.ctx, { env: { QQ_WIKI_WRITER_PROMPT: "config writer" } });
+  miniDocs.miniDocsSetup(configEnvMount.ctx, { env: { QQ_INDEX_WRITER_PROMPT: "config writer" } });
   assert.equal(configEnvMount.sections[0].text, "config writer");
 
   const blankEnvMount = createAgentContext();
   assert.throws(
-    () => miniDocs.miniDocsSetup(blankEnvMount.ctx, { env: { QQ_WIKI_WRITER_PROMPT: " \n\t" } }),
-    /non-blank QQ_WIKI_WRITER_PROMPT/,
+    () => miniDocs.miniDocsSetup(blankEnvMount.ctx, { env: { QQ_INDEX_WRITER_PROMPT: " \n\t" } }),
+    /non-blank QQ_INDEX_WRITER_PROMPT/,
   );
   assert.equal(blankEnvMount.sections.length, 0);
   assert.equal(blankEnvMount.registeredTools.length, 0);
 } finally {
-  if (originalPrompt === undefined) delete process.env.QQ_WIKI_WRITER_PROMPT;
-  else process.env.QQ_WIKI_WRITER_PROMPT = originalPrompt;
+  if (originalPrompt === undefined) delete process.env.QQ_INDEX_WRITER_PROMPT;
+  else process.env.QQ_INDEX_WRITER_PROMPT = originalPrompt;
 }
 
 // A failed surface assignment aborts before persona, bash lookup, or registration.
@@ -282,7 +282,7 @@ failedSurfaceMount.ctx.get = () => ({
 failedSurfaceMount.ctx.tools.get = () => { failedLookups++; return undefined; };
 failedSurfaceMount.ctx.tools.register = () => { failedRegistrations++; return () => {}; };
 assert.throws(
-  () => miniDocs.miniDocsSetup(failedSurfaceMount.ctx, { env: { QQ_WIKI_WRITER_PROMPT: WRITER_PROMPT } }),
+  () => miniDocs.miniDocsSetup(failedSurfaceMount.ctx, { env: { QQ_INDEX_WRITER_PROMPT: WRITER_PROMPT } }),
   /docs surface failed/,
 );
 assert.equal(failedLookups, 0);
@@ -293,17 +293,17 @@ assert.equal(failedSurfaceMount.sections.length, 0);
 // Host apply/sync owns lifecycle; the adapter entry remains available explicitly.
 const explicitHarness = createAgentContext();
 const explicitAgent = docsAgent("explicit-docs", explicitHarness.ctx);
-assert.equal(miniDocs.ensureMiniDocsMounted(explicitAgent, { env: { QQ_WIKI_WRITER_PROMPT: WRITER_PROMPT } }), true);
+assert.equal(miniDocs.ensureMiniDocsMounted(explicitAgent, { env: { QQ_INDEX_WRITER_PROMPT: WRITER_PROMPT } }), true);
 assert.deepEqual(explicitHarness.registeredTools.map((tool) => tool.name), ["bash"]);
 const unrelatedHarness = createAgentContext();
-assert.equal(miniDocs.ensureMiniDocsMounted(docsAgent("not-docs", unrelatedHarness.ctx, { kind: "mini-code" }), { env: { QQ_WIKI_WRITER_PROMPT: WRITER_PROMPT } }), false);
+assert.equal(miniDocs.ensureMiniDocsMounted(docsAgent("not-docs", unrelatedHarness.ctx, { kind: "mini-code" }), { env: { QQ_INDEX_WRITER_PROMPT: WRITER_PROMPT } }), false);
 assert.equal(unrelatedHarness.registeredTools.length, 0);
 
 // The plugin's live-child synchronization path mounts mini-docs by either
 // header marker. A mini-code child receives its own adapter, never mini-docs.
-const syncPrompt = process.env.QQ_WIKI_WRITER_PROMPT;
+const syncPrompt = process.env.QQ_INDEX_WRITER_PROMPT;
 try {
-  process.env.QQ_WIKI_WRITER_PROMPT = WRITER_PROMPT;
+  process.env.QQ_INDEX_WRITER_PROMPT = WRITER_PROMPT;
   const pluginDocsHarness = createAgentContext();
   const pluginDocsAgent = docsAgent("plugin-docs", pluginDocsHarness.ctx, { agentPreset: "mini-docs" });
   assert.equal(pluginInternals.syncLiveDelegationChild(null, pluginDocsAgent), false);
@@ -325,8 +325,8 @@ try {
   );
   assert.equal(pluginCodeHarness.hostCalls.length, 1, "mini-code does not receive the docs completion wrapper");
 } finally {
-  if (syncPrompt === undefined) delete process.env.QQ_WIKI_WRITER_PROMPT;
-  else process.env.QQ_WIKI_WRITER_PROMPT = syncPrompt;
+  if (syncPrompt === undefined) delete process.env.QQ_INDEX_WRITER_PROMPT;
+  else process.env.QQ_INDEX_WRITER_PROMPT = syncPrompt;
 }
 
 // Keep the no-Land/no-submit/no-commit fence explicit in this adapter.

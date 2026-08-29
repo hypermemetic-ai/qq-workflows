@@ -115,9 +115,9 @@ function toolsOf(holder) {
 }
 
 function writerPrompt(config) {
-  const prompt = config?.env?.QQ_WIKI_WRITER_PROMPT ?? process.env.QQ_WIKI_WRITER_PROMPT;
+  const prompt = config?.env?.QQ_INDEX_WRITER_PROMPT ?? process.env.QQ_INDEX_WRITER_PROMPT;
   if (typeof prompt !== "string" || prompt.trim() === "") {
-    throw new Error("mini-docs requires a non-blank QQ_WIKI_WRITER_PROMPT");
+    throw new Error("mini-docs requires a non-blank QQ_INDEX_WRITER_PROMPT");
   }
   return prompt;
 }
@@ -206,8 +206,6 @@ export function miniDocsSetup(agentCtx, config = {}) {
   const previous = agentCtx[MINI_DOCS_MOUNT];
   if (previous?.generation === MOUNT_GENERATION) return;
   previous?.dispose?.();
-  // qq-wiki's headless writer profile intentionally omits qq-core. Keep this
-  // compatibility surface local so every other adapter still requires real core.
   if (!agentCtx.get?.("qq-core", false) && typeof agentCtx.provide === "function") {
     agentCtx.provide("qq-core", HEADLESS_QQ_CORE);
   }

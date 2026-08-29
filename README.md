@@ -72,15 +72,6 @@ An inactive timestamp can authoritatively date the return to `plan/planning`;
 without that parent-scoped interface adopted kinds do not affect the chair
 phase.
 
-Documentation publication remains owned by qq-wiki's timer: it harvests,
-performs README-only validation, commits, and fast-forwards. The inner writer is
-a headless DSH process that overlay-loads this plugin on a profile that may omit
-`qq-core`. The host mounts the `mini-docs` adapter when the agent's `header.kind`
-or `agentPreset` is
-`mini-docs`; qq-wiki supplies `QQ_WIKI_WRITER_PROMPT` to that one-shot process.
-Completion is the DSH process exit. This inner pass is neither a `/workflows`
-chair nor a `delegate` kind, and it does not use the hosted workflow lifecycle.
-
 ## Working memory
 
 Working memory is the architect's only durable plan document and the exact
@@ -136,6 +127,5 @@ submission. Failures retain the capsule for diagnosis or retry.
   `submit_review`.
 - `mini-research` intercepts standalone evidence acquisition commands inside a
   private capsule. Search leads are not evidence until materialized.
-- `mini-docs` is the inner headless writer adapter. It has no standalone Cordis
-  `apply`; this host plugin mounts it from the agent header, while qq-wiki's timer
-  retains the outer publication lifecycle.
+- `mini-docs` is a host-mounted writer adapter. It has no standalone Cordis
+  `apply`; this plugin mounts it from the agent header.
