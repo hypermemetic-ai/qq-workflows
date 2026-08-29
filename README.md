@@ -34,6 +34,44 @@ not exist. Durable delegations are controlled through the same UUID surface:
 
 Session aliases are display-only and are never relay identities.
 
+## Live chair snapshots
+
+`service.workflows.snapshots()` is a synchronous, side-effect-free batch read for
+in-process consumers such as qq-dashboard. It returns one row for every live
+top-level agent and excludes child/subagent sessions:
+
+```js
+{
+  sessionUuid,                       // stable DSH session UUID
+  workflow,                          // string or null
+  phase,                             // planning | plan | work | none | unknown
+  phaseStartedAt,                    // epoch milliseconds or null
+}
+```
+
+An unselected chair is `workflow: null`, `phase: "none"`; a selected
+non-architect workflow (including the implicit `projects` chair) is `unknown`.
+An architect is `planning` while working memory is empty, `plan` while it is
+non-empty, and `work` while any built-in implementation or research delegation
+is nonterminal. Implementation, research, QA, revision, and landing states all
+remain `work`; landed, blocked, and completed records do not. Concurrent runs
+keep the chair in `work` until the final active run terminates.
+
+`phaseStartedAt` is backed by an atomic mode-0600 per-parent semantic phase
+ledger. Selection, case, and built-in delegation mutations update it, while
+`snapshots()` only reads and never creates cases, attaches workflows, or rewrites
+state. Same-phase edits and implementation/QA transitions retain the timestamp,
+including across plugin replacement. `none` and `unknown` have no semantic start
+and always report `null`.
+
+Adopted delegation kinds are not inferred from labels, aliases, case prose, or
+`status()` calls. They may opt into architect `work` projection with a
+synchronous, side-effect-free
+`activeProjection({ parentSessionUuid })`, returning either `true` or `{ active: boolean, phaseStartedAt?: number }`.
+An inactive timestamp can authoritatively date the return to `plan/planning`;
+without that parent-scoped interface adopted kinds do not affect the chair
+phase.
+
 Documentation publication remains owned by qq-wiki's timer: it harvests,
 performs README-only validation, commits, and fast-forwards. The inner writer is
 a headless DSH process that overlay-loads this plugin on a profile that may omit

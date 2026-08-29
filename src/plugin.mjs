@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 // Session context and awaitable leave/transition live on service.workflows;
 // /workflows select and clear stay the command path.
 
-import { createCaseStore, defaultCaseDir, titleOf } from "./casefile.mjs";
+import { createCaseStore, defaultCaseDir, isWorkingMemoryEmpty, titleOf } from "./casefile.mjs";
 import { DEFAULT_H, createFolder } from "./fold.mjs";
 import { buildArchitectTools } from "./tools.mjs";
 import { createArchitect, isArchitectCandidate } from "./architect.mjs";
@@ -25,6 +25,7 @@ import { createResearch } from "./research.mjs";
 import { createResearchStore } from "./research-store.mjs";
 import { defaultResearchDir } from "./research-evidence.mjs";
 import { createSelectionStore, defaultSelectionDir } from "./selection.mjs";
+import { createPhaseStore, defaultPhaseDir } from "./phase-store.mjs";
 import { buildLandTool } from "./land-tools.mjs";
 import {
   HOST_ROLES,
@@ -118,6 +119,7 @@ function registeredDelegationSpec(spec) {
     owns: typeof spec.owns === "function" ? spec.owns : null,
     resumeChild: typeof spec.resumeChild === "function" ? spec.resumeChild : null,
     releaseChild: typeof spec.releaseChild === "function" ? spec.releaseChild : null,
+    activeProjection: typeof spec.activeProjection === "function" ? spec.activeProjection : null,
     listSettings: typeof spec.listSettings === "function" ? spec.listSettings : null,
     writeSettings: typeof spec.writeSettings === "function" ? spec.writeSettings : null,
   });
@@ -155,14 +157,115 @@ function syncLiveDelegationChild(land, agent) {
 }
 
 export function apply(ctx, config = {}) {
-  const cases = createCaseStore(defaultCaseDir(process.env, config));
-  const selection = createSelectionStore(defaultSelectionDir(process.env, config));
-  const hostSettings = createHostSettings({ settingsFile: config.settingsFile });
-  const delegationStore = createDelegationStore(defaultDelegationDir(process.env, config));
-  const researchDir = defaultResearchDir(process.env, config);
-  const researchStore = createResearchStore(researchDir);
-  const tokenMeter = ctx.get("tokenMeter", false);
   const agents = hostAgents(ctx);
+  const phaseStore = createPhaseStore(defaultPhaseDir(process.env, config), { now: config.now ?? Date.now });
+  const implementationRecords = new Map();
+  const researchRecords = new Map();
+  const delegationKinds = new Map();
+  const externalDelegationOwners = new Map();
+  let projectsWorkflow = null;
+
+  const activeImplementation = new Set(["running", "reviewing", "revising", "landing"]);
+  const activeResearch = new Set(["researching", "reviewing"]);
+
+  function activeBuiltIn(parentSessionUuid) {
+    for (const record of implementationRecords.values()) {
+      if (record.parentSessionUuid === parentSessionUuid && activeImplementation.has(record.status)) return true;
+    }
+    for (const record of researchRecords.values()) {
+      if (record.parentSessionUuid === parentSessionUuid && activeResearch.has(record.status)) return true;
+    }
+    return false;
+  }
+
+  function adoptedActiveProjection(parentSessionUuid) {
+    let inactiveStartedAt = null;
+    for (const spec of delegationKinds.values()) {
+      if (typeof spec.activeProjection !== "function") continue;
+      try {
+        const projection = spec.activeProjection({ parentSessionUuid });
+        // The dashboard read is synchronous. Async or ambiguous adopted state
+        // is deliberately ignored rather than guessed.
+        if (projection && typeof projection.then === "function") continue;
+        if (projection === true) return { active: true, phaseStartedAt: null };
+        if (!projection || typeof projection !== "object") continue;
+        const timestamp = projection.phaseStartedAt;
+        const phaseStartedAt = Number.isSafeInteger(timestamp) && timestamp >= 0 ? timestamp : null;
+        if (projection.active === true) return { active: true, phaseStartedAt };
+        if (projection.active === false && phaseStartedAt != null) {
+          inactiveStartedAt = inactiveStartedAt == null
+            ? phaseStartedAt
+            : Math.max(inactiveStartedAt, phaseStartedAt);
+        }
+      } catch {
+        // One adopted kind cannot hide authoritative built-in state.
+      }
+    }
+    return { active: false, phaseStartedAt: inactiveStartedAt };
+  }
+
+  function effectiveWorkflow(sessionUuid, agent = agents?.get?.(sessionUuid) ?? null) {
+    if (agent && projectsWorkflow?.candidate(agent)) return "projects";
+    return selection.get(sessionUuid);
+  }
+
+  function semanticProjection(sessionUuid, agent) {
+    const workflow = effectiveWorkflow(sessionUuid, agent);
+    if (!workflow) return { workflow: null, phase: "none", phaseStartedAt: null };
+    if (workflow !== "architect") return { workflow, phase: "unknown", phaseStartedAt: null };
+    const adopted = adoptedActiveProjection(sessionUuid);
+    if (activeBuiltIn(sessionUuid)) return { workflow, phase: "work", phaseStartedAt: null };
+    if (adopted.active) return { workflow, phase: "work", phaseStartedAt: adopted.phaseStartedAt };
+    const memory = cases.load(sessionUuid).text;
+    return {
+      workflow,
+      phase: isWorkingMemoryEmpty(memory) ? "planning" : "plan",
+      phaseStartedAt: adopted.phaseStartedAt,
+    };
+  }
+
+  function reconcileSemanticPhase(sessionUuid) {
+    if (!sessionUuid) return null;
+    const projection = semanticProjection(sessionUuid);
+    return phaseStore.transition(sessionUuid, projection.phase, {
+      ...(projection.phaseStartedAt == null ? {} : { phaseStartedAt: projection.phaseStartedAt }),
+    });
+  }
+
+  function safeReconcileSemanticPhase(sessionUuid) {
+    try {
+      return reconcileSemanticPhase(sessionUuid);
+    } catch (error) {
+      ctx.logger?.warn?.(
+        `qq-workflows: phase projection update failed for ${sessionUuid}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
+    }
+  }
+
+  const cases = createCaseStore(defaultCaseDir(process.env, config), {
+    onChange: ({ sessionUuid }) => safeReconcileSemanticPhase(sessionUuid),
+  });
+  const selection = createSelectionStore(defaultSelectionDir(process.env, config), {
+    onChange: ({ sessionUuid }) => safeReconcileSemanticPhase(sessionUuid),
+  });
+  const hostSettings = createHostSettings({ settingsFile: config.settingsFile });
+  const delegationStore = createDelegationStore(defaultDelegationDir(process.env, config), {
+    onChange: (record) => {
+      implementationRecords.set(record.id, record);
+      safeReconcileSemanticPhase(record.parentSessionUuid);
+    },
+  });
+  for (const record of delegationStore.list()) implementationRecords.set(record.id, record);
+  const researchDir = defaultResearchDir(process.env, config);
+  const researchStore = createResearchStore(researchDir, {
+    onChange: (record) => {
+      researchRecords.set(record.id, record);
+      safeReconcileSemanticPhase(record.parentSessionUuid);
+    },
+  });
+  for (const record of researchStore.list()) researchRecords.set(record.id, record);
+  const tokenMeter = ctx.get("tokenMeter", false);
   const folder = createFolder({
     tokenMeter,
     h: config.h ?? DEFAULT_H,
@@ -178,9 +281,6 @@ export function apply(ctx, config = {}) {
     run: config.runCommand,
     github: config.github,
   });
-  const delegationKinds = new Map();
-  const externalDelegationOwners = new Map();
-
   const research = createResearch({
     ctx,
     store: researchStore,
@@ -211,13 +311,14 @@ export function apply(ctx, config = {}) {
       const result = await spec.invoke(args);
       if (result?.status === "ok") {
         externalDelegationOwners.set(args.delegationId, spec);
+        safeReconcileSemanticPhase(args.parentSessionUuid);
         return { ...result, delegationId: args.delegationId };
       }
       return result;
     },
   });
 
-  const projectsWorkflow = createProjectsWorkflow({ ctx });
+  projectsWorkflow = createProjectsWorkflow({ ctx });
   const workflows = new Map();
   const toolDisposers = new Map();
 
@@ -430,6 +531,7 @@ export function apply(ctx, config = {}) {
     if (projectsWorkflow.candidate(agent)) {
       for (const workflow of workflows.values()) workflow.ensureDetached(agent);
       projectsWorkflow.ensureAttached(agent);
+      safeReconcileSemanticPhase(sessionIdOf(agent));
       return;
     }
     projectsWorkflow.ensureDetached(agent);
@@ -439,6 +541,7 @@ export function apply(ctx, config = {}) {
       if (name === chosen && workflow.candidate(agent) === true) workflow.ensureAttached(agent);
       else workflow.ensureDetached(agent);
     }
+    safeReconcileSemanticPhase(sessionId);
   }
 
   function delegationKindNames() {
@@ -477,9 +580,17 @@ export function apply(ctx, config = {}) {
   function workflowStop(args = {}) {
     const controller = controllerForDelegation(args.delegationId);
     if (!controller) return { status: "refused", reason: "delegation was not found" };
-    return controller === land || controller === research
+    const result = controller === land || controller === research
       ? controller.workflowStop(args)
       : controller.stop(args);
+    if (result && typeof result.then === "function") {
+      return result.then((settled) => {
+        if (settled?.status === "ok") safeReconcileSemanticPhase(args.parentSessionUuid);
+        return settled;
+      });
+    }
+    if (result?.status === "ok") safeReconcileSemanticPhase(args.parentSessionUuid);
+    return result;
   }
 
   async function invokeDelegation(args = {}) {
@@ -491,6 +602,7 @@ export function apply(ctx, config = {}) {
     const result = await spec.invoke({ ...args, delegationId });
     if (result?.status === "ok") {
       externalDelegationOwners.set(delegationId, spec);
+      safeReconcileSemanticPhase(args.parentSessionUuid);
       return { ...result, delegationId };
     }
     return result;
@@ -500,8 +612,11 @@ export function apply(ctx, config = {}) {
     const spec = registeredDelegationSpec(input);
     if (delegationKinds.has(spec.kind)) throw new Error(`delegation kind already registered: ${spec.kind}`);
     delegationKinds.set(spec.kind, spec);
-    if (typeof agents?.list === "function" && spec.resumeChild) {
-      for (const agent of agents.list()) spec.resumeChild(agent);
+    if (typeof agents?.list === "function") {
+      for (const agent of agents.list()) {
+        if (spec.resumeChild) spec.resumeChild(agent);
+        if (isArchitectCandidate(agent)) safeReconcileSemanticPhase(sessionIdOf(agent));
+      }
     }
     let disposed = false;
     return () => {
@@ -510,6 +625,11 @@ export function apply(ctx, config = {}) {
       if (delegationKinds.get(spec.kind) === spec) delegationKinds.delete(spec.kind);
       for (const [id, owner] of externalDelegationOwners) {
         if (owner === spec) externalDelegationOwners.delete(id);
+      }
+      if (typeof agents?.list === "function") {
+        for (const agent of agents.list()) {
+          if (isArchitectCandidate(agent)) safeReconcileSemanticPhase(sessionIdOf(agent));
+        }
       }
     };
   }
@@ -618,6 +738,31 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  function snapshots() {
+    if (typeof agents?.list !== "function") return [];
+    const rows = [];
+    for (const agent of agents.list()) {
+      if (!isArchitectCandidate(agent)) continue;
+      const sessionUuid = sessionIdOf(agent);
+      const semantic = semanticProjection(sessionUuid, agent);
+      let phaseStartedAt = null;
+      if (semantic.phase === "planning" || semantic.phase === "plan" || semantic.phase === "work") {
+        let durable = null;
+        try { durable = phaseStore.get(sessionUuid); } catch { /* keep the batch readable */ }
+        phaseStartedAt = durable?.phase === semantic.phase
+          ? durable.phaseStartedAt
+          : semantic.phaseStartedAt;
+      }
+      rows.push({
+        sessionUuid,
+        workflow: semantic.workflow,
+        phase: semantic.phase,
+        phaseStartedAt,
+      });
+    }
+    return rows;
+  }
+
   const service = Object.freeze({
     cases,
     folder,
@@ -653,6 +798,7 @@ export function apply(ctx, config = {}) {
     workflows: Object.freeze({
       names: userFacingNames,
       selected: selectedName,
+      snapshots,
       select: selectWorkflow,
       clear: clearWorkflow,
       register: registerWorkflow,

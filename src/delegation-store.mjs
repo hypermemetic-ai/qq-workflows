@@ -301,7 +301,7 @@ function normalize(raw) {
   };
 }
 
-export function createDelegationStore(dirPath) {
+export function createDelegationStore(dirPath, { onChange } = {}) {
   mkdirSync(dirPath, { recursive: true, mode: 0o700 });
 
   function fileFor(id) {
@@ -405,7 +405,9 @@ export function createDelegationStore(dirPath) {
         updatedAt: fields.updatedAt ?? now,
       });
       persist(record);
-      return snapshot(record);
+      const result = snapshot(record);
+      onChange?.(result);
+      return result;
     },
 
     load(id) {
@@ -467,7 +469,9 @@ export function createDelegationStore(dirPath) {
         }
       }
       persist(next);
-      return snapshot(next);
+      const result = snapshot(next);
+      onChange?.(result);
+      return result;
     },
 
     list() {
