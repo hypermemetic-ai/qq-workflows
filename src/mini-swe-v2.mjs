@@ -26,6 +26,13 @@ export const MINI_SWE_COMPLETION_COMMAND = "echo COMPLETE_TASK_AND_SUBMIT_FINAL_
 
 export const MINI_SWE_SYSTEM_PROMPT = "You are a helpful assistant that can interact with a computer.";
 
+/** Add dsh-tool-bash metadata at execution time without exposing it to the model schema. */
+export function withNativeBashDescription(args, description = "Execute Mini bash command") {
+  const input = args && typeof args === "object" ? args : {};
+  if (typeof input.description === "string" && input.description.trim()) return input;
+  return { ...input, description };
+}
+
 function systemInformation(info = {}) {
   return {
     system: info.system ?? type(),

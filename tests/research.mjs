@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import { createResearch } from "../src/research.mjs";
 import { createResearchStore, RESEARCH_DELEGATION_SCHEMA } from "../src/research-store.mjs";
+import { MINI_QA_SYSTEM_PROMPT } from "../src/mini-qa-v2.mjs";
 import { MINI_SWE_COMPLETION_COMMAND } from "../src/mini-swe-v2.mjs";
 
 const scratch = mkdtempSync(join(tmpdir(), "qq-research-run."));
@@ -250,6 +251,9 @@ assert.equal(mixedCaseSend.status, "sent", mixedCaseSend.reason);
 assert.equal(coreRootLookups, 1);
 assert.equal(children.length, 1);
 assert.equal(children[0].session.header.kind, "mini-research");
+const spawnedResearchTask = children[0].followups[0].content[0].text;
+assert.match(spawnedResearchTask, /^Please research this question: What does the fixture show\?/);
+assert.match(spawnedResearchTask, /## Recommended Workflow/);
 assert.deepEqual(children[0].ctx.surfaceCalls, [{ agent: children[0], names: ["bash"] }]);
 const researchBash = children[0].ctx.registered.find((tool) => tool.name === "bash");
 assert.equal((await researchBash.execute({ command: "web-search 'fixture'" }, { agent: children[0] })).exitCode, 0);
@@ -273,8 +277,17 @@ const ordinaryBash = await reviewBash.execute({ command: "web-search 'not interc
 assert.equal(ordinaryBash.exitCode, 0);
 assert.equal(review.ctx.hostBashCommands.length, 1);
 assert.match(review.ctx.hostBashCommands[0], /; web-search 'not intercepted'$/);
-assert.match(review.ctx.sections.find((section) => section.name === "deployment:persona").text, /ordinary bash/);
-assert.match(review.followups[0].content[0].text, /Use ordinary bash in this capsule/);
+assert.equal(
+  review.ctx.sections.find((section) => section.name === "deployment:persona").text,
+  MINI_QA_SYSTEM_PROMPT,
+  "research review uses the standard Mini QA persona",
+);
+const spawnedReviewTask = review.followups[0].content[0].text;
+assert.match(spawnedReviewTask, /^Please review this proposed research answer\./);
+assert.match(spawnedReviewTask, /Question:\nWhat does the fixture show\?/);
+assert.match(spawnedReviewTask, /Proposed answer:\nThe fixture supports the answer \[W001\]\./);
+assert.match(spawnedReviewTask, /Use ordinary bash in this capsule/);
+assert.match(spawnedReviewTask, /unsupported claims/);
 const submit = review.ctx.registered.find((tool) => tool.name === "submit_review");
 const reviewResult = await submit.execute({ findings: [] }, { agent: review, concludeTurn() {} });
 assert.equal(reviewResult.status, "ok", reviewResult.reason);

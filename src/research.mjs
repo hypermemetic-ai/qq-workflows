@@ -10,8 +10,11 @@ import {
   isMiniResearchAgent,
   MINI_RESEARCH_KIND,
   miniResearchSetup,
-  renderMiniResearchTask,
 } from "./mini-research.mjs";
+import {
+  renderMiniResearchReviewTask,
+  renderMiniResearchTask,
+} from "./mini-research-v2.mjs";
 import {
   bindMiniQaSubmit,
   isMiniQaAgent,
@@ -22,13 +25,6 @@ import { createResearchWorkspace, checkAnswerCitations, readManifest, workspaceP
 import { createResearchOracle } from "./research-oracle.mjs";
 import { createResearchSessions } from "./research-sessions.mjs";
 import { createResearchWeb } from "./research-web.mjs";
-
-export const RESEARCH_REVIEW_PROMPT = [
-  "You are Mini QA performing a fresh-context quality review of a proposed research answer.",
-  "Use ordinary bash from the research capsule to inspect only question.md, answer.md, evidence/, and repo/. You cannot retrieve new web or session evidence; web-search, web-get, session-search, and session-get are unavailable.",
-  "Find concrete answer defects: unsupported claims, citations that do not entail the claim, ignored contradictions, inference presented as fact, or conclusions stronger than the evidence.",
-  "Report each defect at the relevant answer.md line. Zero findings is valid. Finish with submit_review.",
-].join("\n");
 
 function sessionIdOf(agent) { return agent?.session?.id ?? agent?.id ?? ""; }
 function valueOf(value) { return typeof value === "function" ? value() : value; }
@@ -53,24 +49,6 @@ async function projectRoot(ctx, parent) {
   return root;
 }
 
-function reviewTask({ question, answer, manifest }) {
-  const manifestText = manifest.length ? manifest.map((record) => JSON.stringify(record)).join("\n") : "(empty)";
-  return [
-    "Review this proposed research answer.",
-    "",
-    "Question:",
-    question.trim(),
-    "",
-    "Proposed answer:",
-    answer.trim(),
-    "",
-    "Acquired evidence manifest:",
-    manifestText,
-    "",
-    "Use ordinary bash in this capsule for focused checks. Do not request or perform new retrieval.",
-    "Submit only concrete defects in answer.md; an empty findings array is valid.",
-  ].join("\n");
-}
 
 function reportText(state, answer) {
   const findings = state.reviewFindings ?? [];
@@ -212,7 +190,7 @@ export function createResearch({
   }
 
   function bindReview(child, state) {
-    miniQaSetup(child?.ctx ?? child, { prompt: RESEARCH_REVIEW_PROMPT });
+    miniQaSetup(child?.ctx ?? child);
     const oracle = createResearchOracle(state.root);
     clearBinding(sessionIdOf(child));
     const dispose = bindMiniQaSubmit(child, {
@@ -243,7 +221,7 @@ export function createResearch({
           agentPreset: MINI_QA_KIND,
           delegationId: planned.id,
         },
-        ...childCreateOptions(route, { setup: (agentCtx) => miniQaSetup(agentCtx, { prompt: RESEARCH_REVIEW_PROMPT }) }),
+        ...childCreateOptions(route, { setup: miniQaSetup }),
       }));
       const child = retain(created, created?.agent ?? created);
       bindReview(child, planned);
@@ -254,7 +232,7 @@ export function createResearch({
       child.followup({
         id: randomUUID(),
         role: "user",
-        content: [{ type: "text", text: reviewTask({ question: planned.question, answer, manifest }) }],
+        content: [{ type: "text", text: renderMiniResearchReviewTask({ question: planned.question, answer, manifest }) }],
         source: { kind: "plugin", plugin: "qq-workflows", form: "notice" },
       });
       return child;
@@ -355,7 +333,7 @@ export function createResearch({
       child.followup({
         id: randomUUID(),
         role: "user",
-        content: [{ type: "text", text: renderMiniResearchTask() }],
+        content: [{ type: "text", text: renderMiniResearchTask({ task: text }) }],
         source: { kind: "plugin", plugin: "qq-workflows", form: "notice" },
       });
       return { status: "ok", delegationId: state.id, child: sessionIdOf(child), role: "mini-research", phaseEpoch: 1, workspace: state.root };
