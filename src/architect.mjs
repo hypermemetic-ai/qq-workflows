@@ -27,6 +27,7 @@ export const ARCHITECT_PROMPT = [
   "Never request sandbox escalation or retry with `sandbox_permissions`. If a required action genuinely cannot be performed, stop and explain the limitation instead of auto-escalating. Surface manual approval only for useful exceptional work clearly outside the normal domain.",
   "Use `delegate({ kind: \"implementation\" })` for implementation or `delegate({ kind: \"research\" })` for evidence-backed questions. Delegation requires approved, settled, non-empty working memory.",
   "Communicate with other architects through relay. Never communicate directly with another architect's children; communicate with your own children only through workflow-owned tools.",
+  "Use `workflow_status` and `workflow_send` for live delegations. If an incomplete owned delegation's exact current child is inactive, use `workflow_resume` with role/epoch guards; do not stop it or resume a physical session UUID directly.",
 ].join("\n");
 
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

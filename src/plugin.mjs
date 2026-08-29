@@ -19,6 +19,7 @@ import { ensureMiniDocsMounted, isMiniDocsAgent } from "./mini-docs.mjs";
 import { allowInherited, ARCHITECT_INHERITED_TOOLS } from "./hide-harness.mjs";
 import { runCommand } from "./git.mjs";
 import { capObservationTool } from "./observation.mjs";
+import { wrapArchitectBash } from "./architect-bash.mjs";
 import { createLand } from "./land.mjs";
 import { createDelegationStore, defaultDelegationDir } from "./delegation-store.mjs";
 import { createResearch } from "./research.mjs";
@@ -117,6 +118,7 @@ function registeredDelegationSpec(spec) {
     send: spec.send,
     stop: spec.stop,
     owns: typeof spec.owns === "function" ? spec.owns : null,
+    resume: typeof spec.resume === "function" ? spec.resume : null,
     resumeChild: typeof spec.resumeChild === "function" ? spec.resumeChild : null,
     releaseChild: typeof spec.releaseChild === "function" ? spec.releaseChild : null,
     activeProjection: typeof spec.activeProjection === "function" ? spec.activeProjection : null,
@@ -341,7 +343,8 @@ export function apply(ctx, config = {}) {
     for (const schema of schemas) {
       try {
         const definition = tools.get(schema?.name, agent);
-        const capped = capObservationTool(definition);
+        const visible = schema?.name === "bash" ? wrapArchitectBash(definition) : definition;
+        const capped = capObservationTool(visible);
         if (!capped || capped === definition) continue;
         const dispose = tools.register(capped);
         if (typeof dispose === "function") disposers.push(dispose);
@@ -370,6 +373,7 @@ export function apply(ctx, config = {}) {
             delegate: (args) => architect.delegate(args),
             workflowStatus,
             workflowSend,
+            workflowResume,
             workflowStop,
             tasks,
             land: invokeLand,
@@ -585,6 +589,16 @@ export function apply(ctx, config = {}) {
     return controller === land || controller === research
       ? controller.workflowSend(args)
       : controller.send(args);
+  }
+
+  function workflowResume(args = {}) {
+    const controller = controllerForDelegation(args.delegationId);
+    if (!controller) return { status: "refused", reason: "delegation was not found" };
+    const resume = controller === land ? controller.workflowResume : controller.resume;
+    if (typeof resume !== "function") {
+      return { status: "refused", reason: "delegation kind does not support workflow_resume" };
+    }
+    return resume.call(controller, args);
   }
 
   function workflowStop(args = {}) {
@@ -816,6 +830,7 @@ export function apply(ctx, config = {}) {
       delegate: invokeDelegation,
       status: workflowStatus,
       send: workflowSend,
+      resume: workflowResume,
       stop: workflowStop,
       acceptedContexts: sessionApi.acceptedContexts,
       accepts: sessionApi.accepts,

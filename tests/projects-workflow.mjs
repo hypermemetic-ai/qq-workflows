@@ -11,12 +11,45 @@ import { createSelectionStore } from "../src/selection.mjs";
 
 const PROJECTS_ID = "session-10000000-0000-4000-8000-000000000001";
 const ORDINARY_ID = "session-20000000-0000-4000-8000-000000000002";
+const BASE_ID = "session-40000000-0000-4000-8000-000000000004";
 const TOOL_NAMES = [...PROJECTS_INHERITED_TOOLS];
 
 function toolHarness() {
-  const definitions = new Map(TOOL_NAMES.map((name) => [name, { name, async execute() {} }]));
+  const definitions = new Map(TOOL_NAMES.map((name) => [name, {
+    name,
+    parameters: { type: "object", properties: { value: { type: "string" } } },
+    async execute() {},
+  }]));
+  const hostCalls = [];
+  const hostBash = {
+    name: "bash",
+    description: "Host bash",
+    parameters: {
+      type: "object",
+      properties: {
+        command: { type: "string" },
+        description: { type: "string" },
+        timeoutMs: { type: "number" },
+        workdir: { type: "string" },
+        run_in_background: { type: "boolean" },
+        sandbox_permissions: { type: "string" },
+        justification: { type: "string" },
+      },
+      required: ["command", "sandbox_permissions", "justification"],
+    },
+    isConcurrencySafe() { return true; },
+    execute(args, exec) {
+      hostCalls.push({ args, exec });
+      return { kind: "foreground", exitCode: 0 };
+    },
+  };
+  definitions.set("bash", hostBash);
+  const hostRead = definitions.get("read");
   const registered = [];
   return {
+    hostBash,
+    hostCalls,
+    hostRead,
     registered,
     schemas() {
       return [...definitions.values()].map(({ name }) => ({ name }));
@@ -91,9 +124,11 @@ try {
   const selection = createSelectionStore(selectionDir);
   selection.set(PROJECTS_ID, "architect");
   selection.set(ORDINARY_ID, "architect");
+  selection.set(BASE_ID, "base");
 
   const projects = fakeAgent(PROJECTS_ID, join(projectsRoot, "."));
   const ordinary = fakeAgent(ORDINARY_ID, ordinaryRoot);
+  const base = fakeAgent(BASE_ID, ordinaryRoot);
   const allowed = [];
   const coreService = {
     projectsRoot: realpathSync(projectsRoot),
@@ -110,6 +145,7 @@ try {
   const agentsById = new Map([
     [PROJECTS_ID, projects.agent],
     [ORDINARY_ID, ordinary.agent],
+    [BASE_ID, base.agent],
   ]);
   const commands = [];
   const effects = [];
@@ -185,6 +221,7 @@ try {
     },
     status(args) { docsCalls.push(["status", args]); return { status: "ok", delegationId: args.delegationId, delegationStatus: "writing" }; },
     send(args) { docsCalls.push(["send", args]); return { status: "sent", delegationId: args.delegationId }; },
+    resume(args) { docsCalls.push(["resume", args]); return { status: "already-live", delegationId: args.delegationId }; },
     stop(args) { docsCalls.push(["stop", args]); return { status: "ok", delegationId: args.delegationId, delegationStatus: "blocked" }; },
     owns(id) { return docsRecords.has(id); },
   });
@@ -195,6 +232,7 @@ try {
   assert.match(docsStarted.delegationId, /^[0-9a-f-]{36}$/);
   assert.equal(service.workflows.status({ delegationId: docsStarted.delegationId }).delegationStatus, "writing");
   assert.equal((await service.workflows.send({ delegationId: docsStarted.delegationId, message: "focus" })).status, "sent");
+  assert.equal((await service.workflows.resume({ delegationId: docsStarted.delegationId })).status, "already-live");
   assert.equal((await service.workflows.stop({ delegationId: docsStarted.delegationId })).delegationStatus, "blocked");
   disposeDocs();
   assert.deepEqual(service.workflows.kinds(), ["implementation", "research"]);
@@ -203,10 +241,46 @@ try {
     { agent: projects.agent, names: [...PROJECTS_INHERITED_TOOLS] },
     { agent: ordinary.agent, names: [...ARCHITECT_INHERITED_TOOLS] },
   ]);
-  for (const name of ["case_write", "delegate", "land", "workflow_status", "workflow_send", "workflow_stop"]) {
+  for (const name of ["case_write", "delegate", "land", "workflow_status", "workflow_send", "workflow_resume", "workflow_stop"]) {
     assert.equal(projects.tools.registered.includes(name), false, `${name} must not be registered on Projects`);
   }
   assert.ok(ordinary.tools.registered.includes("case_write"), "ordinary architect still receives architect tools");
+
+  const architectBash = ordinary.tools.get("bash");
+  assert.notEqual(architectBash, ordinary.tools.hostBash, "architect bash shadows the inherited host definition");
+  assert.deepEqual(Object.keys(architectBash.parameters.properties), [
+    "command", "description", "timeoutMs", "workdir", "run_in_background",
+  ]);
+  assert.deepEqual(architectBash.parameters.required, ["command"]);
+  assert.equal(architectBash.isConcurrencySafe(), true, "host concurrency semantics are preserved");
+  const bashExec = { agent: ordinary.agent };
+  const bashResult = await architectBash.execute({
+    command: "pwd",
+    description: "ordinary workspace command",
+    timeoutMs: 1_000,
+    workdir: ordinaryRoot,
+    run_in_background: false,
+    sandbox_permissions: "danger-full-access",
+    justification: "must be stripped",
+  }, bashExec);
+  assert.equal(bashResult.exitCode, 0);
+  assert.deepEqual(ordinary.tools.hostCalls, [{
+    args: {
+      command: "pwd",
+      description: "ordinary workspace command",
+      timeoutMs: 1_000,
+      workdir: ordinaryRoot,
+      run_in_background: false,
+    },
+    exec: bashExec,
+  }]);
+  assert.equal(projects.tools.get("bash"), projects.tools.hostBash, "Projects bash contract is unchanged");
+  assert.equal(base.tools.get("bash"), base.tools.hostBash, "base-chair bash contract is unchanged");
+
+  const architectRead = ordinary.tools.get("read");
+  assert.notEqual(architectRead, ordinary.tools.hostRead, "non-bash observations are still capped");
+  assert.equal(architectRead.parameters, ordinary.tools.hostRead.parameters, "non-bash schemas are unchanged");
+  assert.equal(architectRead.execute, ordinary.tools.hostRead.execute, "non-bash execution is unchanged");
 
   const prompt = projects.contexts.find((entry) => entry.name === PROJECTS_PROMPT_NAME);
   assert.ok(prompt, "Projects prompt is attached");
