@@ -202,7 +202,7 @@ assert.throws(
 // A new module generation replaces, rather than stacks on, a live mount.
 const mountedTools = [];
 const mountedSections = [];
-const mountedRestrictions = [];
+const surfaceCalls = [];
 const mountedListeners = [];
 const mountOperations = [];
 const hostCalls = [];
@@ -226,7 +226,16 @@ const hostBash = {
   },
 };
 let runtimeSuppressed = false;
+const mountAgent = { id: "mini-review-mount" };
 const mountCtx = {
+  agent: mountAgent,
+  get(name) {
+    assert.equal(name, "qq-core");
+    return { surface: { allow(agent, names) {
+      mountOperations.push("allow");
+      surfaceCalls.push({ agent, names: [...names] });
+    } } };
+  },
   systemPrompt: {
     section(section) {
       mountedSections.push(section);
@@ -247,12 +256,6 @@ const mountCtx = {
         if (index >= 0) mountedTools.splice(index, 1);
       };
     },
-    restrict(spec) {
-      mountOperations.push("restrict");
-      const record = { spec, active: true };
-      mountedRestrictions.push(record);
-      return () => { record.active = false; };
-    },
   },
   effect(effect) { return effect(); },
   on(type, fn) {
@@ -267,8 +270,8 @@ assert.equal(mountedSections.length, 1);
 assert.equal(mountedSections[0].complete, true);
 assert.equal(mountedSections[0].text, MINI_REVIEW_SYSTEM_PROMPT);
 assert.deepEqual(mountedTools.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
-assert.deepEqual(mountedRestrictions.filter((record) => record.active).map((record) => record.spec.allow), [["bash"]]);
-assert.deepEqual(mountOperations.slice(0, 3), ["restrict", "register:bash", "register:submit_review"]);
+assert.deepEqual(surfaceCalls, [{ agent: mountAgent, names: ["bash"] }]);
+assert.deepEqual(mountOperations.slice(0, 3), ["allow", "register:bash", "register:submit_review"]);
 assert.equal(mountedTools[0].isConcurrencySafe(), false);
 assert.equal(mountedListeners.length, 2);
 assert.equal(miniReviewModuleForHmr.assembleMiniReviewPrompt(mountedSections, { runtimeSuppressed }), MINI_REVIEW_SYSTEM_PROMPT);
@@ -317,47 +320,54 @@ const nextGeneration = await import(`../src/mini-review.mjs?hmr=${Date.now()}`);
 nextGeneration.miniReviewSetup(mountCtx);
 assert.equal(mountedSections.length, 1);
 assert.deepEqual(mountedTools.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
-assert.deepEqual(mountedRestrictions.filter((record) => record.active).map((record) => record.spec.allow), [["bash"]]);
+assert.deepEqual(surfaceCalls, [
+  { agent: mountAgent, names: ["bash"] },
+  { agent: mountAgent, names: ["bash"] },
+]);
 assert.equal(mountedListeners.length, 2);
 
 // A host bash is mandatory.
 const missingBashCtx = {
+  agent: { id: "missing-bash" },
+  get() { return { surface: { allow() {} } }; },
   systemPrompt: {
     section() { return () => {}; },
     suppressRuntimeContext() {},
   },
   tools: {
     get() { return undefined; },
-    restrict() { return () => {}; },
     register() { return () => {}; },
   },
 };
 assert.throws(() => miniReviewModuleForHmr.miniReviewSetup(missingBashCtx), /requires a bash tool to wrap/);
 
-// Restriction is mandatory and precedes every plugin registration.
-let registrationsAfterRestrictionFailure = 0;
-const failedRestrictionCtx = {
+// Surface assignment is mandatory and fails before bash lookup or registration.
+let lookupsAfterSurfaceFailure = 0;
+let registrationsAfterSurfaceFailure = 0;
+const failedSurfaceCtx = {
+  agent: { id: "failed-surface" },
+  get(name) {
+    assert.equal(name, "qq-core");
+    return { surface: { allow(agent, names) {
+      assert.equal(agent, failedSurfaceCtx.agent);
+      assert.deepEqual(names, ["bash"]);
+      throw new Error("inherited surface assignment failed");
+    } } };
+  },
   systemPrompt: {
     section() { return () => {}; },
     suppressRuntimeContext() {},
   },
   tools: {
-    get(name) { return name === "bash" ? hostBash : undefined; },
-    restrict(spec) {
-      assert.deepEqual(spec, { allow: ["bash"] });
-      throw new Error("global catalog restriction failed");
-    },
-    register() {
-      registrationsAfterRestrictionFailure++;
-      return () => {};
-    },
+    get() { lookupsAfterSurfaceFailure++; return hostBash; },
+    register() { registrationsAfterSurfaceFailure++; return () => {}; },
   },
-  effect(effect) { return effect(); },
 };
 assert.throws(
-  () => miniReviewModuleForHmr.miniReviewSetup(failedRestrictionCtx),
-  /global catalog restriction failed/,
+  () => miniReviewModuleForHmr.miniReviewSetup(failedSurfaceCtx),
+  /inherited surface assignment failed/,
 );
-assert.equal(registrationsAfterRestrictionFailure, 0);
+assert.equal(lookupsAfterSurfaceFailure, 0);
+assert.equal(registrationsAfterSurfaceFailure, 0);
 
 console.log("mini-review tests passed");

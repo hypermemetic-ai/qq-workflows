@@ -17,7 +17,7 @@ import { pluginUserMessage } from "./tools.mjs";
 import { guardContext, OVERFLOW_MESSAGE } from "./fold.mjs";
 import { markAssemble } from "./assemble-mark.mjs";
 import { childCreateOptions } from "./child-model.mjs";
-import { hideHarnessToolsOn } from "./hide-harness.mjs";
+import { allowInherited, ITERATE_HANDS_INHERITED_TOOLS } from "./hide-harness.mjs";
 import { repoRootFor } from "./git.mjs";
 import { formatProjection, projectJournal } from "./journal.mjs";
 import { randomUUID } from "node:crypto";
@@ -523,7 +523,7 @@ export function createIterate({
       }),
     }));
     const child = handle?.agent ?? handle;
-    hideHarnessToolsOn(child);
+    allowInherited(ctx, child, ITERATE_HANDS_INHERITED_TOOLS);
     liveHands = { childId: child.session?.id ?? childId, bundle, queued: [] };
     const queued = liveHands.queued;
     registerHandsTools?.(child, queued);

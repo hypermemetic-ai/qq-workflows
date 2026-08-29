@@ -10,7 +10,7 @@ const WRITER_PROMPT = "You are the unattended architect-orientation wiki writer.
 function createAgentContext() {
   const sections = [];
   const registeredTools = [];
-  const restrictions = [];
+  const surfaceCalls = [];
   const listeners = [];
   const operations = [];
   const hostCalls = [];
@@ -41,7 +41,16 @@ function createAgentContext() {
     },
   };
 
+  const agent = { id: "mini-docs-mount" };
   const ctx = {
+    agent,
+    get(name) {
+      assert.equal(name, "qq-core");
+      return { surface: { allow(actualAgent, names) {
+        operations.push("allow");
+        surfaceCalls.push({ agent: actualAgent, names: [...names] });
+      } } };
+    },
     systemPrompt: {
       section(section) {
         sections.push(section);
@@ -56,12 +65,6 @@ function createAgentContext() {
       get(toolName) {
         if (toolName !== "bash") return undefined;
         return [...registeredTools].reverse().find((tool) => tool.name === toolName) ?? hostBash;
-      },
-      restrict(spec) {
-        operations.push("restrict");
-        const record = { spec, active: true };
-        restrictions.push(record);
-        return () => { record.active = false; };
       },
       register(tool) {
         operations.push(`register:${tool.name}`);
@@ -84,19 +87,22 @@ function createAgentContext() {
   };
 
   return {
+    agent,
     ctx,
     hostCalls,
     listeners,
     operations,
     registeredTools,
-    restrictions,
+    surfaceCalls,
     sections,
     runtimeSuppressed: () => runtimeSuppressed,
   };
 }
 
 function docsAgent(id, ctx, header = { kind: miniDocs.MINI_DOCS_KIND }) {
-  return { session: { id, header }, ctx, steers: [], steer(message) { this.steers.push(message); } };
+  const agent = { session: { id, header }, ctx, steers: [], steer(message) { this.steers.push(message); } };
+  ctx.agent = agent;
+  return agent;
 }
 
 assert.equal(miniDocs.name, "qq-mini-docs");
@@ -119,11 +125,8 @@ assert.deepEqual(mounted.sections, [{
   text: WRITER_PROMPT,
   complete: true,
 }]);
-assert.deepEqual(mounted.operations.slice(0, 2), ["restrict", "register:bash"]);
-assert.deepEqual(
-  mounted.restrictions.filter((record) => record.active).map((record) => record.spec),
-  [{ allow: ["bash"] }],
-);
+assert.deepEqual(mounted.operations.slice(0, 2), ["allow", "register:bash"]);
+assert.deepEqual(mounted.surfaceCalls, [{ agent: mounted.agent, names: ["bash"] }]);
 assert.deepEqual(mounted.registeredTools.map((tool) => tool.name), ["bash"]);
 assert.deepEqual(Object.keys(mounted.registeredTools[0].parameters.properties), ["command"]);
 assert.equal("sandbox_permissions" in mounted.registeredTools[0].parameters.properties, false);
@@ -209,7 +212,10 @@ nextGeneration.miniDocsSetup(mounted.ctx, { env: { QQ_WIKI_WRITER_PROMPT: "repla
 assert.equal(mounted.sections.length, 1);
 assert.equal(mounted.sections[0].text, "replacement writer");
 assert.deepEqual(mounted.registeredTools.map((tool) => tool.name), ["bash"]);
-assert.equal(mounted.restrictions.filter((record) => record.active).length, 1);
+assert.deepEqual(mounted.surfaceCalls, [
+  { agent: mounted.agent, names: ["bash"] },
+  { agent: mounted.ctx.agent, names: ["bash"] },
+]);
 assert.equal(mounted.listeners.length, 2);
 
 // Config env wins; process env is the fallback; blank config env fails loudly.
@@ -242,6 +248,23 @@ try {
   if (originalPrompt === undefined) delete process.env.QQ_WIKI_WRITER_PROMPT;
   else process.env.QQ_WIKI_WRITER_PROMPT = originalPrompt;
 }
+
+// A failed surface assignment aborts before persona, bash lookup, or registration.
+let failedLookups = 0;
+let failedRegistrations = 0;
+const failedSurfaceMount = createAgentContext();
+failedSurfaceMount.ctx.get = () => ({
+  surface: { allow() { throw new Error("docs surface failed"); } },
+});
+failedSurfaceMount.ctx.tools.get = () => { failedLookups++; return undefined; };
+failedSurfaceMount.ctx.tools.register = () => { failedRegistrations++; return () => {}; };
+assert.throws(
+  () => miniDocs.miniDocsSetup(failedSurfaceMount.ctx, { env: { QQ_WIKI_WRITER_PROMPT: WRITER_PROMPT } }),
+  /docs surface failed/,
+);
+assert.equal(failedLookups, 0);
+assert.equal(failedRegistrations, 0);
+assert.equal(failedSurfaceMount.sections.length, 0);
 
 // apply() mounts only live/new mini-docs agents, including agentPreset detection.
 const candidates = [

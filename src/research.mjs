@@ -4,7 +4,6 @@ import { readFile, realpath } from "node:fs/promises";
 import { adoptAgentHandle } from "./agent-handle.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
 import { CHILD_ORIGIN, isArchitectCandidate } from "./architect.mjs";
-import { hideHarnessToolsOn } from "./hide-harness.mjs";
 import {
   bindMiniResearch,
   ensureMiniResearchMounted,
@@ -247,7 +246,6 @@ export function createResearch({
         ...childCreateOptions(route, { setup: (agentCtx) => miniReviewSetup(agentCtx, { prompt: RESEARCH_REVIEW_PROMPT }) }),
       }));
       const child = retain(created, created?.agent ?? created);
-      hideHarnessToolsOn(child);
       bindReview(child, planned);
       const [answer, manifest] = await Promise.all([
         readFile(`${planned.root}/answer.md`, "utf8"),
@@ -349,7 +347,6 @@ export function createResearch({
         ...childCreateOptions(route, { setup: miniResearchSetup }),
       }));
       const child = retain(created, created?.agent ?? created);
-      hideHarnessToolsOn(child);
       bindResearch(child, state);
       child.followup({
         id: randomUUID(),

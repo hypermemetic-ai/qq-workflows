@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { isArchitectCandidate } from "./architect.mjs";
-import { hideHarnessTools, toolsOf } from "./hide-harness.mjs";
+import { allowInherited, PROJECTS_INHERITED_TOOLS } from "./hide-harness.mjs";
 
 export const PROJECTS_LABEL = "workflows:projects";
 export const PROJECTS_PROMPT_NAME = "qq-workflows:projects";
@@ -68,12 +68,6 @@ export function createProjectsWorkflow({ ctx } = {}) {
     if (typeof presets?.set === "function") presets.set(agent.session, PROJECTS_PRESET);
   }
 
-  function installTools(record, holder) {
-    if (attached.get(record.sessionId) !== record || record.toolsOff) return;
-    const off = hideHarnessTools(toolsOf(holder) ?? toolsOf(record.agent));
-    if (typeof off === "function") record.toolsOff = off;
-  }
-
   function installPrompt(record, holder) {
     if (attached.get(record.sessionId) !== record || record.promptOff) return;
     const prompt = systemPromptOf(holder) ?? systemPromptOf(record.agent);
@@ -87,12 +81,8 @@ export function createProjectsWorkflow({ ctx } = {}) {
   }
 
   function attachServices(record) {
-    installTools(record, record.agent);
     installPrompt(record, record.agent);
     if (typeof record.agent?.ctx?.inject !== "function") return;
-    if (!record.toolsOff) {
-      record.agent.ctx.inject(["tools"], (holder) => installTools(record, holder));
-    }
     if (!record.promptOff) {
       record.agent.ctx.inject(["systemPrompt"], (holder) => installPrompt(record, holder));
     }
@@ -106,10 +96,10 @@ export function createProjectsWorkflow({ ctx } = {}) {
     const sessionId = agent.session.id;
     const existing = attached.get(sessionId);
     if (existing) return existing;
+    allowInherited(ctx, agent, PROJECTS_INHERITED_TOOLS);
     const record = {
       agent,
       sessionId,
-      toolsOff: null,
       promptOff: null,
     };
     attached.set(sessionId, record);
@@ -125,9 +115,7 @@ export function createProjectsWorkflow({ ctx } = {}) {
     const record = attached.get(sessionId);
     if (!record) return null;
     attached.delete(sessionId);
-    for (const off of [record.promptOff, record.toolsOff]) {
-      try { off?.(); } catch {}
-    }
+    try { record.promptOff?.(); } catch {}
     try { relayOf(ctx)?.clear?.(sessionId, PROJECTS_LABEL); } catch {}
     return sessionId;
   }

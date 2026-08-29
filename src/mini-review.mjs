@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { armChildSettlement, childToolOutput } from "./child-settlement.mjs";
+import { allowInherited, MINI_INHERITED_TOOLS } from "./hide-harness.mjs";
 import { createQaVerdict } from "./qa-verdict.mjs";
 import { wrapMiniBash } from "./official-mini.mjs";
 import {
@@ -247,22 +248,11 @@ function installPersona(holder, persona = MINI_REVIEW_SYSTEM_PROMPT) {
 
 function installTools(holder) {
   const tools = toolsOf(holder);
-  if (!tools || typeof tools.get !== "function" || typeof tools.register !== "function" || typeof tools.restrict !== "function") {
-    throw new Error("mini-review requires tools.get, tools.register, and tools.restrict");
+  if (!tools || typeof tools.get !== "function" || typeof tools.register !== "function") {
+    throw new Error("mini-review requires tools.get and tools.register");
   }
   const wrappedBash = wrapMiniBash(tools.get("bash"), { interceptCompletion: false });
   const lifts = [];
-  // Keep only the host bash catalog entry, then replace it with Mini's wrapped
-  // presentation before adding typed review completion. Restriction failures
-  // intentionally abort setup before either plugin tool is registered.
-  const restrict = () => tools.restrict({ allow: ["bash"] });
-  if (typeof holder.effect === "function") {
-    const lift = holder.effect(restrict, "qq-workflows mini-review");
-    if (typeof lift === "function") lifts.push(lift);
-  } else {
-    const lift = restrict();
-    if (typeof lift === "function") lifts.push(lift);
-  }
   const bashLift = tools.register(wrappedBash);
   if (typeof bashLift === "function") lifts.push(bashLift);
   for (const tool of buildMiniReviewTools()) {
@@ -302,6 +292,7 @@ export function miniReviewSetup(agentCtx, options = {}) {
   const previous = agentCtx[MINI_REVIEW_MOUNT];
   if (previous?.generation === MOUNT_GENERATION) return;
   previous?.dispose?.();
+  allowInherited(agentCtx, agentCtx.agent, MINI_INHERITED_TOOLS);
   const lifts = [];
   try {
     lifts.push(installPersona(agentCtx, options.prompt ?? MINI_REVIEW_SYSTEM_PROMPT));
