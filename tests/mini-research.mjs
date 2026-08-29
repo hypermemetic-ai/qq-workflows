@@ -90,22 +90,47 @@ completion = await checking.execute({ command: MINI_SWE_COMPLETION_COMMAND }, { 
 assert.equal(completion.exitCode, 1);
 assert.match(completion.stderr.text, /W999/);
 
-// Mount isolates the preset to bash alone.
-const restrictions = [];
+// Mount opts the live agent into bash before reading and wrapping it.
+const allowed = [];
 const registered = [];
 const sections = [];
+const operations = [];
+const mountAgent = { id: "mini-research-mount" };
 const mountCtx = {
+  agent: mountAgent,
+  get(name) {
+    assert.equal(name, "qq-core");
+    return { surface: { allow(agent, names) {
+      operations.push("allow");
+      allowed.push({ agent, names: [...names] });
+    } } };
+  },
   systemPrompt: { section(value) { sections.push(value); return () => {}; }, suppressRuntimeContext() {} },
   tools: {
-    get(name) { assert.equal(name, "bash"); return base; },
-    register(tool) { registered.push(tool.name); return () => {}; },
-    restrict(spec) { restrictions.push(spec); return () => {}; },
+    get(name) { operations.push(`get:${name}`); assert.equal(name, "bash"); return base; },
+    register(tool) { operations.push(`register:${tool.name}`); registered.push(tool.name); return () => {}; },
   },
-  effect(fn) { return fn(); },
   on() { return () => {}; },
 };
 miniResearchSetup(mountCtx);
+assert.deepEqual(operations, ["allow", "get:bash", "get:bash", "register:bash"]);
+assert.deepEqual(allowed, [{ agent: mountAgent, names: ["bash"] }]);
 assert.deepEqual(registered, ["bash"]);
-assert.deepEqual(restrictions, [{ allow: ["bash"] }]);
 assert.equal(sections[0].complete, true);
+
+// A failed surface assignment aborts before the host bash is read or wrapped.
+let failedLookups = 0;
+let failedRegistrations = 0;
+const failedSurfaceCtx = {
+  agent: { id: "mini-research-failed-surface" },
+  get() { return { surface: { allow() { throw new Error("research surface failed"); } } }; },
+  tools: {
+    get() { failedLookups++; return base; },
+    register() { failedRegistrations++; return () => {}; },
+  },
+};
+assert.throws(() => miniResearchSetup(failedSurfaceCtx), /research surface failed/);
+assert.equal(failedLookups, 0);
+assert.equal(failedRegistrations, 0);
+
 console.log("mini-research: ok");

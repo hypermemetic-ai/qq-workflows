@@ -177,7 +177,7 @@ function packet(brief, files) {
   };
 }
 
-function childAgent({ id, cwd, registered, restricted, followups, listeners, origin = CHILD_ORIGIN, onFollowup, claimFollowup = false }) {
+function childAgent({ id, cwd, registered, allowed, followups, listeners, origin = CHILD_ORIGIN, onFollowup, claimFollowup = false }) {
   const inbox = { nextTurn: [], nextStep: [] };
   const sections = [];
   const hostBash = {
@@ -202,11 +202,6 @@ function childAgent({ id, cwd, registered, restricted, followups, listeners, ori
         const at = registered?.indexOf(definition) ?? -1;
         if (at >= 0) registered.splice(at, 1);
       };
-    },
-    restrict(spec) {
-      const record = { id, spec, active: true };
-      restricted?.push(record);
-      return () => { record.active = false; };
     },
     get(name) {
       return [...(registered ?? [])].reverse().find((tool) => tool.name === name)
@@ -269,10 +264,16 @@ function childAgent({ id, cwd, registered, restricted, followups, listeners, ori
       get(name) {
         if (name === "tools") return toolService;
         if (name === "systemPrompt") return systemPrompt;
+        if (name === "qq-core") return {
+          surface: {
+            allow(agent, names) { allowed?.push({ id, agent, names: [...names] }); },
+          },
+        };
         return undefined;
       },
     },
   };
+  child.ctx.agent = child;
   return child;
 }
 
@@ -362,7 +363,7 @@ function createHarness({ complete, worktree, tasks, parentHeader = {}, run, gith
   const sent = [];
   const created = [];
   const followups = [];
-  const restricted = [];
+  const allowed = [];
   const disposed = [];
   const hung = [];
   const cleared = [];
@@ -421,7 +422,7 @@ function createHarness({ complete, worktree, tasks, parentHeader = {}, run, gith
         id: options.sessionId,
         cwd: options.meta?.cwd ?? worktree,
         registered,
-        restricted,
+        allowed,
         followups,
         listeners,
         onFollowup: onChildFollowup,
@@ -469,7 +470,7 @@ function createHarness({ complete, worktree, tasks, parentHeader = {}, run, gith
     github,
   });
   return {
-    land, github, store, sent, created, followups, restricted, children, disposed, parent,
+    land, github, store, sent, created, followups, allowed, children, disposed, parent,
     hung, cleared, relay, ctx: harnessCtx, settings: harnessSettings, agents: agentService,
   };
 }
@@ -689,7 +690,7 @@ try {
       id: implementerId,
       cwd: repo.worktree,
       registered,
-      restricted: harness.restricted,
+      allowed: harness.allowed,
       listeners,
     });
     const implementerRecord = { child: implementer, registered, listeners, live: true };
@@ -853,7 +854,7 @@ try {
       id: implementerId,
       cwd: repo.worktree,
       registered,
-      restricted: harness.restricted,
+      allowed: harness.allowed,
       listeners,
     });
     const record = { child: implementer, registered, listeners, live: true };
@@ -1051,7 +1052,7 @@ try {
   {
     const repo = initRepo({ branch: "feat/session" });
     commitFile(repo.worktree, "core/src/session.mjs", "export const x = 1;\n", "session tweak");
-    const { land, sent, created, children, restricted } = createHarness({
+    const { land, sent, created, children, allowed } = createHarness({
       complete: async () => "review",
       worktree: repo.worktree,
     });
@@ -1072,7 +1073,7 @@ try {
     assert.ok(qa);
     assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
     assert.deepEqual(
-      restricted.filter((row) => row.id === submitted.qa && row.active).map((row) => row.spec.allow),
+      allowed.filter((row) => row.id === submitted.qa).map((row) => row.names),
       [["bash"]],
     );
     const passed = await executeQaTool(land, qa, {
@@ -1620,7 +1621,6 @@ try {
         mountedBash = tool;
         return () => { if (mountedBash === tool) mountedBash = previous; };
       },
-      restrict() { return () => {}; },
     };
     const record = { child: mini, registered, listeners, live: true };
     harness.children.set(implementerId, record);
@@ -1743,7 +1743,7 @@ try {
       id: implementerId,
       cwd: repo.worktree,
       registered,
-      restricted: harness.restricted,
+      allowed: harness.allowed,
       listeners,
     });
     const implementerRecord = { child: implementer, registered, listeners, live: true };
@@ -1884,12 +1884,12 @@ try {
     assert.ok(qa?.live);
     assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
     assertMiniReviewMounted(qa);
-    assert.equal(harness.restricted.filter((item) => item.id === qaId && item.active).length, 1);
+    assert.equal(harness.allowed.filter((item) => item.id === qaId).length, 1);
     await landB.dispose();
     assert.equal(qa.live, true);
     assert.equal(harness.disposed.includes(qaId), false);
     assertMiniReviewMounted(qa, { owned: false });
-    assert.equal(harness.restricted.filter((item) => item.id === qaId && item.active).length, 1);
+    assert.equal(harness.allowed.filter((item) => item.id === qaId).length, 1);
     assert.deepEqual(harness.relay.labelsFor(qaId), []);
 
     const landC = controller();
@@ -1897,11 +1897,11 @@ try {
     assert.deepEqual(landC.ownedChildren(), [qaId]);
     assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
     assertMiniReviewMounted(qa);
-    assert.equal(harness.restricted.filter((item) => item.id === qaId && item.active).length, 1);
+    assert.equal(harness.allowed.filter((item) => item.id === qaId).length, 1);
     assert.equal(syncLive(landC), 1);
     assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
     assertMiniReviewMounted(qa);
-    assert.equal(harness.restricted.filter((item) => item.id === qaId && item.active).length, 1);
+    assert.equal(harness.allowed.filter((item) => item.id === qaId).length, 1);
     assert.deepEqual(harness.relay.labelsFor(qaId), [
       "workflows:land-role/qa-look-1",
       `workflows:land-run/${adopted.run}`,
@@ -2007,7 +2007,7 @@ try {
       id: implementerId,
       cwd: repo.worktree,
       registered,
-      restricted: harness.restricted,
+      allowed: harness.allowed,
       listeners,
     });
     const implementerRecord = { child: implementer, registered, listeners, live: true };
@@ -2228,7 +2228,7 @@ try {
     assert.equal(qa.live, true, "pre-arm HMR must preserve the live QA handle");
     assert.deepEqual(harness.land.ownedChildren(), []);
     assertMiniReviewMounted(qa, { owned: false });
-    assert.equal(harness.restricted.filter((item) => item.id === submitted.qa && item.active).length, 1);
+    assert.equal(harness.allowed.filter((item) => item.id === submitted.qa).length, 1);
     assert.deepEqual(harness.relay.labelsFor(submitted.qa), []);
     assert.equal(harness.created.length, 1, "controller A cannot start a fixer before the exact result");
     const pending = harness.land.run(adopted.run);
@@ -2271,7 +2271,7 @@ try {
     assert.deepEqual(landB.ownedChildren(), [submitted.qa]);
     assertMiniReviewMounted(qa, { owned: false });
     assertMiniReviewMounted(qa);
-    assert.equal(harness.restricted.filter((item) => item.id === submitted.qa && item.active).length, 1);
+    assert.equal(harness.allowed.filter((item) => item.id === submitted.qa).length, 1);
     assert.deepEqual(harness.relay.labelsFor(submitted.qa), [
       "workflows:land-role/qa-look-1",
       `workflows:land-run/${adopted.run}`,
@@ -2328,7 +2328,7 @@ try {
       id: implementerId,
       cwd: repo.worktree,
       registered,
-      restricted: harness.restricted,
+      allowed: harness.allowed,
       listeners,
     });
     const implementerRecord = { child: implementer, registered, listeners, live: true };
@@ -2413,7 +2413,7 @@ try {
     assert.deepEqual(listeners, []);
     assert.deepEqual(harness.relay.labelsFor(implementerId), []);
     assertMiniReviewMounted(qa, { owned: false });
-    assert.equal(harness.restricted.filter((item) => item.id === qaId && item.active).length, 1);
+    assert.equal(harness.allowed.filter((item) => item.id === qaId).length, 1);
     assert.deepEqual(harness.relay.labelsFor(qaId), []);
     await Promise.resolve();
     await Promise.resolve();
@@ -2444,7 +2444,7 @@ try {
     }, qaIdentity);
     assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
     assertMiniReviewMounted(qa);
-    assert.equal(harness.restricted.filter((item) => item.id === qaId && item.active).length, 1);
+    assert.equal(harness.allowed.filter((item) => item.id === qaId).length, 1);
     assert.deepEqual(harness.relay.labelsFor(qaId), [
       "workflows:land-role/qa-look-1",
       `workflows:land-run/${adopted.run}`,
@@ -2491,7 +2491,7 @@ try {
       id: implementerId,
       cwd: repo.worktree,
       registered,
-      restricted: harness.restricted,
+      allowed: harness.allowed,
       listeners,
     });
     const implementerRecord = { child: implementer, registered, listeners, live: true };
@@ -2581,7 +2581,7 @@ try {
     assert.deepEqual(landB.ownedChildren(), [pending.sessionUuid]);
     assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
     assertMiniReviewMounted(qa);
-    assert.equal(harness.restricted.filter((item) => item.id === pending.sessionUuid && item.active).length, 1);
+    assert.equal(harness.allowed.filter((item) => item.id === pending.sessionUuid).length, 1);
     assert.deepEqual(harness.relay.labelsFor(pending.sessionUuid), [
       "workflows:land-role/qa-look-1",
       `workflows:land-run/${adopted.run}`,
@@ -2683,7 +2683,7 @@ try {
     assert.deepEqual(harness.land.ownedChildren(), [intendedQa]);
     assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
     assertMiniReviewMounted(qa);
-    assert.equal(harness.restricted.filter((item) => item.id === intendedQa && item.active).length, 1);
+    assert.equal(harness.allowed.filter((item) => item.id === intendedQa).length, 1);
     assert.deepEqual(harness.relay.labelsFor(intendedQa), [
       "workflows:land-role/qa-look-1",
       `workflows:land-run/${planned.id}`,
@@ -2724,7 +2724,7 @@ try {
     assert.deepEqual(landB.ownedChildren(), [intendedQa]);
     assert.deepEqual(qa.registered.map((tool) => tool.name), MINI_REVIEW_TOOL_NAMES);
     assertMiniReviewMounted(qa);
-    assert.equal(harness.restricted.filter((item) => item.id === intendedQa && item.active).length, 1);
+    assert.equal(harness.allowed.filter((item) => item.id === intendedQa).length, 1);
     assert.deepEqual(harness.relay.labelsFor(intendedQa), [
       "workflows:land-role/qa-look-1",
       `workflows:land-run/${planned.id}`,
@@ -2754,7 +2754,7 @@ try {
       id: implementerId,
       cwd: repo.worktree,
       registered,
-      restricted: harness.restricted,
+      allowed: harness.allowed,
       listeners,
     });
     const implementerRecord = { child: implementer, registered, listeners, live: true };

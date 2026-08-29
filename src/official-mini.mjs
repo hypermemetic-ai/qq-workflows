@@ -11,6 +11,7 @@ import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { open } from "node:fs/promises";
 
 import { armChildSettlement } from "./child-settlement.mjs";
+import { allowInherited, MINI_INHERITED_TOOLS } from "./hide-harness.mjs";
 import {
   OBSERVATION_HEAD_CHARS,
   OBSERVATION_MAX_CHARS,
@@ -57,7 +58,7 @@ export {
 export const MINI_KIND = "mini-coder";
 export const LEGACY_MINI_KIND = "mini";
 export const MINI_TOOLS = Object.freeze(["bash"]);
-export const MINI_GLOBAL_ALLOW = Object.freeze(["bash"]);
+export const MINI_GLOBAL_ALLOW = MINI_INHERITED_TOOLS;
 export const MINI_PERSONA_SECTION = "deployment:persona";
 export const MINI_PERSONA_ORDER = 0;
 export const MINI_PROMPT = MINI_SWE_SYSTEM_PROMPT;
@@ -570,21 +571,13 @@ function installMiniPersona(holder) {
 
 function installMiniTools(holder) {
   const tools = toolsOf(holder);
-  if (!tools || typeof tools.restrict !== "function" || typeof tools.register !== "function" || typeof tools.get !== "function") {
-    throw new Error("mini requires tools.get, tools.register, and tools.restrict");
+  if (!tools || typeof tools.register !== "function" || typeof tools.get !== "function") {
+    throw new Error("mini requires tools.get and tools.register");
   }
   const wrapped = wrapMiniBash(tools.get("bash"));
   const lifts = [];
   const bashLift = tools.register(wrapped);
   if (typeof bashLift === "function") lifts.push(bashLift);
-  const restrict = () => tools.restrict({ allow: [...MINI_GLOBAL_ALLOW] });
-  if (typeof holder.effect === "function") {
-    const lift = holder.effect(restrict, "qq-workflows official mini-swe");
-    if (typeof lift === "function") lifts.push(lift);
-  } else {
-    const lift = restrict();
-    if (typeof lift === "function") lifts.push(lift);
-  }
   return () => {
     for (const lift of lifts) {
       try { lift(); } catch { /* best effort */ }
@@ -627,6 +620,7 @@ export function miniSetup(agentCtx) {
   if (previous?.generation === MOUNT_GENERATION) return;
   previous?.dispose?.();
 
+  allowInherited(agentCtx, agentCtx.agent, MINI_INHERITED_TOOLS);
   const tools = toolsOf(agentCtx);
   const currentBash = tools?.get?.("bash");
   if (!tools || !currentBash?.execute) throw new Error("mini setup requires prompt and bash services");

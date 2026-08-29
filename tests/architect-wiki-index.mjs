@@ -11,7 +11,6 @@ import {
 } from "../src/wiki-index.mjs";
 import { miniSetup } from "../src/official-mini.mjs";
 import { miniReviewSetup } from "../src/mini-review.mjs";
-import { stripAgentInstructionMessages } from "../src/hide-harness.mjs";
 
 const architectId = "session-63a11000-0000-4000-8000-000000000009";
 
@@ -108,9 +107,15 @@ function createArchitectHarness(indexOrError = "") {
 for (const setup of [miniSetup, miniReviewSetup]) {
   const prompt = createPrompt();
   let wikiLoads = 0;
+  const agent = { id: "mini-wiki-test" };
   const ctx = {
+    agent,
     systemPrompt: prompt,
     get(name) {
+      if (name === "qq-core") return { surface: { allow(actual, names) {
+        assert.equal(actual, agent);
+        assert.deepEqual(names, ["bash"]);
+      } } };
       return name === "qq-wiki" ? { loadIndex() { wikiLoads++; return "- [Never](never.md)"; } } : null;
     },
     tools: {
@@ -119,7 +124,6 @@ for (const setup of [miniSetup, miniReviewSetup]) {
           ? { name: "bash", parameters: { type: "object", properties: {} }, async execute() { return {}; } }
           : null;
       },
-      restrict() { return () => {}; },
       register() { return () => {}; },
     },
     on() { return () => {}; },
@@ -127,19 +131,6 @@ for (const setup of [miniSetup, miniReviewSetup]) {
   setup(ctx);
   assert.equal(prompt.contexts.has(WIKI_INDEX_CONTEXT_NAME), false);
   assert.equal(wikiLoads, 0);
-}
-
-// Architect AGENTS.md hiding is independent: wiki context is not an
-// agent-instructions message and remains available after the dump is stripped.
-{
-  const harness = createArchitectHarness("- [Routing](routing.md)\n");
-  harness.architect.attach(harness.agent);
-  const wikiEntry = harness.prompt.contexts.get(WIKI_INDEX_CONTEXT_NAME);
-  const messages = [
-    { source: { kind: "agent-instructions" }, content: "Contents of AGENTS.md" },
-    { source: { kind: "plugin", plugin: "qq-workflows" }, content: wikiEntry.text() },
-  ];
-  assert.deepEqual(stripAgentInstructionMessages(messages), [messages[1]]);
 }
 
 console.log("architect wiki index: ok");

@@ -18,7 +18,7 @@ const children = [];
 
 function childContext() {
   const registered = [];
-  const restrictions = [];
+  const surfaceCalls = [];
   const sections = [];
   const listeners = [];
   const hostBashCommands = [];
@@ -41,7 +41,7 @@ function childContext() {
     },
   };
   const ctx = {
-    registered, restrictions, sections, listeners, hostBashCommands,
+    registered, surfaceCalls, sections, listeners, hostBashCommands,
     systemPrompt: {
       section(value) { sections.push(value); return () => {}; },
       suppressRuntimeContext() {},
@@ -49,12 +49,17 @@ function childContext() {
     tools: {
       get(name) { return name === "bash" ? (registered.find((tool) => tool.name === name) ?? baseBash) : registered.find((tool) => tool.name === name); },
       register(tool) { registered.push(tool); return () => {}; },
-      restrict(spec) { restrictions.push(spec); return () => {}; },
-      guard() { return () => {}; },
     },
     effect(fn) { return fn(); },
     on(type, fn) { listeners.push({ type, fn }); return () => {}; },
-    get(name) { if (name === "tools") return this.tools; if (name === "systemPrompt") return this.systemPrompt; return undefined; },
+    get(name) {
+      if (name === "tools") return this.tools;
+      if (name === "systemPrompt") return this.systemPrompt;
+      if (name === "qq-core") return {
+        surface: { allow(agent, names) { surfaceCalls.push({ agent, names: [...names] }); } },
+      };
+      return undefined;
+    },
   };
   return ctx;
 }
@@ -62,7 +67,6 @@ function childContext() {
 const agents = {
   async create(options) {
     const ctx = childContext();
-    options.setup?.(ctx);
     const child = {
       session: { id: options.sessionId, header: { ...options.meta }, events: [] },
       ctx,
@@ -70,6 +74,8 @@ const agents = {
       followups: [],
       followup(message) { this.followups.push(message); },
     };
+    ctx.agent = child;
+    options.setup?.(ctx);
     const handle = { agent: child, async dispose() {} };
     children.push(child);
     return handle;
@@ -104,7 +110,7 @@ assert.equal(started.status, "ok", started.reason);
 assert.equal(coreRootLookups, 1);
 assert.equal(children.length, 1);
 assert.equal(children[0].session.header.kind, "mini-research");
-assert.deepEqual(children[0].ctx.restrictions.find((spec) => spec.allow), { allow: ["bash"] });
+assert.deepEqual(children[0].ctx.surfaceCalls, [{ agent: children[0], names: ["bash"] }]);
 const researchBash = children[0].ctx.registered.find((tool) => tool.name === "bash");
 assert.equal((await researchBash.execute({ command: "web-search 'fixture'" }, { agent: children[0] })).exitCode, 0);
 assert.equal((await researchBash.execute({ command: "web-get W001" }, { agent: children[0] })).exitCode, 0);
@@ -118,7 +124,7 @@ assert.equal(concluded, 1);
 assert.equal(children.length, 2, "accepted research spawns one fresh review context");
 const review = children[1];
 assert.equal(review.session.header.kind, "mini-review");
-assert.deepEqual(review.ctx.restrictions.find((spec) => spec.allow), { allow: ["bash"] });
+assert.deepEqual(review.ctx.surfaceCalls, [{ agent: review, names: ["bash"] }]);
 assert.deepEqual(review.ctx.registered.map((tool) => tool.name), ["bash", "submit_review"]);
 const reviewBash = review.ctx.registered.find((tool) => tool.name === "bash");
 assert.equal(reviewBash.isConcurrencySafe(), false);

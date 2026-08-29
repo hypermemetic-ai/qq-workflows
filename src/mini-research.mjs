@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { armChildSettlement } from "./child-settlement.mjs";
+import { allowInherited, MINI_INHERITED_TOOLS } from "./hide-harness.mjs";
 import { buildMiniObservationSync } from "./official-mini.mjs";
 import {
   MINI_SWE_BASH_SCHEMA,
@@ -10,7 +11,7 @@ import {
 
 export const MINI_RESEARCH_KIND = "mini-research";
 export const MINI_RESEARCH_TOOLS = Object.freeze(["bash"]);
-export const MINI_RESEARCH_GLOBAL_ALLOW = Object.freeze(["bash"]);
+export const MINI_RESEARCH_GLOBAL_ALLOW = MINI_INHERITED_TOOLS;
 export const MINI_RESEARCH_PERSONA_SECTION = "deployment:persona";
 export const MINI_RESEARCH_PERSONA_ORDER = 0;
 export const MINI_RESEARCH_PROMPT = [
@@ -316,16 +317,13 @@ function installPersona(holder) {
 
 function installTools(holder) {
   const tools = toolsOf(holder);
-  if (!tools || typeof tools.get !== "function" || typeof tools.register !== "function" || typeof tools.restrict !== "function") {
-    throw new Error("mini-research requires bash registration and restriction services");
+  if (!tools || typeof tools.get !== "function" || typeof tools.register !== "function") {
+    throw new Error("mini-research requires bash registration services");
   }
   const lifts = [];
   const wrapped = wrapMiniResearchBash(tools.get("bash"));
   const register = tools.register(wrapped);
   if (typeof register === "function") lifts.push(register);
-  const restrict = () => tools.restrict({ allow: [...MINI_RESEARCH_GLOBAL_ALLOW] });
-  const restriction = typeof holder.effect === "function" ? holder.effect(restrict, "qq-workflows mini-research") : restrict();
-  if (typeof restriction === "function") lifts.push(restriction);
   return () => { for (const lift of lifts.reverse()) try { lift?.(); } catch { /* best effort */ } };
 }
 
@@ -345,6 +343,7 @@ export function miniResearchSetup(agentCtx) {
   const previous = agentCtx[MOUNT];
   if (previous?.generation === MOUNT_GENERATION) return;
   previous?.dispose?.();
+  allowInherited(agentCtx, agentCtx.agent, MINI_INHERITED_TOOLS);
   const tools = toolsOf(agentCtx);
   if (tools?.get?.("bash")?.[WRAPPED]) {
     ownMount(agentCtx, [installFormatRecovery(agentCtx)]);

@@ -5,7 +5,6 @@ import { randomUUID } from "node:crypto";
 import { pluginUserMessage } from "./tools.mjs";
 import { createDelegatedWorktree, repoRootFor, runCommand } from "./git.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
-import { hideHarnessToolsOn } from "./hide-harness.mjs";
 import { MINI_KIND, miniSetup, renderMiniSweTask } from "./official-mini.mjs";
 import { CASE_CONTEXT_NAME, CASE_VARIABLE_NAME, EMPTY_CASE, renderCaseContext } from "./casefile.mjs";
 import { guardContext, OVERFLOW_MESSAGE } from "./fold.mjs";
@@ -390,7 +389,6 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, talking, ha
       ...childCreateOptions(route, { setup: miniSetup }),
     }));
     const child = created?.agent ?? created;
-    hideHarnessToolsOn(child);
     const childSessionId = child.session?.id ?? childId;
     retainDelegated(created, child);
     const refuseAdoption = async (reason, { dispose = true } = {}) => {

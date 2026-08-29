@@ -11,17 +11,10 @@
 import { createCaseStore, defaultCaseDir, titleOf } from "./casefile.mjs";
 import { DEFAULT_H, createFolder } from "./fold.mjs";
 import { buildArchitectTools } from "./tools.mjs";
-import { CHILD_ORIGIN, createArchitect, isArchitectCandidate } from "./architect.mjs";
+import { createArchitect, isArchitectCandidate } from "./architect.mjs";
 import { ensureMiniMounted, isMiniAgent, MINI_SWE_MIGRATION } from "./official-mini.mjs";
 import { ensureMiniReviewMounted, isMiniReviewAgent } from "./mini-review.mjs";
-import {
-  hideHarnessTools,
-  restrictArchitectTools,
-  stripAgentInstructionsPreStep,
-  stripHiddenHarnessTools,
-  stripUnlistedArchitectTools,
-  toolsOf,
-} from "./hide-harness.mjs";
+import { allowInherited, ARCHITECT_INHERITED_TOOLS } from "./hide-harness.mjs";
 import { runCommand } from "./git.mjs";
 import { capObservationTool } from "./observation.mjs";
 import { createLand } from "./land.mjs";
@@ -196,40 +189,6 @@ export function apply(ctx, config = {}) {
   const projectsWorkflow = createProjectsWorkflow({ ctx });
   const workflows = new Map();
   const toolDisposers = new Map();
-  const hideDisposers = new Map();
-
-  function originOf(agent) {
-    return agent?.session?.header?.origin;
-  }
-
-  function installHide(agent, resolvedTools) {
-    const sessionId = sessionIdOf(agent);
-    if (!sessionId || hideDisposers.has(sessionId)) return;
-    const install = (toolCtx) => {
-      if (hideDisposers.has(sessionId)) return;
-      const tools = resolvedTools ?? toolsOf(toolCtx) ?? toolsService(agent);
-      const restrict = originOf(agent) === CHILD_ORIGIN
-        ? hideHarnessTools
-        : selectedName(sessionId) === "architect"
-          ? restrictArchitectTools
-          : null;
-      const dispose = restrict?.(tools);
-      if (!dispose) return;
-      hideDisposers.set(sessionId, () => {
-        dispose();
-        hideDisposers.delete(sessionId);
-      });
-    };
-    if (resolvedTools) install(null);
-    else if (typeof agent?.ctx?.inject === "function") agent.ctx.inject(["tools"], install);
-    else install(agent?.ctx);
-  }
-
-  function liftHide(agentOrId) {
-    const sessionId = typeof agentOrId === "string" ? agentOrId : sessionIdOf(agentOrId);
-    hideDisposers.get(sessionId)?.();
-    hideDisposers.delete(sessionId);
-  }
 
   function capVisibleArchitectTools(tools, agent) {
     if (typeof tools?.schemas !== "function" || typeof tools?.get !== "function") return [];
@@ -259,7 +218,7 @@ export function apply(ctx, config = {}) {
       if (selected !== "architect" && selected !== "base") return;
       const tools = toolsService(toolCtx) ?? toolsService(agent);
       if (!tools || typeof tools.register !== "function") return;
-      if (selected === "architect") installHide(agent, tools);
+      if (selected === "architect") allowInherited(ctx, agent, ARCHITECT_INHERITED_TOOLS);
       const tasks = null;
       const invokeLand = (args) => land.invoke(args);
       const inheritedCaps = selected === "architect" ? capVisibleArchitectTools(tools, agent) : [];
@@ -317,7 +276,6 @@ export function apply(ctx, config = {}) {
     },
     ensureDetached(agentOrId) {
       disposeAgentTools(agentOrId, "architect");
-      liftHide(agentOrId);
       return architect.detach(agentOrId);
     },
     listSettings() {
@@ -708,7 +666,6 @@ export function apply(ctx, config = {}) {
   ctx.on("agent/created", ({ agent }) => {
     pinTalking(agent);
     syncMini(agent);
-    if (originOf(agent) === CHILD_ORIGIN) installHide(agent);
     syncSession(agent);
   });
   ctx.on("agent/disposed", async ({ agent }) => {
@@ -718,25 +675,7 @@ export function apply(ctx, config = {}) {
     for (const workflow of workflows.values()) workflow.ensureDetached(agent);
     const sessionId = sessionIdOf(agent);
     unpinTalking(sessionId);
-    liftHide(agent);
   });
-  ctx.on("system-prompt/assemble", async (_assembly, context, next) => {
-    const agent = context?.agent ?? context?.scope;
-    const result = await next();
-    let tools;
-    if (originOf(agent) === CHILD_ORIGIN || projectsWorkflow.candidate(agent)) {
-      tools = stripHiddenHarnessTools(result?.tools);
-    } else if (selectedName(sessionIdOf(agent)) === "architect") {
-      tools = stripUnlistedArchitectTools(result?.tools);
-    } else {
-      return result;
-    }
-    if (tools === result?.tools) return result;
-    return { ...result, tools };
-  });
-  // Prepend: agent-instructions injects after next(). Wrapping it is the
-  // only way the dump does not re-enter the batch we just stripped.
-  ctx.on("agent/pre-step", stripAgentInstructionsPreStep, { prepend: true });
 
   if (typeof agents?.list === "function") {
     for (const agent of agents.list()) {
@@ -780,8 +719,6 @@ export function apply(ctx, config = {}) {
     research.dispose?.();
     await land.dispose?.();
     for (const record of [...toolDisposers.values()]) record.dispose();
-    for (const dispose of [...hideDisposers.values()]) dispose();
-    hideDisposers.clear();
     for (const sessionId of [...talkingOff.keys()]) unpinTalking(sessionId);
     findAttached.clear();
   }, "qq-workflows: live attachments");

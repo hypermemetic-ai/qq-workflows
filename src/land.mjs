@@ -474,18 +474,10 @@ export async function landWorktree(run, state, { github = createGitHubClient(run
   return state;
 }
 
-function registerTools(child, definitions, { allow } = {}) {
+function registerTools(child, definitions) {
   const tools = toolsService(child);
   if (!tools || typeof tools.register !== "function") return () => {};
   const disposers = definitions.map((tool) => tools.register(tool));
-  if (allow && typeof tools.restrict === "function") {
-    try {
-      const disposeRestrict = tools.restrict({ allow: [...allow] });
-      if (typeof disposeRestrict === "function") disposers.push(disposeRestrict);
-    } catch {
-      // Restrict is best-effort. Verdict still registers.
-    }
-  }
   return () => {
     for (const dispose of disposers) {
       try { dispose?.(); } catch {}

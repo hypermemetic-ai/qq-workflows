@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { wrapMiniBash } from "./official-mini.mjs";
+import { allowInherited, MINI_INHERITED_TOOLS } from "./hide-harness.mjs";
 
 export const name = "qq-mini-docs";
 export const inject = ["agents"];
@@ -142,8 +143,8 @@ function installPersona(holder, config) {
 
 function installTools(holder) {
   const tools = toolsOf(holder);
-  if (!tools || typeof tools.get !== "function" || typeof tools.register !== "function" || typeof tools.restrict !== "function") {
-    throw new Error("mini-docs requires tools.get, tools.register, and tools.restrict");
+  if (!tools || typeof tools.get !== "function" || typeof tools.register !== "function") {
+    throw new Error("mini-docs requires tools.get and tools.register");
   }
 
   const miniBash = wrapMiniBash(tools.get("bash"), { interceptCompletion: false });
@@ -161,13 +162,6 @@ function installTools(holder) {
 
   const lifts = [];
   try {
-    // Restrict the inherited catalog before replacing its sole bash entry.
-    const restrict = () => tools.restrict({ allow: ["bash"] });
-    const restrictionLift = typeof holder.effect === "function"
-      ? holder.effect(restrict, "qq-workflows mini-docs")
-      : restrict();
-    if (typeof restrictionLift === "function") lifts.push(restrictionLift);
-
     const bashLift = tools.register(docsBash);
     if (typeof bashLift === "function") lifts.push(bashLift);
   } catch (error) {
@@ -210,6 +204,7 @@ export function miniDocsSetup(agentCtx, config = {}) {
   const previous = agentCtx[MINI_DOCS_MOUNT];
   if (previous?.generation === MOUNT_GENERATION) return;
   previous?.dispose?.();
+  allowInherited(agentCtx, agentCtx.agent, MINI_INHERITED_TOOLS);
 
   const lifts = [];
   try {
