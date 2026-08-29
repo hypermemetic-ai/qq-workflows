@@ -36,30 +36,48 @@ function editCaseText(args, current) {
   if (!args || typeof args !== "object" || Array.isArray(args)) {
     throw new Error("case_write requires a full rewrite or patch");
   }
-  const hasText = Object.hasOwn(args, "text");
-  const hasPatch = Object.hasOwn(args, "old_string")
-    || Object.hasOwn(args, "new_string")
-    || Object.hasOwn(args, "replace_all");
-  if (hasText) {
-    if (hasPatch) throw new Error("case_write accepts either text or a patch, not both");
-    if (typeof args.text !== "string") throw new Error("case_write requires text to be a string");
+  const hasNonEmptyText = typeof args.text === "string" && args.text.length > 0;
+  const hasPatch = Boolean(
+    (typeof args.old_string === "string" && args.old_string.length > 0)
+    || (typeof args.new_string === "string" && args.new_string.length > 0)
+    || (args.replace_all !== undefined && args.replace_all !== false),
+  );
+  if (hasNonEmptyText && hasPatch) {
+    throw new Error("case_write accepts either text or a patch, not both");
+  }
+  if (hasPatch || (!hasNonEmptyText && (Object.hasOwn(args, "old_string") || Object.hasOwn(args, "new_string")) && typeof args.text !== "string")) {
+    if (typeof args.old_string !== "string" || typeof args.new_string !== "string") {
+      throw new Error("case_write patch requires old_string and new_string");
+    }
+    if (!args.old_string) throw new Error("case_write patch requires a non-empty old_string");
+    if (args.replace_all !== undefined && typeof args.replace_all !== "boolean") {
+      throw new Error("case_write replace_all must be a boolean");
+    }
+    const source = String(current ?? "");
+    const first = source.indexOf(args.old_string);
+    if (first < 0) throw new Error("case_write old_string was not found");
+    if (args.replace_all === true) return source.split(args.old_string).join(args.new_string);
+    if (source.indexOf(args.old_string, first + 1) >= 0) {
+      throw new Error("case_write old_string is not unique; set replace_all to true to replace every match");
+    }
+    return source.slice(0, first) + args.new_string + source.slice(first + args.old_string.length);
+  }
+  if (typeof args.text === "string") {
+    if (args.replace_all !== undefined && typeof args.replace_all !== "boolean") {
+      throw new Error("case_write replace_all must be a boolean");
+    }
     return args.text;
   }
-  if (typeof args.old_string !== "string" || typeof args.new_string !== "string") {
-    throw new Error("case_write patch requires old_string and new_string");
+  if (Object.hasOwn(args, "text")) {
+    throw new Error("case_write requires text to be a string");
   }
-  if (!args.old_string) throw new Error("case_write patch requires a non-empty old_string");
-  if (args.replace_all !== undefined && typeof args.replace_all !== "boolean") {
-    throw new Error("case_write replace_all must be a boolean");
+  if (Object.hasOwn(args, "old_string") || Object.hasOwn(args, "new_string")) {
+    if (typeof args.old_string !== "string" || typeof args.new_string !== "string") {
+      throw new Error("case_write patch requires old_string and new_string");
+    }
+    if (!args.old_string) throw new Error("case_write patch requires a non-empty old_string");
   }
-  const source = String(current ?? "");
-  const first = source.indexOf(args.old_string);
-  if (first < 0) throw new Error("case_write old_string was not found");
-  if (args.replace_all === true) return source.split(args.old_string).join(args.new_string);
-  if (source.indexOf(args.old_string, first + 1) >= 0) {
-    throw new Error("case_write old_string is not unique; set replace_all to true to replace every match");
-  }
-  return source.slice(0, first) + args.new_string + source.slice(first + args.old_string.length);
+  throw new Error("case_write requires a full rewrite or patch");
 }
 
 function buildCaseWriteTool(cases, tasks) {

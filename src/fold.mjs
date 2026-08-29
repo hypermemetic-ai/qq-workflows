@@ -18,8 +18,10 @@ export const OVERFLOW_MESSAGE = "qq-workflows: open tail cannot fit after prunin
 
 const GROK_PROVIDERS = new Set(["xai-auth", "xai"]);
 
-export function qualityCeiling(route = {}) {
-  if (GROK_PROVIDERS.has(route.provider) || /grok/i.test(String(route.model ?? ""))) {
+export function qualityCeiling(route) {
+  const provider = route?.provider;
+  const model = route?.model;
+  if (GROK_PROVIDERS.has(provider) || /grok/i.test(String(model ?? ""))) {
     return GROK_Q;
   }
   return DEFAULT_Q;

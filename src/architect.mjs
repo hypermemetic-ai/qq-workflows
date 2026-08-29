@@ -129,7 +129,7 @@ export async function capArchitectToolObservation(_exec, result, next) {
   return capped === content ? decision : { ...decision, content: capped };
 }
 
-export function createArchitect({ ctx, cases, folder, agents, tasks, architecture, implementation, onInvokeImplementation, onResearch, onDelegateKind, loadIndex, run = runCommand, env = process.env } = {}) {
+export function createArchitect({ ctx, cases, folder, agents, tasks, architecture, implementation, onInvokeImplementation, onInvokeChild, onResearch, onDelegateKind, loadIndex, run = runCommand, env = process.env } = {}) {
   const attached = new Map();
   const delegatedHandles = new Map();
   const tasksOf = () => (typeof tasks === "function" ? tasks() : tasks ?? null);
@@ -437,9 +437,10 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, architectur
       };
     };
     let adoption;
-    if (typeof onInvokeImplementation === "function") {
+    const invokeImplementation = onInvokeImplementation ?? onInvokeChild;
+    if (typeof invokeImplementation === "function") {
       try {
-        adoption = await onInvokeImplementation(child, {
+        adoption = await invokeImplementation(child, {
           handle: created,
           packet,
           delegationId,
@@ -500,7 +501,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, architectur
     };
   }
 
-  async function delegate({ agent, kind } = {}) {
+  async function delegate({ agent, kind = "implementation" } = {}) {
     if (kind === "implementation") return delegateImplementation({ agent });
     if (kind !== "research" && typeof onDelegateKind !== "function") {
       return { status: "refused", reason: `unknown delegation kind: ${String(kind ?? "")}` };

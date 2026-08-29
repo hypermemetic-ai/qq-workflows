@@ -36,9 +36,9 @@ export const PROJECTS_INHERITED_TOOLS = Object.freeze([
 ]);
 
 export function allowInherited(ctx, agent, names) {
-  const qq = ctx.get("qq-core");
+  const qq = ctx?.get?.("qq-core", false) ?? ctx?.get?.("qq-core") ?? ctx?.get?.("qq", false) ?? ctx?.get?.("qq");
   if (typeof qq?.surface?.allow !== "function") {
     throw new Error("qq-core surface.allow is required");
   }
-  qq.surface.allow(agent, names);
+  qq.surface.allow(agent ?? ctx, names);
 }

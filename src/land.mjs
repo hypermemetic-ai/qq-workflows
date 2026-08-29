@@ -2083,6 +2083,7 @@ ${message}`,
   return Object.freeze({
     dispose,
     adoptImplementation,
+    adoptImplementer: adoptImplementation,
     resumeImplementation,
     resumeChild,
     recoverPendingPhases,

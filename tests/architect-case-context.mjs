@@ -213,6 +213,32 @@ function createPrompt() {
     assert.doesNotMatch(cases.load(architectId).text, /Repeat\./);
     assert.equal(cases.load(architectId).text.match(/Once\./g)?.length, 2);
 
+    const codexRewritten = await caseWrite.execute({
+      text: "# Plan\n\nFull rewrite with defaults.\n",
+      old_string: "",
+      new_string: "",
+      replace_all: false,
+    }, exec);
+    assert.equal(codexRewritten.status, "ok");
+    assert.equal(cases.load(architectId).text, "# Plan\n\nFull rewrite with defaults.\n");
+
+    const codexPatched = await caseWrite.execute({
+      text: "",
+      old_string: "Full rewrite with defaults.",
+      new_string: "Patched with defaults.",
+      replace_all: false,
+    }, exec);
+    assert.equal(codexPatched.status, "ok");
+    assert.equal(cases.load(architectId).text, "# Plan\n\nPatched with defaults.\n");
+
+    const conflicting = await caseWrite.execute({
+      text: "# New Plan",
+      old_string: "Patched",
+      new_string: "Replaced",
+    }, exec);
+    assert.equal(conflicting.status, "refused");
+    assert.match(conflicting.reason, /accepts either text or a patch/i);
+
     const beforeOversize = cases.load(architectId).text;
     const oversized = await caseWrite.execute({ text: "x".repeat(CASE_MAX_CHARS + 1) }, exec);
     assert.equal(oversized.status, "refused");
@@ -220,7 +246,7 @@ function createPrompt() {
     assert.equal(cases.load(architectId).text, beforeOversize);
 
     const oversizedPatch = await caseWrite.execute({
-      old_string: "Approved step.",
+      old_string: "Patched with defaults.",
       new_string: "x".repeat(CASE_MAX_CHARS),
     }, exec);
     assert.equal(oversizedPatch.status, "refused");
