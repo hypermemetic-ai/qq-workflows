@@ -769,17 +769,11 @@ export function apply(ctx, config = {}) {
       offs.push(agent.ctx.on(
         "agent/request",
         async (_payload, next) => {
-          let result;
-          try {
-            result = await next();
-          } catch (error) {
-            assembled = null;
-            throw error;
-          }
-          // Consume the route snapshotted by the matching prompt assembly. A
-          // request without an assembly must not reuse an earlier binding.
+          const result = await next();
+          // One assembled prompt may drive multiple request attempts. Keep its
+          // route through retries; only the next assembly may replace it (with
+          // either another binding or an explicit unbound null snapshot).
           const binding = assembled;
-          assembled = null;
           if (!binding) return result;
           const { reasoningEffort: _inherited, ...rest } = result;
           return {

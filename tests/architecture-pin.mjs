@@ -52,10 +52,18 @@ function waterfallContext() {
     [{}, {}],
     async () => ({ variables: { cwd: "/work" } }),
   );
+  let nextRequestError = null;
   const requestOnly = () => emit(
     "agent/request",
     [{ turn: 1, step: 1 }],
-    async () => ({ provider: "terminal", model: "terminal", reasoningEffort: "terminal" }),
+    async () => {
+      if (nextRequestError) {
+        const error = nextRequestError;
+        nextRequestError = null;
+        throw error;
+      }
+      return { provider: "terminal", model: "terminal", reasoningEffort: "terminal" };
+    },
   );
 
   return {
@@ -63,6 +71,9 @@ function waterfallContext() {
     get() { return undefined; },
     assemble,
     requestOnly,
+    failNextRequest(error) {
+      nextRequestError = error;
+    },
     async request() {
       const prompt = await assemble();
       const request = await requestOnly();
@@ -188,17 +199,23 @@ try {
   const assembleMark = agent.session.events.find((event) => event.type === "hook/result");
   assert.equal(assembleMark?.data?.q, DEFAULT_Q, "guard ceiling must use the live architecture route");
 
-  // The request consumes the route captured during prompt assembly, even if
-  // settings change between the two hooks. That snapshot cannot leak into a
-  // later request that had no prompt assembly.
+  // Keep the route captured during prompt assembly for every request attempt
+  // in that step, even if settings change or a stream failure triggers a retry.
+  // Only the next prompt assembly may replace the snapshot.
   const capturedPrompt = await agent.ctx.assemble();
   assertPrompt(capturedPrompt, ARCHITECTURE);
   writeSettings(settingsFile, ALTERNATE);
+  agent.ctx.failNextRequest(new Error("stream failed"));
+  await assert.rejects(agent.ctx.requestOnly(), /stream failed/);
   assertRoute(await agent.ctx.requestOnly(), ARCHITECTURE);
-  assertRoute(await agent.ctx.requestOnly(), HOST);
+  assertRoute(await agent.ctx.requestOnly(), ARCHITECTURE);
 
-  // Settings are loaded live. An unbound architecture seat falls through to
-  // qq-core for both prompt variables and request configuration.
+  const alternate = await agent.ctx.request();
+  assertPrompt(alternate.prompt, ALTERNATE);
+  assertRoute(alternate.request, ALTERNATE);
+
+  // Settings are loaded live. A new assembly with an unbound architecture seat
+  // snapshots null and falls through to qq-core for prompt and request routing.
   writeSettings(settingsFile, null);
   const unbound = await agent.ctx.request();
   assertPrompt(unbound.prompt, HOST);
