@@ -369,9 +369,9 @@ assert.equal(review.disposeCount, 0, "QA remains live until its result is durabl
 await setAgentStatus(review, "idle");
 await new Promise((resolve) => setTimeout(resolve, 0));
 assert.equal(review.disposeCount, 0, "idle alone cannot settle QA before the matching result");
-await commitToolResult(review, reviewCallId);
+await commitToolResult(review, reviewCallId, { isError: true });
 assert.equal(await research.whenSettled(review.session.id), true);
-assert.equal(review.disposeCount, 1, "QA child settles after exact result commit and idle");
+assert.equal(review.disposeCount, 1, "saved QA pass settles after its matching error envelope commits and the child is idle");
 assert.equal(sent.length, 2);
 assert.equal(sent[0].to, children[0].session.id);
 assert.equal(sent[0].message, "Check the fixture carefully.");

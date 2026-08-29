@@ -167,6 +167,13 @@ export function createResearch({
     settlementPromises.set(owner.sessionId, promise);
   }
 
+  function errorEnvelopeCommitsPass(owner) {
+    const state = store.bySession(owner.sessionId);
+    return state?.status === "completed"
+      && state.reviewSession === owner.sessionId
+      && state.reviewFindings.length === 0;
+  }
+
   function installOwnerLifecycle(owner) {
     const offs = [];
     const eventOff = owner.child.ctx?.on?.("session/event", (_session, event) => {
@@ -177,7 +184,7 @@ export function createResearch({
       if (!pending || pending.started) return;
       const blocks = resultBlocksFor(message, callId);
       if (blocks.length === 0) return;
-      if (blocks.some((block) => block.isError === true)) {
+      if (blocks.some((block) => block.isError === true) && !errorEnvelopeCommitsPass(owner)) {
         owner.settlements.delete(callId);
         try { pending.onFailure?.(); } catch { /* best effort */ }
         pending.resolve(false);
