@@ -99,25 +99,44 @@ removes old built-in sections while preserving adopted-plugin settings.
 
 ## Implementation QA and land
 
-`done` is the implementation child's submission command. Every accepted `done`
-first fetches the actual origin base, rejects candidates already contained by or
-diverged from it, persists that remote commit as the effective review base, then
-compiles a bounded proposal packet and starts `mini-qa`; there is no paint skip,
-router model hop, or evidence stamp. Implementation children are explicitly told
-not to push, create or merge pull requests, or merge into the base branch; host
-Land exclusively owns publication. A first QA failure starts a fresh
-`mini-code` child on the same implementation binding. A second QA failure blocks
-the delegation. Public phase roles are only `implementation` and `qa`; look
-count remains internal.
+Implementation children edit a metadata-free workspace beside a host-owned Git
+capsule. Their session is pinned to DSH `workspace-write` with approval `never`,
+and every Bash command is additionally executed by bubblewrap with only that
+workspace writable, ambient credentials cleared, and networking unshared. The
+host refuses adoption/recovery unless `sandboxPolicy`, the sandboxed shell, and
+the sandbox provider resolve full enforcement for the immutable child cwd.
+This is intentionally stronger than DSH file policy alone: DSH documents that
+its file sandbox does not restrict network, so qq-workflows also requires a
+working bubblewrap network namespace and fails closed without it.
+
+`run_tests` is an implementation-only host capability for the configured suite
+(`npm test` by default). It stages ordinary workspace files into the host
+capsule, fingerprints the exact commit-eligible tree before and after the suite,
+and records bounded output and exit status. A pass is reusable only for the
+same tree. `done` invokes that same capability when matching evidence is absent;
+a failure leaves implementation live without a commit or QA transition. After
+a pass, the host stages and commits—children never write refs or objects.
+
+Before QA, `done` fetches actual `origin/main`. A candidate already contained by
+main is rejected as pre-landed. Ordinary parallel main/candidate divergence is
+normal: the delegated ancestry base is retained and the bounded proposal packet
+uses its triple-dot delta; PR integration remains host-owned. `mini-qa` receives
+the exact candidate and test evidence, has no `run_tests`, and keeps its single
+Bash tool under DSH `read-only`, approval `never`, cleared credentials, and the
+same no-network namespace. QA submits only a verdict. A first QA failure starts
+a fresh `mini-code` revision and invalidates old test evidence; a second failure
+blocks the delegation. Public phase roles remain `implementation` and `qa`.
 
 After QA passes, the host performs the final `land` verb:
 
-1. recheck clean main and delegated worktrees plus generated-path guards;
-2. push the exact reviewed proposal commit;
-3. open a pull request against `main`;
-4. merge it with a merge commit;
-5. fetch and fast-forward local `main`; and
-6. remove the capsule/worktree and local proposal branch.
+1. recheck clean main/capsule state, ancestry, non-empty delta, and generated paths;
+2. push a full candidate SHA to the explicit full heads ref;
+3. independently fetch and require the exact remote OID and commit type;
+4. resume an existing exact-head PR (including an already merged one) or create
+   one explicitly against the origin repository;
+5. merge with a head-OID match, verify candidate ancestry on origin, and
+   fast-forward local main; and
+6. only then remove the workspace/capsule and local diagnostic refs.
 
 The chair `land` tool is only a fallback for an existing linked worktree or a
 retry of a QA-passed but unlanded delegation. It never bypasses QA for a new
@@ -145,11 +164,11 @@ directly with another architect's children. An architect may communicate with
 its own children through the workflow-owned status/send/stop tools.
 
 The first `mini-code` child receives the exact implementation task once. The
-host also writes those bytes to `.git/qq-workflows/task.md` (or the equivalent
-per-worktree Git metadata directory), with byte count and SHA-256 metadata. Git
-metadata does not dirty the worktree. Before every fresh QA or revision handoff,
-the host rewrites the artifact from active durable state and verifies its bytes
-and digest, so a prior child cannot poison later context. New handoffs contain
+host also writes those bytes beneath the sibling capsule's private Git metadata,
+with byte count and SHA-256 metadata, and gives children an absolute read-only
+pointer. Before every fresh QA or revision handoff, the host rewrites the
+artifact from active durable state and verifies its bytes and digest; child
+workspaces contain no `.git` entry and cannot poison later context. New handoffs contain
 only the artifact pointer/digest, a bounded proposal summary, and a bounded
 phase delta. Artifact-backed terminal records drop their duplicate durable
 `brief`; blocked worktrees retain the artifact for diagnosis.

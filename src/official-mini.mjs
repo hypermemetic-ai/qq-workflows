@@ -70,8 +70,10 @@ const MINI_SUBMIT = Symbol.for("qq.officialMiniSubmit");
 const MINI_COMPLETED = Symbol.for("qq.officialMiniCompleted");
 const MINI_WRAPPED_BASH = Symbol.for("qq.officialMiniWrappedBash");
 const MINI_MOUNT = Symbol.for("qq.officialMiniMount");
+const MINI_SHELL_ISOLATION = Symbol.for("qq.officialMiniShellIsolation");
 const MOUNT_GENERATION = Object.freeze({});
 const submits = new WeakMap();
+const shellIsolations = new WeakMap();
 const completed = new WeakSet();
 const consecutiveFormatErrors = new WeakMap();
 const lastResponseHadBash = new WeakMap();
@@ -81,7 +83,7 @@ const FORMAT_ERROR = [
   "Tool call error:",
   "",
   "<error>",
-  "Every response needs to use the 'bash' tool at least once to execute commands.",
+  "Every response needs to use bash or run_tests at least once.",
   "</error>",
   "",
   "Call the bash tool with your command as the argument:",
@@ -100,6 +102,29 @@ export function isMiniAgent(agent) {
 
 function submitKeys(agent) {
   return [agent, agent?.session, agent?.ctx].filter((value) => value && typeof value === "object");
+}
+
+export function bindMiniShellIsolation(agent, isolate) {
+  if (!agent || typeof isolate !== "function") throw new Error("mini shell isolation requires an agent and command wrapper");
+  const keys = submitKeys(agent);
+  for (const key of keys) {
+    shellIsolations.set(key, isolate);
+    try { key[MINI_SHELL_ISOLATION] = isolate; } catch { /* WeakMap fallback */ }
+  }
+  return () => {
+    for (const key of keys) {
+      if (shellIsolations.get(key) === isolate) shellIsolations.delete(key);
+      try { if (key[MINI_SHELL_ISOLATION] === isolate) key[MINI_SHELL_ISOLATION] = undefined; } catch {}
+    }
+  };
+}
+
+function shellIsolationFor(agent) {
+  for (const key of submitKeys(agent)) {
+    const isolate = key[MINI_SHELL_ISOLATION] ?? shellIsolations.get(key);
+    if (typeof isolate === "function") return isolate;
+  }
+  return null;
 }
 
 /** Bind official completion to Land without exposing a second model-visible tool. */
@@ -128,11 +153,11 @@ function submitFor(agent) {
   return undefined;
 }
 
-function messageHasBash(event) {
+function messageHasAction(event) {
   if (event?.type !== "assistant/message") return undefined;
   const content = event?.data?.message?.content ?? event?.message?.content;
   if (!Array.isArray(content)) return false;
-  return content.some((block) => block?.type === "tool-call" && block?.name === "bash");
+  return content.some((block) => block?.type === "tool-call" && (block?.name === "bash" || block?.name === "run_tests"));
 }
 
 function markCompleted(agent) {
@@ -158,7 +183,7 @@ function installFormatRecovery(agentCtx) {
   if (typeof agentCtx?.on !== "function") return () => {};
   const offEvent = agentCtx.on("session/event", (session, event) => {
     if (!session || typeof session !== "object") return;
-    const hadBash = messageHasBash(event);
+    const hadBash = messageHasAction(event);
     if (hadBash === undefined) return;
     lastResponseHadBash.set(session, hadBash);
     if (hadBash) consecutiveFormatErrors.set(session, 0);
@@ -535,8 +560,10 @@ export function wrapMiniBash(base, { interceptCompletion = true } = {}) {
         try { exec?.concludeTurn?.(); } catch { /* accepted result remains armed */ }
         return success;
       }
+      const requested = withPagerEnv(args?.command);
+      const isolate = shellIsolationFor(exec?.agent);
       return base.execute({
-        command: withPagerEnv(args?.command),
+        command: isolate ? isolate(requested) : requested,
         description: "Execute Mini SWE bash command",
       }, exec);
     },

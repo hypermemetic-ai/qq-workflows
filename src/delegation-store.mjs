@@ -110,6 +110,28 @@ const TASK_ARTIFACT_SCHEMA = "qq.task-artifact/v1";
 const PHASE_INPUT_SCHEMA = "qq.delegation-phase-input/v1";
 const SHA256 = /^[0-9a-f]{64}$/;
 
+function normalizeTestEvidence(raw) {
+  if (raw == null) return null;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("qq-workflows: delegation test evidence is malformed");
+  }
+  const command = optionalString(raw.command);
+  const status = raw.status === "pass" || raw.status === "fail" ? raw.status : "";
+  const exitCode = Number.isInteger(raw.exitCode) ? raw.exitCode : null;
+  const output = typeof raw.output === "string" ? raw.output : "";
+  const preTree = optionalString(raw.preTree);
+  const postTree = optionalString(raw.postTree);
+  const ref = optionalString(raw.ref);
+  const createdAt = optionalString(raw.createdAt);
+  const oid = /^[0-9a-f]{40,64}$/i;
+  if (!command || command.length > 240 || !status || exitCode === null
+    || output.length > 8_000 || !oid.test(preTree) || !oid.test(postTree)
+    || (ref && !oid.test(ref)) || !createdAt || Number.isNaN(Date.parse(createdAt))) {
+    throw new Error("qq-workflows: delegation test evidence is malformed");
+  }
+  return { command, status, exitCode, output, preTree, postTree, ref, createdAt };
+}
+
 function normalizeTaskArtifact(raw) {
   if (raw == null) return null;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)
@@ -333,6 +355,7 @@ function normalize(raw) {
     originalImplementationSession: optionalString(raw.originalImplementationSession),
     qaSession: optionalString(raw.qaSession),
     worktree: optionalString(raw.worktree),
+    workspace: optionalString(raw.workspace),
     mainRoot: optionalString(raw.mainRoot),
     branch: optionalString(raw.branch),
     baseBranch: optionalString(raw.baseBranch) || "main",
@@ -340,6 +363,7 @@ function normalize(raw) {
     ref: optionalString(raw.ref),
     brief: optionalString(raw.brief),
     taskArtifact: normalizeTaskArtifact(raw.taskArtifact),
+    testEvidence: normalizeTestEvidence(raw.testEvidence),
     packet: normalizePacket(raw.packet),
     qaVerdict: raw.qaVerdict && typeof raw.qaVerdict === "object" ? { ...raw.qaVerdict } : null,
     blockedReason: optionalString(raw.blockedReason),
@@ -439,6 +463,7 @@ export function createDelegationStore(dirPath, { onChange } = {}) {
         originalImplementationSession: fields.originalImplementationSession || implementation,
         qaSession: fields.qaSession,
         worktree: fields.worktree,
+        workspace: fields.workspace,
         mainRoot: fields.mainRoot,
         branch: fields.branch,
         baseBranch: fields.baseBranch,
@@ -446,6 +471,7 @@ export function createDelegationStore(dirPath, { onChange } = {}) {
         ref: fields.ref,
         brief: fields.brief,
         taskArtifact: fields.taskArtifact,
+        testEvidence: fields.testEvidence,
         packet: fields.packet,
         qaVerdict: fields.qaVerdict,
         blockedReason: fields.blockedReason,

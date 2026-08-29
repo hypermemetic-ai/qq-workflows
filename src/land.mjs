@@ -12,9 +12,11 @@ import { realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   checked,
+  gitIdentityArgs,
   inspectWorktree,
   reason,
   runCommand,
+  syncDelegatedWorkspace,
 } from "./git.mjs";
 
 import {
@@ -23,23 +25,24 @@ import {
   boundedPacketLine,
   compilePacket,
   formatPacket,
-  isTestPath,
 } from "./proposal-packet.mjs";
 import { materializeTaskArtifact } from "./task-artifact.mjs";
 import { createQaVerdict } from "./qa-verdict.mjs";
 import { RepoOracle } from "./repo-oracle.mjs";
 import { AGENT_HANDLE, adoptAgentHandle } from "./agent-handle.mjs";
 import { pinNonInteractiveApproval } from "./approval-policy.mjs";
+import { assertChildSandbox, isolatedCommand, isolatedShellCommand, pinChildSandbox } from "./child-isolation.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
 import { withChildSettlement } from "./child-settlement.mjs";
 import {
+  bindMiniShellIsolation,
   bindMiniSubmit,
   isMiniAgent,
   MINI_KIND,
   miniSetup,
   renderMiniSweTask,
 } from "./official-mini.mjs";
-import { buildDoneTool } from "./land-tools.mjs";
+import { buildDoneTool, buildRunTestsTool } from "./land-tools.mjs";
 import {
   bindMiniQaSubmit,
   ensureMiniQaMounted,
@@ -283,14 +286,18 @@ export async function reconcileReviewBase(run, state, candidateRef) {
     { cwd: mainRoot },
     `cannot resolve origin/${baseBranch} before QA`,
   );
-  const baseRef = remote.stdout.trim();
-  if (!/^[0-9a-f]{40}$/i.test(baseRef)) {
+  const originRef = remote.stdout.trim();
+  if (!/^[0-9a-f]{40}$/i.test(originRef)) {
     throw new Error(`cannot resolve origin/${baseBranch} before QA: expected a full commit SHA`);
   }
+  const baseRef = String(state?.baseRef ?? "").trim();
   const candidate = String(candidateRef ?? "").trim();
+  if (!/^[0-9a-f]{40}$/i.test(baseRef)) {
+    throw new Error("cannot reconcile review base: delegated base is not a full commit SHA");
+  }
   const contained = await run(
     "git",
-    ["merge-base", "--is-ancestor", candidate, baseRef],
+    ["merge-base", "--is-ancestor", candidate, originRef],
     { cwd: worktree },
   );
   if (contained?.code === 0) {
@@ -299,53 +306,22 @@ export async function reconcileReviewBase(run, state, candidateRef) {
   if (contained?.code !== 1) {
     throw new Error(`cannot compare candidate with origin/${baseBranch}: ${reason(contained, "git merge-base failed")}`);
   }
-  const descends = await run(
-    "git",
-    ["merge-base", "--is-ancestor", baseRef, candidate],
-    { cwd: worktree },
-  );
-  if (descends?.code === 1) {
-    throw new Error(`candidate diverges from origin/${baseBranch}; rebase it before QA`);
-  }
-  if (descends?.code !== 0) {
-    throw new Error(`cannot compare origin/${baseBranch} with candidate: ${reason(descends, "git merge-base failed")}`);
-  }
-  return { baseRef, baseBranch };
+  // Current main may have advanced in parallel. Review the delegated
+  // merge-base/base-to-candidate delta and leave integration to the PR path.
+  return { baseRef, originRef, baseBranch };
 }
 
 export async function enforceQaWorktree(run, state, verdict) {
   const dirty = await checked(
-    run, "git", ["status", "--porcelain", "--untracked-files=all"], { cwd: state.worktree }, "cannot inspect qa worktree",
+    run, "git", ["status", "--porcelain", "--untracked-files=all"], { cwd: state.worktree }, "cannot inspect qa capsule",
   );
   const headRevision = await checked(
-    run, "git", ["rev-parse", "--verify", "HEAD^{commit}"], { cwd: state.worktree }, "cannot inspect qa commit",
+    run, "git", ["rev-parse", "--verify", "HEAD^{commit}"], { cwd: state.worktree }, "cannot inspect qa candidate",
   );
-  const qaHead = headRevision.stdout.trim();
-  let testOnlyCommit = false;
-
-  if (dirty.stdout.trim() && verdict.verdict === "pass") {
-    appendVerdictFailure(verdict, "qa left uncommitted worktree changes.");
-  }
-
-  if (!dirty.stdout.trim() && qaHead !== state.ref) {
-    const descendant = await run("git", ["merge-base", "--is-ancestor", state.ref, qaHead], { cwd: state.worktree });
-    if (descendant?.code !== 0) {
-      appendVerdictFailure(verdict, "qa replaced or rewrote the reviewed commit instead of adding test-only changes.");
-    } else {
-      const changed = await checked(
-        run, "git", ["diff", "--name-only", "--no-renames", "-z", `${state.ref}..${qaHead}`],
-        { cwd: state.worktree }, "cannot inspect qa commits",
-      );
-      const paths = parseChangedPaths(changed.stdout);
-      const productionPaths = paths.filter((path) => !isTestPath(path));
-      if (!paths.length) appendVerdictFailure(verdict, "qa created a commit without test changes.");
-      else if (productionPaths.length) {
-        appendVerdictFailure(verdict, `qa committed production-code changes: ${productionPaths.join(", ")}.`);
-      } else testOnlyCommit = true;
-    }
-  }
-
-  return { verdict, testOnlyCommit, qaHead };
+  if (dirty.stdout.trim()) appendVerdictFailure(verdict, "host capsule changed during read-only QA.");
+  if (headRevision.stdout.trim() !== state.ref) appendVerdictFailure(verdict, "host candidate changed during read-only QA.");
+  if (verdict.tests_modified === true) appendVerdictFailure(verdict, "read-only QA cannot modify tests.");
+  return { verdict };
 }
 
 /** GitHub PR operations used by Land. Kept behind the injected command runner so
@@ -410,8 +386,8 @@ export function createGitHubClient(run = runCommand) {
       "gh",
       [
         "pr", "list", "--repo", repository,
-        "--state", "open", "--base", baseBranch, "--head", headBranch,
-        "--json", "url,headRefOid,headRefName,baseRefName", "--limit", "100",
+        "--state", "all", "--base", baseBranch, "--head", headBranch,
+        "--json", "url,headRefOid,headRefName,baseRefName,state,mergedAt", "--limit", "100",
       ],
       { cwd: mainRoot },
       "cannot inspect existing pull requests",
@@ -420,15 +396,19 @@ export function createGitHubClient(run = runCommand) {
     if (!Array.isArray(rows)) throw new Error("cannot inspect existing pull requests: expected an array");
     const matches = rows.filter((row) => row?.headRefOid === headRef
       && row?.headRefName === headBranch && row?.baseRefName === baseBranch && typeof row?.url === "string" && row.url);
-    if (matches.length > 1) throw new Error(`multiple open pull requests match published candidate ${headRef}`);
-    return matches[0]?.url ?? "";
+    if (matches.length > 1) throw new Error(`multiple pull requests match published candidate ${headRef}`);
+    return matches[0] ?? null;
   }
 
+  const alreadyMerged = new Set();
   return Object.freeze({
     async openPullRequest({ mainRoot, baseBranch, headBranch, headRef, title, body = "" }) {
       const repository = await repositoryFor(mainRoot);
       const existing = await matchingPullRequest({ mainRoot, repository, baseBranch, headBranch, headRef });
-      if (existing) return existing;
+      if (existing) {
+        if (existing.state === "MERGED" || existing.mergedAt) alreadyMerged.add(existing.url);
+        return existing.url;
+      }
       const pullRequestTitle = String(title ?? "").trim() || headBranch;
       const args = [
         "pr", "create", "--repo", repository,
@@ -442,7 +422,10 @@ export function createGitHubClient(run = runCommand) {
         // A timeout/504 can arrive after GitHub committed the mutation. Query
         // the exact head OID before deciding whether a retry is safe.
         const recovered = await matchingPullRequest({ mainRoot, repository, baseBranch, headBranch, headRef });
-        if (recovered) return recovered;
+        if (recovered) {
+          if (recovered.state === "MERGED" || recovered.mergedAt) alreadyMerged.add(recovered.url);
+          return recovered.url;
+        }
         throw new Error(`pull request creation failed: ${reason(opened, "command failed")}`);
       }
       const pullRequest = String(opened.stdout ?? "").trim().split(/\r?\n/).at(-1)?.trim() ?? "";
@@ -451,6 +434,7 @@ export function createGitHubClient(run = runCommand) {
     },
 
     async mergePullRequest({ mainRoot, pullRequest, headRef }) {
+      if (alreadyMerged.has(pullRequest)) return;
       const repository = await repositoryFor(mainRoot);
       await checked(
         run,
@@ -480,6 +464,13 @@ export async function publishCandidate(run, state, { mainRoot = state.mainRoot, 
   if (localType.stdout.trim() !== "commit") {
     throw new Error(`local candidate ${candidateOid} has object type ${localType.stdout.trim() || "unknown"}, not commit`);
   }
+  await checked(
+    run,
+    "git",
+    ["merge-base", "--is-ancestor", state.baseRef, candidateOid],
+    { cwd: worktree },
+    "local candidate does not descend from delegated base",
+  );
 
   // Import by immutable OID, not by a potentially stale or ambiguous branch.
   await checked(
@@ -538,6 +529,100 @@ export async function publishCandidate(run, state, { mainRoot = state.mainRoot, 
     throw new Error(`published proposal ${candidateOid} has object type ${remoteType.stdout.trim() || "unknown"}, not commit`);
   }
   return Object.freeze({ candidateOid, localType: "commit", remoteOid: fetchedOid, remoteType: "commit", remoteRef, evidenceRef });
+}
+
+export const DEFAULT_REQUIRED_TEST = Object.freeze({ command: "npm", args: Object.freeze(["test"]), timeout: 120_000 });
+export const TEST_OUTPUT_MAX_CHARS = 8_000;
+
+function normalizedTestCommand(value = DEFAULT_REQUIRED_TEST) {
+  const command = String(value?.command ?? "").trim();
+  const args = Array.isArray(value?.args) ? value.args.map((item) => String(item)) : [];
+  const timeout = Number.isSafeInteger(value?.timeout) && value.timeout > 0 ? value.timeout : DEFAULT_REQUIRED_TEST.timeout;
+  if (!command || command.length > 120 || args.some((arg) => arg.length > 240)) {
+    throw new Error("required test command is invalid");
+  }
+  return Object.freeze({ command, args: Object.freeze(args), timeout, display: [command, ...args].join(" ") });
+}
+
+/** Synchronize ordinary child files and return Git's exact commit-eligible tree. */
+export async function stageDelegatedWorkspace(run, state) {
+  if (!state?.workspace) throw new Error("host staging requires a metadata-free delegated workspace");
+  syncDelegatedWorkspace(state);
+  await checked(run, "git", ["add", "-A", "--", "."], { cwd: state.worktree }, "cannot stage delegated workspace");
+  const tree = await checked(run, "git", ["write-tree"], { cwd: state.worktree }, "cannot fingerprint delegated workspace");
+  const oid = tree.stdout.trim();
+  if (!/^[0-9a-f]{40,64}$/i.test(oid)) throw new Error("delegated workspace fingerprint is not a full tree OID");
+  return oid;
+}
+
+/** Run the one repository-configured suite and bind it to an unchanged tree. */
+export async function runRequiredTests(run, state, { testCommand = DEFAULT_REQUIRED_TEST, env = process.env } = {}) {
+  const suite = normalizedTestCommand(testCommand);
+  const preTree = await stageDelegatedWorkspace(run, state);
+  const isolated = isolatedCommand({
+    workspace: state.workspace,
+    gitDir: join(state.worktree, ".git"),
+    command: suite.command,
+    args: suite.args,
+    writable: true,
+    env,
+  });
+  const result = await run(isolated.command, isolated.args, { cwd: state.workspace, timeout: suite.timeout });
+  const postTree = await stageDelegatedWorkspace(run, state);
+  const exitCode = Number.isInteger(result?.code) ? result.code : 1;
+  const combined = [String(result?.stdout ?? ""), String(result?.stderr ?? "")].filter(Boolean).join("\n");
+  const output = boundFormattedText(combined, TEST_OUTPUT_MAX_CHARS, "test output");
+  const status = exitCode === 0 && preTree === postTree ? "pass" : "fail";
+  const mutation = exitCode === 0 && preTree !== postTree
+    ? `Required tests changed commit-eligible workspace content (${preTree} -> ${postTree}).`
+    : "";
+  return Object.freeze({
+    command: suite.display,
+    status,
+    exitCode: mutation ? 1 : exitCode,
+    output: boundFormattedText([mutation, output].filter(Boolean).join("\n"), TEST_OUTPUT_MAX_CHARS, "test output"),
+    preTree,
+    postTree,
+    ref: "",
+    createdAt: new Date().toISOString(),
+  });
+}
+
+export function testEvidenceMatches(evidence, tree, testCommand = DEFAULT_REQUIRED_TEST) {
+  const suite = normalizedTestCommand(testCommand);
+  return evidence?.status === "pass"
+    && evidence.command === suite.display
+    && evidence.preTree === tree
+    && evidence.postTree === tree;
+}
+
+/** Commit the already-tested staged tree using host-owned identity/capability. */
+export async function commitDelegatedWorkspace(run, state, tree) {
+  const stagedTree = await stageDelegatedWorkspace(run, state);
+  if (stagedTree !== tree) throw new Error("workspace changed after required tests; run_tests evidence is stale");
+  const changed = await run("git", ["diff", "--cached", "--quiet", "HEAD", "--"], { cwd: state.worktree });
+  if (changed?.code === 1) {
+    const title = String(state.brief || state.branch || "Land candidate").trim().split("\n")[0].replace(/^#+\s*/, "").slice(0, 200) || "Land candidate";
+    await checked(
+      run,
+      "git",
+      [...gitIdentityArgs(), "commit", "-m", title],
+      { cwd: state.worktree },
+      "host could not commit delegated workspace",
+    );
+  } else if (changed?.code !== 0) {
+    throw new Error(`cannot compare staged workspace with HEAD: ${reason(changed, "git diff failed")}`);
+  }
+  const revision = await checked(run, "git", ["rev-parse", "--verify", "HEAD^{commit}"], { cwd: state.worktree }, "cannot resolve host candidate");
+  const candidate = revision.stdout.trim();
+  await checked(
+    run, "git", ["merge-base", "--is-ancestor", state.baseRef, candidate], { cwd: state.worktree },
+    "host candidate does not descend from the delegated base",
+  );
+  const delta = await run("git", ["diff", "--quiet", `${state.baseRef}...${candidate}`, "--"], { cwd: state.worktree });
+  if (delta?.code === 0) throw new Error("candidate has no changes relative to the delegated base");
+  if (delta?.code !== 1) throw new Error(`cannot inspect candidate delta: ${reason(delta, "git diff failed")}`);
+  return candidate;
 }
 
 export async function landWorktree(run, state, { github = createGitHubClient(run) } = {}) {
@@ -653,6 +738,7 @@ export async function landWorktree(run, state, { github = createGitHubClient(run
       await run("rm", ["-rf", worktree]);
     }
   }
+  if (state.workspace) rmSync(state.workspace, { recursive: true, force: true });
   await run("git", ["branch", "-D", state.branch], { cwd: mainRoot });
   // Publication failures retain this evidence ref. A fully landed proposal no
   // longer needs the duplicate object pointer.
@@ -680,7 +766,9 @@ export function createLand({
   run = runCommand,
   github = createGitHubClient(run),
   env = process.env,
+  testCommand = DEFAULT_REQUIRED_TEST,
 } = {}) {
+  const requiredTest = normalizedTestCommand(testCommand);
   const childTools = new Map();
   const childOwners = new Map();
   const settlementPromises = new Map();
@@ -710,6 +798,7 @@ export function createLand({
     if (!state?.brief) throw new Error(`delegation ${state?.id || "unknown"} has no durable task for a fresh phase`);
     const artifact = await materializeTaskArtifact(run, {
       worktree: state.worktree,
+      workspace: state.workspace || state.worktree,
       task: state.brief,
       expectedDigest: state.taskArtifact?.sha256,
     });
@@ -1369,12 +1458,45 @@ export function createLand({
     childTools.get(sessionId)?.();
     const submit = (args) => trackChildSubmission(sessionId, (submission) =>
       done({ ...args, delegationId, postTool: true, submission }));
-    const disposeSubmit = isMiniAgent(child)
-      ? bindMiniSubmit(child, submit)
-      : registerTools(child, [buildDoneTool({ submit })]);
+    const runTests = async () => {
+      let state = store.load(delegationId);
+      if (!state || state.implementationSession !== sessionId
+        || (state.status !== "running" && state.status !== "revising")) {
+        return { status: "refused", reason: "run_tests requires the active implementation child" };
+      }
+      const evidence = await runRequiredTests(run, state, { testCommand: requiredTest, env });
+      state = store.save({ ...state, testEvidence: evidence });
+      return {
+        status: evidence.status,
+        command: evidence.command,
+        exitCode: evidence.exitCode,
+        output: evidence.output,
+        tree: evidence.postTree,
+        delegationId: state.delegationId,
+      };
+    };
+    const disposers = [];
+    if (isMiniAgent(child)) disposers.push(bindMiniSubmit(child, submit));
+    else disposers.push(registerTools(child, [buildDoneTool({ submit })]));
+    disposers.push(registerTools(child, [buildRunTestsTool({ runTests })]));
+    disposers.push(bindMiniShellIsolation(child, (command) => {
+      const current = store.load(delegationId);
+      if (!current?.workspace) throw new Error("implementation shell requires a metadata-free workspace");
+      return isolatedShellCommand({
+        workspace: current.workspace,
+        worktree: current.worktree,
+        command,
+        writable: true,
+        env,
+      });
+    }));
     const disposeCancel = watchImplementationCancel(child, delegationId);
     const dispose = () => {
-      try { disposeCancel(); } finally { disposeSubmit(); }
+      try { disposeCancel(); } finally {
+        for (const release of disposers.reverse()) {
+          try { release?.(); } catch {}
+        }
+      }
     };
     childTools.set(sessionId, dispose);
     return dispose;
@@ -1394,7 +1516,7 @@ export function createLand({
         ? capsuleGitDir
         : join(state.mainRoot, ".git"),
     });
-    const dispose = bindMiniQaSubmit(child, {
+    const disposers = [bindMiniQaSubmit(child, {
       oracle,
       submit: (args) => trackChildSubmission(sessionId, (submission) =>
         submitVerdict({ ...args, delegationId, postTool: true, submission })),
@@ -1402,7 +1524,18 @@ export function createLand({
         const current = store.load(delegationId);
         return current?.qaSession === sessionId && Boolean(current.qaVerdict);
       },
-    });
+    }), bindMiniShellIsolation(child, (command) => isolatedShellCommand({
+      workspace: state.workspace || state.worktree,
+      worktree: state.worktree,
+      command,
+      writable: false,
+      env,
+    }))];
+    const dispose = () => {
+      for (const release of disposers.reverse()) {
+        try { release?.(); } catch {}
+      }
+    };
     childTools.set(sessionId, dispose);
     return dispose;
   }
@@ -1415,7 +1548,7 @@ export function createLand({
     const architectSession = info.parent?.id ?? info.parentSession ?? "";
     let git;
     try {
-      git = await inspectWorktree(run, cwd);
+      git = info.git || await inspectWorktree(run, cwd);
     } catch (error) {
       return {
         status: "refused",
@@ -1423,10 +1556,24 @@ export function createLand({
         owned: false,
       };
     }
+    if (!info.git?.workspace || !git.workspace) {
+      return { status: "refused", reason: "adopt requires a host-prepared metadata-free workspace", owned: false };
+    }
+    try {
+      if (await realpath(cwd) !== await realpath(git.workspace)) {
+        return { status: "refused", reason: "adopt child cwd does not match its metadata-free workspace", owned: false };
+      }
+    } catch (error) {
+      return { status: "refused", reason: error instanceof Error ? error.message : String(error), owned: false };
+    }
     const delegationId = info.delegationId || randomUUID();
     let taskArtifact;
     try {
-      taskArtifact = await materializeTaskArtifact(run, { worktree: git.worktree, task: brief });
+      taskArtifact = await materializeTaskArtifact(run, {
+        worktree: git.worktree,
+        workspace: git.workspace || git.worktree,
+        task: brief,
+      });
     } catch (error) {
       return {
         status: "refused",
@@ -1437,6 +1584,9 @@ export function createLand({
     let owner;
     let disposeBinding;
     try {
+      pinNonInteractiveApproval(child, { delegated: true });
+      pinChildSandbox(child, "implementation");
+      assertChildSandbox(child, "implementation");
       if (info.handle) owner = retainChild(info.handle, { child, role: "implementation", workflowRole: "implementation", delegationId });
       disposeBinding = installDone(child, delegationId);
       try {
@@ -1555,6 +1705,8 @@ export function createLand({
     const retained = child?.[CHILD_AGENT_HANDLE] ?? child?.[AGENT_HANDLE];
     if (!retained) return null;
     pinNonInteractiveApproval(child, { delegated: true });
+    pinChildSandbox(child, pending.role);
+    assertChildSandbox(child, pending.role);
     return retainChild(retained, {
       child,
       role: pending.role,
@@ -1592,6 +1744,9 @@ export function createLand({
       if (state.pendingPhase) return true;
     } else {
       pinNonInteractiveApproval(child, { delegated: true });
+      const resumedRole = state.qaSession === sessionId ? "qa" : "implementation";
+      pinChildSandbox(child, resumedRole);
+      assertChildSandbox(child, resumedRole);
     }
     const retained = child?.[CHILD_AGENT_HANDLE] ?? child?.[AGENT_HANDLE];
     if (!retained) return false;
@@ -1652,6 +1807,8 @@ export function createLand({
     let retained = false;
     try {
       pinNonInteractiveApproval(child, { delegated: true });
+      pinChildSandbox(child, role);
+      assertChildSandbox(child, role);
       const owner = retainChild(handle, { child, role, workflowRole, delegationId });
       retained = true;
       return { child, owner };
@@ -1713,7 +1870,7 @@ export function createLand({
         workflowRole: pending.role,
         delegationId: state.delegationId,
         phaseEpoch: pending.phaseEpoch,
-        cwd: state.worktree,
+        cwd: state.workspace || state.worktree,
         parentSession: state.parentSessionUuid || state.architectSession,
       });
     } catch (error) {
@@ -1815,9 +1972,11 @@ export function createLand({
     state = await ensureTaskArtifact(state);
     const parentSession = state.parentSessionUuid || state.architectSession;
     const prior = state.look === 2 ? state.blockedReason : "";
+    const evidence = state.testEvidence;
     const task = [
       state.look === 1 ? "Look 1." : "Look 2, the final look. There is no third look.",
-      `Review ref ${state.ref} against base ${state.baseRef}.`,
+      `Review ref ${state.ref} against delegated base ${state.baseRef}.`,
+      evidence ? `Required tests: ${evidence.command}; ${evidence.status}; exit ${evidence.exitCode}; tree ${evidence.postTree}; candidate ${evidence.ref || state.ref}. Do not rerun tests.` : "Required test evidence is unavailable.",
       prior ? `Prior look-1 rejection:\n${prior}` : "",
     ].filter(Boolean).join("\n\n");
     const workflowRole = "qa";
@@ -1829,7 +1988,7 @@ export function createLand({
       workflowRole,
       delegationId: planned.delegationId,
       phaseEpoch: pending.phaseEpoch,
-      cwd: planned.worktree,
+      cwd: planned.workspace || planned.worktree,
       parentSession,
     });
     try {
@@ -1843,7 +2002,7 @@ export function createLand({
   async function startImplementation(state, verdict) {
     state = await ensureTaskArtifact(state);
     const parentSession = state.parentSessionUuid || state.architectSession;
-    const user = `QA rejected the proposal. ${verdict.feedback || verdict.summary} Address the findings, commit the result, then call done again with ref HEAD.`;
+    const user = `QA rejected the proposal. ${verdict.feedback || verdict.summary} Address the findings, optionally call run_tests, then use the completion command. The host stages and commits the workspace.`;
     const planned = planPhase(state, "implementation", { delta: user });
     const pending = planned.pendingPhase;
     const spawned = await spawnChild({
@@ -1852,7 +2011,7 @@ export function createLand({
       workflowRole: pending.role,
       delegationId: planned.delegationId,
       phaseEpoch: pending.phaseEpoch,
-      cwd: planned.worktree,
+      cwd: planned.workspace || planned.worktree,
       parentSession,
     });
     try {
@@ -2021,20 +2180,37 @@ export function createLand({
     const blocked = notReady(state);
     if (blocked) return { status: "refused", reason: blocked };
     try {
-      const revision = await checked(
-        run, "git", ["rev-parse", "--verify", `${ref}^{commit}`], { cwd: state.worktree }, "ref is not a commit",
-      );
-      const sha = revision.stdout.trim();
-      await checked(
-        run, "git", ["merge-base", "--is-ancestor", state.baseRef, sha], { cwd: state.worktree },
-        "ref does not descend from the delegated base",
-      );
-      const status = await checked(
-        run, "git", ["status", "--porcelain", "--untracked-files=all"], { cwd: state.worktree },
-        "cannot inspect worktree",
-      );
-      if (status.stdout.trim()) {
-        return { status: "refused", reason: "worktree is not clean; commit or remove every change before done" };
+      let sha;
+      if (state.workspace) {
+        const tree = await stageDelegatedWorkspace(run, state);
+        let evidence = state.testEvidence;
+        const matchingPass = testEvidenceMatches(evidence, tree, requiredTest);
+        if (!matchingPass) {
+          evidence = await runRequiredTests(run, state, { testCommand: requiredTest, env });
+          state = store.save({ ...state, testEvidence: evidence });
+        }
+        if (evidence.status !== "pass") {
+          throw new Error(`required tests failed (${evidence.command}, exit ${evidence.exitCode}): ${evidence.output || "no output"}`);
+        }
+        sha = await commitDelegatedWorkspace(run, state, evidence.postTree);
+        evidence = { ...evidence, ref: sha };
+        state = store.save({ ...state, ref: sha, testEvidence: evidence });
+      } else {
+        const revision = await checked(
+          run, "git", ["rev-parse", "--verify", `${ref}^{commit}`], { cwd: state.worktree }, "ref is not a commit",
+        );
+        sha = revision.stdout.trim();
+        await checked(
+          run, "git", ["merge-base", "--is-ancestor", state.baseRef, sha], { cwd: state.worktree },
+          "ref does not descend from the delegated base",
+        );
+        const status = await checked(
+          run, "git", ["status", "--porcelain", "--untracked-files=all"], { cwd: state.worktree },
+          "cannot inspect worktree",
+        );
+        if (status.stdout.trim()) {
+          return { status: "refused", reason: "worktree is not clean; commit or remove every change before done" };
+        }
       }
       const reviewBase = await reconcileReviewBase(run, state, sha);
       const reviewState = { ...state, baseRef: reviewBase.baseRef };
@@ -2046,7 +2222,6 @@ export function createLand({
       packet.mark = "review";
       let next = store.save(beginPhaseTransition(state, {
         ref: sha,
-        baseRef: reviewBase.baseRef,
         look,
         packet,
         status: "reviewing",
@@ -2093,8 +2268,8 @@ export function createLand({
     if (!state.worktree) return { status: "refused", reason: "done requires a worktree" };
     try {
       const cwd = await realpath(agent?.session?.header?.cwd || state.worktree);
-      const expected = await realpath(state.worktree);
-      if (cwd !== expected) return { status: "refused", reason: "done must run from its delegated worktree" };
+      const expected = await realpath(state.workspace || state.worktree);
+      if (cwd !== expected) return { status: "refused", reason: "done must run from its delegated workspace" };
     } catch (error) {
       return { status: "refused", reason: error instanceof Error ? error.message : String(error) };
     }
@@ -2161,7 +2336,7 @@ export function createLand({
       const enforced = await enforceQaWorktree(run, state, working);
       next = store.save({
         ...state,
-        ref: enforced.verdict.verdict === "pass" && enforced.testOnlyCommit ? enforced.qaHead : state.ref,
+        ref: state.ref,
         qaVerdict: enforced.verdict,
       });
       settledQa.add(sessionId);
@@ -2193,6 +2368,7 @@ export function createLand({
           status: "revising",
           implementationSession: "",
           qaSession: sessionId,
+          testEvidence: null,
         }));
         const result = {
           status: "ok",

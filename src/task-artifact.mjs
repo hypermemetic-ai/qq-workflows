@@ -1,10 +1,10 @@
 // Exact implementation task access for fresh workflow phases.
 //
 // Task bytes remain in active durable delegation state and are materialized
-// beneath Git's private metadata directory. This keeps workflow metadata out of
-// `git status` while allowing every fresh child in the delegated capsule to
-// read the exact task. The host rewrites and verifies the artifact before each
-// handoff because a delegated child can modify files under .git.
+// beneath the host capsule's private metadata directory. This keeps workflow
+// metadata out of `git status`; metadata-free children receive a read-only
+// absolute pointer. The host rewrites and verifies the artifact before handoff
+// so restart/recovery never depends on prior materialization.
 
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
@@ -79,7 +79,7 @@ async function writePrivateAtomic(path, contents) {
 }
 
 /** Rematerialize exact durable task bytes and verify the resulting artifact. */
-export async function materializeTaskArtifact(run, { worktree, task, expectedDigest } = {}) {
+export async function materializeTaskArtifact(run, { worktree, workspace = worktree, task, expectedDigest } = {}) {
   if (typeof run !== "function") throw new Error("task artifact requires a command runner");
   if (typeof worktree !== "string" || !worktree) throw new Error("task artifact requires a worktree");
   const contents = String(task ?? "");
@@ -97,7 +97,7 @@ export async function materializeTaskArtifact(run, { worktree, task, expectedDig
   return Object.freeze({
     schema: TASK_ARTIFACT_SCHEMA,
     path: artifactPath,
-    pointer: childPointer(resolve(worktree), artifactPath),
+    pointer: childPointer(resolve(workspace), artifactPath),
     sha256: digest,
     bytes: Buffer.byteLength(contents, "utf8"),
   });

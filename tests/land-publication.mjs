@@ -30,7 +30,7 @@ const state = {
   ref: CANDIDATE,
 };
 
-async function reviewBaseFixture({ contained = 1, descends = 0 } = {}) {
+async function reviewBaseFixture({ contained = 1 } = {}) {
   const originHead = "d".repeat(40);
   const calls = [];
   const run = async (command, args, options = {}) => {
@@ -39,7 +39,6 @@ async function reviewBaseFixture({ contained = 1, descends = 0 } = {}) {
     if (key === "fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main") return { code: 0, stdout: "", stderr: "" };
     if (key === "rev-parse --verify origin/main^{commit}") return { code: 0, stdout: `${originHead}\n`, stderr: "" };
     if (key === `merge-base --is-ancestor ${CANDIDATE} ${originHead}`) return { code: contained, stdout: "", stderr: "" };
-    if (key === `merge-base --is-ancestor ${originHead} ${CANDIDATE}`) return { code: descends, stdout: "", stderr: "" };
     throw new Error(`unexpected review-base command: ${command} ${key}`);
   };
   return { run, calls, originHead };
@@ -48,15 +47,14 @@ async function reviewBaseFixture({ contained = 1, descends = 0 } = {}) {
 {
   const fixture = await reviewBaseFixture();
   const reconciled = await reconcileReviewBase(fixture.run, state, CANDIDATE);
-  assert.deepEqual(reconciled, { baseRef: fixture.originHead, baseBranch: "main" });
-  assert.notEqual(reconciled.baseRef, state.baseRef, "stale delegated base is replaced by actual origin/main");
+  assert.deepEqual(reconciled, { baseRef: state.baseRef, originRef: fixture.originHead, baseBranch: "main" });
+  assert.equal(reconciled.baseRef, state.baseRef, "delegated ancestry base is retained for triple-dot review");
   assert.deepEqual(fixture.calls.map(({ args }) => args.slice(0, 2).join(" ")), [
     "fetch --no-tags",
     "rev-parse --verify",
     "merge-base --is-ancestor",
-    "merge-base --is-ancestor",
   ]);
-  assert.deepEqual(fixture.calls.map(({ cwd }) => cwd), ["/main", "/main", "/worktree", "/worktree"]);
+  assert.deepEqual(fixture.calls.map(({ cwd }) => cwd), ["/main", "/main", "/worktree"]);
 }
 
 for (const label of ["equal head", "candidate already merged before QA"]) {
@@ -70,11 +68,10 @@ for (const label of ["equal head", "candidate already merged before QA"]) {
 }
 
 {
-  const fixture = await reviewBaseFixture({ contained: 1, descends: 1 });
-  await assert.rejects(
-    reconcileReviewBase(fixture.run, state, CANDIDATE),
-    /candidate diverges from origin\/main/,
-  );
+  const fixture = await reviewBaseFixture({ contained: 1 });
+  const reconciled = await reconcileReviewBase(fixture.run, state, CANDIDATE);
+  assert.equal(reconciled.baseRef, state.baseRef, "normal parallel main/candidate divergence proceeds");
+  assert.equal(reconciled.originRef, fixture.originHead);
 }
 
 function publicationFixture({ localType = "commit", rows, fetchedOid = CANDIDATE, remoteType = "commit" } = {}) {
@@ -174,6 +171,32 @@ for (const test of [
     mainRoot: "/main", baseBranch: "main", headBranch: state.branch, headRef: CANDIDATE,
   }), existing[0].url);
   assert.equal(calls.some((call) => call.includes("create")), false);
+}
+
+{
+  const calls = [];
+  const merged = [{
+    url: "https://github.com/owner/repo/pull/9",
+    headRefOid: CANDIDATE,
+    headRefName: state.branch,
+    baseRefName: "main",
+    state: "MERGED",
+    mergedAt: "2026-08-29T00:00:00Z",
+  }];
+  const run = async (command, args) => {
+    calls.push([command, ...args]);
+    if (command === "git") return { code: 0, stdout: "git@github.com:owner/repo.git\n", stderr: "" };
+    if (args[0] === "repo") return { code: 0, stdout: "owner/repo\n", stderr: "" };
+    if (args[0] === "pr" && args[1] === "list") return { code: 0, stdout: JSON.stringify(merged), stderr: "" };
+    throw new Error(`unexpected merged-PR command: ${command} ${args.join(" ")}`);
+  };
+  const github = createGitHubClient(run);
+  const pullRequest = await github.openPullRequest({
+    mainRoot: "/main", baseBranch: "main", headBranch: state.branch, headRef: CANDIDATE,
+  });
+  await github.mergePullRequest({ mainRoot: "/main", pullRequest, headRef: CANDIDATE });
+  assert.equal(pullRequest, merged[0].url);
+  assert.equal(calls.some((call) => call.includes("create") || call.includes("merge")), false, "exact-head merged PR is resumed without mutation");
 }
 
 // Full Land stops before GitHub and cleanup when publication evidence is missing.

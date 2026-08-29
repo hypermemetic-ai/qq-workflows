@@ -12,6 +12,7 @@ import { markAssemble } from "./assemble-mark.mjs";
 import { truncateObservationContent } from "./observation.mjs";
 import { adoptAgentHandle } from "./agent-handle.mjs";
 import { pinNonInteractiveApproval } from "./approval-policy.mjs";
+import { pinChildSandbox } from "./child-isolation.mjs";
 import { loadRepositoryIndexContext } from "./repository-index.mjs";
 
 export const ARCHITECT_LABEL = "workflows:architect";
@@ -373,6 +374,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, architectur
     const childId = `session-${randomUUID()}`;
     const parentCwd = parent.header?.cwd;
     let targetCwd = repoRootFor(parentCwd);
+    let preparedGit = null;
     let gitRootResolved = false;
     const qq = ctx?.get?.("qq-core", false) ?? ctx?.get?.("qq", false) ?? null;
     if (typeof qq?.gitRootForDelegate === "function") {
@@ -395,7 +397,8 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, architectur
         id: childId,
         env,
       });
-      targetCwd = prepared.worktree;
+      preparedGit = prepared;
+      targetCwd = prepared.workspace || prepared.worktree;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (gitRootResolved || !/not a git worktree/i.test(message)) {
@@ -422,6 +425,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, architectur
     }));
     const child = created?.agent ?? created;
     pinNonInteractiveApproval(child, { delegated: true });
+    pinChildSandbox(child, "implementation");
     const childSessionId = child.session?.id ?? childId;
     retainDelegated(created, child);
     const refuseAdoption = async (reason, { dispose = true } = {}) => {
@@ -452,6 +456,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, architectur
           parent,
           parentSession: parent.id,
           cwd: targetCwd,
+          git: preparedGit,
         });
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
