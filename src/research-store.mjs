@@ -82,7 +82,7 @@ function normalize(raw) {
   return validateResearchRun(value);
 }
 
-export function createResearchStore(dirPath) {
+export function createResearchStore(dirPath, { onChange } = {}) {
   if (typeof dirPath !== "string" || !dirPath) throw new Error("research store requires a directory");
   mkdirSync(dirPath, { recursive: true, mode: 0o700 });
   const info = lstatSync(dirPath);
@@ -112,7 +112,7 @@ export function createResearchStore(dirPath) {
     fileFor,
     create(input) {
       const now = new Date().toISOString();
-      return persist({
+      const result = persist({
         schema: RESEARCH_DELEGATION_SCHEMA,
         status: "researching",
         researchSession: "",
@@ -128,6 +128,8 @@ export function createResearchStore(dirPath) {
         updatedAt: now,
         ...input,
       }, { exclusive: true });
+      onChange?.(result);
+      return result;
     },
     save(input) {
       const normalized = normalize(input);
@@ -136,7 +138,9 @@ export function createResearchStore(dirPath) {
       for (const field of ["id", "parentSessionUuid", "root", "repoRoot", "question", "researchSession", "createdAt"]) {
         if (normalized[field] !== previous[field]) throw new Error(`research delegation ${field} is immutable`);
       }
-      return persist({ ...normalized, updatedAt: new Date().toISOString() });
+      const result = persist({ ...normalized, updatedAt: new Date().toISOString() });
+      onChange?.(result);
+      return result;
     },
     load(id) {
       const requestedId = canonicalId(id);

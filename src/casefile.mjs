@@ -79,7 +79,7 @@ function normalizeText(raw) {
   return text;
 }
 
-export function createCaseStore(dirPath) {
+export function createCaseStore(dirPath, { onChange } = {}) {
   mkdirSync(dirPath, { recursive: true, mode: 0o700 });
 
   function fileFor(sessionId) {
@@ -122,6 +122,7 @@ export function createCaseStore(dirPath) {
     const temporary = `${file}.${process.pid}.tmp`;
     writeFileSync(temporary, text.endsWith("\n") ? text : `${text}\n`, { mode: 0o600 });
     renameSync(temporary, file);
+    onChange?.({ sessionUuid: sessionId, text });
   }
 
   const store = {

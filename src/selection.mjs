@@ -50,7 +50,7 @@ function normalize(raw, sessionId) {
   return { schema: SELECTION_SCHEMA, session: sessionId, workflow };
 }
 
-export function createSelectionStore(dirPath) {
+export function createSelectionStore(dirPath, { onChange } = {}) {
   mkdirSync(dirPath, { recursive: true, mode: 0o700 });
 
   function fileFor(sessionId) {
@@ -86,6 +86,7 @@ export function createSelectionStore(dirPath) {
     set(sessionId, workflow) {
       const name = workflow == null || workflow === "" ? null : String(workflow);
       persist({ schema: SELECTION_SCHEMA, session: sessionId, workflow: name });
+      onChange?.({ sessionUuid: sessionId, workflow: name });
       return name;
     },
   });
