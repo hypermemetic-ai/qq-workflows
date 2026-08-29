@@ -37,6 +37,7 @@ import { withChildSettlement } from "./child-settlement.mjs";
 import {
   bindMiniShellIsolation,
   bindMiniSubmit,
+  ensureMiniMounted,
   isMiniAgent,
   MINI_KIND,
   miniSetup,
@@ -46,6 +47,7 @@ import { buildDoneTool, buildRunTestsTool } from "./land-tools.mjs";
 import {
   bindMiniQaSubmit,
   ensureMiniQaMounted,
+  isMiniQaAgent,
   MINI_QA_KIND,
   miniQaSetup,
   renderMiniQaTask,
@@ -60,6 +62,7 @@ export { DELEGATION_PACKET_SCHEMA };
 const DELEGATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CHILD_AGENT_HANDLE = Symbol.for("@hypermemetic-ai/qq-workflows/child-agent-handle");
+const CHILD_CONTROLLER_BINDING = Symbol.for("@hypermemetic-ai/qq-workflows/child-controller-binding");
 const SETTLEMENT_TRANSITIONS = new Set(["dispose", "finish_land", "start_qa", "start_implementation"]);
 export const DELEGATION_PHASE_INPUT_SCHEMA = "qq.delegation-phase-input/v1";
 export const PHASE_DELTA_MAX_CHARS = 4_000;
@@ -778,6 +781,8 @@ export function createLand({
   const activeSubmissions = new Set();
   const activeTransitions = new Set();
   const pendingRecoveries = new Map();
+  const currentRecoveries = new Map();
+  const controllerBinding = Object.freeze({});
   let closing = false;
   let disposePromise = null;
 
@@ -1328,6 +1333,10 @@ export function createLand({
     if (isLandCandidate(child) || child?.session?.header?.origin !== CHILD_ORIGIN) {
       throw new Error("land refuses to own a parent or root AgentHandle");
     }
+    const foreign = child?.[CHILD_CONTROLLER_BINDING];
+    if (foreign?.active && foreign.controller !== controllerBinding) {
+      throw new Error(`current workflow child ${sessionId} is owned by another live controller`);
+    }
     const existing = childOwners.get(sessionId);
     if (existing) {
       if (existing.handle !== handle) throw new Error(`land already owns child ${sessionId}`);
@@ -1336,6 +1345,7 @@ export function createLand({
       hangChildLabels(ctx, existing);
       return existing;
     }
+    const controllerRecord = { controller: controllerBinding, active: true };
     const owner = {
       sessionId,
       child,
@@ -1351,7 +1361,16 @@ export function createLand({
       qaSettleOff: null,
       activeSubmissions: new Set(),
       activeTransitions: new Set(),
+      controllerRecord,
     };
+    try {
+      Object.defineProperty(child, CHILD_CONTROLLER_BINDING, {
+        value: controllerRecord,
+        configurable: true,
+      });
+    } catch (error) {
+      throw new Error(`land cannot bind durable controller ownership for ${sessionId}`, { cause: error });
+    }
     childOwners.set(sessionId, owner);
     hangChildLabels(ctx, owner);
     installOwnerLifecycle(owner);
@@ -1372,11 +1391,22 @@ export function createLand({
     } catch { /* non-extensible Agent */ }
   }
 
+  function clearControllerBinding(owner) {
+    if (!owner?.controllerRecord) return;
+    owner.controllerRecord.active = false;
+    try {
+      if (owner.child?.[CHILD_CONTROLLER_BINDING] === owner.controllerRecord) {
+        delete owner.child[CHILD_CONTROLLER_BINDING];
+      }
+    } catch { /* the inactive shared record still permits replacement adoption */ }
+  }
+
   function forgetChildOwner(owner) {
     if (!owner) return;
     clearChildTools(owner.sessionId);
     clearOwnerLifecycle(owner);
     clearChildLabels(ctx, owner);
+    clearControllerBinding(owner);
     clearRetainedHandle(owner);
     if (childOwners.get(owner.sessionId) === owner) childOwners.delete(owner.sessionId);
     settledQa.delete(owner.sessionId);
@@ -1387,6 +1417,7 @@ export function createLand({
     clearChildTools(owner.sessionId);
     clearOwnerLifecycle(owner, { notifyFailure: false });
     clearChildLabels(ctx, owner);
+    clearControllerBinding(owner);
     if (childOwners.get(owner.sessionId) === owner) childOwners.delete(owner.sessionId);
     settledQa.delete(owner.sessionId);
     // The AgentHandle capability deliberately remains on the live child. A
@@ -1413,6 +1444,7 @@ export function createLand({
             `qq-workflows: failed to dispose ${owner.role} child ${sessionId} (${reason}): ${error instanceof Error ? error.message : String(error)}`,
           );
         } finally {
+          clearControllerBinding(owner);
           clearRetainedHandle(owner);
           if (childOwners.get(sessionId) === owner) childOwners.delete(sessionId);
         }
@@ -1773,14 +1805,20 @@ export function createLand({
     return isMiniAgent(child) && resumeChild(child);
   }
 
-  async function spawnChild({ sessionUuid, role, workflowRole, delegationId, phaseEpoch, cwd, parentSession }) {
-    if (!agents || typeof agents.create !== "function") {
-      throw new Error("land requires ctx.agents.create");
-    }
+  function childAgentOptions(role) {
     const route = childRoute({
       binding: binding(role),
       env,
     });
+    return childCreateOptions(route, role === "implementation"
+      ? { setup: miniSetup }
+      : role === "qa" ? { setup: miniQaSetup } : {});
+  }
+
+  async function spawnChild({ sessionUuid, role, workflowRole, delegationId, phaseEpoch, cwd, parentSession }) {
+    if (!agents || typeof agents.create !== "function") {
+      throw new Error("land requires ctx.agents.create");
+    }
     if (!SESSION_ID.test(sessionUuid)) throw new Error("land child requires its preplanned session UUID");
     const childId = sessionUuid;
     const mini = role === "implementation";
@@ -1798,9 +1836,7 @@ export function createLand({
         ...(mini ? { kind: MINI_KIND, agentPreset: MINI_KIND } : {}),
         ...(miniQa ? { kind: MINI_QA_KIND, agentPreset: MINI_QA_KIND } : {}),
       },
-      ...childCreateOptions(route, mini
-        ? { setup: miniSetup }
-        : miniQa ? { setup: miniQaSetup } : {}),
+      ...childAgentOptions(role),
     }));
     const child = handle?.agent ?? handle;
     let retained = false;
@@ -2451,6 +2487,222 @@ export function createLand({
     };
   }
 
+  function validateCurrentRecovery({ delegationId, expectedRole, expectedEpoch, parentSessionUuid } = {}) {
+    let found;
+    try {
+      found = ownedDelegation(delegationId, parentSessionUuid);
+    } catch (error) {
+      return { refusal: delegationRefusal(`delegation persistence is missing or corrupt: ${error instanceof Error ? error.message : String(error)}`) };
+    }
+    if (found.refusal) return found;
+    const state = found.state;
+    if (!SESSION_ID.test(parentSessionUuid ?? "") || !state.parentSessionUuid) {
+      return { refusal: delegationRefusal("workflow_resume requires the durable owning parent architect session") };
+    }
+    if (state.status === "landed" || state.status === "blocked") {
+      return { refusal: delegationRefusal(`delegation is terminal (${state.status})`) };
+    }
+    if (state.transitioning || state.pendingPhase) {
+      return { refusal: delegationRefusal("delegation has an ambiguous transitioning or pending workflow phase") };
+    }
+    const current = state.current;
+    if (!current) return { refusal: delegationRefusal("delegation has no current workflow child") };
+    if (expectedRole !== undefined && expectedRole !== current.role) {
+      return { refusal: delegationRefusal(`stale workflow role: expected ${expectedRole}, current is ${current.role}`) };
+    }
+    if (expectedEpoch !== undefined && expectedEpoch !== current.phaseEpoch) {
+      return { refusal: delegationRefusal(`stale phase epoch: expected ${expectedEpoch}, current is ${current.phaseEpoch}`) };
+    }
+    const resumable = current.role === "implementation"
+      ? (state.status === "running" || state.status === "revising") && state.implementationSession === current.sessionUuid
+      : current.role === "qa"
+        ? state.status === "reviewing" && state.qaSession === current.sessionUuid
+        : false;
+    if (!resumable || current.phaseEpoch !== state.phaseEpoch) {
+      return { refusal: delegationRefusal("delegation current workflow phase is corrupt or not resumable") };
+    }
+    const owner = childOwners.get(current.sessionUuid);
+    if (owner && (owner.delegationId !== state.id || owner.workflowRole !== current.role)) {
+      return { refusal: delegationRefusal(`current workflow child ${current.sessionUuid} is owned by another live controller`) };
+    }
+    return { state, current };
+  }
+
+  async function validatePersistedCurrentChild(child, state, current) {
+    const sessionId = sessionIdOf(child);
+    if (sessionId !== current.sessionUuid) {
+      throw new Error(`DSH resumed ${sessionId || "an unknown session"} instead of exact current session ${current.sessionUuid}`);
+    }
+    const header = child?.session?.header;
+    const parent = state.parentSessionUuid || state.architectSession;
+    if (header?.origin !== CHILD_ORIGIN
+      || header?.parentSession !== parent
+      || (header?.delegationId !== undefined && header.delegationId !== state.delegationId)
+      || (header?.delegationRole !== undefined && header.delegationRole !== current.role)
+      || (header?.delegationPhaseRole !== undefined && header.delegationPhaseRole !== current.role)
+      || (header?.delegationPhaseEpoch !== undefined && header.delegationPhaseEpoch !== current.phaseEpoch)) {
+      throw new Error(`persisted current session ${current.sessionUuid} has corrupt delegation ownership, role, or epoch metadata`);
+    }
+    if (current.role === "implementation" ? !isMiniAgent(child) : !isMiniQaAgent(child)) {
+      throw new Error(`persisted current session ${current.sessionUuid} has the wrong ${current.role} agent preset`);
+    }
+    const expectedRoot = state.workspace || state.worktree;
+    if (!expectedRoot || !header.cwd) {
+      throw new Error(`persisted current session ${current.sessionUuid} is missing its durable worktree cwd`);
+    }
+    let actual;
+    let expected;
+    try {
+      [actual, expected] = await Promise.all([realpath(header.cwd), realpath(expectedRoot)]);
+    } catch (error) {
+      throw new Error(`persisted current session ${current.sessionUuid} worktree is missing or corrupt: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (actual !== expected) {
+      throw new Error(`persisted current session ${current.sessionUuid} cwd does not match its durable worktree`);
+    }
+  }
+
+  function mountCurrentChild(child, role) {
+    const mounted = role === "implementation" ? ensureMiniMounted(child) : ensureMiniQaMounted(child);
+    if (!mounted) throw new Error(`current workflow child is not a ${role} Mini session`);
+  }
+
+  function currentOwner(state, current) {
+    const owner = childOwners.get(current.sessionUuid);
+    const live = liveAgent(current.sessionUuid);
+    if (!owner || owner.child !== live || owner.delegationId !== state.id
+      || owner.workflowRole !== current.role || sessionIdOf(live) !== current.sessionUuid) return null;
+    return owner;
+  }
+
+  async function adoptLiveCurrent(child, state, current) {
+    const previousOwner = childOwners.get(current.sessionUuid);
+    try {
+      await validatePersistedCurrentChild(child, state, current);
+      mountCurrentChild(child, current.role);
+      if (!resumeChild(child, { allowClosing: true })) {
+        throw new Error(`current session ${current.sessionUuid} is live but its exact AgentHandle cannot be adopted`);
+      }
+      const owner = currentOwner(state, current);
+      if (!owner) throw new Error(`current session ${current.sessionUuid} is live but durable workflow ownership was not restored`);
+      return owner;
+    } catch (error) {
+      const partial = childOwners.get(current.sessionUuid);
+      if (!previousOwner && partial?.child === child) detachChildOwner(partial);
+      throw error;
+    }
+  }
+
+  function recoveryContinuation(role) {
+    const shared = "The previous host process did not continue: DSH restored the latest durable transcript and preserved working tree, and any interrupted command outcome remains unknown. Inspect the current diff, git status, and test state before retrying side effects. Continue the same durable work order in this exact session; do not start a replacement task or session.";
+    return role === "qa"
+      ? `Recovery continuation. ${shared} Keep the workspace read-only and use persisted test evidence rather than rerunning required tests.`
+      : `Recovery continuation. ${shared}`;
+  }
+
+  function recoveryResult(status, state, current) {
+    const relay = relayOf(ctx);
+    return {
+      status,
+      delegationId: state.delegationId,
+      sessionUuid: current.sessionUuid,
+      alias: typeof relay?.alias === "function" ? (relay.alias(current.sessionUuid) ?? "") : "",
+      role: current.role,
+      phaseEpoch: current.phaseEpoch,
+      worktree: state.worktree,
+    };
+  }
+
+  function refreshedCurrentRecovery(request, expected) {
+    const refreshed = validateCurrentRecovery(request);
+    if (refreshed.refusal) throw new Error(refreshed.refusal.reason);
+    const current = refreshed.current;
+    if (current.sessionUuid !== expected.sessionUuid
+      || current.role !== expected.role
+      || current.phaseEpoch !== expected.phaseEpoch) {
+      throw new Error("delegation current workflow phase changed while exact-session recovery was loading");
+    }
+    return refreshed;
+  }
+
+  async function recoverCurrentDelegation(request) {
+    const checked = validateCurrentRecovery(request);
+    if (checked.refusal) return checked.refusal;
+    let { state, current } = checked;
+    let live = liveAgent(current.sessionUuid);
+    if (live) {
+      try {
+        await adoptLiveCurrent(live, state, current);
+        return recoveryResult("already-live", state, current);
+      } catch (error) {
+        return delegationRefusal(error instanceof Error ? error.message : String(error));
+      }
+    }
+    if (!agents || typeof agents.resume !== "function") {
+      return delegationRefusal("workflow_resume requires DSH agents.resume");
+    }
+
+    let handle;
+    let owned = false;
+    try {
+      handle = adoptAgentHandle(await agents.resume({
+        resumeSessionId: current.sessionUuid,
+        ...childAgentOptions(current.role),
+      }));
+      ({ state, current } = refreshedCurrentRecovery(request, current));
+      const child = handle?.agent ?? handle;
+      await validatePersistedCurrentChild(child, state, current);
+      mountCurrentChild(child, current.role);
+      if (!resumeChild(child, { allowClosing: true })) {
+        throw new Error(`DSH resumed exact current session ${current.sessionUuid}, but land could not adopt its AgentHandle`);
+      }
+      owned = Boolean(currentOwner(state, current));
+      if (!owned) throw new Error(`DSH resumed exact current session ${current.sessionUuid}, but durable workflow ownership was not restored`);
+      child.steer({
+        id: randomUUID(),
+        role: "user",
+        content: [{ type: "text", text: recoveryContinuation(current.role) }],
+        source: { kind: "plugin", plugin: "qq-workflows", form: "recovery" },
+      });
+      return recoveryResult("resumed", state, current);
+    } catch (error) {
+      // A fixed-UUID concurrent resume can win DSH's publication race. Adopt
+      // that exact live handle instead of issuing another resume or minting an id.
+      live = liveAgent(current.sessionUuid);
+      if (!handle && live) {
+        try {
+          await adoptLiveCurrent(live, state, current);
+          return recoveryResult("already-live", state, current);
+        } catch (adoptionError) {
+          return delegationRefusal(`cannot resume exact current session ${current.sessionUuid}: ${adoptionError instanceof Error ? adoptionError.message : String(adoptionError)}`);
+        }
+      }
+      const partial = childOwners.get(current.sessionUuid);
+      if (owned || (handle && partial?.handle === handle)) {
+        await disposeChild(current.sessionUuid, "workflow resume rollback");
+      } else if (handle) {
+        try { await handle.dispose?.(); } catch { /* preserve the concrete recovery error */ }
+      }
+      return delegationRefusal(`cannot resume exact current session ${current.sessionUuid}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async function workflowResume(request = {}) {
+    const checked = validateCurrentRecovery(request);
+    if (checked.refusal) return checked.refusal;
+    if (closing) return delegationRefusal("workflow recovery controller is closing");
+    const delegationId = checked.state.id;
+    const existing = currentRecoveries.get(delegationId);
+    if (existing) return existing;
+    const promise = Promise.resolve().then(() => recoverCurrentDelegation(request));
+    currentRecoveries.set(delegationId, promise);
+    trackControllerTransition(promise);
+    void promise.finally(() => {
+      if (currentRecoveries.get(delegationId) === promise) currentRecoveries.delete(delegationId);
+    }).catch(() => {});
+    return promise;
+  }
+
   async function workflowSend({ delegationId, message, expectedRole, expectedEpoch, parentSessionUuid } = {}) {
     const found = ownedDelegation(delegationId, parentSessionUuid);
     if (found.refusal) return found.refusal;
@@ -2569,6 +2821,7 @@ export function createLand({
     releaseChild,
     refreshLabels,
     workflowStatus,
+    workflowResume,
     workflowSend,
     workflowStop,
     done,

@@ -212,6 +212,54 @@ function buildWorkflowSendTool(workflowSend) {
   };
 }
 
+function buildWorkflowResumeTool(workflowResume) {
+  return {
+    name: "workflow_resume",
+    description: "Recover the exact persisted current child behind an owned durable delegation UUID. Never accepts a session UUID or creates a replacement. Rebinds an already-live exact child idempotently; otherwise resumes the same DSH session with optional stale-role and stale-epoch guards.",
+    parameters: {
+      delegationId: {
+        type: "string",
+        required: true,
+        pattern: DELEGATION_PATTERN,
+        description: "Full durable delegation UUID returned by delegate.",
+      },
+      expectedRole: {
+        type: "string",
+        enum: ["implementation", "qa"],
+        description: "Optional stale-recovery guard: require this current workflow role.",
+      },
+      expectedEpoch: {
+        type: "integer",
+        minimum: 1,
+        description: "Optional stale-recovery guard: require this current phase epoch.",
+      },
+    },
+    output: {
+      schema: { type: "object", additionalProperties: true },
+      render: (_args, value) => {
+        if (value.status === "refused") return [textBlock(`Workflow resume refused: ${value.reason}`)];
+        const verb = value.status === "already-live" ? "already live; ownership rebound to" : "resumed";
+        return [textBlock(
+          `delegation ${value.delegationId}\n${verb} exact current session ${value.sessionUuid}${value.alias ? ` (alias ${value.alias}, ephemeral)` : ""}; role ${value.role}; epoch ${value.phaseEpoch}`,
+        )];
+      },
+    },
+    async execute(args, exec) {
+      try {
+        if (typeof workflowResume !== "function") return refusal("workflow_resume is unavailable");
+        return await workflowResume({
+          delegationId: args?.delegationId,
+          expectedRole: args?.expectedRole,
+          expectedEpoch: args?.expectedEpoch,
+          parentSessionUuid: exec?.agent?.session?.id,
+        });
+      } catch (error) {
+        return refusal(error instanceof Error ? error.message : String(error));
+      }
+    },
+  };
+}
+
 function buildWorkflowStopTool(workflowStop) {
   return {
     name: "workflow_stop",
@@ -246,7 +294,7 @@ function buildWorkflowStopTool(workflowStop) {
   };
 }
 
-export function buildArchitectTools({ delegate, workflowStatus, workflowSend, workflowStop, tasks, cases, land } = {}) {
+export function buildArchitectTools({ delegate, workflowStatus, workflowSend, workflowResume, workflowStop, tasks, cases, land } = {}) {
   const tools = [{
     name: "delegate",
     description: "Start one delegation kind from working memory. The result renders the authoritative durable delegation UUID first, followed by the current immutable physical session UUID, role, epoch, and informational ephemeral alias. Workflow-owned results return automatically.",
@@ -285,7 +333,12 @@ export function buildArchitectTools({ delegate, workflowStatus, workflowSend, wo
       }
     },
   }];
-  tools.push(buildWorkflowStatusTool(workflowStatus), buildWorkflowSendTool(workflowSend), buildWorkflowStopTool(workflowStop));
+  tools.push(
+    buildWorkflowStatusTool(workflowStatus),
+    buildWorkflowSendTool(workflowSend),
+    buildWorkflowResumeTool(workflowResume),
+    buildWorkflowStopTool(workflowStop),
+  );
   if (typeof land === "function") tools.push(buildLandTool({ invoke: land }));
   if (cases && typeof cases.write === "function") tools.push(buildCaseWriteTool(cases, tasks));
   return tools;

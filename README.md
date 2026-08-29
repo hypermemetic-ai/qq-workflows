@@ -18,8 +18,8 @@ UUID and have at most one current physical child session. The host ships:
   `mini-qa`, then an automatic report with no git landing.
 
 An adopted delegation plugin registers `{ kind, invoke, status, send, stop }`
-with `service.workflows.register`. It may additionally provide ownership,
-resume/release, and settings hooks. `service.workflows.kinds()` lists delegation
+with `service.workflows.register`. It may additionally provide durable
+`resume`, live-child ownership/release, and settings hooks. `service.workflows.kinds()` lists delegation
 kinds independently from chair names.
 
 The architect exposes one spawn tool, `delegate({ kind })`, for the two shipped
@@ -29,7 +29,11 @@ not exist. Durable delegations are controlled through the same UUID surface:
 - `workflow_status(delegationId)` returns kind, state, current immutable session
   UUID, role, phase epoch, and kind-specific workspace data;
 - `workflow_send(...)` steers only the exact current owned live session, with
-  optional stale-role and stale-epoch guards; and
+  optional stale-role and stale-epoch guards;
+- `workflow_resume(delegationId, expectedRole?, expectedEpoch?)` re-adopts an
+  already-live exact child or resumes the durable current DSH session UUID with
+  its preserved transcript/worktree and a deterministic recovery continuation;
+  it never accepts or creates a replacement physical session UUID; and
 - `workflow_stop(...)` terminalizes the durable delegation and stops its child.
 
 Session aliases are display-only and are never relay identities.
