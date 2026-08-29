@@ -128,7 +128,7 @@ try {
     workflowStop: async () => ({ status: "ok" }),
   });
   assert.deepEqual(tools.map(({ name }) => name), ["delegate", "workflow_status", "workflow_send", "workflow_stop"]);
-  assert.deepEqual(tools[0].parameters.kind.enum, ["implementation", "research", "docs"]);
+  assert.deepEqual(tools[0].parameters.kind.enum, ["implementation", "research"]);
   assert.equal(tools.some(({ name }) => name === "research"), false);
 
   assert.equal(isLandCandidate({ session: { id: parentId, header: {} } }), true);

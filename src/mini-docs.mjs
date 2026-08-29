@@ -14,6 +14,9 @@ export const MINI_DOCS_PERSONA_ORDER = 0;
 const MINI_DOCS_COMPLETED = Symbol.for("qq.miniDocsCompleted");
 const MINI_DOCS_MOUNT = Symbol.for("qq.miniDocsMount");
 const MOUNT_GENERATION = Object.freeze({});
+const HEADLESS_QQ_CORE = Object.freeze({
+  surface: Object.freeze({ allow() {} }),
+});
 const completed = new WeakSet();
 const consecutiveFormatErrors = new WeakMap();
 const lastResponseHadBash = new WeakMap();
@@ -203,6 +206,11 @@ export function miniDocsSetup(agentCtx, config = {}) {
   const previous = agentCtx[MINI_DOCS_MOUNT];
   if (previous?.generation === MOUNT_GENERATION) return;
   previous?.dispose?.();
+  // qq-wiki's headless writer profile intentionally omits qq-core. Keep this
+  // compatibility surface local so every other adapter still requires real core.
+  if (!agentCtx.get?.("qq-core", false) && typeof agentCtx.provide === "function") {
+    agentCtx.provide("qq-core", HEADLESS_QQ_CORE);
+  }
   allowInherited(agentCtx, agentCtx.agent, MINI_INHERITED_TOOLS);
 
   const lifts = [];
