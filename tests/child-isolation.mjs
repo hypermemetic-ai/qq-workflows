@@ -19,24 +19,61 @@ assert.equal(pinChildSandbox(session, "implementation"), true);
 assert.equal(pinChildSandbox(session, "implementation"), false);
 assert.equal(effectiveSandboxMode(events), "workspace-write");
 
-function sandboxAgent({ enforcement = "full", mode = "workspace-write", services = true } = {}) {
+function sandboxAgent({
+  enforcement = "full",
+  mode = "workspace-write",
+  services = true,
+  strictProxy = true,
+  workspaceRoot = process.cwd(),
+} = {}) {
   const childSession = { ...session, events: [{ type: "sandbox/mode", data: { mode } }] };
-  return {
-    session: childSession,
-    ctx: {
-      get(name) {
-        if (!services) return null;
-        if (name === "sandboxPolicy") return { resolve() { return { mode, workspaceRoot: process.cwd() }; } };
-        if (name === "shell") return { sandboxMode: "workspace-write" };
-        if (name === "sandbox") return { confine() { return { enforcement }; } };
-        return null;
-      },
+  const serviceLookups = [];
+  const rawCtx = {
+    get(name, optional) {
+      serviceLookups.push([name, optional]);
+      if (!services) return null;
+      if (name === "sandboxPolicy") return { resolve() { return { mode, workspaceRoot }; } };
+      if (name === "shell") return { sandboxMode: "workspace-write" };
+      if (name === "sandbox") return { confine() { return { enforcement }; } };
+      return null;
     },
   };
+  const ctx = strictProxy
+    ? new Proxy(rawCtx, {
+        get(target, prop, receiver) {
+          if (prop in target || typeof prop === "symbol") return Reflect.get(target, prop, receiver);
+          throw new Error(`cannot get property "${String(prop)}" without inject`);
+        },
+      })
+    : rawCtx;
+  return {
+    session: childSession,
+    ctx,
+    serviceLookups,
+  };
 }
-assert.deepEqual(assertChildSandbox(sandboxAgent(), "implementation"), { mode: "workspace-write", workspaceRoot: process.cwd() });
+const strictAgent = sandboxAgent();
+assert.throws(() => strictAgent.ctx.sandboxPolicy, /cannot get property "sandboxPolicy" without inject/);
+assert.deepEqual(assertChildSandbox(strictAgent, "implementation"), { mode: "workspace-write", workspaceRoot: process.cwd() });
+assert.deepEqual(strictAgent.serviceLookups, [
+  ["sandboxPolicy", false],
+  ["shell", false],
+  ["sandbox", false],
+], "strict Cordis contexts resolve every sandbox dependency through the sanctioned optional getter");
 assert.throws(() => assertChildSandbox(sandboxAgent({ enforcement: "partial" }), "implementation"), /full DSH filesystem enforcement/);
 assert.throws(() => assertChildSandbox(sandboxAgent({ services: false }), "implementation"), /requires the DSH sandbox-policy/);
+assert.throws(() => assertChildSandbox(sandboxAgent({ mode: "read-only" }), "implementation"), /did not resolve workspace-write/);
+assert.throws(() => assertChildSandbox(sandboxAgent({ workspaceRoot: tmpdir() }), "implementation"), /at its immutable cwd/);
+
+const plainAgent = {
+  session: { ...session, events: [{ type: "sandbox/mode", data: { mode: "workspace-write" } }] },
+  ctx: {
+    sandboxPolicy: { resolve() { return { mode: "workspace-write", workspaceRoot: process.cwd() }; } },
+    shell: { sandboxMode: "workspace-write" },
+    sandbox: { confine() { return { enforcement: "full" }; } },
+  },
+};
+assert.deepEqual(assertChildSandbox(plainAgent, "implementation"), { mode: "workspace-write", workspaceRoot: process.cwd() });
 
 const root = mkdtempSync(join(tmpdir(), "qq-child-boundary."));
 const workspace = join(root, "workspace");
