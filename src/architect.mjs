@@ -11,7 +11,7 @@ import { guardContext, OVERFLOW_MESSAGE } from "./fold.mjs";
 import { markAssemble } from "./assemble-mark.mjs";
 import { truncateObservationContent } from "./observation.mjs";
 import { adoptAgentHandle } from "./agent-handle.mjs";
-import { loadWikiIndexContext } from "./wiki-index.mjs";
+import { loadRepositoryIndexContext } from "./repository-index.mjs";
 
 export const ARCHITECT_LABEL = "workflows:architect";
 export const CHILD_ORIGIN = "subagent";
@@ -194,7 +194,7 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, architectur
     let disposeAssemble;
     let disposeObservation;
     const contextOffs = [];
-    const reportedWikiErrors = new Set();
+    const reportedRepositoryIndexErrors = new Set();
 
     function bindArchitectContext(holder) {
       const prompt = systemPromptOf(holder) ?? systemPromptOf(agent);
@@ -205,18 +205,18 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, architectur
       const promptOff = prompt.context({ name: ARCHITECT_PROMPT_NAME, order: 10, text: () => ARCHITECT_PROMPT });
       if (typeof promptOff === "function") contextOffs.push(promptOff);
 
-      const wiki = loadWikiIndexContext({ ctx, cwd: session.header?.cwd, loadIndex });
-      if (wiki.error) {
-        const detail = wiki.error instanceof Error ? wiki.error.message : String(wiki.error);
-        if (!reportedWikiErrors.has(detail)) {
-          reportedWikiErrors.add(detail);
-          const message = `qq-workflows: wiki index was not injected (${detail}).`;
+      const repositoryIndex = loadRepositoryIndexContext({ ctx, cwd: session.header?.cwd, loadIndex });
+      if (repositoryIndex.error) {
+        const detail = repositoryIndex.error instanceof Error ? repositoryIndex.error.message : String(repositoryIndex.error);
+        if (!reportedRepositoryIndexErrors.has(detail)) {
+          reportedRepositoryIndexErrors.add(detail);
+          const message = `qq-workflows: repository index was not injected (${detail}).`;
           logLine(ctx, "warn", message);
           failVisibly(session, message);
         }
-      } else if (wiki.context) {
-        const wikiOff = prompt.context(wiki.context);
-        if (typeof wikiOff === "function") contextOffs.push(wikiOff);
+      } else if (repositoryIndex.context) {
+        const repositoryIndexOff = prompt.context(repositoryIndex.context);
+        if (typeof repositoryIndexOff === "function") contextOffs.push(repositoryIndexOff);
       }
 
       if (!cases) return;

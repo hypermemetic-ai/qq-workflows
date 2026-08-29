@@ -163,7 +163,6 @@ try {
   apply(ctx, {
     selectionDir,
     journalDir: join(scratch, "journals"),
-    wikiDir: join(scratch, "wiki"),
     landDir: join(scratch, "land"),
     caseDir: join(scratch, "cases"),
   });
