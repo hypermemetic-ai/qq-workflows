@@ -98,6 +98,10 @@ class HostProvisionTests(unittest.TestCase):
         value = json.loads(output.getvalue())
         self.assertEqual(value["schema"], runner.REQUEST_SCHEMA)
         self.assertEqual(value["pinned_sources"]["pr-agent"]["pin"], runner.SOURCES["pr-agent"]["pin"])
+        self.assertEqual(value["host_command"][2], "smoke")
+        self.assertEqual(value["followup"], "none: the smoke command provisions, pilots all arms, and runs the serial matrix")
+        self.assertTrue(runner.PR_AGENT_LAUNCHER.is_file())
+        self.assertTrue(runner.MISOSPACE_LAUNCHER.is_file())
         rendered = json.dumps(value).lower()
         self.assertNotIn("paste", rendered)
         self.assertNotIn("bearer", rendered)
@@ -235,7 +239,8 @@ class BridgeTests(unittest.TestCase):
                 body = json.dumps({
                     "model": "grok-4.6",
                     "messages": [{"role": "system", "content": "review"}, {"role": "user", "content": "diff"}],
-                    "reasoning_effort": "high",
+                    "reasoning_effort": "high", "temperature": 0.2,
+                    "max_tokens": 8192,
                 }).encode()
                 request = Request(f"{base}/chat/completions", data=body, headers={
                     "Authorization": f"Bearer {key}", "Content-Type": "application/json",
@@ -253,9 +258,63 @@ class BridgeTests(unittest.TestCase):
                 log = (root / "bridge.jsonl").read_text(encoding="utf-8")
                 self.assertNotIn(key, log)
                 self.assertNotIn("Authorization", log)
+                records = [json.loads(line) for line in log.splitlines() if line.strip()]
+                record = next(item for item in records if item["status"] == 200)
+                self.assertEqual(record["controls"], {
+                    "reasoning_effort_requested": "high",
+                    "reasoning_effort_forwarded": "high",
+                    "temperature_requested": 0.2,
+                    "temperature_forwarded": False,
+                    "token_cap_requested": 8192,
+                    "token_cap_forwarded": False,
+                    "response_format_requested": None,
+                })
+                self.assertNotIn("hidden", json.dumps(value))
             finally:
                 process.terminate()
                 process.wait(timeout=3)
+
+    def test_bridge_rejects_response_format_instead_of_silently_ignoring_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            process, base, key = self.start_bridge(root)
+            try:
+                body = json.dumps({
+                    "model": "grok-4.6",
+                    "messages": [{"role": "user", "content": "diff"}],
+                    "response_format": {"type": "json_object"},
+                }).encode()
+                request = Request(f"{base}/chat/completions", data=body, headers={
+                    "Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                })
+                with self.assertRaises(HTTPError) as raised:
+                    urlopen(request, timeout=3)
+                self.assertEqual(raised.exception.code, 400)
+                error = json.load(raised.exception)
+                self.assertIn("response_format is unsupported", error["error"]["message"])
+                raised.exception.close()
+            finally:
+                process.terminate()
+                process.wait(timeout=3)
+
+    def test_qq_provider_attempt_log_is_strict_and_counts_transport_retries(self) -> None:
+        program = f"""
+          import {{ providerAttempts }} from {json.dumps(USAGE.as_uri())};
+          const rows = providerAttempts([
+            JSON.stringify({{schema:'qq.grok-provider-attempt/v1',model:'grok-4.6',status:401,ok:false}}),
+            JSON.stringify({{schema:'qq.grok-provider-attempt/v1',model:'grok-4.6',status:200,ok:true}}),
+          ].join(String.fromCharCode(10)));
+          process.stdout.write(JSON.stringify(rows));
+        """
+        rows = json.loads(subprocess.check_output(["node", "--input-type=module", "-e", program], text=True))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(sum(not row["ok"] for row in rows), 1)
+        invalid = f"""
+          import {{ providerAttempts }} from {json.dumps(USAGE.as_uri())};
+          providerAttempts('{{"schema":"qq.grok-provider-attempt/v1","model":"other","status":200,"ok":true}}');
+        """
+        result = subprocess.run(["node", "--input-type=module", "-e", invalid], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertNotEqual(result.returncode, 0)
 
     def test_native_qq_usage_is_provider_proven_and_not_double_counted(self) -> None:
         program = f"""
@@ -267,10 +326,114 @@ class BridgeTests(unittest.TestCase):
           process.stdout.write(JSON.stringify(value));
         """
         value = json.loads(subprocess.check_output(["node", "--input-type=module", "-e", program], text=True))
-        self.assertEqual(value["usage"]["input_tokens"], 15)
+        self.assertEqual(value["usage"]["input_tokens"], 10)
         self.assertEqual(value["usage"]["processed_tokens"], 22)
         self.assertEqual(value["usage"]["reasoning_tokens"], 5)
         self.assertEqual(value["responseModels"], ["grok-4.6"])
+
+class ExternalLauncherTests(unittest.TestCase):
+    @staticmethod
+    def load(name: str, path: Path):
+        spec = importlib.util.spec_from_file_location(name, path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_pr_agent_preserves_unknown_severity_and_unlocated_issue(self) -> None:
+        module = self.load("grok_pr_agent_launcher", HERE / "adapters" / "run_pr_agent.py")
+        native = {
+            "review": {"key_issues_to_review": [
+                {"issue_header": "Bug", "issue_content": "Concrete failure", "relevant_file": " src/a.py ", "start_line": "12"},
+                {"issue_content": "Repository-wide concern"},
+            ]},
+            "usage": {"prompt_tokens": 221, "completion_tokens": 69, "total_tokens": 290},
+        }
+        findings = module.normalize_findings(native)
+        self.assertEqual(findings[0], {
+            "path": "src/a.py", "line": 12, "body": "Bug: Concrete failure",
+            "severity": None, "confidence": None, "blocks_merge": None,
+        })
+        self.assertIsNone(findings[1]["path"])
+        self.assertIsNone(findings[1]["line"])
+        self.assertEqual(module.normalize_usage(native), {
+            "input_tokens": None, "output_tokens": 69, "cache_read_tokens": None,
+            "cache_write_tokens": None, "reasoning_tokens": None, "processed_tokens": 290,
+        })
+
+    def test_misospace_preserves_native_verdict_without_requiring_findings(self) -> None:
+        module = self.load("grok_misospace_launcher", HERE / "adapters" / "run_misospace.py")
+        previous = {name: os.environ.get(name) for name in (
+            "BENCH_ARM_ID", "BENCH_CASE_ID", "BENCH_CLIENT_MODEL", "BENCH_PROVIDER_MODEL",
+        )}
+        os.environ.update({
+            "BENCH_ARM_ID": "misospace-pr-reviewer", "BENCH_CASE_ID": "smoke-001",
+            "BENCH_CLIENT_MODEL": "grok-4.6", "BENCH_PROVIDER_MODEL": "grok-4.6",
+        })
+        try:
+            result = module.build_result({"verdict": "request_changes", "findings": []})
+            self.assertEqual(result["native_verdict"], "request_changes")
+            self.assertEqual(result["normalized_verdict"], "fail")
+            self.assertEqual(result["verdict_source"], "native")
+            self.assertEqual(result["findings"], [])
+            findings = module.normalize_findings({"findings": [{
+                "message": "Global blocker", "severity": "blocker", "file": None, "line": None,
+            }, {"message": "Minor", "severity": "minor"}]})
+            self.assertTrue(findings[0]["blocks_merge"])
+            self.assertFalse(findings[1]["blocks_merge"])
+            self.assertIsNone(findings[0]["path"])
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+    def test_host_pilot_gate_rejects_control_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "cases" / "smoke-001" / "misospace-pr-reviewer"
+            provider = artifact / "provider"; provider.mkdir(parents=True)
+            (artifact / "normalized.json").write_text(json.dumps({
+                "failure": None,
+                "result": {
+                    "provider_evidence": {"request_models": ["grok-4.6"], "response_models": ["grok-4.6"]},
+                    "telemetry": {"request_count": 1},
+                },
+            }), encoding="utf-8")
+            request = {
+                "model": "grok-4.6", "stream": True, "temperature": 0.1,
+                "max_tokens": 8192, "stream_options": {"include_usage": True},
+                "messages": [{"role": "user", "content": "review"}],
+            }
+            path = provider / "request-0001.request.bin"
+            path.write_text(json.dumps(request), encoding="utf-8")
+            evidence = runner.validate_pilot(root, "misospace-pr-reviewer")
+            self.assertEqual(evidence["captured_request_count"], 1)
+            request["temperature"] = 0.2
+            path.write_text(json.dumps(request), encoding="utf-8")
+            with self.assertRaisesRegex(runner.HostRunnerError, "stock defaults"):
+                runner.validate_pilot(root, "misospace-pr-reviewer")
+
+    def test_misospace_gh_fixture_rejects_every_unexpected_call(self) -> None:
+        module = self.load("grok_misospace_launcher_shim", HERE / "adapters" / "run_misospace.py")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = root / "files.json"; fixture.write_text("[]\n", encoding="utf-8")
+            shim = module.make_gh_shim(root)
+            environment = os.environ.copy()
+            environment.update({"MISOSPACE_FILES_FIXTURE": str(fixture), "MISOSPACE_GH_LOG": str(root / "calls.jsonl")})
+            accepted = subprocess.run(
+                [str(shim / "gh"), "api", "repos/benchmark/local/pulls/1/files?per_page=100"],
+                env=environment, stdout=subprocess.PIPE, text=True, check=False,
+            )
+            self.assertEqual(accepted.returncode, 0)
+            self.assertEqual(accepted.stdout, "[]\n")
+            rejected = subprocess.run(
+                [str(shim / "gh"), "api", "user"], env=environment,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            )
+            self.assertEqual(rejected.returncode, 97)
 
 
 if __name__ == "__main__":

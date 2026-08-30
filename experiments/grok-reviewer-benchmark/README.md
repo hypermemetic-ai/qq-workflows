@@ -1,231 +1,247 @@
 # Controlled Grok reviewer benchmark
 
-This experiment compares **exactly three current review systems** on paired,
+This experiment compares **exactly three current review systems** on identical,
 frozen changes:
 
-1. the current bash-based qq `mini-qa` reviewer on `xai-auth/grok-4.6`;
-2. `The-PR-Agent/pr-agent` v0.44.0 at
-   `1b6925ba8cc3ef6be09dec704a374da53091926c`, in plain-diff/JSON mode with
-   `xai/grok-4.6`;
-3. `misospace/pr-reviewer-action` v2.2.1 at
-   `54dfb1aac20e1e410ad8f71dc3681b888500a1ec`, with stock review behavior,
-   `tool_mode=off`, no publishing, and `grok-4.6`.
+1. current bash-based qq `mini-qa`, route `xai-auth/grok-4.6`;
+2. `The-PR-Agent/pr-agent` at exact commit
+   `1b6925ba8cc3ef6be09dec704a374da53091926c`, configured as
+   `xai/grok-4.6` in shipped plain-diff/JSON mode;
+3. `misospace/pr-reviewer-action` v2.2.1 at exact commit
+   `54dfb1aac20e1e410ad8f71dc3681b888500a1ec`, configured as `grok-4.6`,
+   `tool_mode=off`, with no publication.
 
-There is no fourth arm. In particular, the historical inspection-capped
-structured reviewer is not a comparator: its cap truncated inspection before it
-found issues, so its latency, token use, and zero-finding behavior are not
-quality/efficiency evidence. Nothing here restores or recommends that behavior.
-No product source or production review setting is changed by this experiment.
+The PR-Agent SHA is a pinned post-release main observation from when the release
+named v0.44.0 was current; it is not itself the v0.44.0 tag (its package metadata
+still says 0.43.0). The immutable SHA is authoritative.
 
-## Current status and exact host boundary
+There is no Maki arm and no historical inspection-capped reviewer arm. The old
+reviewer's cap truncated inspection before it found defects, so lower latency,
+lower tokens, and zero findings are not evidence of review efficiency. Nothing
+here restores that behavior or changes product review settings.
 
-The frozen corpus and offline harness are ready. The tracked host runtime now
-contains:
+## Implementation and runtime status
 
-- `host/runner.py`, which provisions the exact public source pins and frozen Git
-  objects, verifies every corpus hash, starts the bridge, runs `doctor`, and then
-  runs the serial smoke;
-- `host/xai_openai_bridge.mjs`, a loopback-only OpenAI chat-completions facade
-  over the normal qq-models `xai-auth` adapter. It reads host OAuth through the
-  existing store and gives the capture proxy only a random run-scoped synthetic
-  key; no provider key is accepted or copied;
-- the experiment-only DSH headless Mini QA adapter, which reuses production
-  `miniQaSetup`, qq-core's production default-deny tool surface, `RepoOracle`,
-  task-artifact/proposal-packet rendering, the read-only bwrap shell, and native
-  session usage; and
-- offline HTTP, usage, object-provisioning, Git-geometry, and task-packet tests.
+The rig now includes all three tracked stock launchers, exact external source
+blob/tree pins, deterministic corpus provisioning, the trusted xai-auth bridge,
+provider capture, serial scheduling, result normalization, blind packets, and
+scoring.
 
-The live smoke is still **not started**. This implementation shell is PID 1 under
-`bwrap --unshare-net --clearenv`; it cannot reach public Git, the host OAuth
-route, or a host loopback listener. The exact sanctioned handoff is machine
-readable—no key or generic runner bundle is requested:
+Evidence established before the quality matrix:
+
+- Direct live qq-models adapter and bridge calls reached `grok-4.6` through the
+  sanctioned host OAuth route and returned provider usage without exposing token
+  contents.
+- Nonstreaming and streaming bridge calls both returned exact model identity,
+  terminal status, usage, and `[DONE]` where applicable.
+- The pinned stock misospace `scripts/run_review.sh` completed an offline
+  end-to-end compatibility pilot through the capture proxy and bridge using a
+  deterministic fake model response. It made one streamed request with model
+  `grok-4.6`, stock temperature `0.1`, `max_tokens=8192`, usage enabled, no
+  tools, and no `response_format`; its only platform call was the allowed local
+  PR-files fixture read.
+- Offline source, object, synthetic-fixture, Git geometry, token-accounting,
+  schema, bridge, launcher, and adjudication tests pass.
+
+The live three-arm quality matrix has not been run from this checkout's command
+sandbox because PID 1 is `bwrap --unshare-net`. That does not mean the OAuth
+route or network is absent: both are proven in the normal host namespace. The
+tracked `smoke` command is the complete minimal runner path; it does not ask for
+an API key or leave launcher work to the operator.
+
+## One-command sanctioned smoke
+
+Choose a private writable runtime root inside the active implementation
+worktree (the host state directory may be read-only to delegated shells):
+
+```bash
+ROOT="$PWD/.grok-reviewer-live"
+python3 experiments/grok-reviewer-benchmark/host/runner.py smoke --root "$ROOT"
+```
+
+`smoke` performs, in order:
+
+1. clone exact source SHAs;
+2. bootstrap exact `uv 0.9.7` and run PR-Agent's frozen lock install before any
+   measured arm;
+3. materialize all frozen repository objects and deterministically create the
+   disclosed qq-ui synthetic object;
+4. verify source blobs/trees and every case's commit/tree/diff/task/standards
+   hashes;
+5. start the loopback-only xai-auth bridge with a random run-scoped bearer;
+6. run `doctor`;
+7. run one compatibility pilot per arm on `smoke-001`;
+8. run the full three-case matrix serially in the pre-registered order.
+
+To emit the same command as machine-readable, secret-free JSON:
 
 ```bash
 python3 experiments/grok-reviewer-benchmark/host/runner.py request \
-  --root "$HOME/.local/state/qq/grok-reviewer-smoke" \
+  --root "$PWD/.grok-reviewer-live" \
   --output /tmp/grok-reviewer-host-request.json
 ```
 
-The normal host executes the emitted `host_command` (currently
-`host/runner.py provision --root ...`). Provisioning fetches the exact PR-Agent
-and misospace pins and imports locally retained blocked-head objects before
-fetching the missing reachable base/control objects. At this checkout's sandbox
-boundary the two pinned external trees are not yet present, so their release
-entry points cannot honestly be bound or tested here. Do not run the matrix or
-substitute inferred flags until those provisioned trees have been inspected and
-the two stock launchers are tracked. This is the one remaining source/runner
-continuation, not a credential request. No private auth file was inspected or
-copied.
+No provider key, copied OAuth file, or GitHub token is accepted. External
+reviewer children receive only an inert capture-proxy credential. The trusted
+bridge alone uses qq-models' normal `createAuthStore` against the existing
+`QQ_DSH_HOME`/`DSH_HOME`; authorization headers and OAuth fields are never
+logged.
 
-## Frozen smoke corpus
+## Repaired frozen smoke corpus
 
-`corpus/smoke.json` contains only neutral case IDs and immutable execution
-inputs. Labels/known defects are isolated in `corpus/truth.smoke.json`, which is
-accepted only by `score`; neither `run` nor a launcher receives its path.
+Execution inputs and labels are separated. `corpus/smoke.json` is the only
+corpus read by `verify`, `doctor`, and `run`. Known defects exist only in
+`corpus/truth.smoke.json`, which is accepted by `score` and is never passed or
+mounted into reviewer processes.
 
-| Case | Frozen geometry | Scale | Role (scoring-only) |
+| Case | Exact geometry | Scale | Scoring-only role |
 | --- | --- | ---: | --- |
-| `smoke-001` | qq-ui `e0dd0db…` → `20d0380…` | 299 changed lines / 4 files | known-positive original head |
-| `smoke-002` | qq-index `c862e42…` → `437fde1…` | 687 changed lines / 7 files | known-positive original head; leading-blank projection repro |
-| `smoke-003` | qq-index `c862e42…` → `20baa45…` | 754 changed lines / 7 files | corrected, landed control |
+| `smoke-001` | qq-ui `75ec894…` → `2904675…` | 449 lines / 4 files | known-positive disclosed synthetic mutation |
+| `smoke-002` | qq-index `c862e42…` → `c424715…` | 714 lines / 7 files | known-positive real defective head; leading-blank projection repro |
+| `smoke-003` | qq-index `c862e42…` → `20baa45…` | 754 lines / 7 files | corrected landed control |
 
-The qq-index task is the exact uncontaminated task artifact. The qq-ui task is
-the exact operator-authored description of the separate all-project-overview
-follow-on, extracted without the preceding workflow/review history. All arms get
-identical task bytes. `standards.md` is deliberately empty: repository state and
-task acceptance criteria are shared, while each stock reviewer's own system
-prompt remains stock. The empty context is itself SHA-256 pinned.
+The vanished qq-ui `20d0380…` and qq-index `437fde1…` objects are not benchmark
+dependencies and are not claimed as retained originals.
 
-Before **every arm**, the harness resolves full commit and tree IDs and verifies:
+`smoke-001` starts from landed task commit
+`e9ed42ee05c2de6fcbed80575e029cca3949da0c`, whose parent is the frozen base. The
+tracked `corpus/provision_qq_ui_synthetic.py` changes exactly:
 
-- the binary/full-index diff SHA-256;
-- task and standards SHA-256;
-- changed-line/file counts; and
-- availability of both exact revisions.
-
-Git subprocesses delete inherited `GIT_*` geometry and install deterministic,
-noninteractive Git config. This is important on the host checkout, where
-inherited geometry otherwise points unrelated paths at the active task
-worktree. Each arm gets a newly initialized detached checkout backed by a
-read-only object alternate, no remote, a clean status, and an empty output
-directory. Source and sandbox integrity are checked again after the arm.
-
-## Reproducing preflight and run
-
-Run host provisioning from the normal qq execution namespace, not from an
-implementation/QA bwrap:
-
-```bash
-ROOT="$HOME/.local/state/qq/grok-reviewer-smoke"
-python3 experiments/grok-reviewer-benchmark/host/runner.py provision \
-  --root "$ROOT" \
-  --qq-workflows-source /home/qqp/projects/qq-workflows
+```diff
+-if (!projectsScope && project && liveTrackerProjectFilter !== LIVE_TRACKER_OVERVIEW) {
++if (!projectsScope && project) {
 ```
 
-`provision` creates private detached source checkouts and bare object-complete
-fixture repositories under `ROOT`, then calls the same `case_integrity` checks
-used immediately before every arm. It deletes inherited `GIT_*` geometry and
-fails closed on a wrong pin, dirty tracked source, unavailable object, or hash
-mismatch. It needs ordinary public HTTPS but no GitHub token argument.
+Fixed commit-tree metadata produces head
+`2904675f2025d0c8bf8a597d055ea4ddd927f645` and tree
+`bf1ea815e420721f331692b506c0f768780bf2f5`. The provisioner refuses unexpected
+source bytes, blob, tree, or commit IDs.
 
-After the two pinned external release launchers are tracked, the normal host runs:
+`smoke-002` uses available real defective head
+`c4247153a775407b6c9295b6f1c0b27710d5c317`, which has the same leading-blank
+README projection defect, and `smoke-003` retains fixed descendant
+`20baa457fe65fdc24dbdd1c203c6a308611b2e4f` as its paired control.
 
-```bash
-python3 experiments/grok-reviewer-benchmark/host/runner.py run \
-  --root "$ROOT" \
-  --qq-core-source /home/qqp/projects/qq-core \
-  --qq-models-source /home/qqp/projects/qq-models \
-  --qq-dsh-home "$HOME/.local/state/qq" \
-  --pr-agent-launcher /tracked/run-pr-agent-plain-diff \
-  --misospace-launcher /tracked/run-misospace-action
+All arms receive identical diff bytes, task bytes, empty SHA-pinned standards
+context, repository state, and fresh private checkouts. Before and after every
+arm the harness checks commit/tree IDs, binary full-index diff SHA-256, changed
+line/file counts, task/standards hashes, source integrity, clean repository
+state, and output isolation.
+
+## Stock adapters and unavoidable differences
+
+### Current qq Mini QA
+
+`adapters/run_qq_mini_qa.py` uses the shipped `miniQaSetup`, proposal packet,
+`RepoOracle`, `bindMiniQaSubmit`, production default-deny tools, and normal
+read-only bwrap shell. It is not a generic headless prompt arm and does not enter
+the landing/revision state machine. Native DSH response events provide disjoint
+usage and exact `xai-auth/grok-4.6` response evidence. A trusted experiment-only
+qq-models wrapper delegates unchanged to the pinned plugin while logging only
+Responses HTTP attempt model/status/timing; this supplies exact request,
+retry, and failure counts without recording prompts, headers, OAuth, or token
+contents.
+
+### PR-Agent
+
+`adapters/run_pr_agent.py` runs the shipped entrypoint:
+
+```text
+python -m pr_agent.cli --diff-file ... --output ... --json-output ... review
 ```
 
-The runner pins qq-core's DSH lock blob and qq-models' source tree before
-starting anything. It checks only that the normal xai-auth marker exists; the
-bridge's existing auth-store implementation owns all reads/refreshes. The bridge
-binds exactly `127.0.0.1`, accepts exact `grok-4.6` text/no-tool traffic, allows
-one request at a time, and records only secret-free model/usage/error metadata.
-`benchmark.py` starts its existing capture proxy in front of this bridge. Stock
-external reviewers receive only the capture proxy's inert key; qq stays on its
-native `xai-auth/grok-4.6` path.
+It uses exact Dynaconf mappings `CONFIG__MODEL=xai/grok-4.6`, no fallback,
+`CONFIG__REASONING_EFFORT=high`, `OPENAI__API_BASE`, and `XAI__KEY` (the inert
+proxy bearer). The task is supplied through stock
+`PR_REVIEWER__EXTRA_INSTRUCTIONS`, not a PR-description field. Repository/global
+settings are disabled so no arm-specific standards are discovered. PR-Agent
+uses nonstreaming chat completions, stock temperature 0.2, and at most three key
+issues. The bridge records that temperature cannot be forwarded by the
+qq-models Responses adapter. PR-Agent has no native approve/request-changes
+verdict; normalized pass/fail is explicitly `adapter_findings`, and its findings
+have null native severity/confidence/blocker status.
 
-Runs are serial and use the balanced schedule in `config.json`, with a recorded
-10-second cooldown. Exact command arrays, source pins, effective configuration,
-start/finish times, and wall-clock duration are retained. Reviewer processes get
-a fresh private HOME/XDG/TMP tree; truth and other-arm artifacts are never
-passed.
+### misospace action
 
-## Model/settings parity and unavoidable differences
+`adapters/run_misospace.py` invokes shipped `scripts/run_review.sh` in a private
+copy of the exact head. It pre-seeds stock-supported `pr-object.json` and
+`pr.diff`, and puts a fail-closed `gh` shim first on `PATH`. The shim permits only
+`api repos/benchmark/local/pulls/1/files?per_page=100`, returning a deterministic
+list derived from the exact Git diff; every other call is logged and rejected.
 
-All provider requests and responses must identify exact provider model
-`grok-4.6`; aliases/fallbacks fail validation. Client model strings remain the
-stock tool forms (`xai-auth/grok-4.6`, `xai/grok-4.6`, and `grok-4.6`) and are
-recorded separately from provider identity.
+Stock controls remain: stream on, temperature 0.1, `max_tokens=8192`, structured
+output off, eight primary retries, `tool_mode=off`, and no publishing. One
+compatibility correction is necessary: v2.2.1 action wiring defaults a blank
+fallback URL to the primary URL while leaving fallback model blank, but its
+driver rejects that combination. The launcher explicitly leaves both fallback
+URL and model blank rather than inventing a fallback request. Native
+`approve|request_changes` is retained independently of findings, including when
+the finding list is empty or contains null file/line locations.
 
-The target reasoning effort is high, with no experiment-imposed temperature or
-output cap. The qq route uses its current high setting. PR-Agent requests high
-where the pinned LiteLLM/xAI path supports it. Misospace keeps defaults unless a
-compatibility setting is required. Every launcher must dump actual effective
-values and any ignored/unsupported setting; the harness does not pretend unlike
-controls are equivalent. Other unavoidable differences are stock behavior:
-qq has iterative read-only bash, PR-Agent enriches an exact plain diff from head
-files, and misospace has tools off.
+## Bridge and usage accounting
 
-## Usage and raw artifacts
+`host/xai_openai_bridge.mjs` exposes only authenticated
+`POST /v1/chat/completions` on `127.0.0.1`. It accepts exactly `grok-4.6`, forces
+high reasoning when the client cannot request it, translates real qq-models
+`{type:"finish", reason}` events, supports stream/nonstream clients, and never
+exposes reasoning text as assistant content. Unsupported `response_format`
+fails closed. Requested but unforwardable temperature/token caps are recorded as
+such in secret-free bridge logs.
 
-`capture_proxy.py` stores secret-free metadata plus exact request/response bodies
-for each external provider call. Authorization headers are never persisted.
-It supports JSON and SSE usage. For streaming requests it adds only
-`stream_options.include_usage=true`, retaining and hashing both original and
-forwarded request bytes; prompts and generation controls are unchanged. It
-normalizes:
+Token categories are disjoint:
 
-- authoritative proxy request count for external arms and host-log count for qq;
-- input and output tokens;
-- cache-read and cache-write tokens;
-- reasoning tokens; and
-- processed tokens.
+```text
+processed = uncached_input + cache_read + cache_write + output
+```
 
-`processed_tokens` is provider total where supplied, otherwise input + output.
-Reasoning is recorded separately and **never added again**. Streaming cumulative
-usage uses the largest/final record instead of summing chunks. PR-Agent's
-accumulated `--json-output` usage is compared field-by-field with captured
-responses. Misospace proxy usage is authoritative because action output is
-incomplete. The qq launcher must preserve host response logs, supply their exact
-request/response model evidence and normalized usage, and cross-check any
-separately reported totals. External request/response model evidence comes
-straight from the proxy.
+Reasoning is a subset of output and is never added twice. Standard OpenAI prompt
+totals are converted back to uncached input by subtracting cache read/write.
+For example, 93 uncached + 128 cache-read + 69 output = 290 processed, with 66
+reasoning reported separately.
 
-Each arm artifact retains native stdout/stderr, native structured output,
-provider request/response bodies, normalized findings/verdict, retries,
-failures, truncation/context events, integrity records, and elapsed time. `runs/`
-and `adjudication/` are gitignored because raw diffs/prompts/outputs can be
-sensitive and large.
+The capture proxy is authoritative for external requests/retries and usage.
+PR-Agent's inclusive prompt total is preserved in native JSON but not mislabeled
+as uncached input; only comparable completion and total fields are checked.
 
-## Blinded adjudication and scoring
+## Results, blinding, and scoring
 
-After a successful run:
+Each normalized record preserves:
+
+- wall time, request count, complete provider usage, retries/failures, and
+  truncation/context events;
+- `native_verdict`, `normalized_verdict`, and `verdict_source` separately;
+- raw findings, including null path/line/blocking semantics;
+- exact model evidence and effective controls;
+- raw reviewer and provider artifacts.
+
+Generate blinded packets only after a completed live run:
 
 ```bash
 python3 experiments/grok-reviewer-benchmark/benchmark.py blind \
-  --run experiments/grok-reviewer-benchmark/runs/smoke-001 \
-  --output /private/adjudication/smoke-001 --seed 20260821
-```
+  --run "$ROOT/live/<run-id>/run" --seed 20260828 \
+  --output "$ROOT/live/<run-id>/blind"
 
-`packet.json` randomizes findings and hides arm identity. Give only that file and
-the frozen repositories/diffs to independent adjudicators; keep
-`blind-map.json` sealed until completion. For every finding they record:
-
-- introduced by the diff;
-- concrete reproducible trigger;
-- behavior claim correctness;
-- actionable path/line;
-- duplicate status and normalized defect cluster;
-- known-defect match, if any;
-- blocker/non-blocker severity; and
-- confidence from 1–5.
-
-Then score with the sealed map and scoring-only truth:
-
-```bash
 python3 experiments/grok-reviewer-benchmark/benchmark.py score \
-  --run experiments/grok-reviewer-benchmark/runs/smoke-001 \
+  --run "$ROOT/live/<run-id>/run" \
   --truth experiments/grok-reviewer-benchmark/corpus/truth.smoke.json \
-  --adjudication /private/adjudication/smoke-001/completed.json \
-  --blind-map /private/adjudication/smoke-001/blind-map.json \
-  --output /private/adjudication/smoke-001/score.json
+  --adjudication "$ROOT/live/<run-id>/blind/completed-packet.json" \
+  --blind-map "$ROOT/live/<run-id>/blind/blind-map.json" \
+  --output "$ROOT/live/<run-id>/score.json"
 ```
 
-The summary reports defect-cluster precision, known-defect recall, false-positive
-clusters on clean cases, blocker precision, wall time/tokens per valid blocker,
-and all token dimensions. Valid newly discovered defects on a nominally clean
-case are reported separately rather than mislabeled false positives.
+Normalize findings into defect clusters before scoring. Primary metrics are
+cluster precision, known-defect recall, false positives on the clean case,
+blocker precision, and wall time/processed tokens per valid blocker. The
+three-case matrix is harness smoke, not decision-grade evidence; expand to a
+balanced 8–12 real golden-replay corpus and use a second blinded human for any
+product decision.
 
-## Tests
+## Inspect AI verdict
 
-```bash
-python3 -m unittest discover \
-  -s experiments/grok-reviewer-benchmark/tests -p 'test_*.py' -v
-```
-
-The tests are offline and do not invoke reviewers or provider endpoints.
+Do not replace or delay this smoke rig with Inspect AI. Inspect does not solve
+the host-only OAuth route, external usage capture, fixture integrity, native
+launchers, normalization, or blinding. If this becomes a recurring 8–12-case CI
+suite, Inspect can wrap the existing `run --case ... --arm ...` boundary for
+scheduling, retry/resume, logs, and score-edit provenance while this rig retains
+credential, corpus, adapter, usage, artifact, normalization, and adjudication
+responsibilities.

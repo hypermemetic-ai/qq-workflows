@@ -1,0 +1,7 @@
+{
+  "name": "@hypermemetic-ai/qq-models",
+  "version": "0.0.0-benchmark",
+  "private": true,
+  "type": "module",
+  "main": "plugin.mjs"
+}

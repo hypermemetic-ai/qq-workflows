@@ -1,8 +1,8 @@
 /** Experiment-only binding of DSH headless to the production Mini QA preset. */
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { eventCount, usageFrom } from "./usage.mjs";
+import { eventCount, providerAttempts, usageFrom } from "./usage.mjs";
 
 export const name = "qq-benchmark-mini-qa";
 export const inject = ["agents", "qq-core"];
@@ -77,9 +77,14 @@ export function apply(ctx) {
     if (native.requestCount < 1 || native.responseModels.some((model) => model !== "grok-4.6")) {
       throw new Error("qq Mini QA session did not prove exact grok-4.6 responses");
     }
+    const outputDir = resolve(required("BENCH_OUTPUT_DIR"));
+    const attempts = providerAttempts(readFileSync(join(outputDir, "qq-provider-attempts.jsonl"), "utf8"));
+    if (attempts.length < native.requestCount) {
+      throw new Error("qq provider attempt log has fewer HTTP attempts than completed model calls");
+    }
     const events = session.events;
-    const failures = eventCount(events, (item) => item.type === "turn/end" && item.data?.reason?.kind === "error");
-    const retries = eventCount(events, (item) => /retry/i.test(item.type));
+    const failures = attempts.filter((item) => !item.ok).length;
+    const retries = attempts.length - native.requestCount;
     const truncationEvents = eventCount(events, (item) => /truncat|max.?tokens/i.test(item.type)
       || item.type === "turn/end" && /max.?tokens/i.test(String(item.data?.reason?.kind ?? "")));
     const contextEvents = eventCount(events, (item) => /compact|context/i.test(item.type));
@@ -99,12 +104,15 @@ export function apply(ctx) {
         max_output_tokens: null,
         prompt: "production-mini-qa",
         shell_isolation: "production-read-only-bwrap",
+        provider_attempt_instrumentation: "trusted-fetch-status-only",
       },
-      verdict: findings.length ? "fail" : "pass",
+      native_verdict: null,
+      normalized_verdict: findings.length ? "fail" : "pass",
+      verdict_source: "adapter_findings",
       findings,
       usage: { host_captured: native.usage },
       telemetry: {
-        request_count: native.requestCount,
+        request_count: attempts.length,
         retries,
         failures,
         truncation_events: truncationEvents,
@@ -112,7 +120,7 @@ export function apply(ctx) {
       },
       isolation: { prior_findings_visible: false, publishing: false },
       provider_evidence: {
-        request_models: native.requestModels,
+        request_models: attempts.map((item) => item.model),
         response_models: native.responseModels,
       },
     };
