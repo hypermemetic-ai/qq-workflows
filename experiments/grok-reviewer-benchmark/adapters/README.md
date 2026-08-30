@@ -13,8 +13,11 @@ export GROK_BENCH_MISOSPACE_COMMAND_JSON='["/approved/bin/run-misospace-action"]
 
 The harness records each exact array. Do not place credentials in an array.
 `run_qq_mini_qa.py` and `qq-arm-plugin/` are the tracked native qq adapter. It
-uses the pinned production Mini QA exports and the pinned host DSH/qq-models
-runtime; it is not a replacement prompt. The two external command examples
+uses the pinned production Mini QA exports and the pinned host DSH, qq-core,
+and qq-models runtime. The private headless profile applies qq-core's production
+host overlay so its default-deny tool-surface service is live, then disables only
+the daily-host webserver and HMR rows; it is not a replacement prompt. The two
+external command examples
 remain contracts until their exact provisioned release entry points are bound.
 
 ## Input environment

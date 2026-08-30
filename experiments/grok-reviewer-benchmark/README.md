@@ -30,8 +30,9 @@ contains:
   existing store and gives the capture proxy only a random run-scoped synthetic
   key; no provider key is accepted or copied;
 - the experiment-only DSH headless Mini QA adapter, which reuses production
-  `miniQaSetup`, `RepoOracle`, task-artifact/proposal-packet rendering, the
-  read-only bwrap shell, and native session usage; and
+  `miniQaSetup`, qq-core's production default-deny tool surface, `RepoOracle`,
+  task-artifact/proposal-packet rendering, the read-only bwrap shell, and native
+  session usage; and
 - offline HTTP, usage, object-provisioning, Git-geometry, and task-packet tests.
 
 The live smoke is still **not started**. This implementation shell is PID 1 under

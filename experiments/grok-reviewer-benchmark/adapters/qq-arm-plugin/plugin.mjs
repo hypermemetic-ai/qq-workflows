@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { eventCount, usageFrom } from "./usage.mjs";
 
 export const name = "qq-benchmark-mini-qa";
-export const inject = ["agents"];
+export const inject = ["agents", "qq-core"];
 
 const required = (name) => {
   const value = process.env[name];
@@ -13,8 +13,9 @@ const required = (name) => {
   return value;
 };
 const toolSource = resolve(required("BENCH_TOOL_SOURCE"));
-const [mini, oracleModule, isolation, approval] = await Promise.all([
+const [mini, officialMini, oracleModule, isolation, approval] = await Promise.all([
   import(pathToFileURL(join(toolSource, "src/mini-qa.mjs"))),
+  import(pathToFileURL(join(toolSource, "src/official-mini.mjs"))),
   import(pathToFileURL(join(toolSource, "src/repo-oracle.mjs"))),
   import(pathToFileURL(join(toolSource, "src/child-isolation.mjs"))),
   import(pathToFileURL(join(toolSource, "src/approval-policy.mjs"))),
@@ -58,7 +59,7 @@ export function apply(ctx) {
         };
       },
     });
-    mini.bindMiniShellIsolation(agent, (command) => isolation.isolatedShellCommand({
+    officialMini.bindMiniShellIsolation(agent, (command) => isolation.isolatedShellCommand({
       workspace: repository,
       worktree: repository,
       command,

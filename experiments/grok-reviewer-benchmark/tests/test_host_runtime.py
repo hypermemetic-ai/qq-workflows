@@ -19,6 +19,12 @@ RUNNER_SPEC = importlib.util.spec_from_file_location("grok_host_runner", HERE / 
 assert RUNNER_SPEC and RUNNER_SPEC.loader
 runner = importlib.util.module_from_spec(RUNNER_SPEC)
 RUNNER_SPEC.loader.exec_module(runner)
+QQ_LAUNCHER_SPEC = importlib.util.spec_from_file_location(
+    "grok_qq_launcher", HERE / "adapters" / "run_qq_mini_qa.py",
+)
+assert QQ_LAUNCHER_SPEC and QQ_LAUNCHER_SPEC.loader
+qq_launcher = importlib.util.module_from_spec(QQ_LAUNCHER_SPEC)
+QQ_LAUNCHER_SPEC.loader.exec_module(qq_launcher)
 BRIDGE = HERE / "host" / "xai_openai_bridge.mjs"
 FAKE = HERE / "tests" / "fixtures" / "fake_grok_adapter.mjs"
 USAGE = HERE / "adapters" / "qq-arm-plugin" / "usage.mjs"
@@ -96,6 +102,113 @@ class HostProvisionTests(unittest.TestCase):
         self.assertNotIn("paste", rendered)
         self.assertNotIn("bearer", rendered)
         self.assertIn("provider api key argument", rendered)
+
+
+class QqMiniQaAdapterTests(unittest.TestCase):
+    def test_private_profile_mounts_production_qq_core_before_headless_override(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            core = root / "qq-core"
+            models = root / "qq-models"
+            profile = root / "dsh-home" / "profiles" / qq_launcher.PROFILE_NAME
+            core.mkdir()
+            models.mkdir()
+            (core / "package.json").write_text(
+                json.dumps({"name": qq_launcher.CORE_PACKAGE}), encoding="utf-8",
+            )
+            host_patch = core / "host.patch.yml"
+            host_patch.write_text("- insert:\n    - id: qq-core\n", encoding="utf-8")
+
+            self.assertEqual(qq_launcher.validate_core_source(core), host_patch)
+            headless_patch = qq_launcher.materialize_profile(profile, core, models)
+            manifest = json.loads((profile / "package.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                manifest["dependencies"][qq_launcher.CORE_PACKAGE], f"link:{core}",
+            )
+            self.assertEqual(
+                (profile / "node_modules" / "@hypermemetic-ai" / "qq-core").resolve(),
+                core.resolve(),
+            )
+            self.assertIn("id: hmr\n  disabled: true", headless_patch.read_text())
+            self.assertIn("id: qq-webserver\n  disabled: true", headless_patch.read_text())
+
+            command = qq_launcher.dsh_command(
+                Path("/runtime/dsh"), Path("/runtime/compat.mjs"),
+                host_patch, headless_patch, "review exact diff",
+            )
+            self.assertEqual(command[-1], "review exact diff")
+            self.assertEqual(
+                command[command.index("--patch") + 1:command.index("--patch") + 4],
+                [str(host_patch), "--patch", str(headless_patch)],
+            )
+
+    def test_plugin_requires_qq_core_and_binds_isolation_from_official_mini(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "tool" / "src"
+            output = root / "output"
+            repository = root / "repository"
+            source.mkdir(parents=True)
+            output.mkdir()
+            (repository / ".git").mkdir(parents=True)
+            (source / "mini-qa.mjs").write_text(
+                "export function miniQaSetup() { globalThis.calls.push('mini-qa-setup'); }\n"
+                "export function bindMiniQaSubmit() { globalThis.calls.push('submit-binding'); }\n",
+                encoding="utf-8",
+            )
+            (source / "official-mini.mjs").write_text(
+                "export function bindMiniShellIsolation(_agent, isolate) {\n"
+                "  globalThis.calls.push('shell-binding');\n"
+                "  if (isolate('printf inspected') !== 'isolated-command') throw new Error('bad isolation');\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            (source / "repo-oracle.mjs").write_text(
+                "export class RepoOracle { constructor() { globalThis.calls.push('oracle'); } }\n",
+                encoding="utf-8",
+            )
+            (source / "child-isolation.mjs").write_text(
+                "export function pinChildSandbox() { globalThis.calls.push('sandbox-pin'); }\n"
+                "export function assertChildSandbox() { globalThis.calls.push('sandbox-assert'); }\n"
+                "export function isolatedShellCommand(options) {\n"
+                "  if (options.writable !== false || options.command !== 'printf inspected') throw new Error('broad shell');\n"
+                "  globalThis.calls.push('isolated-command'); return 'isolated-command';\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            (source / "approval-policy.mjs").write_text(
+                "export function pinNonInteractiveApproval() { globalThis.calls.push('approval'); }\n",
+                encoding="utf-8",
+            )
+            plugin = HERE / "adapters" / "qq-arm-plugin" / "plugin.mjs"
+            program = f"""
+              globalThis.calls = [];
+              const plugin = await import({json.dumps(plugin.as_uri() + '?adapter-regression')});
+              if (JSON.stringify(plugin.inject) !== JSON.stringify(['agents', 'qq-core'])) {{
+                throw new Error('qq-core is not a required plugin injection');
+              }}
+              const handlers = new Map();
+              plugin.apply({{on(name, handler) {{ handlers.set(name, handler); return () => {{}}; }}}});
+              handlers.get('agent/created')({{agent: {{ctx: {{}}, session: {{id: 'session-test'}}}}}});
+              process.stdout.write(JSON.stringify(globalThis.calls));
+            """
+            environment = runner.secret_free_environment()
+            environment.update({
+                "BENCH_TOOL_SOURCE": str(source.parent),
+                "BENCH_REPOSITORY": str(repository),
+                "BENCH_BASE": "base", "BENCH_HEAD": "head",
+                "BENCH_RESULT_PATH": str(output / "result.json"),
+                "BENCH_OUTPUT_DIR": str(output),
+            })
+            calls = json.loads(subprocess.check_output(
+                ["node", "--input-type=module", "-e", program],
+                env=environment, text=True,
+            ))
+            self.assertEqual(calls, [
+                "mini-qa-setup", "approval", "sandbox-pin", "sandbox-assert",
+                "oracle", "submit-binding", "shell-binding", "isolated-command",
+            ])
+            self.assertEqual((output / "session-id.txt").read_text(), "session-test\n")
 
 
 class BridgeTests(unittest.TestCase):
