@@ -88,6 +88,14 @@ Fold retains the current and previous operator/architect pairs. It may replace
 older history only when working memory is non-empty. If memory is empty, fold
 fails visibly rather than claiming unwritten conversation is authoritative.
 
+When the optional `qq-index` service is present, the architect mounts its
+returned string under a routing-only header. `qq-index` owns README validation,
+projection, and the injected-output budget; qq-workflows does not reproject a
+bounded result or treat an explicit cutoff marker as an error. Lookup, I/O, and
+malformed-service failures warn and fail open. Mini implementer and QA personas
+do not request this context, and qq-workflows has no hard dependency on
+`qq-index`.
+
 ## Bindings
 
 The host has exactly three model bindings:
