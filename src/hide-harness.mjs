@@ -25,11 +25,16 @@ export const ITERATE_HANDS_INHERITED_TOOLS = Object.freeze([
 
 export const PROJECTS_INHERITED_TOOLS = Object.freeze([
   "read",
+  "write",
+  "edit",
+  "read_image",
   "grep",
   "glob",
   "bash",
-  "write",
-  "edit",
+  "job_output",
+  "job_list",
+  "job_kill",
+  "skill",
   "relay_list",
   "relay_send",
   "relay_status",
