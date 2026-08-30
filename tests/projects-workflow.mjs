@@ -274,7 +274,33 @@ try {
     },
     exec: bashExec,
   }]);
-  assert.equal(projects.tools.get("bash"), projects.tools.hostBash, "Projects bash contract is unchanged");
+  const projectsBash = projects.tools.get("bash");
+  assert.notEqual(projectsBash, projects.tools.hostBash, "Projects bash shadows host definition to sanitize sandbox escalation");
+  assert.deepEqual(Object.keys(projectsBash.parameters.properties), [
+    "command", "description", "timeoutMs", "workdir", "run_in_background",
+  ]);
+  assert.deepEqual(projectsBash.parameters.required, ["command"]);
+  const projectsBashExec = { agent: projects.agent };
+  const projectsBashResult = await projectsBash.execute({
+    command: "ls",
+    description: "projects workspace command",
+    timeoutMs: 1_000,
+    workdir: projectsRoot,
+    run_in_background: false,
+    sandbox_permissions: "danger-full-access",
+    justification: "must be stripped to prevent non-widening escalation error",
+  }, projectsBashExec);
+  assert.equal(projectsBashResult.exitCode, 0);
+  assert.deepEqual(projects.tools.hostCalls, [{
+    args: {
+      command: "ls",
+      description: "projects workspace command",
+      timeoutMs: 1_000,
+      workdir: projectsRoot,
+      run_in_background: false,
+    },
+    exec: projectsBashExec,
+  }]);
   assert.equal(base.tools.get("bash"), base.tools.hostBash, "base-chair bash contract is unchanged");
 
   const architectRead = ordinary.tools.get("read");
