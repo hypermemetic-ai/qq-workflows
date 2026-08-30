@@ -1,0 +1,6 @@
+# Match the production qq-models bundle while resolving the package name to the
+# benchmark wrapper, whose main module delegates to the pinned production plugin.
+
+- insert:
+    - id: qq-models
+      name: '@hypermemetic-ai/qq-models'

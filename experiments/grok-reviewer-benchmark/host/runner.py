@@ -577,6 +577,7 @@ def command_run(args: argparse.Namespace) -> int:
                     BRIDGE_PATH, QQ_LAUNCHER, PR_AGENT_LAUNCHER, MISOSPACE_LAUNCHER,
                     HERE / "adapters" / "qq-models-instrumented" / "plugin.mjs",
                     HERE / "adapters" / "qq-models-instrumented" / "package.json",
+                    HERE / "adapters" / "qq-models-instrumented" / "cordis.patch.yml",
                     SYNTHETIC_FIXTURE,
                 )
             },

@@ -133,6 +133,13 @@ class QqMiniQaAdapterTests(unittest.TestCase):
                 (profile / "node_modules" / "@hypermemetic-ai" / "qq-core").resolve(),
                 core.resolve(),
             )
+            models_link = profile / "node_modules" / "@hypermemetic-ai" / "qq-models"
+            self.assertEqual(models_link.resolve(), qq_launcher.MODELS_WRAPPER.resolve())
+            models_manifest = json.loads((models_link / "package.json").read_text(encoding="utf-8"))
+            models_patch = models_link / models_manifest["dsh"]["bundle"]["patch"]
+            self.assertTrue(models_patch.is_file())
+            self.assertIn("id: qq-models", models_patch.read_text(encoding="utf-8"))
+            self.assertIn("name: '@hypermemetic-ai/qq-models'", models_patch.read_text(encoding="utf-8"))
             self.assertIn("id: hmr\n  disabled: true", headless_patch.read_text())
             self.assertIn("id: qq-webserver\n  disabled: true", headless_patch.read_text())
 
