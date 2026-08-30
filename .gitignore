@@ -1,2 +1,8 @@
 node_modules/
 .DS_Store
+
+# Private live benchmark artifacts
+experiments/grok-reviewer-benchmark/runs/
+experiments/grok-reviewer-benchmark/adjudication/
+experiments/grok-reviewer-benchmark/**/__pycache__/
+experiments/grok-reviewer-benchmark/**/*.py[cod]

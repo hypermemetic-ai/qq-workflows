@@ -1,0 +1,118 @@
+{
+  "schema": "qq.grok-reviewer-benchmark-config/v1",
+  "experiment_id": "grok-stock-reviewers-current-v1",
+  "execution": {
+    "schedule": [
+      [
+        "qq-mini-qa",
+        "pr-agent",
+        "misospace-pr-reviewer"
+      ],
+      [
+        "pr-agent",
+        "misospace-pr-reviewer",
+        "qq-mini-qa"
+      ],
+      [
+        "misospace-pr-reviewer",
+        "qq-mini-qa",
+        "pr-agent"
+      ]
+    ],
+    "serial": true,
+    "timeout_seconds": 3600,
+    "cooldown_seconds": 10,
+    "artifacts_directory": "runs"
+  },
+  "provider": {
+    "family": "Grok",
+    "provider_model": "grok-4.6",
+    "openai_compatible_base_url_env": "GROK_BENCH_BASE_URL",
+    "openai_compatible_api_key_env": "GROK_BENCH_API_KEY",
+    "reasoning_effort_target": "high",
+    "temperature_target": null,
+    "max_output_tokens_target": null
+  },
+  "arms": [
+    {
+      "id": "qq-mini-qa",
+      "display_name": "current bash-based qq reviewer",
+      "implementation": "mini-qa",
+      "source_env": "GROK_BENCH_QQ_SOURCE",
+      "pin": "54966c350fe7c7fc57af76f4bc449abef68b9d55",
+      "required_blobs": {
+        "src/mini-qa.mjs": "cef17a94aeb6e4b19e067fbd7315537f7bbd74e4",
+        "src/mini-qa-v2.mjs": "64bda8b5967b1928bce788aaee89b0be9041989b",
+        "src/official-mini.mjs": "45a1f1e002977f998b45977c1ba7f2d5b602d42b"
+      },
+      "command_env": "GROK_BENCH_QQ_COMMAND_JSON",
+      "client_model": "xai-auth/grok-4.6",
+      "provider_model": "grok-4.6",
+      "route": "xai-auth/grok-4.6",
+      "mode": {
+        "reviewer": "current-production",
+        "bash": true,
+        "publishing": false
+      },
+      "usage_source": "host-response-log",
+      "effective_settings": {
+        "reasoning_effort": "high",
+        "temperature": null,
+        "max_output_tokens": null
+      },
+      "required_trees": {
+        "src": "6df1f5909be6725d043ea5d44a7b10d2c41a5fec"
+      }
+    },
+    {
+      "id": "pr-agent",
+      "display_name": "PR-Agent",
+      "implementation": "The-PR-Agent/pr-agent",
+      "release": "v0.44.0",
+      "source_env": "GROK_BENCH_PR_AGENT_SOURCE",
+      "pin": "1b6925ba8cc3ef6be09dec704a374da53091926c",
+      "required_blobs": {},
+      "command_env": "GROK_BENCH_PR_AGENT_COMMAND_JSON",
+      "client_model": "xai/grok-4.6",
+      "provider_model": "grok-4.6",
+      "route": "openai-compatible-capture-proxy",
+      "mode": {
+        "plain_diff": true,
+        "head_file_enrichment": true,
+        "json_output": true,
+        "publishing": false
+      },
+      "usage_source": "json-output-and-capture-proxy",
+      "effective_settings": {
+        "reasoning_effort": "high-where-supported",
+        "temperature": null,
+        "max_output_tokens": null
+      },
+      "required_trees": {}
+    },
+    {
+      "id": "misospace-pr-reviewer",
+      "display_name": "misospace/pr-reviewer-action",
+      "implementation": "misospace/pr-reviewer-action",
+      "release": "v2.2.1",
+      "source_env": "GROK_BENCH_MISOSPACE_SOURCE",
+      "pin": "54dfb1aac20e1e410ad8f71dc3681b888500a1ec",
+      "required_blobs": {},
+      "command_env": "GROK_BENCH_MISOSPACE_COMMAND_JSON",
+      "client_model": "grok-4.6",
+      "provider_model": "grok-4.6",
+      "route": "openai-compatible-capture-proxy",
+      "mode": {
+        "tool_mode": "off",
+        "publishing": false
+      },
+      "usage_source": "capture-proxy",
+      "effective_settings": {
+        "reasoning_effort": "default-unless-compatible",
+        "temperature": "default",
+        "max_output_tokens": "default"
+      },
+      "required_trees": {}
+    }
+  ]
+}
