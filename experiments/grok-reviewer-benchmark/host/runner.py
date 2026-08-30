@@ -32,7 +32,10 @@ REQUEST_SCHEMA = "qq.grok-reviewer-host-request/v1"
 QQ_MODELS_PIN = "c236efd1ff41169e51a04933328ffdd062e49b96"
 QQ_MODELS_SRC_TREE = "12bc406fe94f907026743255287b1a8bcef14a1d"
 QQ_CORE_PIN = "cd2388e549768593747d18dcb5be940eb7ed94a2"
+QQ_CORE_DSH_TREE = "db053b7b9cad3eab5913ec4a09cc468367092dcf"
 QQ_CORE_DSH_LOCK_BLOB = "6cc438db64245fd77daa974dc2b9416a3ef9f1ee"
+QQ_CORE_PACKAGE_BLOB = "f44308b2cb43e6251de07df4aaa66e7b4ebdd902"
+QQ_CORE_HOST_PATCH_BLOB = "221f565faac2e186b42d4f1a05cb1a18d7decc50"
 QQ_LAUNCHER = HERE / "adapters" / "run_qq_mini_qa.py"
 PR_AGENT_LAUNCHER = HERE / "adapters" / "run_pr_agent.py"
 MISOSPACE_LAUNCHER = HERE / "adapters" / "run_misospace.py"
@@ -67,9 +70,15 @@ REPOSITORIES = {
         "directory": "qq-index.git",
     },
 }
+EXTERNAL_ARM_ENDPOINT_ENVS = {
+    "pr-agent": ("GROK_BENCH_PR_AGENT_BASE_URL", "GROK_BENCH_PR_AGENT_API_KEY"),
+    "misospace-pr-reviewer": ("GROK_BENCH_MISOSPACE_BASE_URL", "GROK_BENCH_MISOSPACE_API_KEY"),
+}
+AUTH_READINESS_ENVS = ("GROK_BENCH_AUTH_READY_URL", "GROK_BENCH_AUTH_READY_KEY")
 CREDENTIAL_NAMES = {
     "XAI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
     "GROK_BENCH_API_KEY", "GROK_BENCH_PROXY_API_KEY", "GROK_BENCH_BRIDGE_KEY",
+    "GROK_BENCH_BRIDGE_KEYS_JSON", "GROK_BENCH_BRIDGE_ADMIN_KEY", "GROK_BENCH_AUTH_READY_KEY",
 }
 
 
@@ -148,6 +157,73 @@ def secret_free_environment() -> dict[str, str]:
         ):
             value.pop(name, None)
     return value
+
+
+def private_tool_environment(root: Path) -> dict[str, str]:
+    """Return a secret-free dependency-manager environment contained in *root*.
+
+    Provisioning runs in the normal host namespace, whose HOME and cache paths
+    may be read-only (and must not receive benchmark artifacts). Keep every
+    conventional package-manager, tool-install, temporary, and bytecode path in
+    the caller-supplied private runtime instead. Refuse pre-existing symlink
+    layouts that would redirect one of those paths outside the runtime.
+    """
+    root = root.expanduser().resolve()
+    runtime = root / "tool-runtime"
+    directories = {
+        "home": runtime / "home",
+        "cache": runtime / "cache",
+        "config": runtime / "config",
+        "data": runtime / "data",
+        "state": runtime / "state",
+        "tmp": runtime / "tmp",
+        "uv_cache": runtime / "cache" / "uv",
+        "pip_cache": runtime / "cache" / "pip",
+        "npm_cache": runtime / "cache" / "npm",
+        "yarn_cache": runtime / "cache" / "yarn",
+        "python_cache": runtime / "cache" / "python",
+        "cargo_home": runtime / "tools" / "cargo",
+        "rustup_home": runtime / "tools" / "rustup",
+        "pnpm_home": runtime / "tools" / "pnpm",
+        "bun_home": runtime / "tools" / "bun",
+        "bun_cache": runtime / "cache" / "bun",
+        "uv_python": runtime / "tools" / "uv-python",
+        "uv_tools": runtime / "tools" / "uv-tools",
+        "uv_tool_bin": runtime / "tools" / "uv-bin",
+    }
+    for name, path in directories.items():
+        resolved = path.resolve(strict=False)
+        if not resolved.is_relative_to(root):
+            raise HostRunnerError(f"private tool {name} path escapes runtime root: {path}")
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(path, 0o700)
+
+    environment = secret_free_environment()
+    environment.update({
+        "HOME": str(directories["home"]),
+        "XDG_CACHE_HOME": str(directories["cache"]),
+        "XDG_CONFIG_HOME": str(directories["config"]),
+        "XDG_DATA_HOME": str(directories["data"]),
+        "XDG_STATE_HOME": str(directories["state"]),
+        "TMPDIR": str(directories["tmp"]),
+        "UV_CACHE_DIR": str(directories["uv_cache"]),
+        "UV_CONFIG_FILE": os.devnull,
+        "UV_PYTHON_INSTALL_DIR": str(directories["uv_python"]),
+        "UV_TOOL_DIR": str(directories["uv_tools"]),
+        "UV_TOOL_BIN_DIR": str(directories["uv_tool_bin"]),
+        "PIP_CACHE_DIR": str(directories["pip_cache"]),
+        "PIP_CONFIG_FILE": os.devnull,
+        "npm_config_cache": str(directories["npm_cache"]),
+        "NPM_CONFIG_CACHE": str(directories["npm_cache"]),
+        "YARN_CACHE_FOLDER": str(directories["yarn_cache"]),
+        "PNPM_HOME": str(directories["pnpm_home"]),
+        "BUN_INSTALL": str(directories["bun_home"]),
+        "BUN_INSTALL_CACHE_DIR": str(directories["bun_cache"]),
+        "PYTHONPYCACHEPREFIX": str(directories["python_cache"]),
+        "CARGO_HOME": str(directories["cargo_home"]),
+        "RUSTUP_HOME": str(directories["rustup_home"]),
+    })
+    return environment
 
 
 def clone_exact(url: str, pin: str, destination: Path, local_source: Path | None = None) -> dict[str, str]:
@@ -253,16 +329,16 @@ def verify_models_source(path: Path) -> dict[str, str]:
 def provision_pr_agent_environment(source: Path, root: Path) -> dict[str, str]:
     tools = root / "tools" / "uv"
     uv = tools / "bin" / "uv"
+    environment = private_tool_environment(root)
     if not uv.is_file():
-        run([sys.executable, "-m", "venv", str(tools)], env=secret_free_environment())
+        run([sys.executable, "-m", "venv", str(tools)], env=environment)
         run([
             str(tools / "bin" / "python"), "-m", "pip", "install",
             "--disable-pip-version-check", "--no-input", f"uv=={UV_VERSION}",
-        ], env=secret_free_environment(), capture=False)
-    version = run([str(uv), "--version"], env=secret_free_environment()).stdout.strip()
+        ], env=environment, capture=False)
+    version = run([str(uv), "--version"], env=environment).stdout.strip()
     if version != f"uv {UV_VERSION}":
         raise HostRunnerError(f"wrong uv version: expected uv {UV_VERSION}, got {version}")
-    environment = secret_free_environment()
     environment.update({"UV_PROJECT_ENVIRONMENT": str(source / ".venv"), "UV_NO_PROGRESS": "1"})
     run([
         str(uv), "sync", "--frozen", "--no-install-project", "--no-dev",
@@ -271,7 +347,7 @@ def provision_pr_agent_environment(source: Path, root: Path) -> dict[str, str]:
     if not python.is_file():
         raise HostRunnerError("PR-Agent uv sync did not create .venv/bin/python")
     lock_sha = hashlib.sha256((source / "uv.lock").read_bytes()).hexdigest()
-    python_version = run([str(python), "--version"], env=secret_free_environment()).stdout.strip()
+    python_version = run([str(python), "--version"], env=environment).stdout.strip()
     return {
         "uv_version": version,
         "uv_sha256": hashlib.sha256(uv.read_bytes()).hexdigest(),
@@ -407,20 +483,24 @@ def wait_ready(process: subprocess.Popen[bytes], ready: Path, timeout: float = 1
 
 @contextmanager
 def bridge(models_source: Path, dsh_home: Path, directory: Path):
-    synthetic_key = secrets.token_urlsafe(48)
+    """Run one concurrency-capable trusted bridge for both external arms."""
+    directory.mkdir(parents=True, exist_ok=False, mode=0o700)
+    client_keys = {arm_id: secrets.token_urlsafe(48) for arm_id in EXTERNAL_ARM_ENDPOINT_ENVS}
+    admin_key = secrets.token_urlsafe(48)
     ready = directory / "bridge-ready.json"
     log = directory / "bridge.jsonl"
     stdout = (directory / "bridge.stdout").open("wb")
     stderr = (directory / "bridge.stderr").open("wb")
     environment = secret_free_environment()
-    # The bridge needs the host's normal HOME/DSH_HOME path resolution, but no
-    # provider token is copied into this environment.
+    # The trusted bridge resolves the existing host store in place. No token or
+    # auth file is copied, and only synthetic loopback credentials leave it.
     for name in ("HOME", "XDG_STATE_HOME", "DSH_HOME", "QQ_DSH_HOME", "PATH"):
         if name in os.environ:
             environment[name] = os.environ[name]
     environment["QQ_DSH_HOME"] = str(dsh_home)
     environment["DSH_HOME"] = str(dsh_home)
-    environment["GROK_BENCH_BRIDGE_KEY"] = synthetic_key
+    environment["GROK_BENCH_BRIDGE_KEYS_JSON"] = json.dumps(client_keys, separators=(",", ":"))
+    environment["GROK_BENCH_BRIDGE_ADMIN_KEY"] = admin_key
     try:
         process = subprocess.Popen([
             "node", str(BRIDGE_PATH), "--models-source", str(models_source),
@@ -432,7 +512,10 @@ def bridge(models_source: Path, dsh_home: Path, directory: Path):
         raise
     try:
         evidence = wait_ready(process, ready)
-        yield evidence["base_url"], synthetic_key, evidence
+        if evidence.get("concurrent_requests") is not True or not evidence.get("auth_ready_url"):
+            raise HostRunnerError("xai-auth bridge lacks concurrency/readiness evidence")
+        endpoints = {arm_id: (evidence["base_url"], key) for arm_id, key in client_keys.items()}
+        yield endpoints, (evidence["auth_ready_url"], admin_key), evidence
     finally:
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGTERM)
@@ -445,7 +528,16 @@ def bridge(models_source: Path, dsh_home: Path, directory: Path):
         stderr.close()
 
 
-def execution_environment(args: argparse.Namespace, state: dict[str, Any], base_url: str, key: str) -> dict[str, str]:
+def execution_environment(
+    args: argparse.Namespace,
+    state: dict[str, Any],
+    endpoints: dict[str, tuple[str, str]],
+    auth_readiness: tuple[str, str],
+) -> dict[str, str]:
+    if tuple(endpoints) != tuple(EXTERNAL_ARM_ENDPOINT_ENVS):
+        raise HostRunnerError("both external arms require isolated credentials on the shared bridge")
+    if len({key for _, key in endpoints.values()}) != len(EXTERNAL_ARM_ENDPOINT_ENVS):
+        raise HostRunnerError("external arms require distinct synthetic bridge credentials")
     environment = secret_free_environment()
     environment.update({
         "GROK_BENCH_REPO_QQ_UI": state["repositories"]["qq-ui"]["path"],
@@ -459,24 +551,51 @@ def execution_environment(args: argparse.Namespace, state: dict[str, Any], base_
         "GROK_BENCH_QQ_COMMAND_JSON": launcher_command(args.qq_launcher),
         "GROK_BENCH_PR_AGENT_COMMAND_JSON": launcher_command(args.pr_agent_launcher),
         "GROK_BENCH_MISOSPACE_COMMAND_JSON": launcher_command(args.misospace_launcher),
-        "GROK_BENCH_BASE_URL": base_url,
-        # This is a synthetic loopback key, not provider auth. benchmark.py
-        # keeps it out of all reviewer child environments via capture_proxy.py.
-        "GROK_BENCH_API_KEY": key,
+        AUTH_READINESS_ENVS[0]: auth_readiness[0],
+        AUTH_READINESS_ENVS[1]: auth_readiness[1],
     })
+    for arm_id, (base_url, key) in endpoints.items():
+        base_name, key_name = EXTERNAL_ARM_ENDPOINT_ENVS[arm_id]
+        environment[base_name] = base_url
+        # Reviewer children receive only their capture proxy's inert credential.
+        environment[key_name] = key
     return environment
 
 
 def verify_core_source(path: Path) -> dict[str, str]:
     path = path.expanduser().resolve()
-    pin = git(path, "rev-parse", "HEAD^{commit}").strip()
-    lock_blob = git(path, "rev-parse", "HEAD:dsh/package-lock.json").strip()
-    if pin != QQ_CORE_PIN or lock_blob != QQ_CORE_DSH_LOCK_BLOB:
+    checkout_head = git(path, "rev-parse", "HEAD^{commit}").strip()
+    expected = {
+        "dsh_tree": QQ_CORE_DSH_TREE,
+        "dsh_lock_blob": QQ_CORE_DSH_LOCK_BLOB,
+        "package_blob": QQ_CORE_PACKAGE_BLOB,
+        "host_patch_blob": QQ_CORE_HOST_PATCH_BLOB,
+    }
+    observed = {
+        "dsh_tree": git(path, "rev-parse", "HEAD:dsh").strip(),
+        "dsh_lock_blob": git(path, "rev-parse", "HEAD:dsh/package-lock.json").strip(),
+        "package_blob": git(path, "rev-parse", "HEAD:package.json").strip(),
+        "host_patch_blob": git(path, "rev-parse", "HEAD:host.patch.yml").strip(),
+    }
+    pinned = {
+        "dsh_tree": git(path, "rev-parse", f"{QQ_CORE_PIN}:dsh").strip(),
+        "dsh_lock_blob": git(path, "rev-parse", f"{QQ_CORE_PIN}:dsh/package-lock.json").strip(),
+        "package_blob": git(path, "rev-parse", f"{QQ_CORE_PIN}:package.json").strip(),
+        "host_patch_blob": git(path, "rev-parse", f"{QQ_CORE_PIN}:host.patch.yml").strip(),
+    }
+    if pinned != expected or observed != expected:
         raise HostRunnerError(
-            f"qq-core runtime mismatch: expected {QQ_CORE_PIN}/lock {QQ_CORE_DSH_LOCK_BLOB}, "
-            f"got {pin}/lock {lock_blob}"
+            f"qq-core runtime content mismatch: expected frozen {QQ_CORE_PIN} content {expected}, "
+            f"got checkout {checkout_head} content {observed}"
         )
-    return {"path": str(path), "pin": pin, "dsh_lock_blob": lock_blob}
+    dsh = path / "dsh" / "node_modules" / ".bin" / "dsh"
+    compat = path / "dsh" / "qq-dsh-model-compat.mjs"
+    if not dsh.is_file() or not compat.is_file():
+        raise HostRunnerError("qq-core runtime dependencies are not installed")
+    return {
+        "path": str(path), "pin": QQ_CORE_PIN, "checkout_head": checkout_head,
+        **observed,
+    }
 
 
 def validate_pilot(directory: Path, arm_id: str) -> dict[str, Any]:
@@ -536,11 +655,12 @@ def command_run(args: argparse.Namespace) -> int:
         raise HostRunnerError("pinned PR-Agent runtime is not installed; rerun provision without --skip-pr-agent-install")
     live = root / "live" / (args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
     live.mkdir(parents=True, exist_ok=False, mode=0o700)
-    with bridge(Path(models_state["path"]), dsh_home, live) as (base_url, key, evidence):
+    with bridge(Path(models_state["path"]), dsh_home, live / "bridge") as bridge_runtime:
+        endpoints, auth_readiness, bridge_evidence = bridge_runtime
         args.qq_launcher = QQ_LAUNCHER
         args.qq_core_source = Path(core_state["path"])
         args.qq_dsh_home = dsh_home
-        environment = execution_environment(args, state, base_url, key)
+        environment = execution_environment(args, state, endpoints, auth_readiness)
         doctor = run([sys.executable, str(BENCHMARK_PATH), "doctor"], env=environment, check=False)
         (live / "doctor.stdout").write_text(doctor.stdout, encoding="utf-8")
         (live / "doctor.stderr").write_text(doctor.stderr, encoding="utf-8")
@@ -549,28 +669,39 @@ def command_run(args: argparse.Namespace) -> int:
         if doctor.returncode != 0:
             raise HostRunnerError(f"benchmark doctor failed ({doctor.returncode}): {doctor.stderr.strip()}")
         pilots = live / "pilots"
-        pilot_evidence = []
-        for arm_id in ("qq-mini-qa", "pr-agent", "misospace-pr-reviewer"):
-            pilot_command = [
-                sys.executable, str(BENCHMARK_PATH), "run",
-                "--case", "smoke-001", "--arm", arm_id,
-                "--run-id", f"pilot-{arm_id}", "--output", str(pilots / arm_id),
-            ]
-            pilot = run(pilot_command, env=environment, capture=False, check=False)
-            if pilot.returncode != 0:
-                raise HostRunnerError(f"{arm_id} compatibility pilot failed ({pilot.returncode}); inspect {pilots / arm_id}")
-            pilot_evidence.append(validate_pilot(pilots / arm_id, arm_id))
+        pilot_command = [
+            sys.executable, str(BENCHMARK_PATH), "run",
+            "--case", "smoke-001", "--run-id", "compatibility-pilot-wave",
+            "--output", str(pilots),
+        ]
+        pilot = run(pilot_command, env=environment, capture=False, check=False)
+        if pilot.returncode != 0:
+            raise HostRunnerError(f"concurrent compatibility pilot wave failed ({pilot.returncode}); inspect {pilots}")
+        pilot_evidence = [validate_pilot(pilots, arm_id) for arm_id in ("qq-mini-qa", *EXTERNAL_ARM_ENDPOINT_ENVS)]
+        pilot_manifest = json.loads((pilots / "run.json").read_text(encoding="utf-8"))
+        if len(pilot_manifest.get("waves", [])) != 1 or not pilot_manifest["waves"][0].get("within_start_skew_target"):
+            raise HostRunnerError("compatibility pilots did not launch as one concurrent arm wave")
         command = [sys.executable, str(BENCHMARK_PATH), "run", "--run-id", "three-case-smoke", "--output", str(live / "run")]
         result = run(command, env=environment, capture=False, check=False)
         if result.returncode != 0:
             raise HostRunnerError(f"benchmark smoke failed ({result.returncode}); inspect {live}")
+        smoke_manifest = json.loads((live / "run" / "run.json").read_text(encoding="utf-8"))
+        if len(smoke_manifest.get("waves", [])) != 3 or any(
+            not wave.get("within_start_skew_target") for wave in smoke_manifest["waves"]
+        ):
+            raise HostRunnerError("smoke did not complete three sequential concurrent-arm case waves")
         write_json(live / "host-evidence.json", {
             "schema": "qq.grok-reviewer-host-evidence/v1",
             "state_sha256": hashlib.sha256((root / "state.json").read_bytes()).hexdigest(),
             "qq_models": models_state,
             "qq_core": core_state,
             "qq_dsh_home": str(dsh_home),
-            "bridge": evidence,
+            "bridge": bridge_evidence,
+            "execution": {
+                "mode": "sequential-case-waves-concurrent-arms",
+                "pilot_wave": pilot_manifest["waves"][0],
+                "smoke_waves": smoke_manifest["waves"],
+            },
             "benchmark_components": {
                 str(path.relative_to(HERE)): hashlib.sha256(path.read_bytes()).hexdigest()
                 for path in (
@@ -625,7 +756,7 @@ def command_request(args: argparse.Namespace) -> int:
         "forbidden_inputs": ["provider API key argument", "copied OAuth file", "GitHub token argument"],
         "pinned_sources": SOURCES,
         "frozen_repositories": REPOSITORIES,
-        "followup": "none: the smoke command provisions, pilots all arms, and runs the serial matrix",
+        "followup": "none: the smoke command provisions, launches a concurrent pilot wave, and runs three sequential concurrent-arm case waves",
     }
     if args.output:
         write_json(args.output.resolve(), value, mode=0o644)
@@ -650,7 +781,7 @@ def parser() -> argparse.ArgumentParser:
     child.add_argument("--object-root", type=Path, action="append", default=[])
     child.add_argument("--skip-pr-agent-install", action="store_true", help=argparse.SUPPRESS)
     child.set_defaults(function=command_provision)
-    child = sub.add_parser("smoke", help="provision, pilot all three arms, and run the serial smoke")
+    child = sub.add_parser("smoke", help="provision, run a concurrent pilot wave, and run sequential concurrent-arm case waves")
     child.add_argument("--root", type=Path, required=True)
     child.add_argument("--qq-workflows-source", type=Path)
     child.add_argument("--pr-agent-source", type=Path)
@@ -663,7 +794,7 @@ def parser() -> argparse.ArgumentParser:
     child.add_argument("--qq-dsh-home", type=Path, default=Path("/home/qqp/.local/state/qq"))
     child.add_argument("--run-id")
     child.set_defaults(function=command_smoke)
-    child = sub.add_parser("run", help="start xai-auth bridge, doctor, and serial smoke")
+    child = sub.add_parser("run", help="start the shared xai-auth bridge, doctor, pilots, and concurrent-arm smoke waves")
     child.add_argument("--root", type=Path, required=True)
     child.add_argument("--qq-models-source", type=Path, default=Path("/home/qqp/projects/qq-models"))
     child.add_argument("--qq-core-source", type=Path, default=Path("/home/qqp/projects/qq-core"))
