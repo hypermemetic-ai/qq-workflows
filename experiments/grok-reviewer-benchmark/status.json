@@ -1,0 +1,17 @@
+{
+  "schema": "qq.grok-reviewer-benchmark-status/v1",
+  "offline_harness_tests": "passed",
+  "frozen_corpus_integrity": "verified",
+  "smoke_run": "not-started",
+  "host_discovery": {
+    "xai_api_key_exposed": false,
+    "openai_api_key_exposed": false,
+    "github_token_exposed": false,
+    "anthropic_api_key_exposed": false,
+    "local_tcp_listener_found": false,
+    "qq_cli_found": false,
+    "public_source_fetch": "dns-unavailable",
+    "sanctioned_openai_compatible_grok_bridge": "not-found"
+  },
+  "unblock": "Provide one sanctioned benchmark runner bundle with an OpenAI-compatible grok-4.6 bridge, the exact pinned PR-Agent and misospace source checkouts, and stock launch adapters for all three configured arms."
+}

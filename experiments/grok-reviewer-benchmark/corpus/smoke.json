@@ -1,0 +1,58 @@
+{
+  "schema": "qq.grok-reviewer-corpus/v1",
+  "name": "three-case-smoke",
+  "standards": {
+    "path": "standards.md",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "cases": [
+    {
+      "id": "smoke-001",
+      "repository_id": "qq-ui",
+      "repository_env": "GROK_BENCH_REPO_QQ_UI",
+      "base": "e0dd0db190f0fe21feae1a0bb8e20d71de0d79a3",
+      "head": "20d03800690c7f9ab7b11efeeb26237111c944c1",
+      "base_tree": "69dbcb8591c6bb6e8f00d7ecf262d0c64c7012e8",
+      "head_tree": "33698d60054c94915bcb0fc3049f5792f47a05bc",
+      "diff_sha256": "300edb7e1a9639baf4e219c7b1a25a6b6deeff7a4ea48a50f94e1de26bcfbd0b",
+      "changed_lines": 299,
+      "changed_files": 4,
+      "task": {
+        "path": "tasks/smoke-001.md",
+        "sha256": "feca3deadcc7d382ca60d1ac13c0d21a86aeec0ec6fc6313a43095ff03aa04fc"
+      }
+    },
+    {
+      "id": "smoke-002",
+      "repository_id": "qq-index",
+      "repository_env": "GROK_BENCH_REPO_QQ_INDEX",
+      "base": "c862e42b130ee2b3cc77cf7065b3b819963851be",
+      "head": "437fde1a29cf1885b0e379d821f21dbbafb3e820",
+      "base_tree": "8d9544407a9e7924b2a5347a421d96b4370bba0c",
+      "head_tree": "f33395cc3bd1066883e654e82e408c576ec362cb",
+      "diff_sha256": "352092f607e1023f3c0939dc9a42423f5e29b5b0dde2bb1529c79819573d5a49",
+      "changed_lines": 687,
+      "changed_files": 7,
+      "task": {
+        "path": "tasks/smoke-002.md",
+        "sha256": "84e411239db9bd98da49f76ac65a7d745254b5226bcda4c39ce66568a39ef697"
+      }
+    },
+    {
+      "id": "smoke-003",
+      "repository_id": "qq-index",
+      "repository_env": "GROK_BENCH_REPO_QQ_INDEX",
+      "base": "c862e42b130ee2b3cc77cf7065b3b819963851be",
+      "head": "20baa457fe65fdc24dbdd1c203c6a308611b2e4f",
+      "base_tree": "8d9544407a9e7924b2a5347a421d96b4370bba0c",
+      "head_tree": "9b8cb8109396209319af29fdb92442c7fa8bf92b",
+      "diff_sha256": "61783c21c13c1a4f507d9fb41e634e03ed746bb5ce9bfa92f004ec6ebbdc4a87",
+      "changed_lines": 754,
+      "changed_files": 7,
+      "task": {
+        "path": "tasks/smoke-003.md",
+        "sha256": "84e411239db9bd98da49f76ac65a7d745254b5226bcda4c39ce66568a39ef697"
+      }
+    }
+  ]
+}

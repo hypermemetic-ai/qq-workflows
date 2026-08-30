@@ -1,0 +1,36 @@
+{
+  "schema": "qq.grok-reviewer-truth/v1",
+  "warning": "Scoring-only input. The run command never reads or mounts this file.",
+  "cases": {
+    "smoke-001": {
+      "classification": "known-positive",
+      "known_defects": [
+        {
+          "id": "smoke-001-kd-1",
+          "severity": "blocker",
+          "path": "assets/browser-v9.js",
+          "line": 1826,
+          "trigger": "Enter the all-project overview by clicking chooser whitespace, then select a session.",
+          "incorrect_behavior": "syncRailAfterSwitch overwrites the overview sentinel with that session's project, collapsing the overview even though session selection is meant to retain the current overview/filter behavior."
+        }
+      ]
+    },
+    "smoke-002": {
+      "classification": "known-positive",
+      "known_defects": [
+        {
+          "id": "smoke-002-kd-1",
+          "severity": "blocker",
+          "path": "src/index.mjs",
+          "line": 202,
+          "trigger": "Project an oversized README beginning with a blank line followed by its first ATX heading and useful orientation text.",
+          "incorrect_behavior": "The leading whitespace boundary outranks later useful boundaries, so projection can collapse to only the truncation marker instead of retaining the title and orientation."
+        }
+      ]
+    },
+    "smoke-003": {
+      "classification": "clean-landed",
+      "known_defects": []
+    }
+  }
+}
