@@ -474,9 +474,10 @@ def provider_auth_readiness(config: dict[str, Any]) -> dict[str, Any]:
             "auth readiness did not confirm Grok 4.6")
     require(payload.get("forced") is True, "auth readiness did not force a token rotation")
     require(isinstance(payload.get("refreshed"), bool), "auth readiness omitted refresh evidence")
+    require(payload.get("fresh") is True, "auth readiness did not prove a token outside the refresh window")
     return {
         "status": "ready", "model": "grok-4.6", "checked_at": checked_at,
-        "forced": True, "refreshed": payload["refreshed"],
+        "forced": True, "refreshed": payload["refreshed"], "fresh": True,
         "elapsed_seconds": round((time.monotonic_ns() - started) / 1_000_000_000, 6),
     }
 

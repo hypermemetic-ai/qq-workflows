@@ -1,6 +1,6 @@
 {
   "schema": "qq.grok-reviewer-benchmark-status/v1",
-  "offline_harness_tests": "passed-34-offline-benchmark-tests-before-final-required-suite",
+  "offline_harness_tests": "passed-35-offline-benchmark-tests-before-final-required-suite",
   "frozen_corpus_integrity": "passed-for-all-three-repaired-cases",
   "source_provisioning": "exact-pins-and-critical-blobs-verified-from-readable-public-clones",
   "bridge": {
@@ -11,7 +11,7 @@
     "response_format_fails_closed": true,
     "shared_external_bridge_concurrent_requests_offline": "passed-two-overlapping-generations",
     "auth_refresh_single_flight_offline": "passed-delayed-expiry-and-401-one-rotation-no-two-second-timeout",
-    "forced_pre_wave_auth_readiness": true,
+    "forced_pre_wave_auth_readiness_outside_refresh_window": true,
     "distinct_external_client_keys_and_admin_key": true
   },
   "compatibility_pilots": {

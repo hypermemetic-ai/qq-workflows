@@ -89,7 +89,8 @@ output, and normalized artifacts; each external arm also gets its own capture
 proxy and synthetic bridge key. A launch barrier synchronizes the three arms
 after their isolated inputs/proxies are ready. Its one-shot action performs the
 trusted forced refresh before releasing any reviewer generation. `run.json`
-records that readiness evidence, each wave's dispatch/finish times, per-arm
+records readiness evidence that the rotated token is outside qq-models' refresh
+window, each wave's dispatch/finish times, per-arm
 launch times and offsets, maximum launch skew, and whether the pre-registered
 two-second skew target was met. Cases remain sequential, with cooldown only
 between case waves.
@@ -116,8 +117,10 @@ The bridge wraps the shared auth store with process-local single-flight refresh
 coordination and creates a Grok adapter per request, so external response streams
 can overlap without adapter state leakage. Concurrent expiry or 401 refreshes
 perform one rotation; a waiter whose observed auth generation is already stale
-reuses the newer generation. The forced pre-wave refresh keeps native qq and the
-shared bridge out of deterministic refresh-skew lock contention. If native qq
+reuses the newer generation. Readiness fails closed if rotation returns a token
+that is still inside qq-models' two-minute refresh window. The forced pre-wave
+refresh keeps native qq and the shared bridge out of deterministic refresh-skew
+lock contention. If native qq
 still encounters a provider auth failure (for example, a simultaneous provider
 401 outside benchmark control), the run records an infrastructure failure; it
 is never scored as review-quality evidence. Reviewer generations are not

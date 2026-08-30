@@ -203,7 +203,15 @@ export function createSingleFlightAuthCoordinator(store) {
   async function ready(connectorId, refresher) {
     const before = store.read(connectorId) ?? await store.accessToken(connectorId);
     const token = await rotate(connectorId, refresher, before);
-    return { forced: true, refreshed: !sameAuth(before, token) };
+    // Readiness exists to keep the native qq process and this bridge from both
+    // entering qq-models' two-minute refresh window after the wave barrier is
+    // released. A refresh response can be structurally valid yet already fall
+    // inside that window (for example, an unexpectedly short expires_in).
+    // Failing closed here prevents an immediate cross-process lock race.
+    if (!token || store.needsRefresh(token)) {
+      throw fail("forced auth refresh did not produce a token outside the refresh window", 503, "authentication_error");
+    }
+    return { forced: true, refreshed: !sameAuth(before, token), fresh: true };
   }
 
   return Object.freeze({ requestStore, ready });
@@ -215,7 +223,9 @@ async function loadRuntime(args) {
     if (typeof fixture.createAdapter !== "function") throw fail("test adapter module must export createAdapter", 500);
     return {
       createAdapter: () => fixture.createAdapter(),
-      authReady: typeof fixture.authReady === "function" ? fixture.authReady : async () => ({ forced: true, refreshed: false }),
+      authReady: typeof fixture.authReady === "function"
+        ? fixture.authReady
+        : async () => ({ forced: true, refreshed: false, fresh: true }),
     };
   }
   const root = resolve(args.modelsSource);
@@ -313,11 +323,12 @@ export async function main(argv = process.argv.slice(2)) {
         sendJson(response, 200, {
           schema: "qq.grok-xai-auth-readiness/v1", status: "ready", model: MODEL,
           forced: readiness?.forced === true, refreshed: readiness?.refreshed === true,
+          fresh: readiness?.fresh === true,
         });
         await appendLog({
           request_id: requestId, event: "auth-readiness", model: MODEL, status: 200,
           forced: readiness?.forced === true, refreshed: readiness?.refreshed === true,
-          elapsed_ms: Date.now() - started,
+          fresh: readiness?.fresh === true, elapsed_ms: Date.now() - started,
         });
         return;
       }

@@ -193,7 +193,7 @@ class ConcurrentWaveTests(unittest.TestCase):
                 mock.patch.object(benchmark, "run_one", side_effect=fake_run_one),
                 mock.patch.object(benchmark, "provider_auth_readiness", return_value={
                     "status": "ready", "model": "grok-4.6", "checked_at": "2026-01-01T00:00:00Z",
-                    "forced": True, "refreshed": True, "elapsed_seconds": 0.01,
+                    "forced": True, "refreshed": True, "fresh": True, "elapsed_seconds": 0.01,
                 }) as auth_ready,
                 redirect_stdout(output),
             ):
@@ -208,6 +208,7 @@ class ConcurrentWaveTests(unittest.TestCase):
         self.assertEqual(tuple(wave["arm_ids"]), benchmark.EXPECTED_ARMS)
         self.assertEqual(wave["auth_readiness"]["status"], "ready")
         self.assertTrue(wave["auth_readiness"]["forced"])
+        self.assertTrue(wave["auth_readiness"]["fresh"])
         self.assertIsInstance(wave["common_wave_start_at"], str)
         self.assertGreater(wave["common_wave_start_monotonic_ns"], 0)
         self.assertEqual(set(wave["arm_start_offset_from_common_seconds"]), set(benchmark.EXPECTED_ARMS))
@@ -217,6 +218,34 @@ class ConcurrentWaveTests(unittest.TestCase):
         self.assertEqual([(item["case_id"], item["arm_id"]) for item in manifest["results"]], [
             ("smoke-001", arm_id) for arm_id in benchmark.EXPECTED_ARMS
         ])
+
+    def test_provider_auth_readiness_requires_fresh_token_evidence(self) -> None:
+        config = benchmark.validate_config(HERE / "config.json")
+        spec = config["provider"]["auth_readiness"]
+        environment = {
+            spec["url_env"]: "http://127.0.0.1:8765/_qq/auth/ready",
+            spec["api_key_env"]: "admin-" + "x" * 48,
+        }
+        base = {
+            "schema": "qq.grok-xai-auth-readiness/v1", "status": "ready",
+            "model": "grok-4.6", "forced": True, "refreshed": True,
+        }
+        with (
+            mock.patch.dict(os.environ, environment, clear=False),
+            mock.patch.object(benchmark, "urlopen", return_value=io.StringIO(json.dumps(base))),
+            self.assertRaisesRegex(benchmark.BenchmarkError, "outside the refresh window"),
+        ):
+            benchmark.provider_auth_readiness(config)
+
+        response = io.StringIO(json.dumps({**base, "fresh": True}))
+        with (
+            mock.patch.dict(os.environ, environment, clear=False),
+            mock.patch.object(benchmark, "urlopen", return_value=response),
+        ):
+            evidence = benchmark.provider_auth_readiness(config)
+        self.assertTrue(evidence["forced"])
+        self.assertTrue(evidence["refreshed"])
+        self.assertTrue(evidence["fresh"])
 
     def test_auth_readiness_failure_breaks_wave_before_any_generation(self) -> None:
         generations = 0

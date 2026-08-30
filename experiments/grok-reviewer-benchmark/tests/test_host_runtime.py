@@ -459,6 +459,7 @@ class BridgeTests(unittest.TestCase):
                 self.assertEqual(readiness["schema"], "qq.grok-xai-auth-readiness/v1")
                 self.assertEqual(readiness["status"], "ready")
                 self.assertTrue(readiness["forced"])
+                self.assertTrue(readiness["fresh"])
                 with self.assertRaises(HTTPError) as denied:
                     urlopen(Request(
                         evidence["auth_ready_url"], data=b"", method="POST",
@@ -549,7 +550,24 @@ class BridgeTests(unittest.TestCase):
           if (Date.now() - started >= 1000) throw new Error('refresh approached the old 2-second lock timeout');
           rotations = 0;
           const ready = await coordinator.ready('grok', refresh);
-          if (rotations !== 1 || ready.forced !== true || ready.refreshed !== true) throw new Error('readiness did not force one refresh');
+          if (rotations !== 1 || ready.forced !== true || ready.refreshed !== true || ready.fresh !== true) throw new Error('readiness did not force one fresh refresh');
+
+          store.needsRefresh = (value) => value.expires - 120000 <= Date.now();
+          store.rotate = async (_connector, refresher) => {{
+            rotations += 1;
+            auth = await refresher({{...auth}});
+            return {{...auth}};
+          }};
+          let rejectedShortToken = false;
+          try {{
+            await coordinator.ready('grok', async () => ({{
+              access:'too-short',refresh:'too-short-refresh',expires:Date.now()+1000,
+            }}));
+          }} catch (error) {{
+            rejectedShortToken = /outside the refresh window/.test(String(error?.message));
+          }}
+          if (!rejectedShortToken) throw new Error('readiness accepted an already-expiring token');
+          store.needsRefresh = (value) => value.expires <= Date.now();
 
           auth = {{access:'race-old',refresh:'race-refresh',expires:Date.now()+60000}};
           const raceRequest = coordinator.requestStore();
