@@ -149,6 +149,29 @@ assert.equal(renderRepositoryIndexContext(" \n\t"), "");
   assert.equal(harness.architect.detach(harness.agent), false);
 }
 
+// A projection already bounded by qq-index remains normal routing content. The
+// adapter preserves its explicit cutoff marker and route to the full README.
+{
+  const projection = [
+    "# Routes 🧭",
+    "",
+    "- [Sessions](sessions.md) — changing session lifecycle.",
+    "",
+    "> **Repository index truncated for prompt injection.**",
+    "> Continue with the complete [README.md](README.md).",
+  ].join("\n");
+  const harness = createArchitectHarness({
+    service: { loadIndex() { return projection; } },
+  });
+  assert.doesNotThrow(() => harness.architect.attach(harness.agent));
+  const entry = harness.prompt.contexts.get(REPOSITORY_INDEX_CONTEXT_NAME);
+  assert.ok(entry);
+  assert.equal(entry.text(), `${REPOSITORY_INDEX_HEADER}\n\n${projection}`);
+  assert.deepEqual(harness.warnings, []);
+  assert.deepEqual(harness.notices, []);
+  harness.architect.detach(harness.agent);
+}
+
 // Tests can inject loadIndex directly; the override wins without service lookup.
 {
   const roots = [];
@@ -177,11 +200,11 @@ for (const scenario of [
     detail: /lookup failed/,
   },
   {
-    name: "load",
+    name: "I/O load",
     options: {
-      service: { loadIndex() { throw new Error("qq-index index exceeds 4096 bytes"); } },
+      service: { loadIndex() { throw new Error("qq-index: failed to read README.md (EIO)"); } },
     },
-    detail: /exceeds 4096 bytes/,
+    detail: /failed to read README\.md \(EIO\)/,
   },
   {
     name: "malformed return",
