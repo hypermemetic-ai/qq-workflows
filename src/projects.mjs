@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { wrapArchitectBash } from "./architect-bash.mjs";
 import { isArchitectCandidate } from "./architect.mjs";
 import { allowInherited, PROJECTS_INHERITED_TOOLS } from "./hide-harness.mjs";
 
@@ -26,6 +27,14 @@ function systemPromptOf(holder) {
     ?? holder?.get?.("systemPrompt", false)
     ?? holder?.ctx?.systemPrompt
     ?? holder?.ctx?.get?.("systemPrompt", false)
+    ?? null;
+}
+
+function toolsOf(holder) {
+  return holder?.tools
+    ?? holder?.get?.("tools", false)
+    ?? holder?.ctx?.tools
+    ?? holder?.ctx?.get?.("tools", false)
     ?? null;
 }
 
@@ -80,11 +89,27 @@ export function createProjectsWorkflow({ ctx } = {}) {
     if (typeof off === "function") record.promptOff = off;
   }
 
+  function installTools(record, holder) {
+    if (attached.get(record.sessionId) !== record || record.toolOff) return;
+    const tools = toolsOf(holder) ?? toolsOf(record.agent);
+    if (!tools || typeof tools.register !== "function" || typeof tools.get !== "function") return;
+    const base = tools.get("bash", record.agent);
+    if (!base) return;
+    const wrapped = wrapArchitectBash(base);
+    if (wrapped === base) return;
+    const off = tools.register(wrapped);
+    if (typeof off === "function") record.toolOff = off;
+  }
+
   function attachServices(record) {
     installPrompt(record, record.agent);
+    installTools(record, record.agent);
     if (typeof record.agent?.ctx?.inject !== "function") return;
-    if (!record.promptOff) {
-      record.agent.ctx.inject(["systemPrompt"], (holder) => installPrompt(record, holder));
+    if (!record.promptOff || !record.toolOff) {
+      record.agent.ctx.inject(["systemPrompt", "tools"], (holder) => {
+        installPrompt(record, holder);
+        installTools(record, holder);
+      });
     }
   }
 
@@ -101,6 +126,7 @@ export function createProjectsWorkflow({ ctx } = {}) {
       agent,
       sessionId,
       promptOff: null,
+      toolOff: null,
     };
     attached.set(sessionId, record);
     attachServices(record);
@@ -116,6 +142,7 @@ export function createProjectsWorkflow({ ctx } = {}) {
     if (!record) return null;
     attached.delete(sessionId);
     try { record.promptOff?.(); } catch {}
+    try { record.toolOff?.(); } catch {}
     try { relayOf(ctx)?.clear?.(sessionId, PROJECTS_LABEL); } catch {}
     return sessionId;
   }
