@@ -6,3 +6,8 @@ experiments/grok-reviewer-benchmark/runs/
 experiments/grok-reviewer-benchmark/adjudication/
 experiments/grok-reviewer-benchmark/**/__pycache__/
 experiments/grok-reviewer-benchmark/**/*.py[cod]
+
+# Private local benchmark provisioning/pilot roots
+.grok-reviewer-*/
+.grok-reviewer-*.stdout
+.misospace-offline-pilot/

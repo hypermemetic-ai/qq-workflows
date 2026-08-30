@@ -62,7 +62,16 @@ class FrozenIdentityTests(unittest.TestCase):
         corpus = benchmark.validate_corpus(HERE / "corpus" / "smoke.json")
         self.assertEqual([case["id"] for case in corpus["cases"]], ["smoke-001", "smoke-002", "smoke-003"])
         self.assertNotIn("truth", corpus)
-        self.assertNotIn("known_defects", json.dumps(corpus))
+        rendered = json.dumps(corpus)
+        self.assertNotIn("known_defects", rendered)
+        self.assertNotIn("20d03800690c7f9ab7b11efeeb26237111c944c1", rendered)
+        self.assertNotIn("437fde1a29cf1885b0e379d821f21dbbafb3e820", rendered)
+        self.assertEqual(corpus["cases"][0]["head"], "2904675f2025d0c8bf8a597d055ea4ddd927f645")
+        self.assertEqual(corpus["cases"][1]["head"], "c4247153a775407b6c9295b6f1c0b27710d5c317")
+        self.assertEqual(corpus["cases"][2]["head"], "20baa457fe65fdc24dbdd1c203c6a308611b2e4f")
+        truth = benchmark.read_json(HERE / "corpus" / "truth.smoke.json")
+        self.assertEqual(truth["cases"]["smoke-001"]["known_defects"][0]["line"], 2178)
+        self.assertEqual(truth["cases"]["smoke-002"]["known_defects"][0]["line"], 205)
 
     def test_git_commands_ignore_inherited_host_geometry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -145,9 +154,23 @@ class UsageTests(unittest.TestCase):
             "completion_tokens_details": {"reasoning_tokens": 30},
         })
         self.assertEqual(usage, {
-            "input_tokens": 100, "output_tokens": 40,
+            "input_tokens": 75, "output_tokens": 40,
             "cache_read_tokens": 25, "cache_write_tokens": 0,
             "reasoning_tokens": 30, "processed_tokens": 140,
+        })
+
+    def test_disjoint_provider_usage_matches_live_adapter_example(self) -> None:
+        usage = proxy.normalize_usage({
+            "prompt_tokens": 221,
+            "completion_tokens": 69,
+            "total_tokens": 290,
+            "prompt_tokens_details": {"cached_tokens": 128},
+            "completion_tokens_details": {"reasoning_tokens": 66},
+        })
+        self.assertEqual(usage, {
+            "input_tokens": 93, "output_tokens": 69,
+            "cache_read_tokens": 128, "cache_write_tokens": 0,
+            "reasoning_tokens": 66, "processed_tokens": 290,
         })
 
     def test_proxy_requests_stream_usage_without_changing_generation_inputs(self) -> None:
@@ -194,7 +217,8 @@ class UsageTests(unittest.TestCase):
             "model": arm["client_model"], "provider_model": "grok-4.6", "mode": arm["mode"],
             "effective_config": {"reasoning_effort": "high"},
             "provider_evidence": {"request_models": ["grok-4.6"], "response_models": ["grok-4.6"]},
-            "verdict": "pass", "findings": [],
+            "native_verdict": None, "normalized_verdict": "pass",
+            "verdict_source": "adapter_findings", "findings": [],
             "usage": {"host_captured": {
                 "input_tokens": 10, "output_tokens": 5, "cache_read_tokens": 0,
                 "cache_write_tokens": 0, "reasoning_tokens": 3, "processed_tokens": 15,

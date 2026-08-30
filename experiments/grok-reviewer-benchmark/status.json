@@ -1,24 +1,35 @@
 {
   "schema": "qq.grok-reviewer-benchmark-status/v1",
-  "offline_harness_tests": "passed-17",
-  "frozen_corpus_integrity": "tracked-hashes-verified; object-complete host provisioning pending",
-  "smoke_run": "not-started",
-  "host_discovery": {
-    "command_shell": "bwrap --unshare-net --clearenv",
-    "provider_api_key_exposed": false,
-    "normal_qq_xai_auth_source_found": true,
-    "normal_qq_xai_auth_marker_contents_read": false,
-    "local_host_listener_reachable_from_shell": false,
-    "blocked_head_objects_found_in_visible_worktree_object_databases": true,
-    "public_source_fetch_from_shell": "denied-by-network-namespace",
-    "pinned_external_source_trees_visible": false
+  "offline_harness_tests": "passed-26-before-final-required-suite",
+  "frozen_corpus_integrity": "passed-for-all-three-repaired-cases",
+  "source_provisioning": "exact-pins-and-critical-blobs-verified-from-readable-public-clones",
+  "bridge": {
+    "direct_live_adapter": "passed-before-this-implementation",
+    "nonstream_live_http": "passed-before-this-implementation",
+    "stream_live_http": "passed-before-this-implementation",
+    "real_finish_event_contract_repaired": true,
+    "response_format_fails_closed": true
   },
+  "compatibility_pilots": {
+    "misospace_stock_driver_offline_fake_response": "passed-one-request-retained-artifacts-git-fsck-ok",
+    "qq_live_quality_call": "pending-complete-host-smoke",
+    "pr_agent_live_quality_call": "pending-complete-host-smoke",
+    "misospace_live_quality_call": "pending-complete-host-smoke"
+  },
+  "smoke_run": "not-run-from-network-isolated-command-sandbox",
   "implemented": {
     "host_provisioner": true,
+    "single_command_host_smoke": true,
     "credential_shielding_xai_auth_bridge": true,
     "production_qq_mini_qa_launcher": true,
-    "pr_agent_stock_launcher": false,
-    "misospace_stock_launcher": false
+    "pr_agent_stock_launcher": true,
+    "misospace_stock_launcher": true,
+    "deterministic_qq_ui_synthetic_fixture": true,
+    "repaired_qq_index_pair": true,
+    "doctor_then_three_pilots_then_serial_matrix": true,
+    "qq_provider_attempt_instrumentation": true
   },
-  "exact_unblock": "Run host/runner.py request, then execute its public-Git provision host_command in the normal qq namespace and resume against those exact pinned external trees. No API key input is requested."
+  "host_command": "python3 experiments/grok-reviewer-benchmark/host/runner.py smoke --root $PWD/.grok-reviewer-live",
+  "credential_input_required": false,
+  "inspect_ai": "do-not-replace-smoke-rig; optional-outer-layer-only-for-recurring-8-to-12-case-suite"
 }

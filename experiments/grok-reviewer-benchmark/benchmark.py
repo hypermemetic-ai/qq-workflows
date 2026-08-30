@@ -498,8 +498,12 @@ def normalize_usage(value: Any, *, complete: bool) -> dict[str, int | None]:
                     f"invalid usage field {field}")
             normalized[field] = item
     if complete:
-        require(normalized["processed_tokens"] == normalized["input_tokens"] + normalized["output_tokens"],
-                "processed_tokens must be input + output; reasoning is not added twice")
+        require(
+            normalized["processed_tokens"]
+            == normalized["input_tokens"] + normalized["cache_read_tokens"]
+            + normalized["cache_write_tokens"] + normalized["output_tokens"],
+            "processed_tokens must be uncached input + cache read/write + output; reasoning is not added twice",
+        )
     return normalized
 
 
@@ -540,19 +544,26 @@ def compare_reported_usage(reported: dict[str, int | None], captured: dict[str, 
 
 def validate_finding(value: Any) -> dict[str, Any]:
     require(isinstance(value, dict), "finding must be an object")
-    require(isinstance(value.get("path"), str) and value["path"] and not Path(value["path"]).is_absolute(),
-            "finding path must be repository-relative")
-    require(".." not in Path(value["path"]).parts, "finding path escapes repository")
-    require(isinstance(value.get("line"), int) and value["line"] >= 1, "finding line must be positive")
+    path = value.get("path")
+    require(path is None or isinstance(path, str) and path and not Path(path).is_absolute(),
+            "finding path must be repository-relative or null")
+    if path is not None:
+        require(".." not in Path(path).parts, "finding path escapes repository")
+    line = value.get("line")
+    require(line is None or isinstance(line, int) and not isinstance(line, bool) and line >= 1,
+            "finding line must be positive or null")
     require(isinstance(value.get("body"), str) and value["body"].strip(), "finding body is required")
     severity = value.get("severity")
     require(severity is None or isinstance(severity, str), "finding severity must be string or null")
     confidence = value.get("confidence")
-    require(confidence is None or isinstance(confidence, (int, float)), "finding confidence must be numeric or null")
-    require(isinstance(value.get("blocks_merge"), bool), "adapter must normalize finding blocks_merge")
+    require(confidence is None or isinstance(confidence, (int, float)) and not isinstance(confidence, bool),
+            "finding confidence must be numeric or null")
+    blocks_merge = value.get("blocks_merge")
+    require(blocks_merge is None or isinstance(blocks_merge, bool),
+            "finding blocks_merge must be boolean or null")
     return {
-        "path": value["path"], "line": value["line"], "body": value["body"].strip(),
-        "severity": severity, "confidence": confidence, "blocks_merge": value["blocks_merge"],
+        "path": path, "line": line, "body": value["body"].strip(),
+        "severity": severity, "confidence": confidence, "blocks_merge": blocks_merge,
     }
 
 
@@ -570,11 +581,25 @@ def validate_arm_result(
     require(value.get("provider_model") == arm["provider_model"], f"{arm['id']} provider is not Grok 4.6")
     require(value.get("mode") == arm["mode"], f"{arm['id']} effective mode differs from frozen mode")
     require(isinstance(value.get("effective_config"), dict), "full effective_config dump is required")
-    require(value.get("verdict") in {"pass", "fail"}, "verdict must be pass or fail")
+    native_verdict = value.get("native_verdict")
+    require(native_verdict in {None, "approve", "request_changes"}, "invalid native_verdict")
+    normalized_verdict = value.get("normalized_verdict")
+    require(normalized_verdict in {None, "pass", "fail"}, "invalid normalized_verdict")
+    verdict_source = value.get("verdict_source")
+    require(verdict_source in {"native", "adapter_findings", "none"}, "invalid verdict_source")
+    if verdict_source == "native":
+        require(native_verdict is not None and normalized_verdict == (
+            "pass" if native_verdict == "approve" else "fail"
+        ), "native verdict mapping is inconsistent")
+    elif verdict_source == "adapter_findings":
+        require(native_verdict is None and normalized_verdict is not None,
+                "adapter-derived verdict must have no native verdict")
+    else:
+        require(native_verdict is None and normalized_verdict is None,
+                "none verdict source cannot carry a verdict")
     findings = value.get("findings")
     require(isinstance(findings, list), "findings must be an array")
     findings = [validate_finding(item) for item in findings]
-    require((value["verdict"] == "fail") == bool(findings), "fail must have findings and pass must be empty")
     isolation = value.get("isolation")
     require(isinstance(isolation, dict), "isolation attestation is required")
     require(isolation.get("prior_findings_visible") is False, "arm could read prior findings")
@@ -613,6 +638,18 @@ def validate_arm_result(
             require(normalized_telemetry["request_count"] == proxy_request_count,
                     "tool request count differs from capture proxy")
         normalized_telemetry["request_count"] = proxy_request_count
+        successful_responses = sum(record.get("usage") is not None for record in (proxy_records or []))
+        normalized_telemetry["retries"] = max(proxy_request_count - successful_responses, 0)
+        normalized_telemetry["failures"] = sum(
+            record.get("usage") is None or int(record.get("status", 0)) >= 400
+            for record in (proxy_records or [])
+        )
+        normalized_telemetry["truncation_events"] = sum(
+            "length" in record.get("finish_reasons", []) for record in (proxy_records or [])
+        )
+        normalized_telemetry["context_events"] = sum(
+            record.get("context_event") is True for record in (proxy_records or [])
+        )
         captured_evidence = {
             "request_models": [record["request_model"] for record in (proxy_records or [])
                                if record.get("request_model") is not None],
@@ -646,7 +683,9 @@ def validate_arm_result(
         )
         require(not usage_verification["mismatches"], "qq reported usage differs from host response usage")
     return {
-        "verdict": value["verdict"],
+        "native_verdict": native_verdict,
+        "normalized_verdict": normalized_verdict,
+        "verdict_source": verdict_source,
         "findings": findings,
         "effective_config": value["effective_config"],
         "provider_evidence": provider_evidence,
@@ -845,6 +884,20 @@ def command_run(args: argparse.Namespace) -> int:
     config = validate_config(args.config)
     corpus = validate_corpus(args.corpus)
     readiness = runtime_readiness(config, corpus, args.corpus)
+    selected_cases = set(args.case or [])
+    selected_arms = set(args.arm or [])
+    known_cases = {case["id"] for case in corpus["cases"]}
+    require(selected_cases <= known_cases, f"unknown selected cases: {sorted(selected_cases - known_cases)}")
+    require(selected_arms <= set(EXPECTED_ARMS), f"unknown selected arms: {sorted(selected_arms - set(EXPECTED_ARMS))}")
+    cases = [case for case in corpus["cases"] if not selected_cases or case["id"] in selected_cases]
+    jobs: list[tuple[dict[str, Any], str]] = []
+    for case_index, case in enumerate(corpus["cases"]):
+        if case not in cases:
+            continue
+        schedule = config["execution"]["schedule"][case_index % len(config["execution"]["schedule"])]
+        jobs.extend((case, arm_id) for arm_id in schedule if not selected_arms or arm_id in selected_arms)
+    require(jobs, "selected benchmark job set is empty")
+
     run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     require(re.fullmatch(r"[A-Za-z0-9_.-]+", run_id) is not None, "unsafe run id")
     root = args.output or (HERE / config["execution"]["artifacts_directory"] / run_id)
@@ -860,34 +913,32 @@ def command_run(args: argparse.Namespace) -> int:
         "serial": True,
         "provider_family": "Grok",
         "provider_model": "grok-4.6",
+        "selection": {"cases": sorted(selected_cases), "arms": sorted(selected_arms)},
         "results": [],
     }
     write_json(root / "run.json", run_manifest)
     arms = {arm["id"]: arm for arm in config["arms"]}
     sources = {arm_id: arm_source(arms[arm_id]) for arm_id in EXPECTED_ARMS}
     repositories = {case["repository_id"]: case_repository(case) for case in corpus["cases"]}
-    for case_index, case in enumerate(corpus["cases"]):
-        schedule = config["execution"]["schedule"][case_index % len(config["execution"]["schedule"])]
-        for arm_index, arm_id in enumerate(schedule):
-            arm = arms[arm_id]
-            normalized = run_one(
-                config, corpus, args.corpus, case, arm, repositories[case["repository_id"]],
-                readiness["commands"][arm_id], sources[arm_id],
-                root / "cases" / case["id"] / arm_id,
-            )
-            run_manifest["results"].append({
-                "case_id": case["id"], "arm_id": arm_id,
-                "artifact": f"cases/{case['id']}/{arm_id}",
-                "wall_clock_seconds": normalized["wall_clock_seconds"],
-                "failure": normalized["failure"],
-            })
-            write_json(root / "run.json", run_manifest)
-            is_last = case_index == len(corpus["cases"]) - 1 and arm_index == len(schedule) - 1
-            if not is_last and config["execution"]["cooldown_seconds"]:
-                time.sleep(config["execution"]["cooldown_seconds"])
+    for job_index, (case, arm_id) in enumerate(jobs):
+        arm = arms[arm_id]
+        normalized = run_one(
+            config, corpus, args.corpus, case, arm, repositories[case["repository_id"]],
+            readiness["commands"][arm_id], sources[arm_id],
+            root / "cases" / case["id"] / arm_id,
+        )
+        run_manifest["results"].append({
+            "case_id": case["id"], "arm_id": arm_id,
+            "artifact": f"cases/{case['id']}/{arm_id}",
+            "wall_clock_seconds": normalized["wall_clock_seconds"],
+            "failure": normalized["failure"],
+        })
+        write_json(root / "run.json", run_manifest)
+        if job_index != len(jobs) - 1 and config["execution"]["cooldown_seconds"]:
+            time.sleep(config["execution"]["cooldown_seconds"])
     write_json(root / "run.json", run_manifest)
-    print(root)
-    return 0 if all(item["failure"] is None for item in run_manifest["results"]) else 1
+    print(canonical_json(run_manifest), end="")
+    return 1 if any(item["failure"] is not None for item in run_manifest["results"]) else 0
 
 
 def command_freeze_case(args: argparse.Namespace) -> int:
@@ -945,7 +996,7 @@ def command_blind(args: argparse.Namespace) -> int:
             })
             secret_map.append({
                 "blind_id": blind_id, "case_id": result["case_id"], "arm_id": result["arm_id"],
-                "finding_index": index, "reported_blocker": finding["blocks_merge"],
+                "finding_index": index, "reported_blocker": finding["blocks_merge"] is True,
             })
     random.Random(args.seed).shuffle(entries)
     destination = args.output.resolve()
@@ -1078,6 +1129,8 @@ def parser() -> argparse.ArgumentParser:
     child.add_argument("--corpus", type=Path, default=HERE / "corpus" / "smoke.json")
     child.add_argument("--run-id")
     child.add_argument("--output", type=Path)
+    child.add_argument("--case", action="append", help="run only this case (repeatable)")
+    child.add_argument("--arm", action="append", help="run only this settled arm (repeatable)")
     child.set_defaults(function=command_run)
     child = subparsers.add_parser("freeze-case")
     child.add_argument("--repository", type=Path, required=True)

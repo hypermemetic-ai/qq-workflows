@@ -9,9 +9,9 @@
           "id": "smoke-001-kd-1",
           "severity": "blocker",
           "path": "assets/browser-v9.js",
-          "line": 1826,
-          "trigger": "Enter the all-project overview by clicking chooser whitespace, then select a session.",
-          "incorrect_behavior": "syncRailAfterSwitch overwrites the overview sentinel with that session's project, collapsing the overview even though session selection is meant to retain the current overview/filter behavior."
+          "line": 2178,
+          "trigger": "Enter the all-project overview by clicking chooser whitespace, then select a session from one project group.",
+          "incorrect_behavior": "The disclosed synthetic mutation removes syncRailAfterSwitch's overview-sentinel guard, so selecting a session overwrites the all-project overview filter with that session's project and collapses the overview."
         }
       ]
     },
@@ -22,7 +22,7 @@
           "id": "smoke-002-kd-1",
           "severity": "blocker",
           "path": "src/index.mjs",
-          "line": 202,
+          "line": 205,
           "trigger": "Project an oversized README beginning with a blank line followed by its first ATX heading and useful orientation text.",
           "incorrect_behavior": "The leading whitespace boundary outranks later useful boundaries, so projection can collapse to only the truncation marker instead of retaining the title and orientation."
         }

@@ -12,7 +12,9 @@
     "provider_model",
     "mode",
     "effective_config",
-    "verdict",
+    "native_verdict",
+    "normalized_verdict",
+    "verdict_source",
     "findings",
     "usage",
     "telemetry",
@@ -47,10 +49,33 @@
       "type": "object",
       "description": "Complete, secret-free effective tool/model configuration, including unavoidable defaults."
     },
-    "verdict": {
+    "native_verdict": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "approve",
+        "request_changes",
+        null
+      ]
+    },
+    "normalized_verdict": {
+      "type": [
+        "string",
+        "null"
+      ],
       "enum": [
         "pass",
-        "fail"
+        "fail",
+        null
+      ]
+    },
+    "verdict_source": {
+      "enum": [
+        "native",
+        "adapter_findings",
+        "none"
       ]
     },
     "findings": {
@@ -68,11 +93,17 @@
         ],
         "properties": {
           "path": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "minLength": 1
           },
           "line": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 1
           },
           "body": {
@@ -92,7 +123,10 @@
             ]
           },
           "blocks_merge": {
-            "type": "boolean"
+            "type": [
+              "boolean",
+              "null"
+            ]
           }
         }
       }

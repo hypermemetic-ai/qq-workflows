@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Stock qq Mini QA launcher over the pinned DSH headless runtime."""
 from __future__ import annotations
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -9,10 +10,12 @@ import sys
 
 HERE = Path(__file__).resolve().parent
 PLUGIN = HERE / "qq-arm-plugin"
+MODELS_WRAPPER = HERE / "qq-models-instrumented"
 PROFILE_NAME = "benchmark-mini-qa"
 CORE_PACKAGE = "@hypermemetic-ai/qq-core"
 REQUIRED = (
-    "BENCH_REPOSITORY", "BENCH_HEAD", "BENCH_TASK_PATH", "BENCH_OUTPUT_DIR",
+    "BENCH_REPOSITORY", "BENCH_BASE", "BENCH_HEAD", "BENCH_DIFF_PATH", "BENCH_TASK_PATH",
+    "BENCH_STANDARDS_PATH", "BENCH_INPUT_MANIFEST", "BENCH_OUTPUT_DIR",
     "BENCH_QQ_CORE_SOURCE", "BENCH_QQ_MODELS_SOURCE", "BENCH_QQ_DSH_HOME",
 )
 
@@ -22,6 +25,23 @@ def required(name: str) -> str:
     if not value:
         raise RuntimeError(f"qq launcher requires {name}")
     return value
+
+
+def verify_inputs(repository: Path) -> None:
+    manifest = json.loads(Path(required("BENCH_INPUT_MANIFEST")).read_text(encoding="utf-8"))
+    if manifest.get("base") != required("BENCH_BASE") or manifest.get("head") != required("BENCH_HEAD"):
+        raise RuntimeError("benchmark manifest geometry mismatch")
+    for name, key in (
+        ("BENCH_DIFF_PATH", "diff_sha256"),
+        ("BENCH_TASK_PATH", "task_sha256"),
+        ("BENCH_STANDARDS_PATH", "standards_sha256"),
+    ):
+        path = Path(required(name)).resolve()
+        if hashlib.sha256(path.read_bytes()).hexdigest() != manifest[key]:
+            raise RuntimeError(f"benchmark input hash mismatch: {path.name}")
+    head = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD^{commit}"], text=True).strip()
+    if head != required("BENCH_HEAD"):
+        raise RuntimeError("review repository head mismatch")
 
 
 def link(target: Path, destination: Path) -> None:
@@ -50,7 +70,7 @@ def materialize_profile(profile: Path, core: Path, models: Path) -> Path:
         "private": True,
         "dependencies": {
             CORE_PACKAGE: f"link:{core}",
-            "@hypermemetic-ai/qq-models": f"link:{models}",
+            "@hypermemetic-ai/qq-models": f"link:{MODELS_WRAPPER}",
             "@hypermemetic-ai/qq-benchmark-mini-qa": f"link:{PLUGIN}",
         },
         "dsh": {"profile": {"bundles": [
@@ -62,7 +82,7 @@ def materialize_profile(profile: Path, core: Path, models: Path) -> Path:
     }
     (profile / "package.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     link(core, profile / "node_modules" / "@hypermemetic-ai" / "qq-core")
-    link(models, profile / "node_modules" / "@hypermemetic-ai" / "qq-models")
+    link(MODELS_WRAPPER, profile / "node_modules" / "@hypermemetic-ai" / "qq-models")
     link(PLUGIN, profile / "node_modules" / "@hypermemetic-ai" / "qq-benchmark-mini-qa")
     (profile / "cordis.patch.yml").write_text(
         "- id: agent-default-model\n"
@@ -102,6 +122,7 @@ def main() -> int:
     output = Path(required("BENCH_OUTPUT_DIR")).resolve()
     core = Path(required("BENCH_QQ_CORE_SOURCE")).resolve()
     models = Path(required("BENCH_QQ_MODELS_SOURCE")).resolve()
+    verify_inputs(repository)
     dsh = core / "dsh" / "node_modules" / ".bin" / "dsh"
     compat = core / "dsh" / "qq-dsh-model-compat.mjs"
     host_patch = validate_core_source(core)
@@ -109,7 +130,7 @@ def main() -> int:
         raise RuntimeError("pinned qq-core DSH runtime is incomplete")
 
     workspace = output / "workspace"
-    subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", str(repository), str(workspace)], check=True)
+    subprocess.run(["git", "clone", "--quiet", "--no-hardlinks", "--no-checkout", str(repository), str(workspace)], check=True)
     subprocess.run(["git", "-C", str(workspace), "checkout", "--quiet", "--detach", required("BENCH_HEAD")], check=True)
     if subprocess.check_output(["git", "-C", str(workspace), "status", "--porcelain"], text=True).strip():
         raise RuntimeError("qq review workspace is not clean")

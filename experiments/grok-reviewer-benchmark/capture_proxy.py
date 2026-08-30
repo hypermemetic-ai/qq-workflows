@@ -88,16 +88,24 @@ def normalize_usage(value: Any) -> dict[str, int] | None:
 
     if input_tokens is None and output_tokens is None and total_tokens is None:
         return None
-    input_tokens = input_tokens or 0
+    inclusive_input = input_tokens or 0
     output_tokens = output_tokens or 0
-    # Reasoning is normally a subset of output/completion tokens. It is recorded
-    # separately but is deliberately not added to processed tokens.
-    processed = total_tokens if total_tokens is not None else input_tokens + output_tokens
+    cache_read = cache_read or 0
+    cache_write = cache_write or 0
+    # OpenAI prompt/input totals include cache hits/creation. The benchmark uses
+    # disjoint categories, matching qq-models' adapter usage contract.
+    uncached_input = inclusive_input - cache_read - cache_write
+    if uncached_input < 0:
+        return None
+    # Reasoning is a subset of output/completion and is never added again.
+    processed = uncached_input + cache_read + cache_write + output_tokens
+    if total_tokens is not None and total_tokens != processed:
+        return None
     return {
-        "input_tokens": input_tokens,
+        "input_tokens": uncached_input,
         "output_tokens": output_tokens,
-        "cache_read_tokens": cache_read or 0,
-        "cache_write_tokens": cache_write or 0,
+        "cache_read_tokens": cache_read,
+        "cache_write_tokens": cache_write,
         "reasoning_tokens": reasoning or 0,
         "processed_tokens": processed,
     }
@@ -114,7 +122,7 @@ def _walk(value: Any) -> Iterable[tuple[str | None, Any]]:
             yield from _walk(child)
 
 
-def parse_response_body(body: bytes, content_type: str) -> tuple[str | None, dict[str, int] | None]:
+def parse_response_details(body: bytes, content_type: str) -> tuple[str | None, dict[str, int] | None, list[str]]:
     values: list[Any] = []
     text = body.decode("utf-8", errors="replace")
     if "text/event-stream" in content_type.lower() or text.lstrip().startswith("data:"):
@@ -136,9 +144,15 @@ def parse_response_body(body: bytes, content_type: str) -> tuple[str | None, dic
 
     models: list[str] = []
     usages: list[dict[str, int]] = []
+    finish_reasons: list[str] = []
     for value in values:
         if isinstance(value, dict) and isinstance(value.get("model"), str):
             models.append(value["model"])
+        if isinstance(value, dict) and isinstance(value.get("choices"), list):
+            for choice in value["choices"]:
+                reason = choice.get("finish_reason") if isinstance(choice, dict) else None
+                if isinstance(reason, str) and reason:
+                    finish_reasons.append(reason)
         for key, child in _walk(value):
             if key == "model" and isinstance(child, str):
                 models.append(child)
@@ -149,7 +163,12 @@ def parse_response_body(body: bytes, content_type: str) -> tuple[str | None, dic
     # Streaming APIs can repeat cumulative usage. The largest processed count is
     # the complete response, not a value to sum with earlier chunks.
     usage = max(usages, key=lambda item: item["processed_tokens"], default=None)
-    return (models[-1] if models else None), usage
+    return (models[-1] if models else None), usage, finish_reasons
+
+
+def parse_response_body(body: bytes, content_type: str) -> tuple[str | None, dict[str, int] | None]:
+    model, usage, _ = parse_response_details(body, content_type)
+    return model, usage
 
 
 def ensure_stream_usage(body: bytes) -> tuple[bytes, bool]:
@@ -278,7 +297,8 @@ class CaptureHandler(BaseHTTPRequestHandler):
             (value for key, value in response_headers.items() if key.lower() == "content-type"),
             "application/octet-stream",
         )
-        response_model, usage = parse_response_body(response_body, content_type)
+        response_model, usage, finish_reasons = parse_response_details(response_body, content_type)
+        response_lower = response_body.decode("utf-8", errors="replace").lower()
         metadata = {
             "schema": SCHEMA,
             "sequence": sequence,
@@ -292,7 +312,11 @@ class CaptureHandler(BaseHTTPRequestHandler):
             "response_sha256": hashlib.sha256(response_body).hexdigest(),
             "request_model": request_model(forwarded_body),
             "response_model": response_model,
+            "finish_reasons": finish_reasons,
             "usage": usage,
+            "context_event": any(marker in response_lower for marker in (
+                "context length", "context window", "maximum context", "too many tokens",
+            )),
             "error": error_text,
         }
         self.state.append_metadata(metadata)

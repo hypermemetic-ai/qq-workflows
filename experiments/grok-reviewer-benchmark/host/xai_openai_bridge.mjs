@@ -55,12 +55,28 @@ function textContent(content, label) {
 export function openAiToDsh(body, sessionId = randomUUID()) {
   if (!body || typeof body !== "object" || Array.isArray(body)) throw fail("request body must be an object");
   if (body.model !== MODEL) throw fail(`model must be exactly ${MODEL}`);
+  const allowed = new Set([
+    "model", "messages", "stream", "stream_options", "reasoning_effort", "reasoning",
+    "temperature", "max_tokens", "max_completion_tokens", "response_format", "n", "tools", "tool_choice",
+  ]);
+  const unknown = Object.keys(body).filter((name) => !allowed.has(name));
+  if (unknown.length) throw fail(`unsupported request fields: ${unknown.sort().join(", ")}`);
   if (!Array.isArray(body.messages) || body.messages.length === 0) throw fail("messages must be a nonempty array");
   if (body.tools != null && (!Array.isArray(body.tools) || body.tools.length > 0)) {
     throw fail("tools are disabled for the external stock-reviewer bridge");
   }
   if (body.tool_choice != null && body.tool_choice !== "none") throw fail("tool_choice must be none when supplied");
   if (body.n != null && body.n !== 1) throw fail("n must be 1 when supplied");
+  if (body.stream != null && typeof body.stream !== "boolean") throw fail("stream must be boolean when supplied");
+  if (body.response_format != null) throw fail("response_format is unsupported; configure the stock reviewer with structured output off");
+  if (body.temperature != null && (typeof body.temperature !== "number" || !Number.isFinite(body.temperature))) {
+    throw fail("temperature must be a finite number when supplied");
+  }
+  if (body.stream_options != null && (
+    typeof body.stream_options !== "object" || Array.isArray(body.stream_options)
+    || Object.keys(body.stream_options).some((name) => name !== "include_usage")
+    || body.stream_options.include_usage != null && typeof body.stream_options.include_usage !== "boolean"
+  )) throw fail("unsupported stream_options");
 
   const instructions = [];
   const messages = [];
@@ -79,6 +95,10 @@ export function openAiToDsh(body, sessionId = randomUUID()) {
   if (messages.length === 0 || messages.at(-1).role !== "user") {
     throw fail("messages must end with a user message");
   }
+  if (body.reasoning != null && (
+    typeof body.reasoning !== "object" || Array.isArray(body.reasoning)
+    || Object.keys(body.reasoning).some((name) => name !== "effort")
+  )) throw fail("unsupported reasoning object");
   const effort = body.reasoning_effort ?? body.reasoning?.effort ?? "high";
   if (!new Set(["low", "medium", "high", "xhigh"]).has(effort)) throw fail("unsupported reasoning effort");
   for (const name of ["max_tokens", "max_completion_tokens"]) {
@@ -186,25 +206,41 @@ export async function main(argv = process.argv.slice(2)) {
     const requestId = randomUUID();
     const started = Date.now();
     let claimed = false;
+    let controls = null;
     try {
       if (!authorized(request, syntheticKey)) throw fail("invalid bridge credential", 401, "authentication_error");
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
-      if (request.method === "GET" && url.pathname === "/v1/models") {
-        sendJson(response, 200, { object: "list", data: [{ id: MODEL, object: "model", owned_by: "xai-auth" }] });
-        return;
+      if (request.method !== "POST" || url.pathname !== "/v1/chat/completions" || url.search || url.hash) {
+        throw fail("route not found", 404);
       }
-      if (request.method !== "POST" || url.pathname !== "/v1/chat/completions") throw fail("route not found", 404);
+      if (!String(request.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+        throw fail("content-type must be application/json", 415);
+      }
       if (busy) throw fail("bridge permits one provider request at a time", 429, "rate_limit_error");
       busy = true;
       claimed = true;
       const body = await bodyBytes(request);
       const options = openAiToDsh(body, requestId);
+      const controller = new AbortController();
+      options.signal = controller.signal;
+      request.once("aborted", () => controller.abort());
+      response.once("close", () => { if (!response.writableEnded) controller.abort(); });
+      controls = {
+        reasoning_effort_requested: body.reasoning_effort ?? body.reasoning?.effort ?? null,
+        reasoning_effort_forwarded: options.reasoningEffort,
+        temperature_requested: body.temperature ?? null,
+        temperature_forwarded: false,
+        token_cap_requested: body.max_completion_tokens ?? body.max_tokens ?? null,
+        token_cap_forwarded: false,
+        response_format_requested: body.response_format ?? null,
+      };
       const stream = body.stream === true;
       const id = `chatcmpl-${requestId}`;
       const created = Math.floor(Date.now() / 1000);
       let text = "";
       let usage;
       let finishReason = "stop";
+      let finishSeen = false;
       if (stream) {
         response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "close" });
         response.write(`data: ${JSON.stringify(responseChunk(id, created, { role: "assistant", content: "" }))}\n\n`);
@@ -214,19 +250,22 @@ export async function main(argv = process.argv.slice(2)) {
           const delta = String(chunk.text ?? "");
           text += delta;
           if (stream) response.write(`data: ${JSON.stringify(responseChunk(id, created, { content: delta }))}\n\n`);
-        } else if (chunk?.type === "reasoning-delta" && stream) {
-          response.write(`data: ${JSON.stringify(responseChunk(id, created, { reasoning_content: String(chunk.text ?? "") }))}\n\n`);
         } else if (chunk?.type === "usage") {
           usage = openAiUsage(chunk.usage);
-        } else if (chunk?.type === "finish-reason") {
-          if (chunk.reason?.kind === "max-tokens") finishReason = "length";
-          else if (chunk.reason?.kind === "error" || chunk.reason?.kind === "aborted") {
-            throw fail(chunk.reason?.failure?.message ?? "provider request failed", 502, "provider_error");
-          } else if (chunk.reason?.kind === "tool-calls") {
+        } else if (chunk?.type === "finish") {
+          finishSeen = true;
+          const kind = chunk.reason?.kind;
+          if (kind === "max-tokens") finishReason = "length";
+          else if (kind === "error" || kind === "aborted" || kind === "interrupted" || kind === "blocked") {
+            throw fail(chunk.reason?.failure?.message ?? `provider request ended with ${String(kind)}`, 502, "provider_error");
+          } else if (kind === "tool-calls") {
             throw fail("provider unexpectedly returned tool calls", 502, "provider_error");
+          } else if (kind !== "stop") {
+            throw fail(`provider returned unsupported finish reason ${String(kind)}`, 502, "provider_error");
           }
         }
       }
+      if (!finishSeen) throw fail("provider response omitted finish event", 502, "provider_error");
       if (!usage) throw fail("provider response omitted usage", 502, "provider_error");
       if (stream) {
         response.write(`data: ${JSON.stringify(responseChunk(id, created, {}, finishReason, usage))}\n\n`);
@@ -238,12 +277,18 @@ export async function main(argv = process.argv.slice(2)) {
           usage,
         });
       }
-      await appendLog(resolve(args.log), { request_id: requestId, model: MODEL, status: 200, usage, elapsed_ms: Date.now() - started });
+      await appendLog(resolve(args.log), {
+        request_id: requestId, model: MODEL, status: 200, controls, usage,
+        elapsed_ms: Date.now() - started,
+      });
     } catch (error) {
       const status = Number.isInteger(error?.status) ? error.status : 500;
       if (!response.headersSent) sendJson(response, status, errorJson(error));
       else response.end();
-      await appendLog(resolve(args.log), { request_id: requestId, model: MODEL, status, error_type: error?.type ?? "api_error", elapsed_ms: Date.now() - started }).catch(() => {});
+      await appendLog(resolve(args.log), {
+        request_id: requestId, model: MODEL, status, controls,
+        error_type: error?.type ?? "api_error", elapsed_ms: Date.now() - started,
+      }).catch(() => {});
     } finally {
       if (claimed) busy = false;
     }
