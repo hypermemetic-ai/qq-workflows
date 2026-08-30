@@ -284,10 +284,9 @@ try {
 
   const prompt = projects.contexts.find((entry) => entry.name === PROJECTS_PROMPT_NAME);
   assert.ok(prompt, "Projects prompt is attached");
-  assert.match(prompt.text(), /immediate-child git repositories/);
-  assert.match(prompt.text(), /qq-ui/);
-  assert.match(prompt.text(), /Do not implement product code/);
-  assert.match(prompt.text(), /catalog group/);
+  assert.match(prompt.text(), /operator session/);
+  assert.match(prompt.text(), /managing local state/);
+  assert.match(prompt.text(), /no restrictions/);
   assert.equal(projects.contexts.some((entry) => entry.name === "qq-workflows:architect"), false);
   assert.equal(service.caseFile(PROJECTS_ID), null);
 

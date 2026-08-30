@@ -50,9 +50,9 @@ export function isProjectsCandidate(agent, ctx) {
 
 export function projectsPrompt(projectsRoot) {
   return [
-    `Create and retire immediate-child git repositories under ${projectsRoot} so qq-ui can open them.`,
-    "Do not implement product code.",
-    "Do not edit sibling project trees, except to add or update a catalog group when the operator explicitly asks for one.",
+    `You are the operator session at ${projectsRoot}.`,
+    "You have all basic tools for managing local state and no restrictions.",
+    "Work across all projects and repositories, edit code, run commands, and execute tasks directly.",
   ].join(" ");
 }
 
