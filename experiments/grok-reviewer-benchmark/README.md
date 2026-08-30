@@ -17,27 +17,45 @@ found issues, so its latency, token use, and zero-finding behavior are not
 quality/efficiency evidence. Nothing here restores or recommends that behavior.
 No product source or production review setting is changed by this experiment.
 
-## Current status and one unblock
+## Current status and exact host boundary
 
-The frozen corpus and offline harness are ready and verified. The three-case
-live smoke was **not started** because this shell exposes no `XAI_API_KEY`,
-`OPENAI_API_KEY`, `GITHUB_TOKEN`/`GH_TOKEN`, or `ANTHROPIC_API_KEY`; no local TCP
-listener or `qq` CLI is available; and the host-only `xai-auth` route has no
-discoverable reusable OpenAI-compatible endpoint. Public fetching of the two
-pinned source trees also failed because DNS is unavailable. No private host auth
-file was inspected or copied.
+The frozen corpus and offline harness are ready. The tracked host runtime now
+contains:
 
-The single unblock is an approved benchmark runner bundle that:
+- `host/runner.py`, which provisions the exact public source pins and frozen Git
+  objects, verifies every corpus hash, starts the bridge, runs `doctor`, and then
+  runs the serial smoke;
+- `host/xai_openai_bridge.mjs`, a loopback-only OpenAI chat-completions facade
+  over the normal qq-models `xai-auth` adapter. It reads host OAuth through the
+  existing store and gives the capture proxy only a random run-scoped synthetic
+  key; no provider key is accepted or copied;
+- the experiment-only DSH headless Mini QA adapter, which reuses production
+  `miniQaSetup`, qq-core's production default-deny tool surface, `RepoOracle`,
+  task-artifact/proposal-packet rendering, the read-only bwrap shell, and native
+  session usage; and
+- offline HTTP, usage, object-provisioning, Git-geometry, and task-packet tests.
 
-- exposes the same Grok 4.6 service through a sanctioned OpenAI-compatible base
-  URL/credential bridge without revealing the credential;
-- pre-provisions the exact pinned PR-Agent and misospace source checkouts;
-- supplies three stock arm launchers satisfying `adapters/README.md`; and
-- mounts repositories containing the frozen commit objects.
+The live smoke is still **not started**. This implementation shell is PID 1 under
+`bwrap --unshare-net --clearenv`; it cannot reach public Git, the host OAuth
+route, or a host loopback listener. The exact sanctioned handoff is machine
+readable—no key or generic runner bundle is requested:
 
-`benchmark.py doctor` reports all missing pieces under that one runner unblock
-and exits 2 before any model call. `status.json` records the secret-free observed
-state.
+```bash
+python3 experiments/grok-reviewer-benchmark/host/runner.py request \
+  --root "$HOME/.local/state/qq/grok-reviewer-smoke" \
+  --output /tmp/grok-reviewer-host-request.json
+```
+
+The normal host executes the emitted `host_command` (currently
+`host/runner.py provision --root ...`). Provisioning fetches the exact PR-Agent
+and misospace pins and imports locally retained blocked-head objects before
+fetching the missing reachable base/control objects. At this checkout's sandbox
+boundary the two pinned external trees are not yet present, so their release
+entry points cannot honestly be bound or tested here. Do not run the matrix or
+substitute inferred flags until those provisioned trees have been inspected and
+the two stock launchers are tracked. This is the one remaining source/runner
+continuation, not a credential request. No private auth file was inspected or
+copied.
 
 ## Frozen smoke corpus
 
@@ -74,41 +92,48 @@ directory. Source and sandbox integrity are checked again after the arm.
 
 ## Reproducing preflight and run
 
-The current local repositories that contain all smoke objects can be selected as
-follows; an approved runner may mount equivalent object-complete repositories:
+Run host provisioning from the normal qq execution namespace, not from an
+implementation/QA bwrap:
 
 ```bash
-export GROK_BENCH_REPO_QQ_UI=/path/to/object-complete/qq-ui
-export GROK_BENCH_REPO_QQ_INDEX=/path/to/object-complete/qq-index
-python3 experiments/grok-reviewer-benchmark/benchmark.py verify
+ROOT="$HOME/.local/state/qq/grok-reviewer-smoke"
+python3 experiments/grok-reviewer-benchmark/host/runner.py provision \
+  --root "$ROOT" \
+  --qq-workflows-source /home/qqp/projects/qq-workflows
 ```
 
-The approved runner then supplies source locations, command arrays, and bridge:
+`provision` creates private detached source checkouts and bare object-complete
+fixture repositories under `ROOT`, then calls the same `case_integrity` checks
+used immediately before every arm. It deletes inherited `GIT_*` geometry and
+fails closed on a wrong pin, dirty tracked source, unavailable object, or hash
+mismatch. It needs ordinary public HTTPS but no GitHub token argument.
+
+After the two pinned external release launchers are tracked, the normal host runs:
 
 ```bash
-export GROK_BENCH_QQ_SOURCE=/path/to/qq-workflows
-export GROK_BENCH_PR_AGENT_SOURCE=/path/to/pr-agent-at-1b6925b
-export GROK_BENCH_MISOSPACE_SOURCE=/path/to/pr-reviewer-action-at-54dfb1a
-
-export GROK_BENCH_QQ_COMMAND_JSON='["/approved/bin/run-qq-mini-qa"]'
-export GROK_BENCH_PR_AGENT_COMMAND_JSON='["/approved/bin/run-pr-agent-plain-diff"]'
-export GROK_BENCH_MISOSPACE_COMMAND_JSON='["/approved/bin/run-misospace-action"]'
-
-export GROK_BENCH_BASE_URL=https://sanctioned-openai-compatible.example/v1
-read -rsp 'Benchmark bridge credential: ' GROK_BENCH_API_KEY
-export GROK_BENCH_API_KEY
-
-python3 experiments/grok-reviewer-benchmark/benchmark.py doctor
-python3 experiments/grok-reviewer-benchmark/benchmark.py run --run-id smoke-001
+python3 experiments/grok-reviewer-benchmark/host/runner.py run \
+  --root "$ROOT" \
+  --qq-core-source /home/qqp/projects/qq-core \
+  --qq-models-source /home/qqp/projects/qq-models \
+  --qq-dsh-home "$HOME/.local/state/qq" \
+  --pr-agent-launcher /tracked/run-pr-agent-plain-diff \
+  --misospace-launcher /tracked/run-misospace-action
 ```
 
-Do not put the credential in a command array, config file, artifact, or shell
-history. The harness strips credentials and unrelated benchmark variables from reviewer
-environments and gives each arm a fresh private HOME/XDG/TMP tree. External
-reviewers get only an inert local proxy key; the proxy alone gets the real key.
+The runner pins qq-core's DSH lock blob and qq-models' source tree before
+starting anything. It checks only that the normal xai-auth marker exists; the
+bridge's existing auth-store implementation owns all reads/refreshes. The bridge
+binds exactly `127.0.0.1`, accepts exact `grok-4.6` text/no-tool traffic, allows
+one request at a time, and records only secret-free model/usage/error metadata.
+`benchmark.py` starts its existing capture proxy in front of this bridge. Stock
+external reviewers receive only the capture proxy's inert key; qq stays on its
+native `xai-auth/grok-4.6` path.
+
 Runs are serial and use the balanced schedule in `config.json`, with a recorded
-10-second cooldown. The exact command array, source pin/blob IDs, full effective
-arm config, start/finish times, and wall-clock duration are retained.
+10-second cooldown. Exact command arrays, source pins, effective configuration,
+start/finish times, and wall-clock duration are retained. Reviewer processes get
+a fresh private HOME/XDG/TMP tree; truth and other-arm artifacts are never
+passed.
 
 ## Model/settings parity and unavoidable differences
 

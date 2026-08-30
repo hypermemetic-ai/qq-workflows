@@ -12,6 +12,13 @@ export GROK_BENCH_MISOSPACE_COMMAND_JSON='["/approved/bin/run-misospace-action"]
 ```
 
 The harness records each exact array. Do not place credentials in an array.
+`run_qq_mini_qa.py` and `qq-arm-plugin/` are the tracked native qq adapter. It
+uses the pinned production Mini QA exports and the pinned host DSH, qq-core,
+and qq-models runtime. The private headless profile applies qq-core's production
+host overlay so its default-deny tool-surface service is live, then disables only
+the daily-host webserver and HMR rows; it is not a replacement prompt. The two
+external command examples
+remain contracts until their exact provisioned release entry points are bound.
 
 ## Input environment
 
@@ -30,9 +37,10 @@ Every launcher receives:
 
 The external arms additionally receive `BENCH_OPENAI_BASE_URL` and
 `OPENAI_BASE_URL`, both pointing to the local capture proxy. `OPENAI_API_KEY`
-and `XAI_API_KEY` are inert proxy credentials. The real bridge credential is
-visible only to the proxy and is never put in a command, child environment,
-header log, or snapshot. The proxy requests the provider's final usage chunk on
+and `XAI_API_KEY` are inert proxy credentials. The bridge key is a random run-scoped synthetic value, not provider auth. It is
+visible only to the capture proxy and is never put in a command, reviewer child
+environment, header log, or snapshot. Host OAuth remains inside the tracked
+xai-auth bridge process. The proxy requests the provider's final usage chunk on
 streaming calls and records both original and forwarded request bytes.
 
 No launcher receives a truth/adjudication path or another arm's artifact path.

@@ -1,17 +1,24 @@
 {
   "schema": "qq.grok-reviewer-benchmark-status/v1",
-  "offline_harness_tests": "passed",
-  "frozen_corpus_integrity": "verified",
+  "offline_harness_tests": "passed-17",
+  "frozen_corpus_integrity": "tracked-hashes-verified; object-complete host provisioning pending",
   "smoke_run": "not-started",
   "host_discovery": {
-    "xai_api_key_exposed": false,
-    "openai_api_key_exposed": false,
-    "github_token_exposed": false,
-    "anthropic_api_key_exposed": false,
-    "local_tcp_listener_found": false,
-    "qq_cli_found": false,
-    "public_source_fetch": "dns-unavailable",
-    "sanctioned_openai_compatible_grok_bridge": "not-found"
+    "command_shell": "bwrap --unshare-net --clearenv",
+    "provider_api_key_exposed": false,
+    "normal_qq_xai_auth_source_found": true,
+    "normal_qq_xai_auth_marker_contents_read": false,
+    "local_host_listener_reachable_from_shell": false,
+    "blocked_head_objects_found_in_visible_worktree_object_databases": true,
+    "public_source_fetch_from_shell": "denied-by-network-namespace",
+    "pinned_external_source_trees_visible": false
   },
-  "unblock": "Provide one sanctioned benchmark runner bundle with an OpenAI-compatible grok-4.6 bridge, the exact pinned PR-Agent and misospace source checkouts, and stock launch adapters for all three configured arms."
+  "implemented": {
+    "host_provisioner": true,
+    "credential_shielding_xai_auth_bridge": true,
+    "production_qq_mini_qa_launcher": true,
+    "pr_agent_stock_launcher": false,
+    "misospace_stock_launcher": false
+  },
+  "exact_unblock": "Run host/runner.py request, then execute its public-Git provision host_command in the normal qq namespace and resume against those exact pinned external trees. No API key input is requested."
 }

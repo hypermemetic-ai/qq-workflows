@@ -29,6 +29,9 @@ EXPECTED_PINS = {
     "misospace-pr-reviewer": "54dfb1aac20e1e410ad8f71dc3681b888500a1ec",
 }
 EXPECTED_QQ_TREES = {"src": "6df1f5909be6725d043ea5d44a7b10d2c41a5fec"}
+QQ_RUNTIME_PATH_ENVS = (
+    "GROK_BENCH_QQ_CORE_SOURCE", "GROK_BENCH_QQ_MODELS_SOURCE", "GROK_BENCH_QQ_DSH_HOME",
+)
 EXPECTED_QQ_BLOBS = {
     "src/mini-qa.mjs": "cef17a94aeb6e4b19e067fbd7315537f7bbd74e4",
     "src/mini-qa-v2.mjs": "64bda8b5967b1928bce788aaee89b0be9041989b",
@@ -366,6 +369,12 @@ def runtime_readiness(config: dict[str, Any], corpus: dict[str, Any], corpus_pat
             missing.append(f"missing approved launcher {arm['command_env']}")
         else:
             commands[arm["id"]] = command
+    for name in QQ_RUNTIME_PATH_ENVS:
+        raw = os.environ.get(name)
+        if not raw:
+            missing.append(f"missing trusted qq runtime path {name}")
+        elif not Path(raw).expanduser().resolve().is_dir():
+            missing.append(f"trusted qq runtime path is not a directory: {name}")
     provider = config["provider"]
     base_name = provider["openai_compatible_base_url_env"]
     key_name = provider["openai_compatible_api_key_env"]
@@ -393,10 +402,9 @@ def print_unblock(error: RuntimeUnblock) -> None:
     for detail in error.details:
         print(f"- {detail}", file=sys.stderr)
     print(
-        "UNBLOCK: provide one sanctioned benchmark runner bundle that exposes an "
-        "OpenAI-compatible grok-4.6 bridge without revealing its credential, contains "
-        "the two exact pinned upstream checkouts, supplies the three JSON arm launchers, "
-        "and mounts the frozen repositories named above.",
+        "UNBLOCK: in the normal host namespace run `python3 "
+        "experiments/grok-reviewer-benchmark/host/runner.py request --root <private-root>` "
+        "and execute its emitted public-Git provision command; no API key input is requested.",
         file=sys.stderr,
     )
 
@@ -700,6 +708,15 @@ def run_one(
         "BENCH_TOOL_SOURCE": str(source), "BENCH_CLIENT_MODEL": arm["client_model"],
         "BENCH_PROVIDER_MODEL": arm["provider_model"],
     })
+    if arm["id"] == "qq-mini-qa":
+        for source_name, child_name in (
+            ("GROK_BENCH_QQ_CORE_SOURCE", "BENCH_QQ_CORE_SOURCE"),
+            ("GROK_BENCH_QQ_MODELS_SOURCE", "BENCH_QQ_MODELS_SOURCE"),
+            ("GROK_BENCH_QQ_DSH_HOME", "BENCH_QQ_DSH_HOME"),
+        ):
+            raw = os.environ.get(source_name)
+            require(bool(raw), f"missing trusted qq runtime path {source_name}")
+            child_environment[child_name] = str(Path(raw).expanduser().resolve())
     proxy: subprocess.Popen[bytes] | None = None
     proxy_usage = None
     proxy_records = None

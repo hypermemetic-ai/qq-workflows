@@ -1,0 +1,4 @@
+- insert:
+    - id: qq-benchmark-mini-qa
+      name: '@hypermemetic-ai/qq-benchmark-mini-qa'
+      inject: [agents, qq-core]
