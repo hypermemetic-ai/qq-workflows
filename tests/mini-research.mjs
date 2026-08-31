@@ -60,6 +60,7 @@ const base = {
   async execute(args) { delegated.push(args); return { kind: "foreground", exitCode: 0, stdout: { text: "native\n" }, stderr: { text: "" } }; },
 };
 const calls = [];
+let researchSubmissions = 0;
 const agent = { session: { id: "session-22222222-2222-4222-8222-222222222222", header: { kind: MINI_RESEARCH_KIND } }, ctx: {} };
 bindMiniResearch(agent, {
   web: {
@@ -70,7 +71,7 @@ bindMiniResearch(agent, {
     async search(args) { calls.push(["session-search", args]); return "S001\tlead\n"; },
     async get(ref) { calls.push(["session-get", ref]); return { ref, path: `evidence/sessions/${ref}.md`, sha256: "b".repeat(64) }; },
   },
-  async submit() { return { status: "ok" }; },
+  async submit() { researchSubmissions++; return { status: "ok" }; },
 });
 const wrapped = wrapMiniResearchBash(base);
 for (const command of ["web-search 'alpha beta'", "web-get W1", "session-search 'one' 'two'", "session-get S1"]) {
@@ -95,6 +96,17 @@ assert.equal(delegated.length, 1, "evidence pipelines are never sent to native b
 const laterPipeline = await wrapped.execute({ command: "printf lead | web-search alpha" }, { agent });
 assert.equal(laterPipeline.exitCode, 2);
 assert.equal(delegated.length, 1);
+const researchCompletion = await wrapped.execute(
+  { command: MINI_SWE_COMPLETION_COMMAND },
+  { agent, callId: "research-submit", concludeTurn() {} },
+);
+const researchReplay = await wrapped.execute(
+  { command: MINI_SWE_COMPLETION_COMMAND },
+  { agent, callId: "research-submit-replay", concludeTurn() {} },
+);
+assert.equal(researchCompletion.exitCode, 0);
+assert.equal(researchReplay.exitCode, 0);
+assert.equal(researchSubmissions, 1, "accepted research completion is a monotonic terminal handoff");
 
 // The research submit binding refuses absent answers and unknown leads.
 const scratch = mkdtempSync(join(tmpdir(), "qq-mini-research."));
