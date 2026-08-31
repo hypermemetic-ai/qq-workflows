@@ -137,7 +137,7 @@ export function bindMiniSubmit(agent, submit) {
   }
   return () => {
     for (const key of keys) {
-      submits.delete(key);
+      if (submits.get(key) === submit) submits.delete(key);
       try {
         if (key[MINI_SUBMIT] === submit) key[MINI_SUBMIT] = undefined;
       } catch { /* frozen object */ }

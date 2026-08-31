@@ -5,7 +5,11 @@ import {
   MINI_SWE_COMPLETION_COMMAND,
   renderMiniSweTask,
 } from "../src/mini-swe-v2.mjs";
-import { miniSetup } from "../src/official-mini.mjs";
+import {
+  bindMiniSubmit,
+  miniSetup,
+  wrapMiniBash,
+} from "../src/official-mini.mjs";
 
 assert.equal(MINI_SWE_COMPLETION_COMMAND, "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT");
 
@@ -66,5 +70,38 @@ const failedSurfaceCtx = {
 assert.throws(() => miniSetup(failedSurfaceCtx), /official Mini surface failed/);
 assert.equal(failedLookups, 0);
 assert.equal(failedRegistrations, 0);
+
+
+// A stale HMR generation must not erase a newer completion binding when DSH
+// exposes non-extensible Agent/Session/Context proxies and the WeakMap is the
+// only writable capability store.
+const reboundSession = Object.preventExtensions({});
+const reboundCtx = Object.preventExtensions({});
+const reboundAgent = Object.preventExtensions({ session: reboundSession, ctx: reboundCtx });
+const submissions = [];
+const disposeOldSubmit = bindMiniSubmit(reboundAgent, async () => {
+  submissions.push("old");
+  return { status: "ok" };
+});
+const disposeNewSubmit = bindMiniSubmit(reboundAgent, async () => {
+  submissions.push("new");
+  return { status: "ok" };
+});
+disposeOldSubmit();
+let concluded = 0;
+const reboundBash = wrapMiniBash({
+  name: "bash",
+  parameters: { type: "object", properties: {} },
+  async execute() { throw new Error("completion sentinel reached the underlying shell"); },
+});
+const reboundResult = await reboundBash.execute(
+  { command: MINI_SWE_COMPLETION_COMMAND },
+  { agent: reboundAgent, callId: "rebound-submit", concludeTurn() { concluded++; } },
+);
+assert.deepEqual(submissions, ["new"]);
+assert.equal(reboundResult.exitCode, 0);
+assert.equal(reboundResult.stdout.text, "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n");
+assert.equal(concluded, 1);
+disposeNewSubmit();
 
 console.log("mini-swe-v2 tests passed");
