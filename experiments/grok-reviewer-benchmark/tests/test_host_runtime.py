@@ -1,6 +1,7 @@
 """Offline tests for the sanctioned host runner and xai-auth bridge."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 import importlib.util
 import io
@@ -11,6 +12,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest import mock
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -90,6 +92,184 @@ class HostProvisionTests(unittest.TestCase):
             self.assertEqual((repo / ".git" / "qq-workflows" / "task.md").read_text(), task.read_text())
             self.assertEqual(runner.git(repo, "status", "--porcelain").strip(), "")
 
+    def test_pr_agent_bootstrap_roots_every_tool_cache_under_private_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "private-root"
+            source = root / "sources" / "pr-agent"
+            source.mkdir(parents=True)
+            (source / "uv.lock").write_text("frozen-lock\n", encoding="utf-8")
+            poison = Path(directory) / "read-only-host-home"
+            poisoned_environment = {
+                "HOME": str(poison),
+                "XDG_CACHE_HOME": str(poison / ".cache"),
+                "XDG_CONFIG_HOME": str(poison / ".config"),
+                "XDG_DATA_HOME": str(poison / ".local" / "share"),
+                "XDG_STATE_HOME": str(poison / ".local" / "state"),
+                "TMPDIR": str(poison / "tmp"),
+                "UV_CACHE_DIR": str(poison / "uv"),
+                "PIP_CACHE_DIR": str(poison / "pip"),
+                "npm_config_cache": str(poison / "npm"),
+                "XAI_API_KEY": "must-not-reach-a-child",
+            }
+            observed: list[dict[str, str]] = []
+
+            def fake_run(command: list[str], **kwargs):
+                environment = kwargs.get("env")
+                self.assertIsInstance(environment, dict)
+                observed.append(environment.copy())
+                tools = root / "tools" / "uv"
+                if command[1:3] == ["-m", "venv"]:
+                    (tools / "bin").mkdir(parents=True, exist_ok=True)
+                    (tools / "bin" / "python").write_bytes(b"bootstrap-python")
+                    stdout = ""
+                elif "pip" in command and "install" in command:
+                    (tools / "bin" / "uv").write_bytes(b"uv-binary")
+                    stdout = ""
+                elif command[-1] == "--version" and Path(command[0]).name == "uv":
+                    stdout = f"uv {runner.UV_VERSION}\n"
+                elif "sync" in command:
+                    runtime = source / ".venv" / "bin"
+                    runtime.mkdir(parents=True)
+                    (runtime / "python").write_bytes(b"runtime-python")
+                    stdout = ""
+                elif command[-1] == "--version" and Path(command[0]).name == "python":
+                    stdout = "Python 3.12.0\n"
+                else:
+                    self.fail(f"unexpected bootstrap command: {command}")
+                return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+            with mock.patch.dict(os.environ, poisoned_environment, clear=False), mock.patch.object(
+                runner, "run", side_effect=fake_run,
+            ):
+                state = runner.provision_pr_agent_environment(source, root)
+
+            self.assertEqual(len(observed), 5)
+            self.assertEqual(state["uv_version"], f"uv {runner.UV_VERSION}")
+            rooted_variables = (
+                "HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+                "XDG_STATE_HOME", "TMPDIR", "UV_CACHE_DIR", "UV_PYTHON_INSTALL_DIR",
+                "UV_TOOL_DIR", "UV_TOOL_BIN_DIR", "PIP_CACHE_DIR", "npm_config_cache",
+                "NPM_CONFIG_CACHE", "YARN_CACHE_FOLDER", "PNPM_HOME", "BUN_INSTALL",
+                "BUN_INSTALL_CACHE_DIR", "PYTHONPYCACHEPREFIX", "CARGO_HOME", "RUSTUP_HOME",
+            )
+            private_root = root.resolve()
+            for environment in observed:
+                self.assertNotIn("XAI_API_KEY", environment)
+                for name in rooted_variables:
+                    value = Path(environment[name]).resolve()
+                    self.assertTrue(
+                        value.is_relative_to(private_root),
+                        f"{name} escaped private root: {value}",
+                    )
+            self.assertEqual(observed[-2]["UV_PROJECT_ENVIRONMENT"], str(source / ".venv"))
+            self.assertNotEqual(observed[0]["HOME"], str(poison))
+            self.assertNotEqual(observed[0]["UV_CACHE_DIR"], str(poison / "uv"))
+
+    def test_private_tool_environment_rejects_cache_symlink_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "private-root"
+            outside = Path(directory) / "outside"
+            (root / "tool-runtime").mkdir(parents=True)
+            outside.mkdir()
+            (root / "tool-runtime" / "cache").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(runner.HostRunnerError, "escapes runtime root"):
+                runner.private_tool_environment(root)
+
+    def test_qq_core_verification_pins_runtime_content_not_unrelated_checkout_head(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            core = Path(directory) / "qq-core"
+            dsh = core / "dsh" / "node_modules" / ".bin"
+            dsh.mkdir(parents=True)
+            (dsh / "dsh").write_text("runtime\n", encoding="utf-8")
+            (core / "dsh" / "qq-dsh-model-compat.mjs").write_text("compat\n", encoding="utf-8")
+            expected = {
+                "dsh_tree": "1" * 40, "dsh_lock_blob": "2" * 40,
+                "package_blob": "3" * 40, "host_patch_blob": "4" * 40,
+            }
+
+            def fake_git(_path: Path, *arguments: str, **_kwargs) -> str:
+                expression = arguments[-1]
+                values = {
+                    "HEAD^{commit}": "f" * 40,
+                    "HEAD:dsh": expected["dsh_tree"],
+                    "HEAD:dsh/package-lock.json": expected["dsh_lock_blob"],
+                    "HEAD:package.json": expected["package_blob"],
+                    "HEAD:host.patch.yml": expected["host_patch_blob"],
+                    f"{runner.QQ_CORE_PIN}:dsh": expected["dsh_tree"],
+                    f"{runner.QQ_CORE_PIN}:dsh/package-lock.json": expected["dsh_lock_blob"],
+                    f"{runner.QQ_CORE_PIN}:package.json": expected["package_blob"],
+                    f"{runner.QQ_CORE_PIN}:host.patch.yml": expected["host_patch_blob"],
+                }
+                return values[expression] + "\n"
+
+            patches = (
+                mock.patch.object(runner, "QQ_CORE_DSH_TREE", expected["dsh_tree"]),
+                mock.patch.object(runner, "QQ_CORE_DSH_LOCK_BLOB", expected["dsh_lock_blob"]),
+                mock.patch.object(runner, "QQ_CORE_PACKAGE_BLOB", expected["package_blob"]),
+                mock.patch.object(runner, "QQ_CORE_HOST_PATCH_BLOB", expected["host_patch_blob"]),
+                mock.patch.object(runner, "git", side_effect=fake_git),
+            )
+            with patches[0], patches[1], patches[2], patches[3], patches[4]:
+                state = runner.verify_core_source(core)
+            self.assertEqual(state["pin"], runner.QQ_CORE_PIN)
+            self.assertEqual(state["checkout_head"], "f" * 40)
+            self.assertEqual(state["dsh_tree"], expected["dsh_tree"])
+
+            def drifted_git(path: Path, *arguments: str, **kwargs) -> str:
+                if arguments[-1] == "HEAD:dsh":
+                    return "0" * 40 + "\n"
+                return fake_git(path, *arguments, **kwargs)
+
+            with patches[0], patches[1], patches[2], patches[3], mock.patch.object(
+                runner, "git", side_effect=drifted_git,
+            ), self.assertRaisesRegex(runner.HostRunnerError, "runtime content mismatch"):
+                runner.verify_core_source(core)
+
+    def test_execution_environment_uses_one_shared_bridge_with_isolated_external_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = root / "repository"
+            source = root / "source"
+            core = root / "core"
+            models = root / "models"
+            dsh_home = root / "dsh-home"
+            for path in (repository, source, core, models, dsh_home):
+                path.mkdir()
+            launcher = root / "launcher.py"
+            launcher.write_text("pass\n", encoding="utf-8")
+            args = type("Args", (), {
+                "qq_core_source": core, "qq_models_source": models, "qq_dsh_home": dsh_home,
+                "qq_launcher": launcher, "pr_agent_launcher": launcher,
+                "misospace_launcher": launcher,
+            })()
+            state = {
+                "repositories": {"qq-ui": {"path": str(repository)}, "qq-index": {"path": str(repository)}},
+                "sources": {
+                    "qq-mini-qa": {"path": str(source)}, "pr-agent": {"path": str(source)},
+                    "misospace-pr-reviewer": {"path": str(source)},
+                },
+            }
+            shared_base = "http://127.0.0.1:8000/v1"
+            endpoints = {
+                arm_id: (shared_base, f"synthetic-{index}-" + "x" * 40)
+                for index, arm_id in enumerate(runner.EXTERNAL_ARM_ENDPOINT_ENVS)
+            }
+            auth_readiness = ("http://127.0.0.1:8000/_qq/auth/ready", "admin-" + "z" * 48)
+            environment = runner.execution_environment(args, state, endpoints, auth_readiness)
+            self.assertNotIn("GROK_BENCH_QQ_BASE_URL", environment)
+            observed_keys = set()
+            for arm_id, (base_name, key_name) in runner.EXTERNAL_ARM_ENDPOINT_ENVS.items():
+                self.assertEqual(environment[base_name], shared_base)
+                self.assertEqual(environment[key_name], endpoints[arm_id][1])
+                observed_keys.add(environment[key_name])
+            self.assertEqual(len(observed_keys), 2)
+            self.assertEqual(environment[runner.AUTH_READINESS_ENVS[0]], auth_readiness[0])
+            self.assertEqual(environment[runner.AUTH_READINESS_ENVS[1]], auth_readiness[1])
+            with self.assertRaisesRegex(runner.HostRunnerError, "both external arms"):
+                runner.execution_environment(
+                    args, state, {"pr-agent": endpoints["pr-agent"]}, auth_readiness,
+                )
+
     def test_host_request_is_exact_and_contains_no_credential_handoff(self) -> None:
         args = type("Args", (), {"root": Path("/tmp/frozen-smoke"), "output": None})()
         output = io.StringIO()
@@ -99,7 +279,11 @@ class HostProvisionTests(unittest.TestCase):
         self.assertEqual(value["schema"], runner.REQUEST_SCHEMA)
         self.assertEqual(value["pinned_sources"]["pr-agent"]["pin"], runner.SOURCES["pr-agent"]["pin"])
         self.assertEqual(value["host_command"][2], "smoke")
-        self.assertEqual(value["followup"], "none: the smoke command provisions, pilots all arms, and runs the serial matrix")
+        self.assertEqual(
+            value["followup"],
+            "none: the smoke command provisions, launches a concurrent pilot wave, "
+            "and runs three sequential concurrent-arm case waves",
+        )
         self.assertTrue(runner.PR_AGENT_LAUNCHER.is_file())
         self.assertTrue(runner.MISOSPACE_LAUNCHER.is_file())
         rendered = json.dumps(value).lower()
@@ -223,11 +407,19 @@ class QqMiniQaAdapterTests(unittest.TestCase):
 
 
 class BridgeTests(unittest.TestCase):
-    def start_bridge(self, root: Path) -> tuple[subprocess.Popen[bytes], str, str]:
+    def start_bridge(
+        self, root: Path, *, delay_ms: int = 0,
+    ) -> tuple[subprocess.Popen[bytes], dict[str, object], str, str]:
         key = "synthetic-" + "a" * 48
+        other_key = "synthetic-" + "b" * 48
+        admin_key = "admin-" + "c" * 48
         ready = root / "ready.json"
         environment = runner.secret_free_environment()
-        environment["GROK_BENCH_BRIDGE_KEY"] = key
+        environment["GROK_BENCH_BRIDGE_KEYS_JSON"] = json.dumps({
+            "pr-agent": key, "misospace-pr-reviewer": other_key,
+        })
+        environment["GROK_BENCH_BRIDGE_ADMIN_KEY"] = admin_key
+        environment["FAKE_GROK_DELAY_MS"] = str(delay_ms)
         process = subprocess.Popen([
             "node", str(BRIDGE), "--adapter-module", str(FAKE),
             "--ready-file", str(ready), "--log", str(root / "bridge.jsonl"),
@@ -236,12 +428,13 @@ class BridgeTests(unittest.TestCase):
         while time.monotonic() < deadline and not ready.is_file() and process.poll() is None:
             time.sleep(0.02)
         self.assertTrue(ready.is_file(), f"bridge exited before ready: {process.returncode}")
-        return process, json.loads(ready.read_text())["base_url"], key
+        return process, json.loads(ready.read_text()), key, admin_key
 
     def test_bridge_nonstream_usage_and_authorization(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            process, base, key = self.start_bridge(root)
+            process, evidence, key, admin_key = self.start_bridge(root)
+            base = evidence["base_url"]
             try:
                 body = json.dumps({
                     "model": "grok-4.6",
@@ -258,6 +451,22 @@ class BridgeTests(unittest.TestCase):
                 self.assertEqual(value["usage"]["prompt_tokens"], 15)
                 self.assertEqual(value["usage"]["total_tokens"], 22)
                 self.assertEqual(value["usage"]["completion_tokens_details"]["reasoning_tokens"], 5)
+                ready_request = Request(
+                    evidence["auth_ready_url"], data=b"", method="POST",
+                    headers={"Authorization": f"Bearer {admin_key}"},
+                )
+                readiness = json.load(urlopen(ready_request, timeout=3))
+                self.assertEqual(readiness["schema"], "qq.grok-xai-auth-readiness/v1")
+                self.assertEqual(readiness["status"], "ready")
+                self.assertTrue(readiness["forced"])
+                self.assertTrue(readiness["fresh"])
+                with self.assertRaises(HTTPError) as denied:
+                    urlopen(Request(
+                        evidence["auth_ready_url"], data=b"", method="POST",
+                        headers={"Authorization": f"Bearer {key}"},
+                    ), timeout=3)
+                self.assertEqual(denied.exception.code, 401)
+                denied.exception.close()
                 with self.assertRaises(HTTPError) as raised:
                     urlopen(Request(f"{base}/models", headers={"Authorization": "Bearer wrong"}), timeout=3)
                 self.assertEqual(raised.exception.code, 401)
@@ -281,10 +490,129 @@ class BridgeTests(unittest.TestCase):
                 process.terminate()
                 process.wait(timeout=3)
 
+    def test_bridge_multiplexes_two_overlapping_provider_requests(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            process, evidence, key, _admin_key = self.start_bridge(root, delay_ms=180)
+            try:
+                base = evidence["base_url"]
+                body = json.dumps({
+                    "model": "grok-4.6", "messages": [{"role": "user", "content": "diff"}],
+                    "reasoning_effort": "high",
+                }).encode()
+
+                def request_once() -> dict[str, object]:
+                    request = Request(f"{base}/chat/completions", data=body, headers={
+                        "Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                    })
+                    return json.load(urlopen(request, timeout=3))
+
+                started = time.monotonic()
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    values = list(executor.map(lambda _index: request_once(), range(2)))
+                elapsed = time.monotonic() - started
+                self.assertEqual([item["model"] for item in values], ["grok-4.6", "grok-4.6"])
+                self.assertLess(elapsed, 0.32, "bridge serialized complete provider generations")
+            finally:
+                process.terminate()
+                process.wait(timeout=3)
+
+    def test_auth_coordinator_single_flights_expiry_and_401_rotations(self) -> None:
+        program = f"""
+          import {{ createSingleFlightAuthCoordinator }} from {json.dumps(BRIDGE.as_uri())};
+          const sleep = (ms) => new Promise((accept) => setTimeout(accept, ms));
+          let auth = {{access:'old',refresh:'refresh-old',expires:0}};
+          let rotations = 0;
+          const store = {{
+            pathFor() {{ return '/private/auth'; }},
+            read() {{ return {{...auth}}; }},
+            present() {{ return true; }},
+            write() {{ throw new Error('unused'); }},
+            remove() {{ throw new Error('unused'); }},
+            needsRefresh(value) {{ return value.expires <= Date.now(); }},
+            async accessToken() {{ return {{...auth}}; }},
+            async rotate(_connector, refresher) {{
+              rotations += 1;
+              if (rotations > 1) throw new Error('simulated qq-models 2-second lock timeout');
+              await sleep(120);
+              auth = await refresher({{...auth}});
+              return {{...auth}};
+            }},
+          }};
+          const coordinator = createSingleFlightAuthCoordinator(store);
+          const refresh = async () => ({{access:'new',refresh:'refresh-new',expires:Date.now()+60000}});
+          const started = Date.now();
+          const expiry = await Promise.all([
+            coordinator.requestStore().accessToken('grok', refresh),
+            coordinator.requestStore().accessToken('grok', refresh),
+          ]);
+          if (rotations !== 1 || expiry.some((item) => item.access !== 'new')) throw new Error('expiry was not single-flight');
+          if (Date.now() - started >= 1000) throw new Error('refresh approached the old 2-second lock timeout');
+          rotations = 0;
+          const ready = await coordinator.ready('grok', refresh);
+          if (rotations !== 1 || ready.forced !== true || ready.refreshed !== true || ready.fresh !== true) throw new Error('readiness did not force one fresh refresh');
+
+          store.needsRefresh = (value) => value.expires - 120000 <= Date.now();
+          store.rotate = async (_connector, refresher) => {{
+            rotations += 1;
+            auth = await refresher({{...auth}});
+            return {{...auth}};
+          }};
+          let rejectedShortToken = false;
+          try {{
+            await coordinator.ready('grok', async () => ({{
+              access:'too-short',refresh:'too-short-refresh',expires:Date.now()+1000,
+            }}));
+          }} catch (error) {{
+            rejectedShortToken = /outside the refresh window/.test(String(error?.message));
+          }}
+          if (!rejectedShortToken) throw new Error('readiness accepted an already-expiring token');
+          store.needsRefresh = (value) => value.expires <= Date.now();
+
+          auth = {{access:'race-old',refresh:'race-refresh',expires:Date.now()+60000}};
+          const raceRequest = coordinator.requestStore();
+          await raceRequest.accessToken('grok', refresh);
+          store.rotate = async () => {{
+            await sleep(30);
+            auth = {{access:'race-new',refresh:'race-refresh-new',expires:Date.now()+60000}};
+            throw new Error('qq-models: timed out locking /private/auth');
+          }};
+          const recovered = await raceRequest.rotate('grok', refresh);
+          if (recovered.access !== 'race-new') throw new Error('new cross-process auth generation was not recovered');
+
+          auth = {{access:'401-old',refresh:'401-refresh',expires:Date.now()+60000}};
+          rotations = 0;
+          store.rotate = async (_connector, refresher) => {{
+            rotations += 1;
+            await sleep(100);
+            auth = await refresher({{...auth}});
+            return {{...auth}};
+          }};
+          const first = coordinator.requestStore();
+          const second = coordinator.requestStore();
+          const lateRequest = coordinator.requestStore();
+          await Promise.all([
+            first.accessToken('grok', refresh), second.accessToken('grok', refresh),
+            lateRequest.accessToken('grok', refresh),
+          ]);
+          const rotated = await Promise.all([first.rotate('grok', refresh), second.rotate('grok', refresh)]);
+          if (rotations !== 1 || rotated.some((item) => item.access !== 'new')) throw new Error('401 was not single-flight');
+          const late = await lateRequest.rotate('grok', refresh);
+          if (rotations !== 1 || late.access !== 'new') throw new Error('late 401 waiter rotated a newer generation');
+          console.log(JSON.stringify({{expiry_rotations:1,auth_rotations:rotations}}));
+        """
+        completed = subprocess.run(
+            ["node", "--input-type=module", "-e", program],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout), {"expiry_rotations": 1, "auth_rotations": 1})
+
     def test_bridge_rejects_response_format_instead_of_silently_ignoring_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            process, base, key = self.start_bridge(root)
+            process, evidence, key, admin_key = self.start_bridge(root)
+            base = evidence["base_url"]
             try:
                 body = json.dumps({
                     "model": "grok-4.6",

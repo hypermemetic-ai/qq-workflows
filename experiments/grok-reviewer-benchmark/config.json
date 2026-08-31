@@ -2,24 +2,14 @@
   "schema": "qq.grok-reviewer-benchmark-config/v1",
   "experiment_id": "grok-stock-reviewers-current-v1",
   "execution": {
-    "schedule": [
-      [
-        "qq-mini-qa",
-        "pr-agent",
-        "misospace-pr-reviewer"
-      ],
-      [
-        "pr-agent",
-        "misospace-pr-reviewer",
-        "qq-mini-qa"
-      ],
-      [
-        "misospace-pr-reviewer",
-        "qq-mini-qa",
-        "pr-agent"
-      ]
+    "mode": "sequential-case-waves-concurrent-arms",
+    "arm_wave": [
+      "qq-mini-qa",
+      "pr-agent",
+      "misospace-pr-reviewer"
     ],
-    "serial": true,
+    "max_concurrent_arms": 3,
+    "max_arm_start_skew_seconds": 2.0,
     "timeout_seconds": 3600,
     "cooldown_seconds": 10,
     "artifacts_directory": "runs"
@@ -27,11 +17,24 @@
   "provider": {
     "family": "Grok",
     "provider_model": "grok-4.6",
-    "openai_compatible_base_url_env": "GROK_BENCH_BASE_URL",
-    "openai_compatible_api_key_env": "GROK_BENCH_API_KEY",
     "reasoning_effort_target": "high",
     "temperature_target": null,
-    "max_output_tokens_target": null
+    "max_output_tokens_target": null,
+    "external_arm_endpoints": {
+      "pr-agent": {
+        "base_url_env": "GROK_BENCH_PR_AGENT_BASE_URL",
+        "api_key_env": "GROK_BENCH_PR_AGENT_API_KEY"
+      },
+      "misospace-pr-reviewer": {
+        "base_url_env": "GROK_BENCH_MISOSPACE_BASE_URL",
+        "api_key_env": "GROK_BENCH_MISOSPACE_API_KEY"
+      }
+    },
+    "auth_readiness": {
+      "url_env": "GROK_BENCH_AUTH_READY_URL",
+      "api_key_env": "GROK_BENCH_AUTH_READY_KEY",
+      "mode": "trusted-serial-before-wave-barrier-release"
+    }
   },
   "arms": [
     {

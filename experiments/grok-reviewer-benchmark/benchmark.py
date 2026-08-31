@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import copy
 from datetime import datetime, timezone
 import hashlib
@@ -16,9 +17,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import Any, Iterable
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
 import uuid
 
 HERE = Path(__file__).resolve().parent
@@ -163,12 +167,41 @@ def validate_config(path: Path) -> dict[str, Any]:
     require(arms[2].get("client_model") == "grok-4.6", "wrong misospace model string")
     require(arms[2].get("mode", {}).get("tool_mode") == "off", "misospace tool_mode must remain off")
     execution = value.get("execution")
-    require(isinstance(execution, dict) and execution.get("serial") is True, "execution must be serial")
-    schedule = execution.get("schedule")
-    require(isinstance(schedule, list) and schedule, "a nonempty arm schedule is required")
-    for row in schedule:
-        require(isinstance(row, list) and tuple(sorted(row)) == tuple(sorted(EXPECTED_ARMS)),
-                "every schedule row must be a permutation of exactly three arms")
+    require(isinstance(execution, dict), "execution config is required")
+    require(execution.get("mode") == "sequential-case-waves-concurrent-arms",
+            "execution must use sequential case waves with concurrent arms")
+    require(tuple(execution.get("arm_wave", ())) == EXPECTED_ARMS,
+            "arm_wave must contain exactly the settled three arms")
+    require(execution.get("max_concurrent_arms") == len(EXPECTED_ARMS),
+            "all three arms must be eligible to launch concurrently")
+    skew = execution.get("max_arm_start_skew_seconds")
+    require(isinstance(skew, (int, float)) and not isinstance(skew, bool) and skew > 0,
+            "max_arm_start_skew_seconds must be positive")
+    provider = value.get("provider")
+    require(isinstance(provider, dict), "provider config is required")
+    endpoints = provider.get("external_arm_endpoints")
+    external_arms = EXPECTED_ARMS[1:]
+    require(isinstance(endpoints, dict) and tuple(endpoints) == external_arms,
+            "provider external_arm_endpoints must contain exactly PR-Agent and misospace")
+    for arm_id, endpoint in endpoints.items():
+        require(isinstance(endpoint, dict), f"provider endpoint for {arm_id} must be an object")
+        require(isinstance(endpoint.get("base_url_env"), str) and endpoint["base_url_env"],
+                f"provider endpoint base URL env is required for {arm_id}")
+        require(isinstance(endpoint.get("api_key_env"), str) and endpoint["api_key_env"],
+                f"provider endpoint API key env is required for {arm_id}")
+    require(len({endpoint["api_key_env"] for endpoint in endpoints.values()}) == len(external_arms),
+            "external arms require distinct synthetic bridge credential environments")
+    readiness = provider.get("auth_readiness")
+    require(isinstance(readiness, dict), "provider auth_readiness is required")
+    require(readiness.get("mode") == "trusted-serial-before-wave-barrier-release",
+            "provider auth readiness must run serially before each wave barrier release")
+    require(isinstance(readiness.get("url_env"), str) and readiness["url_env"],
+            "provider auth readiness URL environment is required")
+    require(isinstance(readiness.get("api_key_env"), str) and readiness["api_key_env"],
+            "provider auth readiness key environment is required")
+    endpoint_envs = {item for endpoint in endpoints.values() for item in endpoint.values()}
+    require(readiness["url_env"] not in endpoint_envs and readiness["api_key_env"] not in endpoint_envs,
+            "auth readiness must use a separate trusted channel")
     return value
 
 
@@ -324,9 +357,12 @@ def command_for_arm(arm: dict[str, Any]) -> list[str] | None:
         raise BenchmarkError(f"{arm['command_env']} must be a JSON command array: {error}") from error
     require(isinstance(value, list) and value and all(isinstance(item, str) and item for item in value),
             f"{arm['command_env']} must be a nonempty JSON array of strings")
-    upstream_key = os.environ.get("GROK_BENCH_API_KEY")
-    if upstream_key:
-        require(all(upstream_key not in item for item in value), "upstream credential must not appear in command")
+    upstream_keys = [
+        item for name, item in os.environ.items()
+        if name.startswith("GROK_BENCH_") and name.endswith("_API_KEY") and item
+    ]
+    require(all(key not in argument for key in upstream_keys for argument in value),
+            "upstream credential must not appear in command")
     return value
 
 
@@ -376,17 +412,34 @@ def runtime_readiness(config: dict[str, Any], corpus: dict[str, Any], corpus_pat
         elif not Path(raw).expanduser().resolve().is_dir():
             missing.append(f"trusted qq runtime path is not a directory: {name}")
     provider = config["provider"]
-    base_name = provider["openai_compatible_base_url_env"]
-    key_name = provider["openai_compatible_api_key_env"]
-    base_url = os.environ.get(base_name)
-    api_key = os.environ.get(key_name)
-    if not base_url or not api_key:
-        missing.append(f"missing sanctioned OpenAI-compatible Grok bridge ({base_name} + {key_name})")
+    endpoints: dict[str, dict[str, str]] = {}
+    for arm_id, endpoint in provider["external_arm_endpoints"].items():
+        base_name = endpoint["base_url_env"]
+        key_name = endpoint["api_key_env"]
+        base_url = os.environ.get(base_name)
+        api_key = os.environ.get(key_name)
+        if not base_url or not api_key:
+            missing.append(
+                f"missing sanctioned shared Grok bridge endpoint for {arm_id} ({base_name} + {key_name})"
+            )
+        else:
+            try:
+                validate_bridge_url(base_url)
+                endpoints[arm_id] = {"base_url_env": base_name, "api_key_env": key_name}
+            except BenchmarkError as error:
+                missing.append(f"{arm_id}: {error}")
+    auth_ready = provider["auth_readiness"]
+    ready_url = os.environ.get(auth_ready["url_env"])
+    ready_key = os.environ.get(auth_ready["api_key_env"])
+    if not ready_url or not ready_key:
+        missing.append(
+            f"missing trusted auth readiness channel ({auth_ready['url_env']} + {auth_ready['api_key_env']})"
+        )
     else:
         try:
-            validate_bridge_url(base_url)
+            validate_bridge_url(ready_url)
         except BenchmarkError as error:
-            missing.append(str(error))
+            missing.append(f"auth readiness: {error}")
     if missing:
         raise RuntimeUnblock(missing)
     return {
@@ -394,6 +447,38 @@ def runtime_readiness(config: dict[str, Any], corpus: dict[str, Any], corpus_pat
         "integrity": integrity,
         "sources": sources,
         "commands": commands,
+        "endpoints": endpoints,
+    }
+
+
+def provider_auth_readiness(config: dict[str, Any]) -> dict[str, Any]:
+    """Refresh/read the shared host auth store just before a wave is released."""
+    spec = config["provider"]["auth_readiness"]
+    url = os.environ.get(spec["url_env"])
+    key = os.environ.get(spec["api_key_env"])
+    require(bool(url and key), "trusted auth readiness channel is unavailable")
+    validate_bridge_url(url)
+    started = time.monotonic_ns()
+    checked_at = datetime.now(timezone.utc).isoformat()
+    request = Request(
+        url, data=b"", method="POST",
+        headers={"Authorization": f"Bearer {key}", "Content-Length": "0"},
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            payload = json.load(response)
+    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
+        raise BenchmarkError(f"trusted pre-wave auth readiness failed: {type(error).__name__}: {error}") from error
+    require(payload.get("schema") == "qq.grok-xai-auth-readiness/v1", "auth readiness returned wrong schema")
+    require(payload.get("status") == "ready" and payload.get("model") == "grok-4.6",
+            "auth readiness did not confirm Grok 4.6")
+    require(payload.get("forced") is True, "auth readiness did not force a token rotation")
+    require(isinstance(payload.get("refreshed"), bool), "auth readiness omitted refresh evidence")
+    require(payload.get("fresh") is True, "auth readiness did not prove a token outside the refresh window")
+    return {
+        "status": "ready", "model": "grok-4.6", "checked_at": checked_at,
+        "forced": True, "refreshed": payload["refreshed"], "fresh": True,
+        "elapsed_seconds": round((time.monotonic_ns() - started) / 1_000_000_000, 6),
     }
 
 
@@ -699,6 +784,7 @@ def run_one(
     config: dict[str, Any], corpus: dict[str, Any], corpus_path: Path,
     case: dict[str, Any], arm: dict[str, Any], repository: Path,
     command: list[str], source: Path, final_directory: Path,
+    start_barrier: threading.Barrier | None = None,
 ) -> dict[str, Any]:
     # Required immediately before every arm, not merely once at run start.
     integrity_before = case_integrity(case, corpus_path, repository)
@@ -760,11 +846,11 @@ def run_one(
     proxy_usage = None
     proxy_records = None
     if arm["id"] != "qq-mini-qa":
-        provider = config["provider"]
+        endpoint = config["provider"]["external_arm_endpoints"][arm["id"]]
         proxy, local_base = start_proxy(
             stage_root,
-            os.environ[provider["openai_compatible_base_url_env"]],
-            os.environ[provider["openai_compatible_api_key_env"]],
+            os.environ[endpoint["base_url_env"]],
+            os.environ[endpoint["api_key_env"]],
         )
         child_environment.update({
             "BENCH_OPENAI_BASE_URL": local_base,
@@ -773,6 +859,16 @@ def run_one(
             "XAI_API_KEY": "benchmark-local-proxy",
         })
 
+    if start_barrier is not None:
+        try:
+            start_barrier.wait(timeout=60)
+        except BaseException as error:
+            if proxy is not None:
+                stop_proxy(proxy)
+            shutil.rmtree(stage_root, ignore_errors=True)
+            if isinstance(error, threading.BrokenBarrierError):
+                raise BenchmarkError(f"arm launch barrier failed for {case['id']}/{arm['id']}") from error
+            raise
     started_at = datetime.now(timezone.utc).isoformat()
     started_ns = time.monotonic_ns()
     returncode: int | None = None
@@ -840,6 +936,7 @@ def run_one(
         "model": arm["client_model"], "provider_model": arm["provider_model"],
         "source": source_state, "command": command,
         "started_at": started_at, "finished_at": finished_at,
+        "started_monotonic_ns": started_ns,
         "wall_clock_seconds": round(wall_seconds, 6),
         "returncode": returncode, "timeout": timeout,
         "failure": execution_error or result_error,
@@ -890,13 +987,8 @@ def command_run(args: argparse.Namespace) -> int:
     require(selected_cases <= known_cases, f"unknown selected cases: {sorted(selected_cases - known_cases)}")
     require(selected_arms <= set(EXPECTED_ARMS), f"unknown selected arms: {sorted(selected_arms - set(EXPECTED_ARMS))}")
     cases = [case for case in corpus["cases"] if not selected_cases or case["id"] in selected_cases]
-    jobs: list[tuple[dict[str, Any], str]] = []
-    for case_index, case in enumerate(corpus["cases"]):
-        if case not in cases:
-            continue
-        schedule = config["execution"]["schedule"][case_index % len(config["execution"]["schedule"])]
-        jobs.extend((case, arm_id) for arm_id in schedule if not selected_arms or arm_id in selected_arms)
-    require(jobs, "selected benchmark job set is empty")
+    arm_wave = [arm_id for arm_id in config["execution"]["arm_wave"] if not selected_arms or arm_id in selected_arms]
+    require(cases and arm_wave, "selected benchmark job set is empty")
 
     run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     require(re.fullmatch(r"[A-Za-z0-9_.-]+", run_id) is not None, "unsafe run id")
@@ -910,33 +1002,112 @@ def command_run(args: argparse.Namespace) -> int:
         "schema": "qq.grok-reviewer-benchmark-run/v1",
         "run_id": run_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "serial": True,
+        "serial": False,
+        "execution_mode": "sequential-case-waves-concurrent-arms",
         "provider_family": "Grok",
         "provider_model": "grok-4.6",
         "selection": {"cases": sorted(selected_cases), "arms": sorted(selected_arms)},
+        "waves": [],
         "results": [],
     }
     write_json(root / "run.json", run_manifest)
     arms = {arm["id"]: arm for arm in config["arms"]}
     sources = {arm_id: arm_source(arms[arm_id]) for arm_id in EXPECTED_ARMS}
     repositories = {case["repository_id"]: case_repository(case) for case in corpus["cases"]}
-    for job_index, (case, arm_id) in enumerate(jobs):
-        arm = arms[arm_id]
-        normalized = run_one(
-            config, corpus, args.corpus, case, arm, repositories[case["repository_id"]],
-            readiness["commands"][arm_id], sources[arm_id],
-            root / "cases" / case["id"] / arm_id,
-        )
-        run_manifest["results"].append({
-            "case_id": case["id"], "arm_id": arm_id,
-            "artifact": f"cases/{case['id']}/{arm_id}",
-            "wall_clock_seconds": normalized["wall_clock_seconds"],
-            "failure": normalized["failure"],
+
+    for wave_index, case in enumerate(cases):
+        dispatched_ns = time.monotonic_ns()
+        wave_record: dict[str, Any] = {
+            "wave_index": wave_index,
+            "case_id": case["id"],
+            "arm_ids": list(arm_wave),
+            "dispatched_at": datetime.now(timezone.utc).isoformat(),
+            "status": "running",
+            "auth_readiness": None,
+            "common_wave_start_at": None,
+            "common_wave_start_monotonic_ns": None,
+            "arm_started_at": {},
+            "arm_start_offset_seconds": {},
+            "arm_start_offset_from_common_seconds": {},
+        }
+        run_manifest["waves"].append(wave_record)
+        write_json(root / "run.json", run_manifest)
+
+        def release_wave() -> None:
+            wave_record["auth_readiness"] = provider_auth_readiness(config)
+            write_json(root / "run.json", run_manifest)
+            # Set these last: Barrier releases all waiters immediately after its
+            # action returns, with no I/O between this timestamp and release.
+            wave_record["common_wave_start_at"] = datetime.now(timezone.utc).isoformat()
+            wave_record["common_wave_start_monotonic_ns"] = time.monotonic_ns()
+
+        # The action runs exactly once, after all isolated arms/proxies are
+        # staged and before the barrier releases any reviewer generation.
+        barrier = threading.Barrier(len(arm_wave), action=release_wave)
+
+        def execute_arm(arm_id: str) -> dict[str, Any]:
+            try:
+                return run_one(
+                    config, corpus, args.corpus, case, arms[arm_id],
+                    repositories[case["repository_id"]], readiness["commands"][arm_id],
+                    sources[arm_id], root / "cases" / case["id"] / arm_id,
+                    start_barrier=barrier,
+                )
+            except BaseException:
+                barrier.abort()
+                raise
+
+        normalized_by_arm: dict[str, dict[str, Any]] = {}
+        infrastructure_errors: dict[str, str] = {}
+        with ThreadPoolExecutor(max_workers=len(arm_wave), thread_name_prefix=f"review-{case['id']}") as executor:
+            future_arms = {executor.submit(execute_arm, arm_id): arm_id for arm_id in arm_wave}
+            for future in as_completed(future_arms):
+                arm_id = future_arms[future]
+                try:
+                    normalized_by_arm[arm_id] = future.result()
+                except BaseException as error:
+                    infrastructure_errors[arm_id] = f"{type(error).__name__}: {error}"
+
+        start_values = []
+        for arm_id in arm_wave:
+            normalized = normalized_by_arm.get(arm_id)
+            if normalized is None:
+                continue
+            started_ns = normalized["started_monotonic_ns"]
+            start_values.append(started_ns)
+            wave_record["arm_started_at"][arm_id] = normalized["started_at"]
+            wave_record["arm_start_offset_seconds"][arm_id] = round(
+                (started_ns - dispatched_ns) / 1_000_000_000, 6,
+            )
+            wave_record["arm_start_offset_from_common_seconds"][arm_id] = round(
+                (started_ns - wave_record["common_wave_start_monotonic_ns"]) / 1_000_000_000, 6,
+            )
+            run_manifest["results"].append({
+                "case_id": case["id"], "arm_id": arm_id,
+                "artifact": f"cases/{case['id']}/{arm_id}",
+                "wall_clock_seconds": normalized["wall_clock_seconds"],
+                "failure": normalized["failure"],
+            })
+        start_skew = (max(start_values) - min(start_values)) / 1_000_000_000 if start_values else None
+        wave_record.update({
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "status": "infrastructure-failure" if infrastructure_errors else "complete",
+            "infrastructure_errors": infrastructure_errors,
+            "arm_start_skew_seconds": round(start_skew, 6) if start_skew is not None else None,
+            "start_skew_target_seconds": config["execution"]["max_arm_start_skew_seconds"],
+            "within_start_skew_target": (
+                start_skew <= config["execution"]["max_arm_start_skew_seconds"]
+                if start_skew is not None and len(start_values) == len(arm_wave) else False
+            ),
         })
         write_json(root / "run.json", run_manifest)
-        if job_index != len(jobs) - 1 and config["execution"]["cooldown_seconds"]:
+        if infrastructure_errors:
+            raise BenchmarkError(
+                f"case wave {case['id']} infrastructure failure: "
+                + "; ".join(f"{arm_id}: {message}" for arm_id, message in infrastructure_errors.items())
+            )
+        if wave_index != len(cases) - 1 and config["execution"]["cooldown_seconds"]:
             time.sleep(config["execution"]["cooldown_seconds"])
-    write_json(root / "run.json", run_manifest)
     print(canonical_json(run_manifest), end="")
     return 1 if any(item["failure"] is not None for item in run_manifest["results"]) else 0
 

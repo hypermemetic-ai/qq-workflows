@@ -23,8 +23,9 @@ here restores that behavior or changes product review settings.
 ## Implementation and runtime status
 
 The rig now includes all three tracked stock launchers, exact external source
-blob/tree pins, deterministic corpus provisioning, the trusted xai-auth bridge,
-provider capture, serial scheduling, result normalization, blind packets, and
+blob/tree pins, deterministic corpus provisioning, one concurrency-capable trusted
+xai-auth bridge for the two external arms, provider capture, sequential
+case-wave/concurrent-arm scheduling, result normalization, blind packets, and
 scoring.
 
 Evidence established before the quality matrix:
@@ -43,11 +44,16 @@ Evidence established before the quality matrix:
 - Offline source, object, synthetic-fixture, Git geometry, token-accounting,
   schema, bridge, launcher, and adjudication tests pass.
 
-The live three-arm quality matrix has not been run from this checkout's command
-sandbox because PID 1 is `bwrap --unshare-net`. That does not mean the OAuth
-route or network is absent: both are proven in the normal host namespace. The
-tracked `smoke` command is the complete minimal runner path; it does not ask for
-an API key or leave launcher work to the operator.
+The live three-arm quality matrix has not completed from this checkout's command
+sandbox because PID 1 is `bwrap --unshare-net`. A fresh post-cache-fix smoke
+reused only the verified public pinned clones as local Git origins, cloned all
+three into a new root, created the private tool environment, and stopped while
+pip resolved exact `uv==0.9.7` because `pypi.org` DNS is unavailable. Its logs
+contain no host HOME/cache path; no model call was attempted. That does not mean
+the OAuth route or normal-host network is absent: both were proven in the normal
+host namespace.
+The tracked `smoke` command is the complete minimal runner path; it does not ask
+for an API key or leave launcher work to the operator.
 
 ## One-command sanctioned smoke
 
@@ -63,15 +69,31 @@ python3 experiments/grok-reviewer-benchmark/host/runner.py smoke --root "$ROOT"
 
 1. clone exact source SHAs;
 2. bootstrap exact `uv 0.9.7` and run PR-Agent's frozen lock install before any
-   measured arm;
+   measured arm, with HOME, XDG, uv, pip, npm, temp, bytecode, and tool-install
+   caches rooted under the private `--root` (symlink escapes fail closed);
 3. materialize all frozen repository objects and deterministically create the
    disclosed qq-ui synthetic object;
 4. verify source blobs/trees and every case's commit/tree/diff/task/standards
    hashes;
-5. start the loopback-only xai-auth bridge with a random run-scoped bearer;
+5. start one loopback-only, concurrency-capable xai-auth bridge for PR-Agent and
+   misospace, with distinct random client keys plus a separate admin-only
+   readiness key;
 6. run `doctor`;
-7. run one compatibility pilot per arm on `smoke-001`;
-8. run the full three-case matrix serially in the pre-registered order.
+7. stage all three compatibility pilots, force-refresh host Grok auth once, then
+   release the three reviewers concurrently as one `smoke-001` wave;
+8. run three sequential case waves, staging all arms, force-refreshing auth once,
+   and launching all three reviewer arms concurrently within each case.
+
+Every arm gets its own fresh worktree, private HOME, stdout, stderr, native
+output, and normalized artifacts; each external arm also gets its own capture
+proxy and synthetic bridge key. A launch barrier synchronizes the three arms
+after their isolated inputs/proxies are ready. Its one-shot action performs the
+trusted forced refresh before releasing any reviewer generation. `run.json`
+records readiness evidence that the rotated token is outside qq-models' refresh
+window, each wave's dispatch/finish times, per-arm
+launch times and offsets, maximum launch skew, and whether the pre-registered
+two-second skew target was met. Cases remain sequential, with cooldown only
+between case waves.
 
 To emit the same command as machine-readable, secret-free JSON:
 
@@ -82,10 +104,27 @@ python3 experiments/grok-reviewer-benchmark/host/runner.py request \
 ```
 
 No provider key, copied OAuth file, or GitHub token is accepted. External
-reviewer children receive only an inert capture-proxy credential. The trusted
-bridge alone uses qq-models' normal `createAuthStore` against the existing
-`QQ_DSH_HOME`/`DSH_HOME`; authorization headers and OAuth fields are never
-logged.
+reviewer children receive only an inert capture-proxy credential. One trusted
+bridge uses qq-models' normal `createAuthStore` against the existing
+`QQ_DSH_HOME`/`DSH_HOME`. PR-Agent and misospace share its loopback URL but have
+distinct synthetic keys, request identities, capture proxies, sessions, and raw
+artifacts. The separate admin key can call only auth readiness and is never
+passed to a reviewer or capture proxy. qq retains the settled native
+`xai-auth/grok-4.6` route. Authorization headers and OAuth fields are never
+logged or copied.
+
+The bridge wraps the shared auth store with process-local single-flight refresh
+coordination and creates a Grok adapter per request, so external response streams
+can overlap without adapter state leakage. Concurrent expiry or 401 refreshes
+perform one rotation; a waiter whose observed auth generation is already stale
+reuses the newer generation. Readiness fails closed if rotation returns a token
+that is still inside qq-models' two-minute refresh window. The forced pre-wave
+refresh keeps native qq and the shared bridge out of deterministic refresh-skew
+lock contention. If native qq
+still encounters a provider auth failure (for example, a simultaneous provider
+401 outside benchmark control), the run records an infrastructure failure; it
+is never scored as review-quality evidence. Reviewer generations are not
+serialized.
 
 ## Repaired frozen smoke corpus
 
@@ -180,9 +219,9 @@ the finding list is empty or contains null file/line locations.
 
 ## Bridge and usage accounting
 
-`host/xai_openai_bridge.mjs` exposes only authenticated
-`POST /v1/chat/completions` on `127.0.0.1`. It accepts exactly `grok-4.6`, forces
-high reasoning when the client cannot request it, translates real qq-models
+`host/xai_openai_bridge.mjs` exposes authenticated `POST /v1/chat/completions`
+and an admin-only `POST /_qq/auth/ready` on `127.0.0.1`. It accepts exactly
+`grok-4.6`, forces high reasoning when the client cannot request it, translates real qq-models
 `{type:"finish", reason}` events, supports stream/nonstream clients, and never
 exposes reasoning text as assistant content. Unsupported `response_format`
 fails closed. Requested but unforwardable temperature/token caps are recorded as

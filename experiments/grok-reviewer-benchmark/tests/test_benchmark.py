@@ -9,7 +9,10 @@ import io
 import os
 from pathlib import Path
 import tempfile
+import threading
+import time
 import unittest
+from unittest import mock
 from contextlib import redirect_stdout
 
 HERE = Path(__file__).resolve().parents[1]
@@ -43,6 +46,23 @@ class FrozenIdentityTests(unittest.TestCase):
     def test_config_contains_exactly_the_settled_three_arms(self) -> None:
         config = benchmark.validate_config(HERE / "config.json")
         self.assertEqual(tuple(arm["id"] for arm in config["arms"]), benchmark.EXPECTED_ARMS)
+        self.assertEqual(config["execution"]["mode"], "sequential-case-waves-concurrent-arms")
+        self.assertEqual(tuple(config["execution"]["arm_wave"]), benchmark.EXPECTED_ARMS)
+        endpoints = config["provider"]["external_arm_endpoints"]
+        self.assertEqual(tuple(endpoints), benchmark.EXPECTED_ARMS[1:])
+        self.assertEqual(len({item["api_key_env"] for item in endpoints.values()}), 2)
+        self.assertNotIn("qq-mini-qa", endpoints)
+        readiness = config["provider"]["auth_readiness"]
+        self.assertEqual(readiness["mode"], "trusted-serial-before-wave-barrier-release")
+        duplicate_key = copy.deepcopy(config)
+        duplicate_key["provider"]["external_arm_endpoints"]["misospace-pr-reviewer"]["api_key_env"] = (
+            duplicate_key["provider"]["external_arm_endpoints"]["pr-agent"]["api_key_env"]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "duplicate-key.json"
+            path.write_text(json.dumps(duplicate_key), encoding="utf-8")
+            with self.assertRaisesRegex(benchmark.BenchmarkError, "distinct synthetic"):
+                benchmark.validate_config(path)
         weakened = copy.deepcopy(config)
         weakened["arms"][0]["required_trees"] = {}
         with tempfile.TemporaryDirectory() as directory:
@@ -129,14 +149,158 @@ class FrozenIdentityTests(unittest.TestCase):
                 benchmark.validate_corpus(corpus_path)
 
 
+class ConcurrentWaveTests(unittest.TestCase):
+    def test_selected_case_launches_all_three_arms_in_one_concurrent_wave(self) -> None:
+        active = 0
+        max_active = 0
+        lock = threading.Lock()
+
+        def fake_run_one(*arguments, start_barrier=None, **_kwargs):
+            nonlocal active, max_active
+            case = arguments[3]
+            arm = arguments[4]
+            self.assertIsNotNone(start_barrier)
+            start_barrier.wait(timeout=2)
+            started_ns = time.monotonic_ns()
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.04)
+            with lock:
+                active -= 1
+            return {
+                "started_at": f"2026-01-01T00:00:00.{benchmark.EXPECTED_ARMS.index(arm['id'])}Z",
+                "started_monotonic_ns": started_ns,
+                "wall_clock_seconds": 0.04,
+                "failure": None,
+                "case_id": case["id"], "arm_id": arm["id"],
+            }
+
+        readiness = {
+            "commands": {arm_id: ["fake-reviewer", arm_id] for arm_id in benchmark.EXPECTED_ARMS},
+        }
+        args = argparse.Namespace(
+            config=HERE / "config.json", corpus=HERE / "corpus" / "smoke.json",
+            case=["smoke-001"], arm=None, run_id="concurrent-test", output=None,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            args.output = Path(directory) / "run"
+            output = io.StringIO()
+            with (
+                mock.patch.object(benchmark, "runtime_readiness", return_value=readiness),
+                mock.patch.object(benchmark, "arm_source", return_value=Path(directory)),
+                mock.patch.object(benchmark, "case_repository", return_value=Path(directory)),
+                mock.patch.object(benchmark, "run_one", side_effect=fake_run_one),
+                mock.patch.object(benchmark, "provider_auth_readiness", return_value={
+                    "status": "ready", "model": "grok-4.6", "checked_at": "2026-01-01T00:00:00Z",
+                    "forced": True, "refreshed": True, "fresh": True, "elapsed_seconds": 0.01,
+                }) as auth_ready,
+                redirect_stdout(output),
+            ):
+                self.assertEqual(benchmark.command_run(args), 0)
+            manifest = json.loads(output.getvalue())
+
+        self.assertEqual(max_active, 3)
+        self.assertFalse(manifest["serial"])
+        self.assertEqual(manifest["execution_mode"], "sequential-case-waves-concurrent-arms")
+        self.assertEqual(len(manifest["waves"]), 1)
+        wave = manifest["waves"][0]
+        self.assertEqual(tuple(wave["arm_ids"]), benchmark.EXPECTED_ARMS)
+        self.assertEqual(wave["auth_readiness"]["status"], "ready")
+        self.assertTrue(wave["auth_readiness"]["forced"])
+        self.assertTrue(wave["auth_readiness"]["fresh"])
+        self.assertIsInstance(wave["common_wave_start_at"], str)
+        self.assertGreater(wave["common_wave_start_monotonic_ns"], 0)
+        self.assertEqual(set(wave["arm_start_offset_from_common_seconds"]), set(benchmark.EXPECTED_ARMS))
+        self.assertEqual(auth_ready.call_count, 1)
+        self.assertTrue(wave["within_start_skew_target"])
+        self.assertLess(wave["arm_start_skew_seconds"], 0.1)
+        self.assertEqual([(item["case_id"], item["arm_id"]) for item in manifest["results"]], [
+            ("smoke-001", arm_id) for arm_id in benchmark.EXPECTED_ARMS
+        ])
+
+    def test_provider_auth_readiness_requires_fresh_token_evidence(self) -> None:
+        config = benchmark.validate_config(HERE / "config.json")
+        spec = config["provider"]["auth_readiness"]
+        environment = {
+            spec["url_env"]: "http://127.0.0.1:8765/_qq/auth/ready",
+            spec["api_key_env"]: "admin-" + "x" * 48,
+        }
+        base = {
+            "schema": "qq.grok-xai-auth-readiness/v1", "status": "ready",
+            "model": "grok-4.6", "forced": True, "refreshed": True,
+        }
+        with (
+            mock.patch.dict(os.environ, environment, clear=False),
+            mock.patch.object(benchmark, "urlopen", return_value=io.StringIO(json.dumps(base))),
+            self.assertRaisesRegex(benchmark.BenchmarkError, "outside the refresh window"),
+        ):
+            benchmark.provider_auth_readiness(config)
+
+        response = io.StringIO(json.dumps({**base, "fresh": True}))
+        with (
+            mock.patch.dict(os.environ, environment, clear=False),
+            mock.patch.object(benchmark, "urlopen", return_value=response),
+        ):
+            evidence = benchmark.provider_auth_readiness(config)
+        self.assertTrue(evidence["forced"])
+        self.assertTrue(evidence["refreshed"])
+        self.assertTrue(evidence["fresh"])
+
+    def test_auth_readiness_failure_breaks_wave_before_any_generation(self) -> None:
+        generations = 0
+
+        def fake_run_one(*_arguments, start_barrier=None, **_kwargs):
+            nonlocal generations
+            self.assertIsNotNone(start_barrier)
+            start_barrier.wait(timeout=2)
+            generations += 1
+            self.fail("generation must not start after failed auth readiness")
+
+        readiness = {"commands": {arm_id: ["fake", arm_id] for arm_id in benchmark.EXPECTED_ARMS}}
+        args = argparse.Namespace(
+            config=HERE / "config.json", corpus=HERE / "corpus" / "smoke.json",
+            case=["smoke-001"], arm=None, run_id="failed-readiness", output=None,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            args.output = Path(directory) / "run"
+            with (
+                mock.patch.object(benchmark, "runtime_readiness", return_value=readiness),
+                mock.patch.object(benchmark, "arm_source", return_value=Path(directory)),
+                mock.patch.object(benchmark, "case_repository", return_value=Path(directory)),
+                mock.patch.object(benchmark, "run_one", side_effect=fake_run_one),
+                mock.patch.object(
+                    benchmark, "provider_auth_readiness",
+                    side_effect=benchmark.BenchmarkError("forced refresh failed"),
+                ) as auth_ready,
+                self.assertRaisesRegex(benchmark.BenchmarkError, "infrastructure failure"),
+            ):
+                benchmark.command_run(args)
+            manifest = benchmark.read_json(args.output / "run.json")
+        self.assertEqual(auth_ready.call_count, 1)
+        self.assertEqual(generations, 0)
+        self.assertEqual(manifest["waves"][0]["status"], "infrastructure-failure")
+
+
 class UsageTests(unittest.TestCase):
     def test_child_environment_removes_credentials_and_stale_benchmark_paths(self) -> None:
-        previous = {name: os.environ.get(name) for name in ("BENCH_TRUTH_PATH", "GROK_BENCH_API_KEY", "AWS_SECRET_ACCESS_KEY")}
-        os.environ.update({"BENCH_TRUTH_PATH": "/secret/truth", "GROK_BENCH_API_KEY": "secret", "AWS_SECRET_ACCESS_KEY": "secret"})
+        names = (
+            "BENCH_TRUTH_PATH", "GROK_BENCH_API_KEY", "GROK_BENCH_PR_AGENT_API_KEY",
+            "GROK_BENCH_PR_AGENT_BASE_URL", "AWS_SECRET_ACCESS_KEY",
+        )
+        previous = {name: os.environ.get(name) for name in names}
+        os.environ.update({
+            "BENCH_TRUTH_PATH": "/secret/truth", "GROK_BENCH_API_KEY": "secret",
+            "GROK_BENCH_PR_AGENT_API_KEY": "synthetic-secret",
+            "GROK_BENCH_PR_AGENT_BASE_URL": "http://127.0.0.1:9999/v1",
+            "AWS_SECRET_ACCESS_KEY": "secret",
+        })
         try:
             child = benchmark.sanitized_child_environment()
             self.assertNotIn("BENCH_TRUTH_PATH", child)
             self.assertNotIn("GROK_BENCH_API_KEY", child)
+            self.assertNotIn("GROK_BENCH_PR_AGENT_API_KEY", child)
+            self.assertNotIn("GROK_BENCH_PR_AGENT_BASE_URL", child)
             self.assertNotIn("AWS_SECRET_ACCESS_KEY", child)
         finally:
             for name, value in previous.items():
