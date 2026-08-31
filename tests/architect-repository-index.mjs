@@ -248,7 +248,7 @@ for (const setup of [miniSetup, miniQaSetup]) {
     get(name) {
       if (name === "qq-core") return { surface: { allow(actual, names) {
         assert.equal(actual, agent);
-        assert.deepEqual(names, ["bash"]);
+        assert.deepEqual(names, ["bash", "read_image"]);
       } } };
       return name === "qq-index" ? {
         loadIndex() { indexLoads++; return "- [Never](never.md)"; },

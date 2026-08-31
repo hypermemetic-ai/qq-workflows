@@ -136,7 +136,7 @@ assert.deepEqual(mounted.sections, [{
   complete: true,
 }]);
 assert.deepEqual(mounted.operations.slice(0, 2), ["allow", "register:bash"]);
-assert.deepEqual(mounted.surfaceCalls, [{ agent: mounted.agent, names: ["bash"] }]);
+assert.deepEqual(mounted.surfaceCalls, [{ agent: mounted.agent, names: ["bash", "read_image"] }]);
 assert.deepEqual(mounted.registeredTools.map((tool) => tool.name), ["bash"]);
 assert.deepEqual(Object.keys(mounted.registeredTools[0].parameters.properties), ["command"]);
 assert.equal("sandbox_permissions" in mounted.registeredTools[0].parameters.properties, false);
@@ -236,8 +236,8 @@ assert.equal(mounted.sections.length, 1);
 assert.equal(mounted.sections[0].text, "replacement writer");
 assert.deepEqual(mounted.registeredTools.map((tool) => tool.name), ["bash"]);
 assert.deepEqual(mounted.surfaceCalls, [
-  { agent: mounted.agent, names: ["bash"] },
-  { agent: mounted.ctx.agent, names: ["bash"] },
+  { agent: mounted.agent, names: ["bash", "read_image"] },
+  { agent: mounted.ctx.agent, names: ["bash", "read_image"] },
 ]);
 assert.equal(mounted.listeners.length, 2);
 

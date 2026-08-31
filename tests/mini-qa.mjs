@@ -270,7 +270,7 @@ assert.equal(mountedSections.length, 1);
 assert.equal(mountedSections[0].complete, true);
 assert.equal(mountedSections[0].text, MINI_QA_SYSTEM_PROMPT);
 assert.deepEqual(mountedTools.map((tool) => tool.name), MINI_QA_TOOL_NAMES);
-assert.deepEqual(surfaceCalls, [{ agent: mountAgent, names: ["bash"] }]);
+assert.deepEqual(surfaceCalls, [{ agent: mountAgent, names: ["bash", "read_image"] }]);
 assert.deepEqual(mountOperations.slice(0, 3), ["allow", "register:bash", "register:submit_review"]);
 assert.equal(mountedTools[0].isConcurrencySafe(), false);
 assert.equal(mountedListeners.length, 2);
@@ -321,8 +321,8 @@ nextGeneration.miniQaSetup(mountCtx);
 assert.equal(mountedSections.length, 1);
 assert.deepEqual(mountedTools.map((tool) => tool.name), MINI_QA_TOOL_NAMES);
 assert.deepEqual(surfaceCalls, [
-  { agent: mountAgent, names: ["bash"] },
-  { agent: mountAgent, names: ["bash"] },
+  { agent: mountAgent, names: ["bash", "read_image"] },
+  { agent: mountAgent, names: ["bash", "read_image"] },
 ]);
 assert.equal(mountedListeners.length, 2);
 
@@ -350,7 +350,7 @@ const failedSurfaceCtx = {
     assert.equal(name, "qq-core");
     return { surface: { allow(agent, names) {
       assert.equal(agent, failedSurfaceCtx.agent);
-      assert.deepEqual(names, ["bash"]);
+      assert.deepEqual(names, ["bash", "read_image"]);
       throw new Error("inherited surface assignment failed");
     } } };
   },

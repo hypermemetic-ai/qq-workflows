@@ -18,11 +18,12 @@ const expected = [
     "relay_send",
     "relay_status",
   ]],
-  [MINI_INHERITED_TOOLS, ["bash"]],
+  [MINI_INHERITED_TOOLS, ["bash", "read_image"]],
   [ITERATE_HANDS_INHERITED_TOOLS, [
     "read",
     "write",
     "edit",
+    "read_image",
     "grep",
     "glob",
     "bash",

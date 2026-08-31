@@ -358,7 +358,7 @@ const spawnedResearchTask = children[0].followups[0].content[0].text;
 assert.match(spawnedResearchTask, /^Please research the exact question in question\.md\./);
 assert.doesNotMatch(spawnedResearchTask, /What does the fixture show\?/);
 assert.match(spawnedResearchTask, /## Recommended Workflow/);
-assert.deepEqual(children[0].ctx.surfaceCalls, [{ agent: children[0], names: ["bash"] }]);
+assert.deepEqual(children[0].ctx.surfaceCalls, [{ agent: children[0], names: ["bash", "read_image"] }]);
 const researchBash = children[0].ctx.registered.find((tool) => tool.name === "bash");
 assert.equal((await researchBash.execute({ command: "web-search 'fixture'" }, { agent: children[0] })).exitCode, 0);
 assert.equal((await researchBash.execute({ command: "web-get W001" }, { agent: children[0] })).exitCode, 0);
@@ -387,7 +387,7 @@ assert.deepEqual(
   [{ type: "approval/policy", data: { policy: "never", source: "delegation" } }],
   "custom QA child starts non-interactive",
 );
-assert.deepEqual(review.ctx.surfaceCalls, [{ agent: review, names: ["bash"] }]);
+assert.deepEqual(review.ctx.surfaceCalls, [{ agent: review, names: ["bash", "read_image"] }]);
 assert.deepEqual(review.ctx.registered.map((tool) => tool.name), ["bash", "submit_review"]);
 const reviewBash = review.ctx.registered.find((tool) => tool.name === "bash");
 assert.equal(reviewBash.isConcurrencySafe(), false);

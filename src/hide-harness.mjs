@@ -12,12 +12,13 @@ export const ARCHITECT_INHERITED_TOOLS = Object.freeze([
   "relay_status",
 ]);
 
-export const MINI_INHERITED_TOOLS = Object.freeze(["bash"]);
+export const MINI_INHERITED_TOOLS = Object.freeze(["bash", "read_image"]);
 
 export const ITERATE_HANDS_INHERITED_TOOLS = Object.freeze([
   "read",
   "write",
   "edit",
+  "read_image",
   "grep",
   "glob",
   "bash",
