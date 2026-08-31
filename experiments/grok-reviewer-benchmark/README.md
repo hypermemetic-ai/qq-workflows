@@ -52,6 +52,14 @@ pip resolved exact `uv==0.9.7` because `pypi.org` DNS is unavailable. Its logs
 contain no host HOME/cache path; no model call was attempted. That does not mean
 the OAuth route or normal-host network is absent: both were proven in the normal
 host namespace.
+A fresh exact-command attempt from the active delegated implementation worktree
+on 2026-08-31 was likewise blocked before provisioning completed: the first
+public Git clone exited 128 with `Could not resolve host: github.com` under PID
+1's network-unshared bwrap. Private evidence is retained at
+`.grok-reviewer-live/smoke.stderr` and `.grok-reviewer-live/smoke.exit`; no
+`state.json`, model request, compatibility wave, or matrix record was produced.
+This is infrastructure-attempt evidence only, not review-quality evidence.
+
 The tracked `smoke` command is the complete minimal runner path; it does not ask
 for an API key or leave launcher work to the operator.
 

@@ -22,7 +22,7 @@
     "v3_misospace": "completed-live-compatibility-call-in-166s",
     "misospace_stock_driver_offline_fake_response": "passed-one-request-retained-artifacts-git-fsck-ok"
   },
-  "smoke_run": "pending-fresh-v4-host-pilot-and-matrix; v3 proved concurrent-wave/auth readiness but was compatibility-only and did not produce a quality matrix",
+  "smoke_run": "pending-fresh-normal-host-v4-pilot-and-matrix; a fresh sanctioned delegated attempt on 2026-08-31 exited 2 during the first public Git clone because PID 1 was bwrap --unshare-net; no state manifest, model request, compatibility wave, or matrix record was produced",
   "implemented": {
     "host_provisioner": true,
     "single_command_host_smoke": true,
@@ -48,5 +48,20 @@
   },
   "host_command": "python3 experiments/grok-reviewer-benchmark/host/runner.py smoke --root $PWD/.grok-reviewer-live",
   "credential_input_required": false,
-  "inspect_ai": "do-not-replace-smoke-rig; optional-outer-layer-only-for-recurring-8-to-12-case-suite"
+  "inspect_ai": "do-not-replace-smoke-rig; optional-outer-layer-only-for-recurring-8-to-12-case-suite",
+  "latest_smoke_attempt": {
+    "attempted_at": "2026-08-31T13:55:05Z",
+    "command": "python3 experiments/grok-reviewer-benchmark/host/runner.py smoke --root $PWD/.grok-reviewer-live",
+    "environment": "delegated-bwrap-unshare-net",
+    "outcome": "blocked-before-provisioning-first-public-git-clone-dns-unavailable",
+    "exit_code": 2,
+    "private_evidence": [
+      ".grok-reviewer-live/smoke.stderr",
+      ".grok-reviewer-live/smoke.exit"
+    ],
+    "state_manifest_created": false,
+    "model_requests": 0,
+    "compatibility_records": 0,
+    "matrix_records": 0
+  }
 }
