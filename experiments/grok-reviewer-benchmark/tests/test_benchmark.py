@@ -43,26 +43,18 @@ def make_repo(root: Path, content: str = "base\n") -> tuple[Path, str]:
 
 
 class FrozenIdentityTests(unittest.TestCase):
-    def test_config_contains_exactly_the_settled_three_arms(self) -> None:
+    def test_config_contains_exactly_the_requested_two_arms(self) -> None:
         config = benchmark.validate_config(HERE / "config.json")
+        self.assertEqual(benchmark.EXPECTED_ARMS, ("qq-mini-qa", "pr-agent"))
         self.assertEqual(tuple(arm["id"] for arm in config["arms"]), benchmark.EXPECTED_ARMS)
         self.assertEqual(config["execution"]["mode"], "sequential-case-waves-concurrent-arms")
         self.assertEqual(tuple(config["execution"]["arm_wave"]), benchmark.EXPECTED_ARMS)
+        self.assertEqual(config["execution"]["max_concurrent_arms"], 2)
         endpoints = config["provider"]["external_arm_endpoints"]
-        self.assertEqual(tuple(endpoints), benchmark.EXPECTED_ARMS[1:])
-        self.assertEqual(len({item["api_key_env"] for item in endpoints.values()}), 2)
+        self.assertEqual(tuple(endpoints), ("pr-agent",))
         self.assertNotIn("qq-mini-qa", endpoints)
         readiness = config["provider"]["auth_readiness"]
         self.assertEqual(readiness["mode"], "trusted-serial-before-wave-barrier-release")
-        duplicate_key = copy.deepcopy(config)
-        duplicate_key["provider"]["external_arm_endpoints"]["misospace-pr-reviewer"]["api_key_env"] = (
-            duplicate_key["provider"]["external_arm_endpoints"]["pr-agent"]["api_key_env"]
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "duplicate-key.json"
-            path.write_text(json.dumps(duplicate_key), encoding="utf-8")
-            with self.assertRaisesRegex(benchmark.BenchmarkError, "distinct synthetic"):
-                benchmark.validate_config(path)
         weakened = copy.deepcopy(config)
         weakened["arms"][0]["required_trees"] = {}
         with tempfile.TemporaryDirectory() as directory:
@@ -70,12 +62,19 @@ class FrozenIdentityTests(unittest.TestCase):
             path.write_text(json.dumps(weakened), encoding="utf-8")
             with self.assertRaisesRegex(benchmark.BenchmarkError, "source-tree pin"):
                 benchmark.validate_config(path)
+        lowered = copy.deepcopy(config)
+        lowered["provider"]["reasoning_effort_target"] = "low"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "lowered.json"
+            path.write_text(json.dumps(lowered), encoding="utf-8")
+            with self.assertRaisesRegex(benchmark.BenchmarkError, "reasoning target"):
+                benchmark.validate_config(path)
         modified = copy.deepcopy(config)
         modified["arms"].append(copy.deepcopy(modified["arms"][0]))
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
             path.write_text(json.dumps(modified), encoding="utf-8")
-            with self.assertRaisesRegex(benchmark.BenchmarkError, "exactly these three arms"):
+            with self.assertRaisesRegex(benchmark.BenchmarkError, "exactly these two arms"):
                 benchmark.validate_config(path)
 
     def test_tracked_corpus_files_have_exact_hashes_and_no_truth(self) -> None:
@@ -150,15 +149,16 @@ class FrozenIdentityTests(unittest.TestCase):
 
 
 class ConcurrentWaveTests(unittest.TestCase):
-    def test_selected_case_launches_all_three_arms_in_one_concurrent_wave(self) -> None:
+    def test_selected_case_repeats_both_arms_and_writes_reports(self) -> None:
         active = 0
         max_active = 0
         lock = threading.Lock()
 
-        def fake_run_one(*arguments, start_barrier=None, **_kwargs):
+        def fake_run_one(*arguments, pass_index=1, start_barrier=None, **_kwargs):
             nonlocal active, max_active
             case = arguments[3]
             arm = arguments[4]
+            final_directory = arguments[8]
             self.assertIsNotNone(start_barrier)
             start_barrier.wait(timeout=2)
             started_ns = time.monotonic_ns()
@@ -168,25 +168,42 @@ class ConcurrentWaveTests(unittest.TestCase):
             time.sleep(0.04)
             with lock:
                 active -= 1
-            return {
-                "started_at": f"2026-01-01T00:00:00.{benchmark.EXPECTED_ARMS.index(arm['id'])}Z",
+            usage = {field: pass_index * 10 for field in benchmark.TOKEN_FIELDS}
+            usage["input_tokens"] = pass_index * 4
+            usage["output_tokens"] = pass_index * 6
+            normalized = {
+                "schema": benchmark.NORMALIZED_SCHEMA,
+                "pass_index": pass_index,
+                "started_at": f"2026-01-01T00:00:0{pass_index}Z",
                 "started_monotonic_ns": started_ns,
-                "wall_clock_seconds": 0.04,
+                "wall_clock_seconds": float(pass_index),
                 "failure": None,
                 "case_id": case["id"], "arm_id": arm["id"],
+                "result": {
+                    "usage": usage,
+                    "telemetry": {"request_count": pass_index, "retries": 0, "failures": 0,
+                                  "truncation_events": 0, "context_events": 0},
+                    "native_verdict": None, "normalized_verdict": "fail",
+                    "findings": [{"path": "file.txt", "line": 1, "body": f"Recurring {arm['id']}",
+                                  "severity": None, "confidence": None, "blocks_merge": None}],
+                },
             }
+            final_directory.mkdir(parents=True)
+            benchmark.write_json(final_directory / "normalized.json", normalized)
+            return normalized
 
-        readiness = {
-            "commands": {arm_id: ["fake-reviewer", arm_id] for arm_id in benchmark.EXPECTED_ARMS},
-        }
+        readiness = {"commands": {arm_id: ["fake-reviewer", arm_id] for arm_id in benchmark.EXPECTED_ARMS}}
         args = argparse.Namespace(
             config=HERE / "config.json", corpus=HERE / "corpus" / "smoke.json",
-            case=["smoke-001"], arm=None, run_id="concurrent-test", output=None,
+            case=["smoke-001"], arm=None, run_id="concurrent-test", output=None, repeat_count=2,
         )
+        config = benchmark.validate_config(HERE / "config.json")
+        config["execution"]["cooldown_seconds"] = 0
         with tempfile.TemporaryDirectory() as directory:
             args.output = Path(directory) / "run"
             output = io.StringIO()
             with (
+                mock.patch.object(benchmark, "validate_config", return_value=config),
                 mock.patch.object(benchmark, "runtime_readiness", return_value=readiness),
                 mock.patch.object(benchmark, "arm_source", return_value=Path(directory)),
                 mock.patch.object(benchmark, "case_repository", return_value=Path(directory)),
@@ -199,25 +216,27 @@ class ConcurrentWaveTests(unittest.TestCase):
             ):
                 self.assertEqual(benchmark.command_run(args), 0)
             manifest = json.loads(output.getvalue())
+            aggregate = benchmark.read_json(args.output / "aggregate.json")
+            report = benchmark.read_json(args.output / "report.json")
+            markdown = (args.output / "report.md").read_text(encoding="utf-8")
 
-        self.assertEqual(max_active, 3)
+        self.assertEqual(max_active, 2)
         self.assertFalse(manifest["serial"])
-        self.assertEqual(manifest["execution_mode"], "sequential-case-waves-concurrent-arms")
-        self.assertEqual(len(manifest["waves"]), 1)
-        wave = manifest["waves"][0]
-        self.assertEqual(tuple(wave["arm_ids"]), benchmark.EXPECTED_ARMS)
-        self.assertEqual(wave["auth_readiness"]["status"], "ready")
-        self.assertTrue(wave["auth_readiness"]["forced"])
-        self.assertTrue(wave["auth_readiness"]["fresh"])
-        self.assertIsInstance(wave["common_wave_start_at"], str)
-        self.assertGreater(wave["common_wave_start_monotonic_ns"], 0)
-        self.assertEqual(set(wave["arm_start_offset_from_common_seconds"]), set(benchmark.EXPECTED_ARMS))
-        self.assertEqual(auth_ready.call_count, 1)
-        self.assertTrue(wave["within_start_skew_target"])
-        self.assertLess(wave["arm_start_skew_seconds"], 0.1)
-        self.assertEqual([(item["case_id"], item["arm_id"]) for item in manifest["results"]], [
-            ("smoke-001", arm_id) for arm_id in benchmark.EXPECTED_ARMS
+        self.assertEqual(manifest["execution_mode"], "repeated-sequential-case-waves-concurrent-paired-arms")
+        self.assertEqual(manifest["repeat_count"], 2)
+        self.assertEqual([wave["pass_index"] for wave in manifest["waves"]], [1, 2])
+        self.assertTrue(all(tuple(wave["arm_ids"]) == benchmark.EXPECTED_ARMS for wave in manifest["waves"]))
+        self.assertEqual(auth_ready.call_count, 2)
+        self.assertTrue(all(wave["within_start_skew_target"] for wave in manifest["waves"]))
+        self.assertEqual([(item["pass_index"], item["case_id"], item["arm_id"]) for item in manifest["results"]], [
+            (pass_index, "smoke-001", arm_id)
+            for pass_index in (1, 2) for arm_id in benchmark.EXPECTED_ARMS
         ])
+        self.assertEqual(aggregate["observation_count"], 4)
+        self.assertEqual(aggregate["per_arm_case"][0]["tokens"]["processed_tokens"]["median"], 15.0)
+        self.assertEqual(aggregate["per_arm_case"][0]["finding_recurrence"][0]["pass_recurrence"], 2)
+        self.assertEqual(report["repeat_count"], 2)
+        self.assertIn("does not establish statistical significance", markdown)
 
     def test_provider_auth_readiness_requires_fresh_token_evidence(self) -> None:
         config = benchmark.validate_config(HERE / "config.json")
@@ -260,7 +279,7 @@ class ConcurrentWaveTests(unittest.TestCase):
         readiness = {"commands": {arm_id: ["fake", arm_id] for arm_id in benchmark.EXPECTED_ARMS}}
         args = argparse.Namespace(
             config=HERE / "config.json", corpus=HERE / "corpus" / "smoke.json",
-            case=["smoke-001"], arm=None, run_id="failed-readiness", output=None,
+            case=["smoke-001"], arm=None, run_id="failed-readiness", output=None, repeat_count=1,
         )
         with tempfile.TemporaryDirectory() as directory:
             args.output = Path(directory) / "run"
@@ -372,6 +391,22 @@ class UsageTests(unittest.TestCase):
                 "cache_write_tokens": 0, "reasoning_tokens": 3, "processed_tokens": 18,
             }, complete=True)
 
+    def test_failed_external_observation_retains_attempt_telemetry_without_inventing_tokens(self) -> None:
+        arm = benchmark.validate_config(HERE / "config.json")["arms"][1]
+        records = [{
+            "request_model": "grok-4.6", "response_model": None, "status": 503,
+            "usage": None, "finish_reasons": [], "context_event": False,
+        }]
+        value = benchmark.observation_attempt_data(arm, Path("/unused"), None, None, records)
+        self.assertEqual(value["telemetry"], {
+            "request_count": 1, "retries": 1, "failures": 1,
+            "truncation_events": 0, "context_events": 0,
+        })
+        self.assertEqual(value["provider_evidence"]["request_models"], ["grok-4.6"])
+        self.assertTrue(all(item is None for item in value["usage"].values()))
+        self.assertEqual(value["findings"], [])
+        self.assertIsNone(value["normalized_verdict"])
+
     def test_arm_result_requires_exact_model_mode_and_isolation(self) -> None:
         config = benchmark.validate_config(HERE / "config.json")
         arm = config["arms"][0]
@@ -393,6 +428,10 @@ class UsageTests(unittest.TestCase):
         }
         normalized = benchmark.validate_arm_result(value, arm, case, None, None)
         self.assertEqual(normalized["usage"]["processed_tokens"], 15)
+        value["effective_config"]["reasoning_effort"] = "low"
+        with self.assertRaisesRegex(benchmark.BenchmarkError, "high reasoning"):
+            benchmark.validate_arm_result(value, arm, case, None, None)
+        value["effective_config"]["reasoning_effort"] = "high"
         value["model"] = "other-model"
         with self.assertRaisesRegex(benchmark.BenchmarkError, "exact configured model"):
             benchmark.validate_arm_result(value, arm, case, None, None)
@@ -407,25 +446,28 @@ class AdjudicationTests(unittest.TestCase):
             complete_usage = {field: 10 for field in benchmark.TOKEN_FIELDS}
             complete_usage["processed_tokens"] = 20
             complete_usage["input_tokens"] = 10; complete_usage["output_tokens"] = 10
-            for arm_id in benchmark.EXPECTED_ARMS:
-                artifact = Path("cases") / "positive" / arm_id
-                target = run / artifact; target.mkdir(parents=True)
-                normalized = {
-                    "schema": benchmark.NORMALIZED_SCHEMA, "arm_id": arm_id, "case_id": "positive",
-                    "wall_clock_seconds": 2.0, "failure": None,
-                    "result": {"usage": complete_usage, "findings": [{
-                        "path": "file.txt", "line": 1, "body": "Concrete trigger and bad behavior",
-                        "severity": "high", "confidence": 0.9, "blocks_merge": True,
-                    }]},
-                }
-                benchmark.write_json(target / "normalized.json", normalized)
-                run_rows.append({"artifact": str(artifact), "case_id": "positive", "arm_id": arm_id})
+            for pass_index in (1, 2):
+                for arm_id in benchmark.EXPECTED_ARMS:
+                    artifact = Path("passes") / f"pass-{pass_index:03d}" / "cases" / "positive" / arm_id
+                    target = run / artifact; target.mkdir(parents=True)
+                    normalized = {
+                        "schema": benchmark.NORMALIZED_SCHEMA, "pass_index": pass_index,
+                        "arm_id": arm_id, "case_id": "positive",
+                        "wall_clock_seconds": 2.0, "failure": None,
+                        "result": {"usage": complete_usage, "findings": [{
+                            "path": "file.txt", "line": 1, "body": "Concrete trigger and bad behavior",
+                            "severity": "high", "confidence": 0.9, "blocks_merge": True,
+                        }]},
+                    }
+                    benchmark.write_json(target / "normalized.json", normalized)
+                    run_rows.append({"pass_index": pass_index, "artifact": str(artifact),
+                                     "case_id": "positive", "arm_id": arm_id})
             benchmark.write_json(run / "run.json", {"results": run_rows})
             blind = root / "blind"
             benchmark.command_blind(argparse.Namespace(run=run, output=blind, seed=7))
             packet = benchmark.read_json(blind / "packet.json")
             mapping = {item["blind_id"]: item for item in benchmark.read_json(blind / "blind-map.json")["entries"]}
-            self.assertEqual(len(packet["entries"]), 3)
+            self.assertEqual(len(packet["entries"]), 4)
             for entry in packet["entries"]:
                 self.assertNotIn("arm_id", entry)
                 self.assertIn(entry["blind_id"], mapping)
@@ -450,7 +492,8 @@ class AdjudicationTests(unittest.TestCase):
                 self.assertEqual(value["arms"][arm_id]["defect_cluster_precision"], 1.0)
                 self.assertEqual(value["arms"][arm_id]["known_defect_recall"], 1.0)
                 self.assertEqual(value["arms"][arm_id]["blocker_precision"], 1.0)
-                self.assertEqual(value["arms"][arm_id]["processed_tokens_per_valid_blocker"], 20.0)
+                self.assertEqual(value["arms"][arm_id]["observation_count"], 2)
+                self.assertEqual(value["arms"][arm_id]["processed_tokens_per_valid_blocker"], 40.0)
 
 
 if __name__ == "__main__":

@@ -27,8 +27,7 @@
     "arm_id": {
       "enum": [
         "qq-mini-qa",
-        "pr-agent",
-        "misospace-pr-reviewer"
+        "pr-agent"
       ]
     },
     "case_id": {

@@ -1,14 +1,13 @@
 {
   "schema": "qq.grok-reviewer-benchmark-config/v1",
-  "experiment_id": "grok-stock-reviewers-current-v1",
+  "experiment_id": "grok-qq-mini-qa-vs-pr-agent-repeated-v1",
   "execution": {
     "mode": "sequential-case-waves-concurrent-arms",
     "arm_wave": [
       "qq-mini-qa",
-      "pr-agent",
-      "misospace-pr-reviewer"
+      "pr-agent"
     ],
-    "max_concurrent_arms": 3,
+    "max_concurrent_arms": 2,
     "max_arm_start_skew_seconds": 2.0,
     "timeout_seconds": 3600,
     "cooldown_seconds": 10,
@@ -24,10 +23,6 @@
       "pr-agent": {
         "base_url_env": "GROK_BENCH_PR_AGENT_BASE_URL",
         "api_key_env": "GROK_BENCH_PR_AGENT_API_KEY"
-      },
-      "misospace-pr-reviewer": {
-        "base_url_env": "GROK_BENCH_MISOSPACE_BASE_URL",
-        "api_key_env": "GROK_BENCH_MISOSPACE_API_KEY"
       }
     },
     "auth_readiness": {
@@ -111,47 +106,6 @@
       },
       "required_trees": {
         "pr_agent": "cbd131c8e0305bd0dd7d55a3c32a494ccdaeb435"
-      }
-    },
-    {
-      "id": "misospace-pr-reviewer",
-      "display_name": "misospace/pr-reviewer-action",
-      "implementation": "misospace/pr-reviewer-action",
-      "release": "v2.2.1",
-      "source_env": "GROK_BENCH_MISOSPACE_SOURCE",
-      "pin": "54dfb1aac20e1e410ad8f71dc3681b888500a1ec",
-      "required_blobs": {
-        "action.yml": "bae724534fbad68cc07b1df0116bfe6f1d405966",
-        "scripts/run_review.sh": "363a5175145e708f5f876a5a0af062a154724fdb",
-        "scripts/model_call.sh": "06e03d4875fbb4e00e1f20474fe539943e0e1310",
-        "scripts/sections/context.sh": "8e48f67e04903577c11ef35d025aaddd42e6fc5e",
-        "scripts/sections/review.sh": "d3596458b47eafa5b7018e9f107b291d52e9a2fc",
-        "pr_reviewer/response_parser.py": "1737a58dad8349d1601c000bd2a570faa563ac61"
-      },
-      "command_env": "GROK_BENCH_MISOSPACE_COMMAND_JSON",
-      "client_model": "grok-4.6",
-      "provider_model": "grok-4.6",
-      "route": "openai-compatible-capture-proxy",
-      "mode": {
-        "tool_mode": "off",
-        "publishing": false
-      },
-      "usage_source": "capture-proxy",
-      "effective_settings": {
-        "reasoning_effort": "bridge-forced-high",
-        "temperature_requested": 0.1,
-        "temperature_forwarded": false,
-        "max_output_tokens_requested": 8192,
-        "max_output_tokens_forwarded": false,
-        "request_stream": true,
-        "response_format": "off",
-        "tool_mode": "off",
-        "primary_retries": 8,
-        "fallback": "explicitly-disabled-compatibility-correction"
-      },
-      "required_trees": {
-        "scripts": "a282a5383265cc85f552ada77e025f855f969d69",
-        "pr_reviewer": "4bd932a536bc54895b0097e90ebd25cd6b90f201"
       }
     }
   ]
