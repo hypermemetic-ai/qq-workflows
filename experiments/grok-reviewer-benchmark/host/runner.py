@@ -20,6 +20,7 @@ from pathlib import Path
 import secrets
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -835,11 +836,53 @@ def require_successful_pilot(root: Path, run_id: str) -> dict[str, Any]:
     return evidence
 
 
+def _owner_controlled_runtime_directory(root: Path, path: Path, description: str) -> Path:
+    """Validate one default runtime-pin directory without following symlinks."""
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise HostRunnerError(f"{description} is absent: expected {path}") from error
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise HostRunnerError(f"{description} must be a real directory, not a symlink: {path}")
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as error:
+        raise HostRunnerError(f"cannot resolve {description} at {path}: {error}") from error
+    if resolved != path or not resolved.is_relative_to(root):
+        raise HostRunnerError(f"{description} must be canonical and contained by runtime root {root}: {path}")
+    if metadata.st_uid != os.getuid() or metadata.st_mode & 0o022:
+        raise HostRunnerError(f"{description} must be owner-controlled by uid {os.getuid()}: {path}")
+    return resolved
+
+
+def resolve_runtime_sources(
+    root: Path, qq_models_source: Path | None, qq_core_source: Path | None,
+) -> tuple[Path, Path]:
+    """Select root-contained runtime pins unless diagnostic overrides are explicit."""
+    if qq_models_source is not None and qq_core_source is not None:
+        return qq_models_source.expanduser().resolve(), qq_core_source.expanduser().resolve()
+
+    pins = root / "runtime-pins"
+    _owner_controlled_runtime_directory(root, pins, "runtime pin directory")
+
+    def source(override: Path | None, name: str) -> Path:
+        if override is not None:
+            return override.expanduser().resolve()
+        return _owner_controlled_runtime_directory(root, pins / name, f"root-contained {name} runtime pin")
+
+    return source(qq_models_source, "qq-models"), source(qq_core_source, "qq-core")
+
+
 def command_execute(args: argparse.Namespace, stage: str) -> int:
     root = args.root.expanduser().resolve()
     state = load_state(root)
-    models_state = verify_models_source(args.qq_models_source)
-    core_state = verify_core_source(args.qq_core_source)
+    models_source, core_source = resolve_runtime_sources(
+        root, args.qq_models_source, args.qq_core_source,
+    )
+    models_state = verify_models_source(models_source)
+    core_state = verify_core_source(core_source)
+    args.qq_models_source = Path(models_state["path"])
+    args.qq_core_source = Path(core_state["path"])
     dsh_home = args.qq_dsh_home.expanduser().resolve()
     pr_runtime = state["sources"]["pr-agent"].get("runtime", {})
     if pr_runtime.get("status") == "skipped-test-only" or not Path(pr_runtime.get("python", "")).is_file():
@@ -858,7 +901,6 @@ def command_execute(args: argparse.Namespace, stage: str) -> int:
         endpoints, auth_readiness, bridge_evidence = bridge_runtime
         args.qq_launcher = QQ_LAUNCHER
         args.pr_agent_launcher = PR_AGENT_LAUNCHER
-        args.qq_core_source = Path(core_state["path"])
         args.qq_dsh_home = dsh_home
         environment = execution_environment(args, state, endpoints, auth_readiness)
         doctor = run([sys.executable, str(BENCHMARK_PATH), "doctor"], env=environment, check=False)
@@ -963,8 +1005,14 @@ def command_request(args: argparse.Namespace) -> int:
 
 def add_runtime_options(child: argparse.ArgumentParser) -> None:
     child.add_argument("--root", type=Path, required=True)
-    child.add_argument("--qq-models-source", type=Path, default=Path("/home/qqp/projects/qq-models"))
-    child.add_argument("--qq-core-source", type=Path, default=Path("/home/qqp/projects/qq-core"))
+    child.add_argument(
+        "--qq-models-source", type=Path,
+        help="diagnostic override (default: <root>/runtime-pins/qq-models)",
+    )
+    child.add_argument(
+        "--qq-core-source", type=Path,
+        help="diagnostic override (default: <root>/runtime-pins/qq-core)",
+    )
     child.add_argument("--qq-dsh-home", type=Path, default=Path("/home/qqp/.local/state/qq"))
     child.add_argument("--run-id", required=True)
 
