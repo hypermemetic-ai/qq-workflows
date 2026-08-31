@@ -272,6 +272,11 @@ export function createArchitect({ ctx, cases, folder, agents, tasks, architectur
           if (guard.pruneError) {
             failVisibly(session, `qq-workflows: tool-result prune refused (${guard.pruneError instanceof Error ? guard.pruneError.message : String(guard.pruneError)}).`);
           }
+          try {
+            folder?.decide?.(sessionId, { events: session.events, session, route: liveArchitectureRoute(agent) });
+          } catch {
+            // Refreshing a fold decision never blocks request assembly.
+          }
           const pending = folder?.pending?.(sessionId);
           if (pending?.action === "fail") folder.clear(sessionId);
           else if (pending?.action === "drop") {
