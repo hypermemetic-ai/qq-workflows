@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 
 import { AGENT_HANDLE, adoptAgentHandle } from "./agent-handle.mjs";
+import { forceStopAgent } from "./force-stop.mjs";
 import { pinNonInteractiveApproval } from "./approval-policy.mjs";
 import { withChildSettlement } from "./child-settlement.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
@@ -150,10 +151,36 @@ export function createResearch({
       block?.type === "tool-result" && block.toolCallId === callId);
   }
 
-  async function disposeOwned(agentOrId, reason = "settled") {
+  async function disposeOwned(agentOrId, reason = "settled", options = {}) {
     const id = typeof agentOrId === "string" ? agentOrId : sessionIdOf(agentOrId);
     const owner = owners.get(id);
-    if (!owner) return false;
+    const child = owner?.child ?? agents?.get?.(id);
+    const handle = owner?.handle ?? child?.[AGENT_HANDLE];
+    if (!owner && (!options.force || !child)) return false;
+
+    if (options.force) {
+      clearBinding(id);
+      if (owner) {
+        clearOwnerLifecycle(owner, { notifyFailure: false });
+        // detachEntered emits agent/disposed synchronously. Mark disposal before
+        // detaching so releaseChild treats this as an owned stop.
+        owner.disposePromise ??= Promise.resolve();
+      }
+      const stopped = forceStopAgent({ agents, agent: child, handle });
+      const disposal = stopped.disposal.catch((error) => {
+        log(ctx, "warn", `qq-workflows: failed to drain research child ${id} after force stop (${reason}): ${error instanceof Error ? error.message : String(error)}`);
+        return false;
+      }).finally(() => {
+        if (!owner) return;
+        try { if (owner.child?.[AGENT_HANDLE] === owner.handle) delete owner.child[AGENT_HANDLE]; } catch { /* non-extensible Agent */ }
+        if (owners.get(id) === owner) owners.delete(id);
+      });
+      if (owner) owner.disposePromise = disposal;
+      else void disposal;
+      if (options.wait !== false) return disposal;
+      return true;
+    }
+
     if (!owner.disposePromise) {
       clearBinding(id);
       clearOwnerLifecycle(owner, { notifyFailure: false });
@@ -609,7 +636,7 @@ export function createResearch({
     // Reclaim its retained handle and retire it instead of leaving a completed
     // research/review child visible forever.
     clearBinding(id);
-    if (owners.has(id)) void disposeOwned(id, `stale ${state.status} research phase`);
+    void disposeOwned(id, `stale ${state.status} research phase`, { force: true, wait: false });
     return true;
   }
 
@@ -697,10 +724,18 @@ export function createResearch({
     const found = ownedDelegation(delegationId, parentSessionUuid);
     if (found.refusal) return found.refusal;
     const phase = currentPhase(found.state);
-    if (!phase.sessionUuid) return { status: "refused", reason: `delegation is terminal (${found.state.status})` };
+    if (!phase.sessionUuid) {
+      if (found.state.status !== "blocked") {
+        return { status: "refused", reason: `delegation is terminal (${found.state.status})` };
+      }
+      for (const childId of new Set([found.state.researchSession, found.state.reviewSession].filter(Boolean))) {
+        await disposeOwned(childId, "blocked research stop retried", { force: true, wait: false });
+      }
+      return { status: "ok", delegationId: found.state.id, delegationStatus: "blocked", terminal: true };
+    }
     const blocked = store.save({ ...found.state, status: "blocked", blockedReason: String(reason || "stopped by parent") });
     clearBinding(phase.sessionUuid);
-    await disposeOwned(phase.sessionUuid, "research stopped");
+    await disposeOwned(phase.sessionUuid, "research stopped", { force: true, wait: false });
     try { await deliver(blocked); } catch (error) {
       log(ctx, "warn", `qq-workflows: stopped research report pending for ${blocked.id}: ${error instanceof Error ? error.message : String(error)}`);
     }

@@ -132,6 +132,11 @@ try {
   assert.equal(relayed.length, 1, "stopping reports through the normal completion path");
   assert.equal(relayed[0].to, parentId);
   assert.doesNotMatch(relayed[0].message, /Land run|land run/);
+  assert.deepEqual(
+    await land.workflowStop({ delegationId, parentSessionUuid: parentId }),
+    { status: "ok", delegationId, delegationStatus: "blocked", terminal: true },
+    "a blocked stop remains an idempotent child-cleanup operation",
+  );
 
   const wrongParent = land.workflowStatus({ delegationId, parentSessionUuid: "session-33333333-3333-4333-8333-333333333333" });
   assert.equal(wrongParent.status, "refused");

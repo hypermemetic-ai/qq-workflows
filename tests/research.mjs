@@ -285,6 +285,45 @@ assert.equal(resumedReviewDisposed, 0, "unreported review child stays retained u
 assert.equal(resumedReview[AGENT_HANDLE], resumedReviewHandle);
 replacementResearch.dispose();
 
+// A blocked research record can still have a running child after a prior stop
+// timed out in AgentHandle.dispose. HMR and idempotent workflow_stop both cancel
+// and detach that exact session without waiting for its tool to cooperate.
+let blockedCancel;
+let releaseBlockedDispose;
+const blockedDisposeGate = new Promise((resolve) => { releaseBlockedDispose = resolve; });
+const blockedChild = {
+  status: "running",
+  session: {
+    id: blockedResearchSession,
+    header: { kind: "mini-research", parentSession: parentId, origin: "subagent" },
+    events: [],
+    append(type, data) { this.events.push({ type, data }); },
+  },
+  ctx: childContext(),
+  cancel(reason) { blockedCancel = reason; },
+};
+blockedChild.ctx.agent = blockedChild;
+const blockedHandle = { agent: blockedChild, async dispose() { await blockedDisposeGate; } };
+Object.defineProperty(blockedChild, AGENT_HANDLE, { value: blockedHandle, configurable: true });
+const blockedEntry = { id: blockedResearchSession, agent: blockedChild, announced: true };
+const blockedEntries = new Map([[blockedResearchSession, blockedEntry]]);
+const blockedAgents = {
+  store: blockedEntries,
+  get(id) { return blockedEntries.get(id)?.agent; },
+  list() { return [...blockedEntries.values()].map(({ agent }) => agent); },
+  detachEntered(entry) { if (blockedEntries.get(entry.id) === entry) blockedEntries.delete(entry.id); },
+};
+const blockedResearch = createResearch({ ctx, store: restartedStore, agents: blockedAgents, parentDir: restartDir, env: {} });
+assert.equal(blockedResearch.resumeChild(blockedChild), true);
+assert.deepEqual(blockedCancel, { kind: "disposed" });
+assert.equal(blockedAgents.get(blockedResearchSession), undefined);
+assert.deepEqual(
+  await blockedResearch.workflowStop({ delegationId: blockedAfterRestart.id, parentSessionUuid: parentId }),
+  { status: "ok", delegationId: blockedAfterRestart.id, delegationStatus: "blocked", terminal: true },
+);
+releaseBlockedDispose();
+blockedResearch.dispose();
+
 const parentDir = join(scratch, "research");
 const store = createResearchStore(parentDir);
 const provider = {
