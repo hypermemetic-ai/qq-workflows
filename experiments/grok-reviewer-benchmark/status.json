@@ -42,7 +42,8 @@
     "forced_auth_refresh_before_pilot_and_each_case_wave": true,
     "distinct_external_bridge_keys_capture_proxies_and_artifacts": true,
     "exact_common_wave_start_and_per_arm_release_offsets": true,
-    "qq_fresh_canonical_session_id_per_invocation": true,
+    "qq_fresh_canonical_launcher_session_id_per_invocation": true,
+    "qq_distinct_headless_review_session_id_captured": true,
     "pr_agent_neutral_ai_timeout_seconds": 600
   },
   "host_command": "python3 experiments/grok-reviewer-benchmark/host/runner.py smoke --root $PWD/.grok-reviewer-live",

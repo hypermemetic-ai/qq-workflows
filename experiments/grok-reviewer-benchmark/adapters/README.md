@@ -13,7 +13,8 @@ not replace prompts, model behavior, auth, or response processing.
 
 `host/runner.py` registers these paths automatically. Commands are recorded as
 JSON arrays and never contain credentials. The qq launcher creates a fresh
-canonical `QQ_DSH_SESSION_ID=session-<UUID>` for every invocation. PR-Agent uses
+canonical `QQ_DSH_SESSION_ID=session-<UUID>` for qq-core on every invocation;
+the headless review agent has a separate generated session UUID. PR-Agent uses
 a neutral 600-second `config.ai_timeout` so transport does not abort valid long
 Grok responses; both compatibility settings are recorded in effective config.
 

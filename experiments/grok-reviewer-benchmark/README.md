@@ -176,8 +176,10 @@ state, and output isolation.
 read-only bwrap shell. It is not a generic headless prompt arm and does not enter
 the landing/revision state machine. Native DSH response events provide disjoint
 usage and exact `xai-auth/grok-4.6` response evidence. Each launcher invocation
-sets a fresh canonical `QQ_DSH_SESSION_ID=session-<UUID>` required by qq-core;
-the plugin retains the actual DSH session ID in `session-id.txt`. A trusted
+sets a fresh canonical `QQ_DSH_SESSION_ID=session-<UUID>` required by qq-core.
+The pinned headless driver independently creates the one-shot review agent with
+another session UUID; the plugin records both identities separately and retains
+the actual review session ID in `session-id.txt`. A trusted
 experiment-only qq-models wrapper delegates unchanged to the pinned plugin while logging only
 Responses HTTP attempt model/status/timing; this supplies exact request,
 retry, and failure counts without recording prompts, headers, OAuth, or token

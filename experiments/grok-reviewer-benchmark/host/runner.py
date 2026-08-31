@@ -618,17 +618,19 @@ def validate_pilot(directory: Path, arm_id: str) -> dict[str, Any]:
     }
     effective = result.get("effective_config") or {}
     if arm_id == "qq-mini-qa":
-        session_id = effective.get("session_id")
-        try:
-            suffix = session_id.removeprefix("session-")
-            parsed_session_id = uuid.UUID(suffix)
-        except (AttributeError, ValueError) as error:
-            raise HostRunnerError("qq pilot lacks a canonical DSH session UUID") from error
-        if (
-            session_id != f"session-{parsed_session_id}"
-            or parsed_session_id.version != 4
-        ):
-            raise HostRunnerError("qq pilot lacks a canonical DSH session UUIDv4")
+        def canonical_session_id(field: str, description: str) -> str:
+            value = effective.get(field)
+            try:
+                suffix = value.removeprefix("session-")
+                parsed = uuid.UUID(suffix)
+            except (AttributeError, ValueError) as error:
+                raise HostRunnerError(f"qq pilot lacks a canonical {description} DSH session UUID") from error
+            if value != f"session-{parsed}" or parsed.version != 4:
+                raise HostRunnerError(f"qq pilot lacks a canonical {description} DSH session UUIDv4")
+            return value
+
+        session_id = canonical_session_id("session_id", "review")
+        launcher_session_id = canonical_session_id("launcher_session_id", "launcher")
         try:
             captured_session_id = (artifact / "output" / "session-id.txt").read_text(encoding="utf-8").strip()
         except OSError as error:
@@ -636,6 +638,7 @@ def validate_pilot(directory: Path, arm_id: str) -> dict[str, Any]:
         if captured_session_id != session_id:
             raise HostRunnerError("qq pilot normalized and retained DSH session identities differ")
         summary["session_id"] = session_id
+        summary["launcher_session_id"] = launcher_session_id
         return summary
     if arm_id == "pr-agent":
         if effective.get("ai_timeout_seconds") != 600:

@@ -37,17 +37,22 @@ export function apply(ctx) {
   const base = required("BENCH_BASE");
   const head = required("BENCH_HEAD");
   const resultPath = resolve(required("BENCH_RESULT_PATH"));
+  const launcherSessionId = required("QQ_DSH_SESSION_ID");
   let pending = null;
   let wrote = false;
   let dshSessionId = null;
 
   const createdOff = ctx.on("agent/created", ({ agent } = {}) => {
-    if (!agent || wrote) return;
-    const expectedSessionId = required("QQ_DSH_SESSION_ID");
-    if (agent.session?.id !== expectedSessionId) {
-      throw new Error("qq Mini QA DSH session identity differs from launcher environment");
+    if (!agent || wrote || dshSessionId !== null) return;
+    const sessionId = agent.session?.id;
+    // qq-core can create its configured host/chair agent with the launcher ID.
+    // dsh-headless independently creates the one-shot review agent with a new
+    // UUID; only that distinct agent receives the production Mini QA binding.
+    if (sessionId === launcherSessionId) return;
+    if (typeof sessionId !== "string" || sessionId.length === 0) {
+      throw new Error("qq Mini QA agent lacks a durable DSH session identity");
     }
-    dshSessionId = expectedSessionId;
+    dshSessionId = sessionId;
     mini.miniQaSetup(agent.ctx ?? agent);
     approval.pinNonInteractiveApproval(agent, { delegated: true });
     isolation.pinChildSandbox(agent, "qa");
@@ -73,7 +78,7 @@ export function apply(ctx) {
       env: process.env,
     }));
     // Preserve the durable session identity for raw audit artifacts.
-    writeFileSync(join(resolve(required("BENCH_OUTPUT_DIR")), "session-id.txt"), `${agent.session.id}\n`, { mode: 0o600 });
+    writeFileSync(join(resolve(required("BENCH_OUTPUT_DIR")), "session-id.txt"), `${dshSessionId}\n`, { mode: 0o600 });
   });
 
   const eventOff = ctx.on("session/event", (session, event) => {
@@ -107,6 +112,7 @@ export function apply(ctx) {
         model: "grok-4.6",
         reasoning_effort: "high",
         session_id: dshSessionId,
+        launcher_session_id: launcherSessionId,
         temperature: null,
         max_output_tokens: null,
         prompt: "production-mini-qa",

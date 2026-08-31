@@ -413,6 +413,7 @@ class QqMiniQaAdapterTests(unittest.TestCase):
               const handlers = new Map();
               plugin.apply({{on(name, handler) {{ handlers.set(name, handler); return () => {{}}; }}}});
               handlers.get('agent/created')({{agent: {{ctx: {{}}, session: {{id: process.env.QQ_DSH_SESSION_ID}}}}}});
+              handlers.get('agent/created')({{agent: {{ctx: {{}}, session: {{id: 'session-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'}}}}}});
               await globalThis.submitReview({{verdict: {{verdict: 'pass'}}, findings: []}});
               const events = [{{
                 type: 'assistant/message',
@@ -448,13 +449,14 @@ class QqMiniQaAdapterTests(unittest.TestCase):
                 "mini-qa-setup", "approval", "sandbox-pin", "sandbox-assert",
                 "oracle", "submit-binding", "shell-binding", "isolated-command",
             ])
-            self.assertEqual(
-                (output / "session-id.txt").read_text(),
-                environment["QQ_DSH_SESSION_ID"] + "\n",
-            )
+            review_session_id = "session-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+            self.assertNotEqual(review_session_id, environment["QQ_DSH_SESSION_ID"])
+            self.assertEqual((output / "session-id.txt").read_text(), review_session_id + "\n")
             result = json.loads((output / "result.json").read_text(encoding="utf-8"))
+            self.assertEqual(result["effective_config"]["session_id"], review_session_id)
             self.assertEqual(
-                result["effective_config"]["session_id"], environment["QQ_DSH_SESSION_ID"],
+                result["effective_config"]["launcher_session_id"],
+                environment["QQ_DSH_SESSION_ID"],
             )
 
 
@@ -800,13 +802,17 @@ class ExternalLauncherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             session_id = "session-12345678-1234-4234-8234-123456789abc"
+            launcher_session_id = "session-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
             qq_artifact = root / "cases" / "smoke-001" / "qq-mini-qa"
             (qq_artifact / "output").mkdir(parents=True)
             (qq_artifact / "output" / "session-id.txt").write_text(session_id + "\n", encoding="utf-8")
             (qq_artifact / "normalized.json").write_text(json.dumps({
                 "failure": None,
                 "result": {
-                    "effective_config": {"session_id": session_id},
+                    "effective_config": {
+                        "session_id": session_id,
+                        "launcher_session_id": launcher_session_id,
+                    },
                     "provider_evidence": {
                         "request_models": ["grok-4.6"], "response_models": ["grok-4.6"],
                     },
@@ -815,6 +821,7 @@ class ExternalLauncherTests(unittest.TestCase):
             }), encoding="utf-8")
             qq_evidence = runner.validate_pilot(root, "qq-mini-qa")
             self.assertEqual(qq_evidence["session_id"], session_id)
+            self.assertEqual(qq_evidence["launcher_session_id"], launcher_session_id)
             (qq_artifact / "output" / "session-id.txt").write_text(
                 "session-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\n", encoding="utf-8",
             )

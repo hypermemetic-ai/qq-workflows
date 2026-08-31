@@ -117,7 +117,7 @@ def dsh_command(
 
 
 def dsh_environment(dsh_home: Path, workspace: Path, core: Path) -> dict[str, str]:
-    """Build one invocation's DSH environment with a fresh qq session identity."""
+    """Build one invocation's DSH environment with a fresh qq-core launcher identity."""
     environment = os.environ.copy()
     environment.update({
         "DSH_HOME": str(dsh_home),
