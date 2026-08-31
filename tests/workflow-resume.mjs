@@ -187,9 +187,16 @@ try {
   let createCalls = 0;
   let releaseResume;
   const resumeGate = new Promise((resolve) => { releaseResume = resolve; });
+  const registryEntries = new Map();
   const agents = {
+    store: registryEntries,
     get(id) { return live.get(id) ?? null; },
     list() { return [...live.values()]; },
+    detachEntered(entry) {
+      if (registryEntries.get(entry.id) !== entry) return;
+      registryEntries.delete(entry.id);
+      live.delete(entry.id);
+    },
     async create() { createCalls += 1; throw new Error("workflow recovery must never create"); },
     async resume(options) {
       resumeCalls += 1;
@@ -216,6 +223,7 @@ try {
       };
       resumedChildren.set(options.resumeSessionId, fixture);
       live.set(options.resumeSessionId, fixture.agent);
+      registryEntries.set(options.resumeSessionId, { id: options.resumeSessionId, agent: fixture.agent, announced: true });
       return fixture.handle;
     },
   };
@@ -326,6 +334,7 @@ try {
   const generic = fakeChild({ id: LIVE_CURRENT, delegationId: LIVE_DELEGATION, cwd: workspace });
   Object.defineProperty(generic.agent, AGENT_HANDLE, { value: generic.handle, configurable: true });
   live.set(LIVE_CURRENT, generic.agent);
+  registryEntries.set(LIVE_CURRENT, { id: LIVE_CURRENT, agent: generic.agent, announced: true });
   const liveBytes = readFileSync(store.fileFor(LIVE_DELEGATION), "utf8");
   const rebound = await land.workflowResume({ delegationId: LIVE_DELEGATION, parentSessionUuid: PARENT });
   assert.equal(rebound.status, "already-live");
@@ -372,6 +381,32 @@ try {
   const foreign = await land.workflowResume({ delegationId: FOREIGN_DELEGATION, parentSessionUuid: PARENT });
   assert.equal(foreign.status, "refused");
   assert.match(foreign.reason, /owned by another live controller/);
+
+  // Parent stop is immediate even when AgentHandle.dispose is waiting on a
+  // tool that ignores abort. The child is cancelled and removed from the live
+  // registry before the owned lifecycle finishes draining.
+  let stopCancel;
+  generic.agent.status = "running";
+  generic.agent.cancel = (reason) => { stopCancel = reason; };
+  const originalGenericDispose = generic.handle.dispose;
+  let releaseStopDispose;
+  const stopDisposeGate = new Promise((resolve) => { releaseStopDispose = resolve; });
+  generic.handle.dispose = async () => {
+    await stopDisposeGate;
+    await originalGenericDispose();
+  };
+  const stopResult = await Promise.race([
+    land.workflowStop({ delegationId: LIVE_DELEGATION, parentSessionUuid: PARENT, reason: "operator stop" }),
+    new Promise((resolve) => setTimeout(() => resolve({ status: "timed-out" }), 50)),
+  ]);
+  assert.equal(stopResult.status, "ok", "workflow_stop must not await an uncooperative child turn");
+  assert.deepEqual(stopCancel, { kind: "disposed" });
+  assert.equal(live.has(LIVE_CURRENT), false);
+  assert.equal(registryEntries.has(LIVE_CURRENT), false);
+  const stopRetry = await land.workflowStop({ delegationId: LIVE_DELEGATION, parentSessionUuid: PARENT });
+  assert.equal(stopRetry.status, "ok", "blocked stop retries remain idempotent cleanup operations");
+  releaseStopDispose();
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   // Missing physical persistence is concrete and leaves the durable delegation
   // byte-for-byte untouched.

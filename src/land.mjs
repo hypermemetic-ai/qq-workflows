@@ -30,6 +30,7 @@ import { materializeTaskArtifact } from "./task-artifact.mjs";
 import { createQaVerdict } from "./qa-verdict.mjs";
 import { RepoOracle } from "./repo-oracle.mjs";
 import { AGENT_HANDLE, adoptAgentHandle } from "./agent-handle.mjs";
+import { forceStopAgent } from "./force-stop.mjs";
 import { pinNonInteractiveApproval } from "./approval-policy.mjs";
 import { assertChildSandbox, isolatedCommand, isolatedShellCommand, pinChildSandbox } from "./child-isolation.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
@@ -1426,10 +1427,42 @@ export function createLand({
     return true;
   }
 
-  async function disposeChild(agentOrId, reason = "settled") {
+  async function disposeChild(agentOrId, reason = "settled", options = {}) {
     const sessionId = typeof agentOrId === "string" ? agentOrId : sessionIdOf(agentOrId);
     const owner = childOwners.get(sessionId);
-    if (!owner) return false;
+    const child = owner?.child ?? agents?.get?.(sessionId);
+    const handle = owner?.handle ?? child?.[CHILD_AGENT_HANDLE] ?? child?.[AGENT_HANDLE];
+    if (!owner && (!options.force || !child)) return false;
+
+    if (options.force) {
+      if (owner) {
+        clearChildTools(sessionId);
+        clearOwnerLifecycle(owner, { notifyFailure: false });
+        clearChildLabels(ctx, owner);
+        // detachEntered emits agent/disposed synchronously. Mark disposal before
+        // detaching so releaseChild recognizes this as controller-owned stop.
+        owner.disposePromise ??= Promise.resolve();
+      }
+      const stopped = forceStopAgent({ agents, agent: child, handle });
+      const disposal = stopped.disposal.catch((error) => {
+        logLine(
+          ctx,
+          "warn",
+          `qq-workflows: failed to drain ${owner?.role ?? "delegated"} child ${sessionId} after force stop (${reason}): ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return false;
+      }).finally(() => {
+        if (!owner) return;
+        clearControllerBinding(owner);
+        clearRetainedHandle(owner);
+        if (childOwners.get(sessionId) === owner) childOwners.delete(sessionId);
+      });
+      if (owner) owner.disposePromise = disposal;
+      else void disposal;
+      if (options.wait !== false) await disposal;
+      return true;
+    }
+
     if (!owner.disposePromise) {
       clearChildTools(sessionId);
       clearOwnerLifecycle(owner);
@@ -1752,6 +1785,10 @@ export function createLand({
     if (!sessionId) return false;
     let state = store.bySession(sessionId);
     if (!state) return false;
+    if (state.status === "blocked") {
+      void disposeChild(sessionId, "stale blocked delegation child", { force: true, wait: false });
+      return true;
+    }
     const pending = state.pendingPhase?.sessionUuid === sessionId ? state.pendingPhase : null;
     const recoverable = state.current?.sessionUuid === sessionId
       || state.settlementSession === sessionId
@@ -2754,15 +2791,19 @@ export function createLand({
     const found = ownedDelegation(delegationId, parentSessionUuid);
     if (found.refusal) return found.refusal;
     const state = found.state;
-    if (state.status === "landed" || state.status === "blocked") {
-      return delegationRefusal(`delegation is terminal (${state.status})`);
-    }
+    if (state.status === "landed") return delegationRefusal("delegation is terminal (landed)");
     const childIds = new Set([
       state.current?.sessionUuid,
       state.pendingPhase?.sessionUuid,
       state.implementationSession,
       state.qaSession,
     ].filter(Boolean));
+    if (state.status === "blocked") {
+      for (const childId of childIds) {
+        await disposeChild(childId, "blocked delegation stop retried", { force: true, wait: false });
+      }
+      return { status: "ok", delegationId: state.delegationId, delegationStatus: state.status, terminal: true };
+    }
     let blocked = store.save(finishWorkflow(state, {
       status: "blocked",
       blockedReason: String(reason || "stopped by parent"),
@@ -2770,7 +2811,9 @@ export function createLand({
     }));
     const report = await deliverRequiredPacket(blocked, "blocked", state.current?.sessionUuid || "");
     blocked = report.state;
-    for (const childId of childIds) await disposeChild(childId, "delegation stopped");
+    for (const childId of childIds) {
+      await disposeChild(childId, "delegation stopped", { force: true, wait: false });
+    }
     return { status: "ok", delegationId: blocked.delegationId, delegationStatus: blocked.status, terminal: true };
   }
 
