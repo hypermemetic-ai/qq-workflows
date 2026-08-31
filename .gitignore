@@ -11,3 +11,4 @@ experiments/grok-reviewer-benchmark/**/*.py[cod]
 .grok-reviewer-*/
 .grok-reviewer-*.stdout
 .misospace-offline-pilot/
+.grok-reviewer-benchmark-launch.json

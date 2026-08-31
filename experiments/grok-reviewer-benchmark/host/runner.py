@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-side provisioning and execution for the frozen Grok reviewer smoke.
+"""Host-side provisioning and staged execution for the paired Grok reviewer benchmark.
 
 This command is intentionally run by the normal qq host runner, not from a
 network-isolated implementation/QA shell. It never accepts or prints a provider
@@ -15,6 +15,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import shutil
@@ -22,6 +23,7 @@ import signal
 import subprocess
 import sys
 import time
+import threading
 import uuid
 from typing import Any, Iterable
 
@@ -39,7 +41,6 @@ QQ_CORE_PACKAGE_BLOB = "f44308b2cb43e6251de07df4aaa66e7b4ebdd902"
 QQ_CORE_HOST_PATCH_BLOB = "221f565faac2e186b42d4f1a05cb1a18d7decc50"
 QQ_LAUNCHER = HERE / "adapters" / "run_qq_mini_qa.py"
 PR_AGENT_LAUNCHER = HERE / "adapters" / "run_pr_agent.py"
-MISOSPACE_LAUNCHER = HERE / "adapters" / "run_misospace.py"
 SYNTHETIC_FIXTURE = HERE / "corpus" / "provision_qq_ui_synthetic.py"
 SYNTHETIC_QQ_UI_HEAD = "2904675f2025d0c8bf8a597d055ea4ddd927f645"
 SYNTHETIC_QQ_UI_LANDED = "e9ed42ee05c2de6fcbed80575e029cca3949da0c"
@@ -55,11 +56,6 @@ SOURCES = {
         "pin": "1b6925ba8cc3ef6be09dec704a374da53091926c",
         "directory": "pr-agent",
     },
-    "misospace-pr-reviewer": {
-        "url": "https://github.com/misospace/pr-reviewer-action.git",
-        "pin": "54dfb1aac20e1e410ad8f71dc3681b888500a1ec",
-        "directory": "pr-reviewer-action",
-    },
 }
 REPOSITORIES = {
     "qq-ui": {
@@ -73,7 +69,6 @@ REPOSITORIES = {
 }
 EXTERNAL_ARM_ENDPOINT_ENVS = {
     "pr-agent": ("GROK_BENCH_PR_AGENT_BASE_URL", "GROK_BENCH_PR_AGENT_API_KEY"),
-    "misospace-pr-reviewer": ("GROK_BENCH_MISOSPACE_BASE_URL", "GROK_BENCH_MISOSPACE_API_KEY"),
 }
 AUTH_READINESS_ENVS = ("GROK_BENCH_AUTH_READY_URL", "GROK_BENCH_AUTH_READY_KEY")
 CREDENTIAL_NAMES = {
@@ -85,6 +80,113 @@ CREDENTIAL_NAMES = {
 
 class HostRunnerError(RuntimeError):
     pass
+
+
+class HostRunnerCancelled(HostRunnerError):
+    pass
+
+
+class ProcessGroupRegistry:
+    """Track child sessions and synchronously cascade host cancellation to them."""
+
+    def __init__(self, grace_seconds: float = 3.0) -> None:
+        self.grace_seconds = grace_seconds
+        self.cancelled = threading.Event()
+        self._lock = threading.RLock()
+        self._processes: dict[int, subprocess.Popen[Any]] = {}
+        self._kill_deadline: float | None = None
+
+    @staticmethod
+    def _signal(process: subprocess.Popen[Any], signum: signal.Signals) -> None:
+        # Address the PGID even if its original leader has exited: descendants
+        # can keep the group alive after Popen.poll() reports completion.
+        try:
+            os.killpg(process.pid, signum)
+        except ProcessLookupError:
+            pass
+
+    @staticmethod
+    def _group_exists(process: subprocess.Popen[Any]) -> bool:
+        try:
+            os.killpg(process.pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+
+    def register(self, process: subprocess.Popen[Any]) -> None:
+        with self._lock:
+            self._processes[process.pid] = process
+            cancelled = self.cancelled.is_set()
+            deadline = self._kill_deadline
+        if cancelled:
+            signum = signal.SIGKILL if deadline is not None and time.monotonic() >= deadline else signal.SIGTERM
+            self._signal(process, signum)
+
+    def unregister(self, process: subprocess.Popen[Any]) -> None:
+        with self._lock:
+            self._processes.pop(process.pid, None)
+
+    def _force_after_grace(self) -> None:
+        with self._lock:
+            deadline = self._kill_deadline
+        if deadline is None:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
+        with self._lock:
+            processes = tuple(self._processes.values())
+        for process in processes:
+            self._signal(process, signal.SIGKILL)
+
+    def cancel(self) -> None:
+        with self._lock:
+            first = not self.cancelled.is_set()
+            self.cancelled.set()
+            if first:
+                self._kill_deadline = time.monotonic() + self.grace_seconds
+            processes = tuple(self._processes.values())
+        for process in processes:
+            self._signal(process, signal.SIGTERM)
+        if first:
+            threading.Thread(
+                target=self._force_after_grace,
+                name="grok-host-cancellation-watchdog",
+                daemon=True,
+            ).start()
+
+    def raise_if_cancelled(self) -> None:
+        if self.cancelled.is_set():
+            raise HostRunnerCancelled("host benchmark job was cancelled")
+
+    def stop(self, process: subprocess.Popen[Any]) -> None:
+        try:
+            deadline = time.monotonic() + self.grace_seconds
+            self._signal(process, signal.SIGTERM)
+            while time.monotonic() < deadline:
+                process.poll()  # Reap the leader so it does not keep an empty PGID alive.
+                if not self._group_exists(process):
+                    break
+                time.sleep(0.02)
+            process.poll()
+            if self._group_exists(process):
+                self._signal(process, signal.SIGKILL)
+            try:
+                process.wait(timeout=self.grace_seconds)
+            except subprocess.TimeoutExpired:
+                self._signal(process, signal.SIGKILL)
+                process.wait(timeout=self.grace_seconds)
+        finally:
+            self.unregister(process)
+
+
+_CHILD_GROUPS = ProcessGroupRegistry()
+
+
+def _handle_cancellation_signal(_signum: int, _frame: Any) -> None:
+    # Do not raise from the handler: it may run in the Popen/register gap. The
+    # registry closes that race and the waiting controller exits after reaping.
+    _CHILD_GROUPS.cancel()
 
 
 def canonical(value: Any) -> str:
@@ -113,13 +215,27 @@ def git_environment() -> dict[str, str]:
 
 def run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None,
         capture: bool = True, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
+    """Run a command in a registered session so host cancellation reaches its tree."""
+    _CHILD_GROUPS.raise_if_cancelled()
+    process = subprocess.Popen(
         command, cwd=cwd, env=env,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE if capture else None,
         stderr=subprocess.PIPE if capture else None,
-        text=True, check=False,
+        text=True, start_new_session=True,
     )
+    _CHILD_GROUPS.register(process)
+    try:
+        stdout, stderr = process.communicate()
+    except BaseException:
+        _CHILD_GROUPS.stop(process)
+        raise
+    else:
+        # Reap the whole session even on success; a controller must not daemonize
+        # an untracked descendant and then report completion.
+        _CHILD_GROUPS.stop(process)
+    result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    _CHILD_GROUPS.raise_if_cancelled()
     if check and result.returncode != 0:
         detail = (result.stderr or result.stdout or "command failed").strip()
         raise HostRunnerError(f"{command[0]} failed ({result.returncode}): {detail}")
@@ -381,7 +497,6 @@ def command_provision(args: argparse.Namespace) -> int:
     local_sources = {
         "qq-mini-qa": args.qq_workflows_source,
         "pr-agent": args.pr_agent_source,
-        "misospace-pr-reviewer": args.misospace_source,
     }
     source_states = {}
     for arm_id, source in SOURCES.items():
@@ -468,6 +583,7 @@ def launcher_command(path: Path) -> str:
 def wait_ready(process: subprocess.Popen[bytes], ready: Path, timeout: float = 10) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        _CHILD_GROUPS.raise_if_cancelled()
         if ready.is_file():
             try:
                 value = json.loads(ready.read_text(encoding="utf-8"))
@@ -484,7 +600,7 @@ def wait_ready(process: subprocess.Popen[bytes], ready: Path, timeout: float = 1
 
 @contextmanager
 def bridge(models_source: Path, dsh_home: Path, directory: Path):
-    """Run one concurrency-capable trusted bridge for both external arms."""
+    """Run the trusted xai-auth bridge for stock PR-Agent."""
     directory.mkdir(parents=True, exist_ok=False, mode=0o700)
     client_keys = {arm_id: secrets.token_urlsafe(48) for arm_id in EXTERNAL_ARM_ENDPOINT_ENVS}
     admin_key = secrets.token_urlsafe(48)
@@ -503,28 +619,25 @@ def bridge(models_source: Path, dsh_home: Path, directory: Path):
     environment["GROK_BENCH_BRIDGE_KEYS_JSON"] = json.dumps(client_keys, separators=(",", ":"))
     environment["GROK_BENCH_BRIDGE_ADMIN_KEY"] = admin_key
     try:
+        _CHILD_GROUPS.raise_if_cancelled()
         process = subprocess.Popen([
             "node", str(BRIDGE_PATH), "--models-source", str(models_source),
             "--ready-file", str(ready), "--log", str(log),
         ], env=environment, stdout=stdout, stderr=stderr, start_new_session=True)
+        _CHILD_GROUPS.register(process)
     except BaseException:
         stdout.close()
         stderr.close()
         raise
     try:
+        _CHILD_GROUPS.raise_if_cancelled()
         evidence = wait_ready(process, ready)
         if evidence.get("concurrent_requests") is not True or not evidence.get("auth_ready_url"):
             raise HostRunnerError("xai-auth bridge lacks concurrency/readiness evidence")
         endpoints = {arm_id: (evidence["base_url"], key) for arm_id, key in client_keys.items()}
         yield endpoints, (evidence["auth_ready_url"], admin_key), evidence
     finally:
-        if process.poll() is None:
-            os.killpg(process.pid, signal.SIGTERM)
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait(timeout=5)
+        _CHILD_GROUPS.stop(process)
         stdout.close()
         stderr.close()
 
@@ -536,7 +649,7 @@ def execution_environment(
     auth_readiness: tuple[str, str],
 ) -> dict[str, str]:
     if tuple(endpoints) != tuple(EXTERNAL_ARM_ENDPOINT_ENVS):
-        raise HostRunnerError("both external arms require isolated credentials on the shared bridge")
+        raise HostRunnerError("PR-Agent requires its isolated synthetic credential on the shared bridge")
     if len({key for _, key in endpoints.values()}) != len(EXTERNAL_ARM_ENDPOINT_ENVS):
         raise HostRunnerError("external arms require distinct synthetic bridge credentials")
     environment = secret_free_environment()
@@ -548,10 +661,8 @@ def execution_environment(
         "GROK_BENCH_QQ_MODELS_SOURCE": str(args.qq_models_source.expanduser().resolve()),
         "GROK_BENCH_QQ_DSH_HOME": str(args.qq_dsh_home.expanduser().resolve()),
         "GROK_BENCH_PR_AGENT_SOURCE": state["sources"]["pr-agent"]["path"],
-        "GROK_BENCH_MISOSPACE_SOURCE": state["sources"]["misospace-pr-reviewer"]["path"],
         "GROK_BENCH_QQ_COMMAND_JSON": launcher_command(args.qq_launcher),
         "GROK_BENCH_PR_AGENT_COMMAND_JSON": launcher_command(args.pr_agent_launcher),
-        "GROK_BENCH_MISOSPACE_COMMAND_JSON": launcher_command(args.misospace_launcher),
         AUTH_READINESS_ENVS[0]: auth_readiness[0],
         AUTH_READINESS_ENVS[1]: auth_readiness[1],
     })
@@ -600,7 +711,7 @@ def verify_core_source(path: Path) -> dict[str, str]:
 
 
 def validate_pilot(directory: Path, arm_id: str) -> dict[str, Any]:
-    artifact = directory / "cases" / "smoke-001" / arm_id
+    artifact = directory / "passes" / "pass-001" / "cases" / "smoke-001" / arm_id
     normalized_path = artifact / "normalized.json"
     try:
         normalized = json.loads(normalized_path.read_text(encoding="utf-8"))
@@ -608,15 +719,42 @@ def validate_pilot(directory: Path, arm_id: str) -> dict[str, Any]:
         raise HostRunnerError(f"{arm_id} pilot has no valid normalized result: {error}") from error
     if normalized.get("failure") is not None or not isinstance(normalized.get("result"), dict):
         raise HostRunnerError(f"{arm_id} pilot did not produce a valid result: {normalized.get('failure')}")
+    if (normalized.get("pass_index") != 1 or normalized.get("arm_id") != arm_id
+            or normalized.get("case_id") != "smoke-001"):
+        raise HostRunnerError(f"{arm_id} pilot observation identity is invalid")
+    if normalized.get("provider_model") != "grok-4.6" or normalized.get("model") not in {
+        "xai-auth/grok-4.6", "xai/grok-4.6",
+    }:
+        raise HostRunnerError(f"{arm_id} pilot lacks exact model identity")
+    if not isinstance(normalized.get("wall_clock_seconds"), (int, float)) or normalized["wall_clock_seconds"] <= 0:
+        raise HostRunnerError(f"{arm_id} pilot lacks wall-clock timing")
+    source = normalized.get("source") or {}
+    if source.get("pin") != SOURCES[arm_id]["pin"]:
+        raise HostRunnerError(f"{arm_id} pilot lacks exact source evidence")
     result = normalized["result"]
+    if not isinstance(result.get("effective_config"), dict) or not isinstance(result.get("findings"), list):
+        raise HostRunnerError(f"{arm_id} pilot lacks complete config/findings artifacts")
+    if result.get("native_verdict") not in {"approve", "request_changes", None} or result.get("normalized_verdict") not in {"pass", "fail", None}:
+        raise HostRunnerError(f"{arm_id} pilot has invalid verdict semantics")
+    usage = result.get("usage") or {}
+    for field in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "processed_tokens"):
+        if not isinstance(usage.get(field), int) or isinstance(usage.get(field), bool) or usage[field] < 0:
+            raise HostRunnerError(f"{arm_id} pilot lacks complete provider usage ({field})")
+    telemetry = result.get("telemetry") or {}
+    for field in ("request_count", "retries", "failures", "truncation_events", "context_events"):
+        if not isinstance(telemetry.get(field), int) or isinstance(telemetry.get(field), bool) or telemetry[field] < 0:
+            raise HostRunnerError(f"{arm_id} pilot lacks complete telemetry ({field})")
     evidence = result.get("provider_evidence") or {}
-    if not evidence.get("request_models") or not evidence.get("response_models"):
-        raise HostRunnerError(f"{arm_id} pilot lacks provider model evidence")
+    if (not evidence.get("request_models") or not evidence.get("response_models")
+            or any(model != "grok-4.6" for model in evidence["request_models"] + evidence["response_models"])):
+        raise HostRunnerError(f"{arm_id} pilot lacks exact provider response-model evidence")
     summary: dict[str, Any] = {
         "arm_id": arm_id, "request_count": result.get("telemetry", {}).get("request_count"),
         "provider_evidence": evidence,
     }
     effective = result.get("effective_config") or {}
+    if effective.get("reasoning_effort") != "high":
+        raise HostRunnerError(f"{arm_id} pilot did not prove high reasoning effort")
     if arm_id == "qq-mini-qa":
         def canonical_session_id(field: str, description: str) -> str:
             value = effective.get(field)
@@ -662,16 +800,42 @@ def validate_pilot(directory: Path, arm_id: str) -> dict[str, Any]:
                 raise HostRunnerError("PR-Agent pilot request controls differ from the frozen stock configuration")
             if body.get("max_tokens") is not None or body.get("max_completion_tokens") is not None:
                 raise HostRunnerError("PR-Agent pilot unexpectedly set an output cap")
-        else:
-            if body.get("stream") is not True or body.get("temperature") != 0.1 or body.get("max_tokens") != 8192:
-                raise HostRunnerError("misospace pilot request controls differ from v2.2.1 stock defaults")
-            if body.get("stream_options", {}).get("include_usage") is not True:
-                raise HostRunnerError("misospace pilot did not request final stream usage")
     summary["captured_request_count"] = len(requests)
     return summary
 
 
-def command_run(args: argparse.Namespace) -> int:
+def complete_pilot_evidence(directory: Path) -> list[dict[str, Any]]:
+    evidence = [validate_pilot(directory, arm_id) for arm_id in ("qq-mini-qa", "pr-agent")]
+    manifest = json.loads((directory / "run.json").read_text(encoding="utf-8"))
+    waves = manifest.get("waves", [])
+    if len(waves) != 1 or waves[0].get("pass_index") != 1 or not waves[0].get("within_start_skew_target"):
+        raise HostRunnerError("compatibility pilot did not complete one paired concurrent arm wave")
+    if len(manifest.get("results", [])) != 2 or any(item.get("failure") is not None for item in manifest["results"]):
+        raise HostRunnerError("compatibility pilot does not contain two valid paired observations")
+    return evidence
+
+
+def require_successful_pilot(root: Path, run_id: str) -> dict[str, Any]:
+    path = root / "live" / f"{run_id}-pilot" / "host-evidence.json"
+    try:
+        evidence = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise HostRunnerError(
+            f"matrix requires a successful paired host-native pilot for run {run_id}; inspect or create {path}"
+        ) from error
+    if (evidence.get("schema") != "qq.grok-reviewer-host-evidence/v1"
+            or evidence.get("stage") != "pilot"
+            or evidence.get("run_id") != run_id
+            or tuple(item.get("arm_id") for item in evidence.get("pilots", [])) != ("qq-mini-qa", "pr-agent")):
+        raise HostRunnerError("matrix pilot evidence is incomplete or belongs to another experiment")
+    expected_state = hashlib.sha256((root / "state.json").read_bytes()).hexdigest()
+    if evidence.get("state_sha256") != expected_state:
+        raise HostRunnerError("matrix pilot evidence does not match the current provisioned state")
+    complete_pilot_evidence(path.parent / "run")
+    return evidence
+
+
+def command_execute(args: argparse.Namespace, stage: str) -> int:
     root = args.root.expanduser().resolve()
     state = load_state(root)
     models_state = verify_models_source(args.qq_models_source)
@@ -680,11 +844,20 @@ def command_run(args: argparse.Namespace) -> int:
     pr_runtime = state["sources"]["pr-agent"].get("runtime", {})
     if pr_runtime.get("status") == "skipped-test-only" or not Path(pr_runtime.get("python", "")).is_file():
         raise HostRunnerError("pinned PR-Agent runtime is not installed; rerun provision without --skip-pr-agent-install")
-    live = root / "live" / (args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+    run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", run_id) is None:
+        raise HostRunnerError("unsafe run id")
+    repeat_count = 1 if stage == "pilot" else args.repeat_count
+    if isinstance(repeat_count, bool) or not isinstance(repeat_count, int) or not 1 <= repeat_count <= 5:
+        raise HostRunnerError("repeat count must be from 1 through 5")
+    if stage == "matrix":
+        require_successful_pilot(root, run_id)
+    live = root / "live" / f"{run_id}-{stage}"
     live.mkdir(parents=True, exist_ok=False, mode=0o700)
     with bridge(Path(models_state["path"]), dsh_home, live / "bridge") as bridge_runtime:
         endpoints, auth_readiness, bridge_evidence = bridge_runtime
         args.qq_launcher = QQ_LAUNCHER
+        args.pr_agent_launcher = PR_AGENT_LAUNCHER
         args.qq_core_source = Path(core_state["path"])
         args.qq_dsh_home = dsh_home
         environment = execution_environment(args, state, endpoints, auth_readiness)
@@ -695,95 +868,92 @@ def command_run(args: argparse.Namespace) -> int:
         os.chmod(live / "doctor.stderr", 0o600)
         if doctor.returncode != 0:
             raise HostRunnerError(f"benchmark doctor failed ({doctor.returncode}): {doctor.stderr.strip()}")
-        pilots = live / "pilots"
-        pilot_command = [
+        output = live / "run"
+        benchmark_command = [
             sys.executable, str(BENCHMARK_PATH), "run",
-            "--case", "smoke-001", "--run-id", "compatibility-pilot-wave",
-            "--output", str(pilots),
+            "--run-id", f"{run_id}-{stage}", "--output", str(output),
+            "--repeat-count", str(repeat_count),
         ]
-        pilot = run(pilot_command, env=environment, capture=False, check=False)
-        if pilot.returncode != 0:
-            raise HostRunnerError(f"concurrent compatibility pilot wave failed ({pilot.returncode}); inspect {pilots}")
-        pilot_evidence = [validate_pilot(pilots, arm_id) for arm_id in ("qq-mini-qa", *EXTERNAL_ARM_ENDPOINT_ENVS)]
-        pilot_manifest = json.loads((pilots / "run.json").read_text(encoding="utf-8"))
-        if len(pilot_manifest.get("waves", [])) != 1 or not pilot_manifest["waves"][0].get("within_start_skew_target"):
-            raise HostRunnerError("compatibility pilots did not launch as one concurrent arm wave")
-        command = [sys.executable, str(BENCHMARK_PATH), "run", "--run-id", "three-case-smoke", "--output", str(live / "run")]
-        result = run(command, env=environment, capture=False, check=False)
+        if stage == "pilot":
+            benchmark_command.extend(["--case", "smoke-001"])
+        result = run(benchmark_command, env=environment, capture=False, check=False)
         if result.returncode != 0:
-            raise HostRunnerError(f"benchmark smoke failed ({result.returncode}); inspect {live}")
-        smoke_manifest = json.loads((live / "run" / "run.json").read_text(encoding="utf-8"))
-        if len(smoke_manifest.get("waves", [])) != 3 or any(
-            not wave.get("within_start_skew_target") for wave in smoke_manifest["waves"]
+            raise HostRunnerError(f"paired {stage} failed ({result.returncode}); inspect {output}")
+        manifest = json.loads((output / "run.json").read_text(encoding="utf-8"))
+        pilots = complete_pilot_evidence(output) if stage == "pilot" else []
+        expected_waves = 1 if stage == "pilot" else repeat_count * 3
+        if len(manifest.get("waves", [])) != expected_waves or any(
+            not wave.get("within_start_skew_target") for wave in manifest.get("waves", [])
         ):
-            raise HostRunnerError("smoke did not complete three sequential concurrent-arm case waves")
+            raise HostRunnerError(f"{stage} did not complete {expected_waves} paired concurrent-arm waves")
+        expected_observations = expected_waves * 2
+        if len(manifest.get("results", [])) != expected_observations:
+            raise HostRunnerError(f"{stage} did not retain all {expected_observations} observations")
+        if stage == "matrix" and not all((output / name).is_file() for name in ("aggregate.json", "report.json", "report.md")):
+            raise HostRunnerError("matrix did not produce aggregate JSON and Markdown reports")
         write_json(live / "host-evidence.json", {
             "schema": "qq.grok-reviewer-host-evidence/v1",
+            "stage": stage,
+            "run_id": run_id,
+            "repeat_count": repeat_count,
             "state_sha256": hashlib.sha256((root / "state.json").read_bytes()).hexdigest(),
             "qq_models": models_state,
             "qq_core": core_state,
             "qq_dsh_home": str(dsh_home),
             "bridge": bridge_evidence,
             "execution": {
-                "mode": "sequential-case-waves-concurrent-arms",
-                "pilot_wave": pilot_manifest["waves"][0],
-                "smoke_waves": smoke_manifest["waves"],
+                "mode": "repeated-sequential-case-waves-concurrent-paired-arms",
+                "waves": manifest["waves"],
             },
             "benchmark_components": {
                 str(path.relative_to(HERE)): hashlib.sha256(path.read_bytes()).hexdigest()
                 for path in (
-                    BRIDGE_PATH, QQ_LAUNCHER, PR_AGENT_LAUNCHER, MISOSPACE_LAUNCHER,
+                    BRIDGE_PATH, QQ_LAUNCHER, PR_AGENT_LAUNCHER,
                     HERE / "adapters" / "qq-models-instrumented" / "plugin.mjs",
                     HERE / "adapters" / "qq-models-instrumented" / "package.json",
                     HERE / "adapters" / "qq-models-instrumented" / "cordis.patch.yml",
                     SYNTHETIC_FIXTURE,
                 )
             },
-            "pilots": pilot_evidence,
+            "pilots": pilots,
             "commands": {
                 "qq-mini-qa": json.loads(environment["GROK_BENCH_QQ_COMMAND_JSON"]),
                 "pr-agent": json.loads(environment["GROK_BENCH_PR_AGENT_COMMAND_JSON"]),
-                "misospace-pr-reviewer": json.loads(environment["GROK_BENCH_MISOSPACE_COMMAND_JSON"]),
             },
             "provider_secret_exposed_to_reviewer": False,
         })
-    print(canonical({"status": "complete", "run": str(live / "run")}), end="")
+    print(canonical({"status": "complete", "stage": stage, "run": str(output)}), end="")
     return 0
 
 
-def command_smoke(args: argparse.Namespace) -> int:
-    provision_args = argparse.Namespace(
-        root=args.root, qq_workflows_source=args.qq_workflows_source,
-        pr_agent_source=args.pr_agent_source, misospace_source=args.misospace_source,
-        qq_ui_source=args.qq_ui_source, qq_index_source=args.qq_index_source,
-        object_root=args.object_root, skip_pr_agent_install=False,
-    )
-    command_provision(provision_args)
-    run_args = argparse.Namespace(
-        root=args.root, qq_models_source=args.qq_models_source,
-        qq_core_source=args.qq_core_source, qq_dsh_home=args.qq_dsh_home,
-        pr_agent_launcher=PR_AGENT_LAUNCHER, misospace_launcher=MISOSPACE_LAUNCHER,
-        run_id=args.run_id,
-    )
-    return command_run(run_args)
+def command_pilot(args: argparse.Namespace) -> int:
+    return command_execute(args, "pilot")
 
+
+def command_matrix(args: argparse.Namespace) -> int:
+    return command_execute(args, "matrix")
 
 def command_request(args: argparse.Namespace) -> int:
     root = args.root.expanduser().resolve()
-    command = [sys.executable, str(Path(__file__).resolve()), "smoke", "--root", str(root)]
     value = {
         "schema": REQUEST_SCHEMA,
-        "reason": "execute the complete sanctioned smoke in the normal host namespace with its existing xai-auth OAuth store",
-        "host_command": command,
-        "required_host_capabilities": [
-            "normal outbound HTTPS for public Git/dependency provisioning",
-            "read/write access to the normal qq xai-auth store by the bridge process",
-            "loopback TCP shared by runner, capture proxy, and reviewer children",
-        ],
-        "forbidden_inputs": ["provider API key argument", "copied OAuth file", "GitHub token argument"],
+        "reason": "launch only the fixed paired Grok reviewer pilot/matrix through qq.service in the host namespace",
+        "runtime_root": str(root),
+        "run_id": args.run_id,
+        "host_routes": {
+            "pilot": "/api/qq-workflows/grok-reviewer-benchmark/pilot",
+            "matrix": "/api/qq-workflows/grok-reviewer-benchmark/matrix",
+            "status": "/api/qq-workflows/grok-reviewer-benchmark/status",
+            "cancel": "/api/qq-workflows/grok-reviewer-benchmark/cancel",
+        },
+        "fixed_host_commands": {
+            "pilot": ["python3", "experiments/grok-reviewer-benchmark/host/runner.py", "pilot"],
+            "matrix": ["python3", "experiments/grok-reviewer-benchmark/host/runner.py", "matrix"],
+        },
+        "forbidden_inputs": ["command", "executable", "provider API key", "copied OAuth file", "GitHub token"],
         "pinned_sources": SOURCES,
         "frozen_repositories": REPOSITORIES,
-        "followup": "none: the smoke command provisions, launches a concurrent pilot wave, and runs three sequential concurrent-arm case waves",
+        "staging": "run one paired smoke-001 pilot; only after it validates, run the repeated matrix once",
     }
     if args.output:
         write_json(args.output.resolve(), value, mode=0o644)
@@ -791,55 +961,59 @@ def command_request(args: argparse.Namespace) -> int:
     return 0
 
 
+def add_runtime_options(child: argparse.ArgumentParser) -> None:
+    child.add_argument("--root", type=Path, required=True)
+    child.add_argument("--qq-models-source", type=Path, default=Path("/home/qqp/projects/qq-models"))
+    child.add_argument("--qq-core-source", type=Path, default=Path("/home/qqp/projects/qq-core"))
+    child.add_argument("--qq-dsh-home", type=Path, default=Path("/home/qqp/.local/state/qq"))
+    child.add_argument("--run-id", required=True)
+
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     sub = value.add_subparsers(dest="command", required=True)
-    child = sub.add_parser("request", help="emit the exact secret-free host execution request")
+    child = sub.add_parser("request", help="emit the secret-free fixed host-route request")
     child.add_argument("--root", type=Path, required=True)
+    child.add_argument("--run-id", required=True)
     child.add_argument("--output", type=Path)
     child.set_defaults(function=command_request)
     child = sub.add_parser("provision", help="fetch and verify exact pinned sources and frozen Git objects")
     child.add_argument("--root", type=Path, required=True)
     child.add_argument("--qq-workflows-source", type=Path)
     child.add_argument("--pr-agent-source", type=Path)
-    child.add_argument("--misospace-source", type=Path)
     child.add_argument("--qq-ui-source", type=Path)
     child.add_argument("--qq-index-source", type=Path)
     child.add_argument("--object-root", type=Path, action="append", default=[])
     child.add_argument("--skip-pr-agent-install", action="store_true", help=argparse.SUPPRESS)
     child.set_defaults(function=command_provision)
-    child = sub.add_parser("smoke", help="provision, run a concurrent pilot wave, and run sequential concurrent-arm case waves")
-    child.add_argument("--root", type=Path, required=True)
-    child.add_argument("--qq-workflows-source", type=Path)
-    child.add_argument("--pr-agent-source", type=Path)
-    child.add_argument("--misospace-source", type=Path)
-    child.add_argument("--qq-ui-source", type=Path)
-    child.add_argument("--qq-index-source", type=Path)
-    child.add_argument("--object-root", type=Path, action="append", default=[])
-    child.add_argument("--qq-models-source", type=Path, default=Path("/home/qqp/projects/qq-models"))
-    child.add_argument("--qq-core-source", type=Path, default=Path("/home/qqp/projects/qq-core"))
-    child.add_argument("--qq-dsh-home", type=Path, default=Path("/home/qqp/.local/state/qq"))
-    child.add_argument("--run-id")
-    child.set_defaults(function=command_smoke)
-    child = sub.add_parser("run", help="start the shared xai-auth bridge, doctor, pilots, and concurrent-arm smoke waves")
-    child.add_argument("--root", type=Path, required=True)
-    child.add_argument("--qq-models-source", type=Path, default=Path("/home/qqp/projects/qq-models"))
-    child.add_argument("--qq-core-source", type=Path, default=Path("/home/qqp/projects/qq-core"))
-    child.add_argument("--qq-dsh-home", type=Path, default=Path("/home/qqp/.local/state/qq"))
-    child.add_argument("--pr-agent-launcher", type=Path, default=PR_AGENT_LAUNCHER)
-    child.add_argument("--misospace-launcher", type=Path, default=MISOSPACE_LAUNCHER)
-    child.add_argument("--run-id")
-    child.set_defaults(function=command_run)
+    child = sub.add_parser("pilot", help="run exactly one paired smoke-001 compatibility pilot")
+    add_runtime_options(child)
+    child.set_defaults(function=command_pilot)
+    child = sub.add_parser("matrix", help="run the repeated paired three-case matrix after a successful pilot")
+    add_runtime_options(child)
+    child.add_argument("--repeat-count", type=int, choices=range(1, 6), default=3)
+    child.set_defaults(function=command_matrix)
     return value
-
 
 def main() -> int:
     args = parser().parse_args()
+    previous_handlers = {
+        signum: signal.signal(signum, _handle_cancellation_signal)
+        for signum in (signal.SIGTERM, signal.SIGINT)
+    }
     try:
-        return args.function(args)
+        result = args.function(args)
+        _CHILD_GROUPS.raise_if_cancelled()
+        return result
+    except HostRunnerCancelled as error:
+        print(f"HOST RUNNER CANCELLED: {error}", file=sys.stderr)
+        return 130
     except HostRunnerError as error:
         print(f"HOST RUNNER BLOCKED: {error}", file=sys.stderr)
         return 2
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
 
 
 if __name__ == "__main__":

@@ -37,6 +37,7 @@ import { completeComposerLine, formatWorkflowList, parseWorkflowsInput } from ".
 import { DEFAULT_ACCEPTED_CONTEXTS, normalizeAcceptedContexts } from "./context.mjs";
 import { createWorkflowSessionApi } from "./transition.mjs";
 import { createProjectsWorkflow, PROJECTS_LABEL } from "./projects.mjs";
+import { installBenchmarkHostLauncher } from "./grok-benchmark-host.mjs";
 
 export {
   DEFAULT_ACCEPTED_CONTEXTS,
@@ -168,6 +169,7 @@ export function compactActivityProjection(record) {
 }
 
 export function apply(ctx, config = {}) {
+  installBenchmarkHostLauncher(ctx);
   const agents = hostAgents(ctx);
   const phaseStore = createPhaseStore(defaultPhaseDir(process.env, config), { now: config.now ?? Date.now });
   const implementationRecords = new Map();

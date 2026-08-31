@@ -1,67 +1,49 @@
 {
   "schema": "qq.grok-reviewer-benchmark-status/v1",
-  "offline_harness_tests": "passed-38-offline-benchmark-tests",
-  "frozen_corpus_integrity": "passed-for-all-three-repaired-cases",
-  "source_provisioning": "exact-pins-and-critical-blobs-verified-from-readable-public-clones",
-  "bridge": {
-    "direct_live_adapter": "passed-before-this-implementation",
-    "nonstream_live_http": "passed-before-this-implementation",
-    "stream_live_http": "passed-before-this-implementation",
-    "real_finish_event_contract_repaired": true,
-    "response_format_fails_closed": true,
-    "shared_external_bridge_concurrent_requests_offline": "passed-two-overlapping-generations",
-    "auth_refresh_single_flight_offline": "passed-delayed-expiry-and-401-one-rotation-no-two-second-timeout",
-    "forced_pre_wave_auth_readiness_outside_refresh_window": true,
-    "distinct_external_client_keys_and_admin_key": true
+  "objective": "production qq mini-qa versus pinned stock The-PR-Agent/pr-agent",
+  "active_arms": [
+    "qq-mini-qa",
+    "pr-agent"
+  ],
+  "provider_model": "grok-4.6",
+  "reasoning_effort_target": "high",
+  "valid_paired_observations": 0,
+  "valid_comparison_exists": false,
+  "required_next_stage": "one paired host-native smoke-001 compatibility pilot",
+  "matrix_after_pilot": {
+    "repeat_count": 3,
+    "case_count": 3,
+    "arm_count": 2,
+    "expected_observations": 18
   },
-  "compatibility_pilots": {
-    "v3_concurrent_start_skew_seconds": 0.000175,
-    "v3_auth_readiness": "passed-forced-refresh",
-    "v3_qq": "failed-before-inference-missing-canonical-session-id; fixed-offline-pending-v4",
-    "v3_pr_agent": "live-bridge-calls-aborted-by-stock-120s-ai-timeout; fixed-to-600s-offline-pending-v4",
-    "v3_misospace": "completed-live-compatibility-call-in-166s",
-    "misospace_stock_driver_offline_fake_response": "passed-one-request-retained-artifacts-git-fsck-ok"
-  },
-  "smoke_run": "pending-fresh-normal-host-v4-pilot-and-matrix; a fresh sanctioned delegated attempt on 2026-08-31 exited 2 during the first public Git clone because PID 1 was bwrap --unshare-net; no state manifest, model request, compatibility wave, or matrix record was produced",
-  "implemented": {
-    "host_provisioner": true,
-    "single_command_host_smoke": true,
-    "credential_shielding_xai_auth_bridge": true,
-    "production_qq_mini_qa_launcher": true,
-    "pr_agent_stock_launcher": true,
-    "misospace_stock_launcher": true,
-    "deterministic_qq_ui_synthetic_fixture": true,
-    "repaired_qq_index_pair": true,
-    "qq_provider_attempt_instrumentation": true,
-    "private_dependency_manager_home_and_caches_under_runtime_root": true,
-    "doctor_then_concurrent_pilot_wave_then_three_sequential_case_waves": true,
-    "wave_launch_timing_and_skew_evidence": true,
-    "qq_core_runtime_content_pin_allows_unrelated_checkout_head_advance": true,
-    "one_shared_concurrent_external_xai_auth_bridge": true,
-    "process_local_auth_single_flight_and_per_request_adapters": true,
-    "forced_auth_refresh_before_pilot_and_each_case_wave": true,
-    "distinct_external_bridge_keys_capture_proxies_and_artifacts": true,
-    "exact_common_wave_start_and_per_arm_release_offsets": true,
-    "qq_fresh_canonical_launcher_session_id_per_invocation": true,
-    "qq_distinct_headless_review_session_id_captured": true,
-    "pr_agent_neutral_ai_timeout_seconds": 600
-  },
-  "host_command": "python3 experiments/grok-reviewer-benchmark/host/runner.py smoke --root $PWD/.grok-reviewer-live",
-  "credential_input_required": false,
-  "inspect_ai": "do-not-replace-smoke-rig; optional-outer-layer-only-for-recurring-8-to-12-case-suite",
-  "latest_smoke_attempt": {
-    "attempted_at": "2026-08-31T13:55:05Z",
-    "command": "python3 experiments/grok-reviewer-benchmark/host/runner.py smoke --root $PWD/.grok-reviewer-live",
-    "environment": "delegated-bwrap-unshare-net",
-    "outcome": "blocked-before-provisioning-first-public-git-clone-dns-unavailable",
-    "exit_code": 2,
-    "private_evidence": [
-      ".grok-reviewer-live/smoke.stderr",
-      ".grok-reviewer-live/smoke.exit"
-    ],
-    "state_manifest_created": false,
+  "current_truth": "No valid qq Mini-QA versus PR-Agent comparison has run. Archived misospace and plain-prompt Grok results are not substitutes.",
+  "previous_failed_attempt": {
+    "environment": "delegated bwrap --unshare-net",
+    "outcome": "blocked before a valid paired model wave",
     "model_requests": 0,
-    "compatibility_records": 0,
-    "matrix_records": 0
+    "paired_observations": 0
+  },
+  "implemented": {
+    "loopback_fixed_operation_host_launcher": true,
+    "private_run_scoped_descriptor": true,
+    "asynchronous_status_and_cancel_artifacts": true,
+    "single_host_job_lock": true,
+    "hmr_disposal_cancels_live_job": true,
+    "exact_two_arm_config": true,
+    "separate_pilot_and_matrix_commands": true,
+    "matrix_requires_successful_same_run_pilot": true,
+    "repeat_bound": [
+      1,
+      5
+    ],
+    "pass_indexed_observations": true,
+    "aggregate_json": true,
+    "concise_json_and_markdown_reports": true,
+    "finding_recurrence": true,
+    "repeated_blinding_and_scoring": true
+  },
+  "archived_non_substitute_evidence": {
+    "misospace": "excluded from active scope",
+    "plain_grok_host_session": "not production mini-qa"
   }
 }

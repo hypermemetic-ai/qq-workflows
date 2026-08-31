@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 import importlib.util
 import io
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -31,6 +32,91 @@ QQ_LAUNCHER_SPEC.loader.exec_module(qq_launcher)
 BRIDGE = HERE / "host" / "xai_openai_bridge.mjs"
 FAKE = HERE / "tests" / "fixtures" / "fake_grok_adapter.mjs"
 USAGE = HERE / "adapters" / "qq-arm-plugin" / "usage.mjs"
+
+
+def pilot_observation(arm_id: str, effective_config: dict[str, object]) -> dict[str, object]:
+    return {
+        "schema": "qq.grok-reviewer-normalized-run/v1",
+        "pass_index": 1,
+        "arm_id": arm_id,
+        "case_id": "smoke-001",
+        "model": "xai-auth/grok-4.6" if arm_id == "qq-mini-qa" else "xai/grok-4.6",
+        "provider_model": "grok-4.6",
+        "source": {"pin": runner.SOURCES[arm_id]["pin"]},
+        "wall_clock_seconds": 1.25,
+        "failure": None,
+        "result": {
+            "effective_config": effective_config,
+            "native_verdict": None,
+            "normalized_verdict": "pass",
+            "findings": [],
+            "usage": {
+                "input_tokens": 10, "output_tokens": 5, "cache_read_tokens": 2,
+                "cache_write_tokens": 0, "reasoning_tokens": 3, "processed_tokens": 17,
+            },
+            "provider_evidence": {
+                "request_models": ["grok-4.6"], "response_models": ["grok-4.6"],
+            },
+            "telemetry": {
+                "request_count": 1, "retries": 0, "failures": 0,
+                "truncation_events": 0, "context_events": 0,
+            },
+        },
+    }
+
+
+class HostProcessCancellationTests(unittest.TestCase):
+    @staticmethod
+    def assert_not_live(test: unittest.TestCase, pid: int) -> None:
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                state = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[2]
+            except (FileNotFoundError, ProcessLookupError):
+                return
+            if state == "Z":
+                return
+            time.sleep(0.02)
+        test.fail(f"process {pid} remained live after host cancellation")
+
+    def test_registry_reaps_detached_controller_descendants_and_late_spawn(self) -> None:
+        registry = runner.ProcessGroupRegistry(grace_seconds=0.15)
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "pids.json"
+            script = (
+                "import json, os, pathlib, signal, subprocess, sys, time\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "ready = pathlib.Path(sys.argv[1] + '.child-ready')\n"
+                'child_code = "import pathlib,signal,sys,time; '
+                'signal.signal(signal.SIGTERM, signal.SIG_IGN); '
+                'pathlib.Path(sys.argv[1]).write_text(\'ready\'); time.sleep(60)"\n'
+                "child = subprocess.Popen([sys.executable, '-c', child_code, str(ready)])\n"
+                "while not ready.is_file(): time.sleep(0.01)\n"
+                "pathlib.Path(sys.argv[1]).write_text(json.dumps([os.getpid(), child.pid]))\n"
+                "time.sleep(60)\n"
+            )
+            process = subprocess.Popen(
+                [sys.executable, "-c", script, str(marker)],
+                start_new_session=True,
+            )
+            registry.register(process)
+            deadline = time.monotonic() + 2
+            while not marker.is_file() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(marker.is_file())
+            pids = json.loads(marker.read_text(encoding="utf-8"))
+            registry.cancel()
+            process.wait(timeout=2)
+            registry.stop(process)
+            for pid in pids:
+                self.assert_not_live(self, pid)
+
+            time.sleep(0.2)
+            late = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+            registry.register(late)
+            late.wait(timeout=2)
+            registry.stop(late)
+            self.assertLess(late.returncode, 0)
 
 
 class HostProvisionTests(unittest.TestCase):
@@ -241,13 +327,11 @@ class HostProvisionTests(unittest.TestCase):
             args = type("Args", (), {
                 "qq_core_source": core, "qq_models_source": models, "qq_dsh_home": dsh_home,
                 "qq_launcher": launcher, "pr_agent_launcher": launcher,
-                "misospace_launcher": launcher,
             })()
             state = {
                 "repositories": {"qq-ui": {"path": str(repository)}, "qq-index": {"path": str(repository)}},
                 "sources": {
                     "qq-mini-qa": {"path": str(source)}, "pr-agent": {"path": str(source)},
-                    "misospace-pr-reviewer": {"path": str(source)},
                 },
             }
             shared_base = "http://127.0.0.1:8000/v1"
@@ -263,34 +347,45 @@ class HostProvisionTests(unittest.TestCase):
                 self.assertEqual(environment[base_name], shared_base)
                 self.assertEqual(environment[key_name], endpoints[arm_id][1])
                 observed_keys.add(environment[key_name])
-            self.assertEqual(len(observed_keys), 2)
+            self.assertEqual(len(observed_keys), 1)
             self.assertEqual(environment[runner.AUTH_READINESS_ENVS[0]], auth_readiness[0])
             self.assertEqual(environment[runner.AUTH_READINESS_ENVS[1]], auth_readiness[1])
-            with self.assertRaisesRegex(runner.HostRunnerError, "both external arms"):
-                runner.execution_environment(
-                    args, state, {"pr-agent": endpoints["pr-agent"]}, auth_readiness,
-                )
+            with self.assertRaisesRegex(runner.HostRunnerError, "PR-Agent requires"):
+                runner.execution_environment(args, state, {}, auth_readiness)
+
+    def test_host_cli_has_only_staged_fixed_execution_and_matrix_requires_pilot(self) -> None:
+        parser = runner.parser()
+        self.assertIs(parser.parse_args(["pilot", "--root", "/tmp/root", "--run-id", "paired-v1"]).function,
+                      runner.command_pilot)
+        matrix = parser.parse_args(["matrix", "--root", "/tmp/root", "--run-id", "paired-v1", "--repeat-count", "3"])
+        self.assertIs(matrix.function, runner.command_matrix)
+        self.assertEqual(matrix.repeat_count, 3)
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["run", "--root", "/tmp/root"])
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["smoke", "--root", "/tmp/root"])
+        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(
+            runner.HostRunnerError, "requires a successful paired host-native pilot",
+        ):
+            runner.require_successful_pilot(Path(directory), "paired-v1")
 
     def test_host_request_is_exact_and_contains_no_credential_handoff(self) -> None:
-        args = type("Args", (), {"root": Path("/tmp/frozen-smoke"), "output": None})()
+        args = type("Args", (), {"root": Path("/tmp/frozen-smoke"), "run_id": "paired-v1", "output": None})()
         output = io.StringIO()
         with redirect_stdout(output):
             self.assertEqual(runner.command_request(args), 0)
         value = json.loads(output.getvalue())
         self.assertEqual(value["schema"], runner.REQUEST_SCHEMA)
         self.assertEqual(value["pinned_sources"]["pr-agent"]["pin"], runner.SOURCES["pr-agent"]["pin"])
-        self.assertEqual(value["host_command"][2], "smoke")
-        self.assertEqual(
-            value["followup"],
-            "none: the smoke command provisions, launches a concurrent pilot wave, "
-            "and runs three sequential concurrent-arm case waves",
-        )
+        self.assertEqual(set(value["pinned_sources"]), {"qq-mini-qa", "pr-agent"})
+        self.assertEqual(value["fixed_host_commands"]["pilot"][-1], "pilot")
+        self.assertEqual(value["fixed_host_commands"]["matrix"][-1], "matrix")
+        self.assertIn("only after", value["staging"])
         self.assertTrue(runner.PR_AGENT_LAUNCHER.is_file())
-        self.assertTrue(runner.MISOSPACE_LAUNCHER.is_file())
         rendered = json.dumps(value).lower()
         self.assertNotIn("paste", rendered)
         self.assertNotIn("bearer", rendered)
-        self.assertIn("provider api key argument", rendered)
+        self.assertIn("provider api key", rendered)
 
 
 class QqMiniQaAdapterTests(unittest.TestCase):
@@ -470,7 +565,7 @@ class BridgeTests(unittest.TestCase):
         ready = root / "ready.json"
         environment = runner.secret_free_environment()
         environment["GROK_BENCH_BRIDGE_KEYS_JSON"] = json.dumps({
-            "pr-agent": key, "misospace-pr-reviewer": other_key,
+            "client-a": key, "client-b": other_key,
         })
         environment["GROK_BENCH_BRIDGE_ADMIN_KEY"] = admin_key
         environment["FAKE_GROK_DELAY_MS"] = str(delay_ms)
@@ -770,81 +865,37 @@ class ExternalLauncherTests(unittest.TestCase):
             "cache_write_tokens": None, "reasoning_tokens": None, "processed_tokens": 290,
         })
 
-    def test_misospace_preserves_native_verdict_without_requiring_findings(self) -> None:
-        module = self.load("grok_misospace_launcher", HERE / "adapters" / "run_misospace.py")
-        previous = {name: os.environ.get(name) for name in (
-            "BENCH_ARM_ID", "BENCH_CASE_ID", "BENCH_CLIENT_MODEL", "BENCH_PROVIDER_MODEL",
-        )}
-        os.environ.update({
-            "BENCH_ARM_ID": "misospace-pr-reviewer", "BENCH_CASE_ID": "smoke-001",
-            "BENCH_CLIENT_MODEL": "grok-4.6", "BENCH_PROVIDER_MODEL": "grok-4.6",
-        })
-        try:
-            result = module.build_result({"verdict": "request_changes", "findings": []})
-            self.assertEqual(result["native_verdict"], "request_changes")
-            self.assertEqual(result["normalized_verdict"], "fail")
-            self.assertEqual(result["verdict_source"], "native")
-            self.assertEqual(result["findings"], [])
-            findings = module.normalize_findings({"findings": [{
-                "message": "Global blocker", "severity": "blocker", "file": None, "line": None,
-            }, {"message": "Minor", "severity": "minor"}]})
-            self.assertTrue(findings[0]["blocks_merge"])
-            self.assertFalse(findings[1]["blocks_merge"])
-            self.assertIsNone(findings[0]["path"])
-        finally:
-            for name, value in previous.items():
-                if value is None:
-                    os.environ.pop(name, None)
-                else:
-                    os.environ[name] = value
 
-    def test_host_pilot_gate_verifies_qq_session_and_pr_agent_timeout(self) -> None:
+    def test_host_pilot_gate_verifies_complete_qq_and_pr_agent_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             session_id = "session-12345678-1234-4234-8234-123456789abc"
             launcher_session_id = "session-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
-            qq_artifact = root / "cases" / "smoke-001" / "qq-mini-qa"
+            base = root / "passes" / "pass-001" / "cases" / "smoke-001"
+            qq_artifact = base / "qq-mini-qa"
             (qq_artifact / "output").mkdir(parents=True)
             (qq_artifact / "output" / "session-id.txt").write_text(session_id + "\n", encoding="utf-8")
-            (qq_artifact / "normalized.json").write_text(json.dumps({
-                "failure": None,
-                "result": {
-                    "effective_config": {
-                        "session_id": session_id,
-                        "launcher_session_id": launcher_session_id,
-                    },
-                    "provider_evidence": {
-                        "request_models": ["grok-4.6"], "response_models": ["grok-4.6"],
-                    },
-                    "telemetry": {"request_count": 1},
-                },
-            }), encoding="utf-8")
+            qq = pilot_observation("qq-mini-qa", {
+                "session_id": session_id, "launcher_session_id": launcher_session_id,
+                "reasoning_effort": "high",
+            })
+            (qq_artifact / "normalized.json").write_text(json.dumps(qq), encoding="utf-8")
             qq_evidence = runner.validate_pilot(root, "qq-mini-qa")
             self.assertEqual(qq_evidence["session_id"], session_id)
             self.assertEqual(qq_evidence["launcher_session_id"], launcher_session_id)
-            (qq_artifact / "output" / "session-id.txt").write_text(
-                "session-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\n", encoding="utf-8",
-            )
-            with self.assertRaisesRegex(runner.HostRunnerError, "identities differ"):
+            qq["result"]["usage"].pop("cache_read_tokens")
+            (qq_artifact / "normalized.json").write_text(json.dumps(qq), encoding="utf-8")
+            with self.assertRaisesRegex(runner.HostRunnerError, "complete provider usage"):
                 runner.validate_pilot(root, "qq-mini-qa")
 
-            pr_artifact = root / "cases" / "smoke-001" / "pr-agent"
+            pr_artifact = base / "pr-agent"
             (pr_artifact / "provider").mkdir(parents=True)
-            (pr_artifact / "normalized.json").write_text(json.dumps({
-                "failure": None,
-                "result": {
-                    "effective_config": {"ai_timeout_seconds": 120},
-                    "provider_evidence": {
-                        "request_models": ["grok-4.6"], "response_models": ["grok-4.6"],
-                    },
-                    "telemetry": {"request_count": 1},
-                },
-            }), encoding="utf-8")
+            pr = pilot_observation("pr-agent", {"ai_timeout_seconds": 120, "reasoning_effort": "high"})
+            (pr_artifact / "normalized.json").write_text(json.dumps(pr), encoding="utf-8")
             with self.assertRaisesRegex(runner.HostRunnerError, "600-second AI timeout"):
                 runner.validate_pilot(root, "pr-agent")
-            normalized = json.loads((pr_artifact / "normalized.json").read_text(encoding="utf-8"))
-            normalized["result"]["effective_config"]["ai_timeout_seconds"] = 600
-            (pr_artifact / "normalized.json").write_text(json.dumps(normalized), encoding="utf-8")
+            pr["result"]["effective_config"]["ai_timeout_seconds"] = 600
+            (pr_artifact / "normalized.json").write_text(json.dumps(pr), encoding="utf-8")
             (pr_artifact / "provider" / "request-0001.request.bin").write_text(json.dumps({
                 "model": "grok-4.6", "stream": False, "temperature": 0.2,
                 "reasoning_effort": "high", "messages": [{"role": "user", "content": "review"}],
@@ -852,51 +903,6 @@ class ExternalLauncherTests(unittest.TestCase):
             pr_evidence = runner.validate_pilot(root, "pr-agent")
             self.assertEqual(pr_evidence["ai_timeout_seconds"], 600)
 
-    def test_host_pilot_gate_rejects_control_drift(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            artifact = root / "cases" / "smoke-001" / "misospace-pr-reviewer"
-            provider = artifact / "provider"; provider.mkdir(parents=True)
-            (artifact / "normalized.json").write_text(json.dumps({
-                "failure": None,
-                "result": {
-                    "provider_evidence": {"request_models": ["grok-4.6"], "response_models": ["grok-4.6"]},
-                    "telemetry": {"request_count": 1},
-                },
-            }), encoding="utf-8")
-            request = {
-                "model": "grok-4.6", "stream": True, "temperature": 0.1,
-                "max_tokens": 8192, "stream_options": {"include_usage": True},
-                "messages": [{"role": "user", "content": "review"}],
-            }
-            path = provider / "request-0001.request.bin"
-            path.write_text(json.dumps(request), encoding="utf-8")
-            evidence = runner.validate_pilot(root, "misospace-pr-reviewer")
-            self.assertEqual(evidence["captured_request_count"], 1)
-            request["temperature"] = 0.2
-            path.write_text(json.dumps(request), encoding="utf-8")
-            with self.assertRaisesRegex(runner.HostRunnerError, "stock defaults"):
-                runner.validate_pilot(root, "misospace-pr-reviewer")
-
-    def test_misospace_gh_fixture_rejects_every_unexpected_call(self) -> None:
-        module = self.load("grok_misospace_launcher_shim", HERE / "adapters" / "run_misospace.py")
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            fixture = root / "files.json"; fixture.write_text("[]\n", encoding="utf-8")
-            shim = module.make_gh_shim(root)
-            environment = os.environ.copy()
-            environment.update({"MISOSPACE_FILES_FIXTURE": str(fixture), "MISOSPACE_GH_LOG": str(root / "calls.jsonl")})
-            accepted = subprocess.run(
-                [str(shim / "gh"), "api", "repos/benchmark/local/pulls/1/files?per_page=100"],
-                env=environment, stdout=subprocess.PIPE, text=True, check=False,
-            )
-            self.assertEqual(accepted.returncode, 0)
-            self.assertEqual(accepted.stdout, "[]\n")
-            rejected = subprocess.run(
-                [str(shim / "gh"), "api", "user"], env=environment,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
-            )
-            self.assertEqual(rejected.returncode, 97)
 
 
 if __name__ == "__main__":
