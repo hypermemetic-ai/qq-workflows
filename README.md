@@ -1,45 +1,46 @@
-# `@hypermemetic-ai/qq-workflows`
+# qq-workflows
 
-Private ESM package for named DSH workflows, delegation capsules, QA, and GitHub PR landing. The package metadata describes this plugin as optional: the core boots when it is absent.
+`@hypermemetic-ai/qq-workflows` is a private ESM package for named DSH workflows, delegation capsules, QA, and GitHub PR landing. Its package contract says the core boots when this plugin is absent. The default entry point is [`src/plugin.mjs`](src/plugin.mjs).
 
 ## Run and test
 
-The only repository task declared in [`package.json`](package.json) is the full test suite:
+The package declares one command:
 
 ```sh
 npm test
 ```
 
-The script runs its `.mjs` tests directly with Node in a fixed sequence. For a focused check, run a listed test the same way, for example:
+This runs the repository's Node test files in an explicit sequence. No install, start, or other run command is declared; the package metadata also does not specify a Node version or dependency set.
 
-```sh
-node tests/land.mjs
-node tests/mini-docs.mjs
-node tests/research.mjs
-```
+## Repository map
 
-No install, start, or build script—and no Node engine requirement—is declared in the package metadata.
+[`package.json`](package.json) is the authoritative package boundary: it marks the package as ESM and private, lists only `src/` as package files, defines every public subpath, and owns the test command.
 
-## Package map
+The main public areas are:
 
-[`package.json`](package.json) is the authoritative export map. Its root entry is [`src/plugin.mjs`](src/plugin.mjs); representative subpath boundaries are:
+- **Plugin and workflow surfaces:** [`src/plugin.mjs`](src/plugin.mjs), [`src/architect.mjs`](src/architect.mjs), [`src/tools.mjs`](src/tools.mjs), and [`src/command.mjs`](src/command.mjs).
+- **Delegation and task artifacts:** [`src/delegation-store.mjs`](src/delegation-store.mjs), [`src/proposal-packet.mjs`](src/proposal-packet.mjs), and [`src/task-artifact.mjs`](src/task-artifact.mjs).
+- **Mini and QA surfaces:** [`src/mini.mjs`](src/mini.mjs), [`src/official-mini.mjs`](src/official-mini.mjs), [`src/mini-qa.mjs`](src/mini-qa.mjs), and [`src/qa-verdict.mjs`](src/qa-verdict.mjs).
+- **Git and landing surfaces:** [`src/git.mjs`](src/git.mjs), [`src/land.mjs`](src/land.mjs), and [`src/land-tools.mjs`](src/land-tools.mjs).
+- **Research surfaces:** [`src/research.mjs`](src/research.mjs), [`src/research-evidence.mjs`](src/research-evidence.mjs), and [`src/research-web.mjs`](src/research-web.mjs).
 
-- workflow and command surfaces: [`src/architect.mjs`](src/architect.mjs), [`src/tools.mjs`](src/tools.mjs), and [`src/command.mjs`](src/command.mjs);
-- mini and QA surfaces: [`src/mini.mjs`](src/mini.mjs), [`src/official-mini.mjs`](src/official-mini.mjs), [`src/mini-qa.mjs`](src/mini-qa.mjs), and [`src/mini-docs.mjs`](src/mini-docs.mjs);
-- Git and PR-landing surfaces: [`src/git.mjs`](src/git.mjs), [`src/land.mjs`](src/land.mjs), and [`src/land-tools.mjs`](src/land-tools.mjs);
-- research surfaces: [`src/research.mjs`](src/research.mjs), [`src/research-evidence.mjs`](src/research-evidence.mjs), [`src/research-web.mjs`](src/research-web.mjs), and [`src/research-sessions.mjs`](src/research-sessions.mjs);
-- state and artifact surfaces: [`src/phase-store.mjs`](src/phase-store.mjs), [`src/delegation-store.mjs`](src/delegation-store.mjs), [`src/research-store.mjs`](src/research-store.mjs), and [`src/proposal-packet.mjs`](src/proposal-packet.mjs).
+These are routing landmarks, not a complete module inventory; consult the export map in [`package.json`](package.json) for the full supported surface. Reviewer-benchmark work has separate guidance in [`experiments/grok-reviewer-benchmark/README.md`](experiments/grok-reviewer-benchmark/README.md).
 
-Implementation is under `src/`; the root test task draws from `tests/`. The declared package file set is limited to `src/`, so tracked studies under `experiments/` are separate from that package payload. Their own entry points include the [Grok reviewer benchmark README](experiments/grok-reviewer-benchmark/README.md) and the [CCA mixed study decision](experiments/cca-mixed-current/decision.md).
+## Route a change
 
-## Change routing
-
-| Change area | Start with | Focused verification |
+| Change area | Start with | Focused tests |
 | --- | --- | --- |
-| Architect and repository context | [`src/architect.mjs`](src/architect.mjs), [`src/architect-bash.mjs`](src/architect-bash.mjs), [`src/repository-index.mjs`](src/repository-index.mjs) | [`tests/architect-bash.mjs`](tests/architect-bash.mjs), [`tests/architect-case-context.mjs`](tests/architect-case-context.mjs), [`tests/architect-repository-index.mjs`](tests/architect-repository-index.mjs) |
-| Git geometry and landing | [`src/git.mjs`](src/git.mjs), [`src/land.mjs`](src/land.mjs), [`src/land-tools.mjs`](src/land-tools.mjs) | [`tests/git-geometry.mjs`](tests/git-geometry.mjs), [`tests/land.mjs`](tests/land.mjs), [`tests/land-publication.mjs`](tests/land-publication.mjs) |
-| Mini QA or docs | [`src/mini-qa.mjs`](src/mini-qa.mjs), [`src/mini-docs.mjs`](src/mini-docs.mjs) | [`tests/mini-qa.mjs`](tests/mini-qa.mjs), [`tests/mini-docs.mjs`](tests/mini-docs.mjs) |
-| Research pipeline | [`src/research.mjs`](src/research.mjs), [`src/research-evidence.mjs`](src/research-evidence.mjs), [`src/research-web.mjs`](src/research-web.mjs), [`src/research-sessions.mjs`](src/research-sessions.mjs) | [`tests/research.mjs`](tests/research.mjs), [`tests/research-evidence.mjs`](tests/research-evidence.mjs), [`tests/research-web.mjs`](tests/research-web.mjs), [`tests/research-sessions.mjs`](tests/research-sessions.mjs) |
-| Settings | [`src/settings.mjs`](src/settings.mjs) | [`tests/settings.mjs`](tests/settings.mjs) |
+| Package entry points or exports | [`package.json`](package.json), [`src/plugin.mjs`](src/plugin.mjs) | No same-named plugin test is tracked; run `npm test` |
+| Workflow architecture | [`src/architect.mjs`](src/architect.mjs), [`src/architect-bash.mjs`](src/architect-bash.mjs) | [`tests/architecture-pin.mjs`](tests/architecture-pin.mjs), [`tests/architect-case-context.mjs`](tests/architect-case-context.mjs), [`tests/architect-repository-index.mjs`](tests/architect-repository-index.mjs), [`tests/architect-bash.mjs`](tests/architect-bash.mjs) |
+| Delegation, proposals, or isolation | [`src/delegation-store.mjs`](src/delegation-store.mjs), [`src/proposal-packet.mjs`](src/proposal-packet.mjs), [`src/child-isolation.mjs`](src/child-isolation.mjs) | [`tests/proposal-packet.mjs`](tests/proposal-packet.mjs), [`tests/packet-lifecycle.mjs`](tests/packet-lifecycle.mjs), [`tests/child-isolation.mjs`](tests/child-isolation.mjs) |
+| QA or mini execution | [`src/official-mini.mjs`](src/official-mini.mjs), [`src/mini-qa.mjs`](src/mini-qa.mjs) | [`tests/mini-swe-v2.mjs`](tests/mini-swe-v2.mjs), [`tests/mini-qa.mjs`](tests/mini-qa.mjs) |
+| Git or PR landing | [`src/git.mjs`](src/git.mjs), [`src/land.mjs`](src/land.mjs), [`src/land-tools.mjs`](src/land-tools.mjs) | [`tests/git-geometry.mjs`](tests/git-geometry.mjs), [`tests/land.mjs`](tests/land.mjs), [`tests/land-publication.mjs`](tests/land-publication.mjs) |
+| Research | [`src/research.mjs`](src/research.mjs), [`src/research-evidence.mjs`](src/research-evidence.mjs), [`src/research-store.mjs`](src/research-store.mjs) | [`tests/research.mjs`](tests/research.mjs), [`tests/research-evidence.mjs`](tests/research-evidence.mjs), [`tests/research-sessions.mjs`](tests/research-sessions.mjs), [`tests/research-web.mjs`](tests/research-web.mjs), [`tests/research-oracle.mjs`](tests/research-oracle.mjs) |
+| Documentation pass behavior | [`src/mini-docs.mjs`](src/mini-docs.mjs) | [`tests/mini-docs.mjs`](tests/mini-docs.mjs) |
 
-Public package entry points are explicit rather than inferred from filenames; keep [`package.json`](package.json) aligned with any intended subpath change. The full test command is also an explicit list rather than a file glob, so a new test joins the suite only when that script includes it.
+## Contributor invariants
+
+- Keep the package's ESM contract and public export map in sync with source changes.
+- The test command enumerates files rather than discovering them. Adding a test file does not add it to `npm test`; update the script in [`package.json`](package.json).
+- [`src/official-mini.mjs`](src/official-mini.mjs) and [`src/research-evidence.mjs`](src/research-evidence.mjs) have the highest relative-module fan-in in the tracked source. Treat changes there as cross-cutting and run the full suite.
+- Preserve the package-level contract that the core can boot without this plugin.
