@@ -12,7 +12,10 @@ arm has provider-attempt retries/failures as well as DSH response usage. It does
 not replace prompts, model behavior, auth, or response processing.
 
 `host/runner.py` registers these paths automatically. Commands are recorded as
-JSON arrays and never contain credentials.
+JSON arrays and never contain credentials. The qq launcher creates a fresh
+canonical `QQ_DSH_SESSION_ID=session-<UUID>` for every invocation. PR-Agent uses
+a neutral 600-second `config.ai_timeout` so transport does not abort valid long
+Grok responses; both compatibility settings are recorded in effective config.
 
 Every launcher receives a fresh detached `$BENCH_REPOSITORY`, exact
 `BENCH_BASE`/`BENCH_HEAD`, SHA-verified `$BENCH_DIFF_PATH`, `$BENCH_TASK_PATH`,

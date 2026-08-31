@@ -39,9 +39,15 @@ export function apply(ctx) {
   const resultPath = resolve(required("BENCH_RESULT_PATH"));
   let pending = null;
   let wrote = false;
+  let dshSessionId = null;
 
   const createdOff = ctx.on("agent/created", ({ agent } = {}) => {
     if (!agent || wrote) return;
+    const expectedSessionId = required("QQ_DSH_SESSION_ID");
+    if (agent.session?.id !== expectedSessionId) {
+      throw new Error("qq Mini QA DSH session identity differs from launcher environment");
+    }
+    dshSessionId = expectedSessionId;
     mini.miniQaSetup(agent.ctx ?? agent);
     approval.pinNonInteractiveApproval(agent, { delegated: true });
     isolation.pinChildSandbox(agent, "qa");
@@ -100,6 +106,7 @@ export function apply(ctx) {
         provider: "xai-auth",
         model: "grok-4.6",
         reasoning_effort: "high",
+        session_id: dshSessionId,
         temperature: null,
         max_output_tokens: null,
         prompt: "production-mini-qa",

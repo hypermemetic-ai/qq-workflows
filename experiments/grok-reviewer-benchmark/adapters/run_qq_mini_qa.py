@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import uuid
 
 HERE = Path(__file__).resolve().parent
 PLUGIN = HERE / "qq-arm-plugin"
@@ -115,6 +116,31 @@ def dsh_command(
     ]
 
 
+def dsh_environment(dsh_home: Path, workspace: Path, core: Path) -> dict[str, str]:
+    """Build one invocation's DSH environment with a fresh qq session identity."""
+    environment = os.environ.copy()
+    environment.update({
+        "DSH_HOME": str(dsh_home),
+        # Auth remains host-owned. Mini QA bash runs in a clear-env/no-network
+        # bwrap and does not inherit this path.
+        "QQ_DSH_HOME": required("BENCH_QQ_DSH_HOME"),
+        "QQ_DSH_PROVIDER": "xai-auth",
+        "QQ_DSH_MODEL": "grok-4.6",
+        "QQ_DSH_REASONING_EFFORT": "high",
+        "QQ_DSH_SESSION_ID": f"session-{uuid.uuid4()}",
+        "QQ_DSH_CWD": str(workspace),
+        "QQ_DSH_HMR_ROOTS": str(core),
+        "QQ_DSH_HAVE_UI": "0",
+        "QQ_DSH_HAVE_RELAY": "0",
+        "QQ_DSH_HAVE_INDEX": "0",
+        "QQ_DSH_HAVE_DASHBOARD": "0",
+        "QQ_DSH_HAVE_WORKFLOWS": "0",
+        "BENCH_REPOSITORY": str(workspace),
+        "NO_COLOR": "1",
+    })
+    return environment
+
+
 def main() -> int:
     for name in REQUIRED:
         required(name)
@@ -151,25 +177,7 @@ def main() -> int:
     if rendered.returncode != 0 or not rendered_task.is_file():
         raise RuntimeError(f"production Mini QA task rendering failed: {rendered.stderr.strip()}")
     task = rendered_task.read_text(encoding="utf-8")
-    environment = os.environ.copy()
-    environment.update({
-        "DSH_HOME": str(dsh_home),
-        # Auth remains host-owned. Mini QA bash runs in a clear-env/no-network
-        # bwrap and does not inherit this path.
-        "QQ_DSH_HOME": required("BENCH_QQ_DSH_HOME"),
-        "QQ_DSH_PROVIDER": "xai-auth",
-        "QQ_DSH_MODEL": "grok-4.6",
-        "QQ_DSH_REASONING_EFFORT": "high",
-        "QQ_DSH_CWD": str(workspace),
-        "QQ_DSH_HMR_ROOTS": str(core),
-        "QQ_DSH_HAVE_UI": "0",
-        "QQ_DSH_HAVE_RELAY": "0",
-        "QQ_DSH_HAVE_INDEX": "0",
-        "QQ_DSH_HAVE_DASHBOARD": "0",
-        "QQ_DSH_HAVE_WORKFLOWS": "0",
-        "BENCH_REPOSITORY": str(workspace),
-        "NO_COLOR": "1",
-    })
+    environment = dsh_environment(dsh_home, workspace, core)
     command = dsh_command(dsh, compat, host_patch, headless_patch, task)
     completed = subprocess.run(command, cwd=workspace, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     (output / "native.stdout").write_text(completed.stdout, encoding="utf-8")
