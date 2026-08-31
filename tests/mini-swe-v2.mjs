@@ -41,7 +41,7 @@ const miniCtx = {
     return { surface: { allow(agent, names) {
       operations.push("allow");
       assert.equal(agent, miniAgent);
-      assert.deepEqual(names, ["bash"]);
+      assert.deepEqual(names, ["bash", "read_image"]);
     } } };
   },
   systemPrompt: {
