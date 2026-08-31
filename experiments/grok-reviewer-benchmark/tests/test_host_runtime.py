@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+import uuid
 from unittest import mock
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -337,6 +338,33 @@ class QqMiniQaAdapterTests(unittest.TestCase):
                 [str(host_patch), "--patch", str(headless_patch)],
             )
 
+    def test_dsh_environment_replaces_stale_identity_with_fresh_canonical_sessions(self) -> None:
+        first = uuid.UUID("11111111-2222-4333-8444-555555555555")
+        second = uuid.UUID("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+        with (
+            mock.patch.dict(os.environ, {
+                "BENCH_QQ_DSH_HOME": "/host-owned/qq",
+                "QQ_DSH_SESSION_ID": "session-stale",
+            }),
+            mock.patch.object(qq_launcher.uuid, "uuid4", side_effect=[first, second]),
+        ):
+            first_environment = qq_launcher.dsh_environment(
+                Path("/private/dsh"), Path("/review/workspace"), Path("/pinned/qq-core"),
+            )
+            second_environment = qq_launcher.dsh_environment(
+                Path("/private/dsh"), Path("/review/workspace"), Path("/pinned/qq-core"),
+            )
+        self.assertEqual(first_environment["QQ_DSH_SESSION_ID"], f"session-{first}")
+        self.assertEqual(second_environment["QQ_DSH_SESSION_ID"], f"session-{second}")
+        self.assertNotEqual(
+            first_environment["QQ_DSH_SESSION_ID"], second_environment["QQ_DSH_SESSION_ID"],
+        )
+        for environment in (first_environment, second_environment):
+            session_id = environment["QQ_DSH_SESSION_ID"]
+            self.assertEqual(str(uuid.UUID(session_id.removeprefix("session-"))), session_id.removeprefix("session-"))
+            self.assertEqual(environment["QQ_DSH_PROVIDER"], "xai-auth")
+            self.assertEqual(environment["QQ_DSH_MODEL"], "grok-4.6")
+
     def test_plugin_requires_qq_core_and_binds_isolation_from_official_mini(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -348,7 +376,7 @@ class QqMiniQaAdapterTests(unittest.TestCase):
             (repository / ".git").mkdir(parents=True)
             (source / "mini-qa.mjs").write_text(
                 "export function miniQaSetup() { globalThis.calls.push('mini-qa-setup'); }\n"
-                "export function bindMiniQaSubmit() { globalThis.calls.push('submit-binding'); }\n",
+                "export function bindMiniQaSubmit(_agent, options) { globalThis.calls.push('submit-binding'); globalThis.submitReview = options.submit; }\n",
                 encoding="utf-8",
             )
             (source / "official-mini.mjs").write_text(
@@ -384,16 +412,34 @@ class QqMiniQaAdapterTests(unittest.TestCase):
               }}
               const handlers = new Map();
               plugin.apply({{on(name, handler) {{ handlers.set(name, handler); return () => {{}}; }}}});
-              handlers.get('agent/created')({{agent: {{ctx: {{}}, session: {{id: 'session-test'}}}}}});
+              handlers.get('agent/created')({{agent: {{ctx: {{}}, session: {{id: process.env.QQ_DSH_SESSION_ID}}}}}});
+              handlers.get('agent/created')({{agent: {{ctx: {{}}, session: {{id: 'session-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'}}}}}});
+              await globalThis.submitReview({{verdict: {{verdict: 'pass'}}, findings: []}});
+              const events = [{{
+                type: 'assistant/message',
+                data: {{
+                  message: {{source: {{provider: 'xai-auth', model: 'grok-4.6'}}}},
+                  usage: {{inputTokens: 3, outputTokens: 2, cacheReadTokens: 1, reasoningTokens: 1}},
+                }},
+              }}];
+              handlers.get('session/event')({{events}}, {{type: 'turn/end'}});
               process.stdout.write(JSON.stringify(globalThis.calls));
             """
+            (output / "qq-provider-attempts.jsonl").write_text(json.dumps({
+                "schema": "qq.grok-provider-attempt/v1", "model": "grok-4.6",
+                "ok": True, "status": 200,
+            }) + "\n", encoding="utf-8")
             environment = runner.secret_free_environment()
             environment.update({
                 "BENCH_TOOL_SOURCE": str(source.parent),
                 "BENCH_REPOSITORY": str(repository),
                 "BENCH_BASE": "base", "BENCH_HEAD": "head",
+                "BENCH_ARM_ID": "qq-mini-qa", "BENCH_CASE_ID": "smoke-001",
+                "BENCH_CLIENT_MODEL": "xai-auth/grok-4.6",
+                "BENCH_PROVIDER_MODEL": "grok-4.6",
                 "BENCH_RESULT_PATH": str(output / "result.json"),
                 "BENCH_OUTPUT_DIR": str(output),
+                "QQ_DSH_SESSION_ID": "session-12345678-1234-4234-8234-123456789abc",
             })
             calls = json.loads(subprocess.check_output(
                 ["node", "--input-type=module", "-e", program],
@@ -403,7 +449,15 @@ class QqMiniQaAdapterTests(unittest.TestCase):
                 "mini-qa-setup", "approval", "sandbox-pin", "sandbox-assert",
                 "oracle", "submit-binding", "shell-binding", "isolated-command",
             ])
-            self.assertEqual((output / "session-id.txt").read_text(), "session-test\n")
+            review_session_id = "session-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+            self.assertNotEqual(review_session_id, environment["QQ_DSH_SESSION_ID"])
+            self.assertEqual((output / "session-id.txt").read_text(), review_session_id + "\n")
+            result = json.loads((output / "result.json").read_text(encoding="utf-8"))
+            self.assertEqual(result["effective_config"]["session_id"], review_session_id)
+            self.assertEqual(
+                result["effective_config"]["launcher_session_id"],
+                environment["QQ_DSH_SESSION_ID"],
+            )
 
 
 class BridgeTests(unittest.TestCase):
@@ -675,6 +729,26 @@ class ExternalLauncherTests(unittest.TestCase):
         spec.loader.exec_module(module)
         return module
 
+    def test_pr_agent_passes_and_records_neutral_ai_timeout(self) -> None:
+        module = self.load("grok_pr_agent_timeout_launcher", HERE / "adapters" / "run_pr_agent.py")
+        with tempfile.TemporaryDirectory() as directory:
+            task = Path(directory) / "task.md"
+            task.write_text("Review the exact frozen change.\n", encoding="utf-8")
+            with mock.patch.dict(os.environ, {
+                "BENCH_OPENAI_BASE_URL": "http://127.0.0.1:12345/v1",
+                "OPENAI_API_KEY": "inert-local-key",
+            }):
+                environment = module.pr_agent_environment(Path("/pinned/pr-agent"), task)
+        self.assertEqual(environment["CONFIG__AI_TIMEOUT"], "600")
+        self.assertEqual(environment["CONFIG__MODEL"], "xai/grok-4.6")
+        result_environment = {
+            "BENCH_ARM_ID": "pr-agent", "BENCH_CASE_ID": "smoke-001",
+            "BENCH_CLIENT_MODEL": "xai/grok-4.6", "BENCH_PROVIDER_MODEL": "grok-4.6",
+        }
+        with mock.patch.dict(os.environ, result_environment):
+            result = module.build_result({})
+        self.assertEqual(result["effective_config"]["ai_timeout_seconds"], 600)
+
     def test_pr_agent_preserves_unknown_severity_and_unlocated_issue(self) -> None:
         module = self.load("grok_pr_agent_launcher", HERE / "adapters" / "run_pr_agent.py")
         native = {
@@ -723,6 +797,60 @@ class ExternalLauncherTests(unittest.TestCase):
                     os.environ.pop(name, None)
                 else:
                     os.environ[name] = value
+
+    def test_host_pilot_gate_verifies_qq_session_and_pr_agent_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session_id = "session-12345678-1234-4234-8234-123456789abc"
+            launcher_session_id = "session-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+            qq_artifact = root / "cases" / "smoke-001" / "qq-mini-qa"
+            (qq_artifact / "output").mkdir(parents=True)
+            (qq_artifact / "output" / "session-id.txt").write_text(session_id + "\n", encoding="utf-8")
+            (qq_artifact / "normalized.json").write_text(json.dumps({
+                "failure": None,
+                "result": {
+                    "effective_config": {
+                        "session_id": session_id,
+                        "launcher_session_id": launcher_session_id,
+                    },
+                    "provider_evidence": {
+                        "request_models": ["grok-4.6"], "response_models": ["grok-4.6"],
+                    },
+                    "telemetry": {"request_count": 1},
+                },
+            }), encoding="utf-8")
+            qq_evidence = runner.validate_pilot(root, "qq-mini-qa")
+            self.assertEqual(qq_evidence["session_id"], session_id)
+            self.assertEqual(qq_evidence["launcher_session_id"], launcher_session_id)
+            (qq_artifact / "output" / "session-id.txt").write_text(
+                "session-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\n", encoding="utf-8",
+            )
+            with self.assertRaisesRegex(runner.HostRunnerError, "identities differ"):
+                runner.validate_pilot(root, "qq-mini-qa")
+
+            pr_artifact = root / "cases" / "smoke-001" / "pr-agent"
+            (pr_artifact / "provider").mkdir(parents=True)
+            (pr_artifact / "normalized.json").write_text(json.dumps({
+                "failure": None,
+                "result": {
+                    "effective_config": {"ai_timeout_seconds": 120},
+                    "provider_evidence": {
+                        "request_models": ["grok-4.6"], "response_models": ["grok-4.6"],
+                    },
+                    "telemetry": {"request_count": 1},
+                },
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(runner.HostRunnerError, "600-second AI timeout"):
+                runner.validate_pilot(root, "pr-agent")
+            normalized = json.loads((pr_artifact / "normalized.json").read_text(encoding="utf-8"))
+            normalized["result"]["effective_config"]["ai_timeout_seconds"] = 600
+            (pr_artifact / "normalized.json").write_text(json.dumps(normalized), encoding="utf-8")
+            (pr_artifact / "provider" / "request-0001.request.bin").write_text(json.dumps({
+                "model": "grok-4.6", "stream": False, "temperature": 0.2,
+                "reasoning_effort": "high", "messages": [{"role": "user", "content": "review"}],
+            }), encoding="utf-8")
+            pr_evidence = runner.validate_pilot(root, "pr-agent")
+            self.assertEqual(pr_evidence["ai_timeout_seconds"], 600)
 
     def test_host_pilot_gate_rejects_control_drift(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

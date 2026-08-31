@@ -13,6 +13,7 @@ from typing import Any
 RESULT_SCHEMA = "qq.grok-reviewer-arm-result/v1"
 MODE = {"plain_diff": True, "head_file_enrichment": True, "json_output": True, "publishing": False}
 PIN = "1b6925ba8cc3ef6be09dec704a374da53091926c"
+AI_TIMEOUT_SECONDS = 600
 
 
 def required(name: str) -> str:
@@ -56,6 +57,26 @@ def verify_inputs() -> tuple[Path, Path, Path, Path, Path]:
         if hashlib.sha256(path.read_bytes()).hexdigest() != manifest[key]:
             raise RuntimeError(f"benchmark input hash mismatch: {path.name}")
     return source, repository, diff, task, output
+
+
+def pr_agent_environment(source: Path, task: Path) -> dict[str, str]:
+    """Build the exact Dynaconf environment passed to the stock CLI."""
+    environment = os.environ.copy()
+    environment.update({
+        "PYTHONPATH": str(source),
+        "CONFIG__MODEL": "xai/grok-4.6",
+        "CONFIG__FALLBACK_MODELS": "[]",
+        "CONFIG__REASONING_EFFORT": "high",
+        "CONFIG__AI_TIMEOUT": str(AI_TIMEOUT_SECONDS),
+        "OPENAI__API_BASE": required("BENCH_OPENAI_BASE_URL"),
+        "XAI__KEY": required("OPENAI_API_KEY"),
+        "PR_REVIEWER__EXTRA_INSTRUCTIONS": task.read_text(encoding="utf-8"),
+        "CONFIG__REPO_CONTEXT_FILES": "[]",
+        "CONFIG__USE_REPO_SETTINGS_FILE": "false",
+        "CONFIG__USE_GLOBAL_SETTINGS_FILE": "false",
+        "NO_COLOR": "1",
+    })
+    return environment
 
 
 def positive_int(value: Any) -> int | None:
@@ -136,6 +157,7 @@ def build_result(native: Any) -> dict[str, Any]:
             "global_settings": False,
             "request_stream": False,
             "response_format": None,
+            "ai_timeout_seconds": AI_TIMEOUT_SECONDS,
         },
         "native_verdict": None,
         "normalized_verdict": "fail" if findings else "pass",
@@ -160,20 +182,7 @@ def main() -> int:
     python = source / ".venv" / "bin" / "python"
     if not python.is_file():
         raise RuntimeError("pinned PR-Agent environment is missing .venv/bin/python; provision with uv 0.9.7 sync --frozen --no-install-project --no-dev")
-    environment = os.environ.copy()
-    environment.update({
-        "PYTHONPATH": str(source),
-        "CONFIG__MODEL": "xai/grok-4.6",
-        "CONFIG__FALLBACK_MODELS": "[]",
-        "CONFIG__REASONING_EFFORT": "high",
-        "OPENAI__API_BASE": required("BENCH_OPENAI_BASE_URL"),
-        "XAI__KEY": required("OPENAI_API_KEY"),
-        "PR_REVIEWER__EXTRA_INSTRUCTIONS": task.read_text(encoding="utf-8"),
-        "CONFIG__REPO_CONTEXT_FILES": "[]",
-        "CONFIG__USE_REPO_SETTINGS_FILE": "false",
-        "CONFIG__USE_GLOBAL_SETTINGS_FILE": "false",
-        "NO_COLOR": "1",
-    })
+    environment = pr_agent_environment(source, task)
     command = [
         str(python), "-m", "pr_agent.cli",
         "--diff-file", str(diff),

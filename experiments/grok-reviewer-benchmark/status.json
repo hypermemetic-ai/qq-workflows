@@ -1,6 +1,6 @@
 {
   "schema": "qq.grok-reviewer-benchmark-status/v1",
-  "offline_harness_tests": "passed-35-offline-benchmark-tests-before-final-required-suite",
+  "offline_harness_tests": "passed-38-offline-benchmark-tests",
   "frozen_corpus_integrity": "passed-for-all-three-repaired-cases",
   "source_provisioning": "exact-pins-and-critical-blobs-verified-from-readable-public-clones",
   "bridge": {
@@ -15,12 +15,14 @@
     "distinct_external_client_keys_and_admin_key": true
   },
   "compatibility_pilots": {
-    "misospace_stock_driver_offline_fake_response": "passed-one-request-retained-artifacts-git-fsck-ok",
-    "qq_live_quality_call": "pending-complete-host-smoke",
-    "pr_agent_live_quality_call": "pending-complete-host-smoke",
-    "misospace_live_quality_call": "pending-complete-host-smoke"
+    "v3_concurrent_start_skew_seconds": 0.000175,
+    "v3_auth_readiness": "passed-forced-refresh",
+    "v3_qq": "failed-before-inference-missing-canonical-session-id; fixed-offline-pending-v4",
+    "v3_pr_agent": "live-bridge-calls-aborted-by-stock-120s-ai-timeout; fixed-to-600s-offline-pending-v4",
+    "v3_misospace": "completed-live-compatibility-call-in-166s",
+    "misospace_stock_driver_offline_fake_response": "passed-one-request-retained-artifacts-git-fsck-ok"
   },
-  "smoke_run": "pending-post-auth-coordination-host-smoke; prior cache-fix attempt stopped at private uv bootstrap because delegated sandbox lacked pypi DNS; no model call attempted",
+  "smoke_run": "pending-fresh-v4-host-pilot-and-matrix; v3 proved concurrent-wave/auth readiness but was compatibility-only and did not produce a quality matrix",
   "implemented": {
     "host_provisioner": true,
     "single_command_host_smoke": true,
@@ -39,7 +41,10 @@
     "process_local_auth_single_flight_and_per_request_adapters": true,
     "forced_auth_refresh_before_pilot_and_each_case_wave": true,
     "distinct_external_bridge_keys_capture_proxies_and_artifacts": true,
-    "exact_common_wave_start_and_per_arm_release_offsets": true
+    "exact_common_wave_start_and_per_arm_release_offsets": true,
+    "qq_fresh_canonical_launcher_session_id_per_invocation": true,
+    "qq_distinct_headless_review_session_id_captured": true,
+    "pr_agent_neutral_ai_timeout_seconds": 600
   },
   "host_command": "python3 experiments/grok-reviewer-benchmark/host/runner.py smoke --root $PWD/.grok-reviewer-live",
   "credential_input_required": false,

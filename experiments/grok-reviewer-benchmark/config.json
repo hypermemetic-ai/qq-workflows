@@ -62,7 +62,9 @@
         "reasoning_effort": "high",
         "temperature": null,
         "max_output_tokens": null,
-        "provider_attempt_instrumentation": "trusted-status-only-fetch-wrapper"
+        "provider_attempt_instrumentation": "trusted-status-only-fetch-wrapper",
+        "launcher_session_id_format": "fresh-canonical-session-uuid-per-invocation",
+        "review_session_id_source": "dsh-headless-agent-created"
       },
       "required_trees": {
         "src": "6df1f5909be6725d043ea5d44a7b10d2c41a5fec"
@@ -104,7 +106,8 @@
         "max_findings": 3,
         "fallback_models": [],
         "repo_settings": false,
-        "global_settings": false
+        "global_settings": false,
+        "ai_timeout_seconds": 600
       },
       "required_trees": {
         "pr_agent": "cbd131c8e0305bd0dd7d55a3c32a494ccdaeb435"

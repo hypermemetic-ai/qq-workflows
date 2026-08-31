@@ -22,6 +22,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from typing import Any, Iterable
 
 HERE = Path(__file__).resolve().parents[1]
@@ -615,8 +616,34 @@ def validate_pilot(directory: Path, arm_id: str) -> dict[str, Any]:
         "arm_id": arm_id, "request_count": result.get("telemetry", {}).get("request_count"),
         "provider_evidence": evidence,
     }
+    effective = result.get("effective_config") or {}
     if arm_id == "qq-mini-qa":
+        def canonical_session_id(field: str, description: str) -> str:
+            value = effective.get(field)
+            try:
+                suffix = value.removeprefix("session-")
+                parsed = uuid.UUID(suffix)
+            except (AttributeError, ValueError) as error:
+                raise HostRunnerError(f"qq pilot lacks a canonical {description} DSH session UUID") from error
+            if value != f"session-{parsed}" or parsed.version != 4:
+                raise HostRunnerError(f"qq pilot lacks a canonical {description} DSH session UUIDv4")
+            return value
+
+        session_id = canonical_session_id("session_id", "review")
+        launcher_session_id = canonical_session_id("launcher_session_id", "launcher")
+        try:
+            captured_session_id = (artifact / "output" / "session-id.txt").read_text(encoding="utf-8").strip()
+        except OSError as error:
+            raise HostRunnerError(f"qq pilot lacks retained DSH session evidence: {error}") from error
+        if captured_session_id != session_id:
+            raise HostRunnerError("qq pilot normalized and retained DSH session identities differ")
+        summary["session_id"] = session_id
+        summary["launcher_session_id"] = launcher_session_id
         return summary
+    if arm_id == "pr-agent":
+        if effective.get("ai_timeout_seconds") != 600:
+            raise HostRunnerError("PR-Agent pilot did not use the frozen 600-second AI timeout")
+        summary["ai_timeout_seconds"] = 600
     requests = []
     for path in sorted((artifact / "provider").glob("request-*.request.bin")):
         try:

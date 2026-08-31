@@ -175,8 +175,12 @@ state, and output isolation.
 `RepoOracle`, `bindMiniQaSubmit`, production default-deny tools, and normal
 read-only bwrap shell. It is not a generic headless prompt arm and does not enter
 the landing/revision state machine. Native DSH response events provide disjoint
-usage and exact `xai-auth/grok-4.6` response evidence. A trusted experiment-only
-qq-models wrapper delegates unchanged to the pinned plugin while logging only
+usage and exact `xai-auth/grok-4.6` response evidence. Each launcher invocation
+sets a fresh canonical `QQ_DSH_SESSION_ID=session-<UUID>` required by qq-core.
+The pinned headless driver independently creates the one-shot review agent with
+another session UUID; the plugin records both identities separately and retains
+the actual review session ID in `session-id.txt`. A trusted
+experiment-only qq-models wrapper delegates unchanged to the pinned plugin while logging only
 Responses HTTP attempt model/status/timing; this supplies exact request,
 retry, and failure counts without recording prompts, headers, OAuth, or token
 contents.
@@ -195,7 +199,9 @@ proxy bearer). The task is supplied through stock
 `PR_REVIEWER__EXTRA_INSTRUCTIONS`, not a PR-description field. Repository/global
 settings are disabled so no arm-specific standards are discovered. PR-Agent
 uses nonstreaming chat completions, stock temperature 0.2, and at most three key
-issues. The bridge records that temperature cannot be forwarded by the
+issues. Its stock 120-second AI transport timeout is raised to a neutral 600
+seconds so a valid long Grok response is not aborted; this changes transport
+compatibility only, not generation inputs. The bridge records that temperature cannot be forwarded by the
 qq-models Responses adapter. PR-Agent has no native approve/request-changes
 verdict; normalized pass/fail is explicitly `adapter_findings`, and its findings
 have null native severity/confidence/blocker status.
