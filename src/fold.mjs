@@ -81,9 +81,10 @@ function hasOperator(slice) {
  * the first operator user/message of a stretch and ends at a completed
  * turn/end. Aborted or interrupted turns are not pairs; a resume after abort
  * (operator continue, host continue) stays the same open stretch. Plugin-only
- * turns are not pairs.
+ * turns are not pairs. When includeOpen is true, the final unfinished stretch
+ * is included only if it contains an operator message.
  */
-export function pairBoundaries(events) {
+export function pairBoundaries(events, { includeOpen = false } = {}) {
   const byTurn = new Map();
   let current;
   for (const event of events) {
@@ -131,6 +132,14 @@ export function pairBoundaries(events) {
       events: slice,
     });
   }
+  if (includeOpen && open?.hasOperator && open.events.length > 0) {
+    pairs.push({
+      turn: open.turn,
+      startSeq: open.startSeq,
+      endSeq: open.events.at(-1).seq,
+      events: open.events,
+    });
+  }
   return pairs;
 }
 
@@ -169,7 +178,7 @@ export function decideFold({
   q,
   route,
 } = {}) {
-  const pairs = pairBoundaries(events);
+  const pairs = pairBoundaries(events, { includeOpen: true });
   if (pairs.length <= MIN_PAIRS) return { action: "keep", reason: "two-turn-floor", pairs: pairs.length };
   const surface = surfaceNodes(session, events);
   const priced = pairs.map((pair) => ({

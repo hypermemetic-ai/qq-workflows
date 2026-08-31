@@ -247,8 +247,8 @@ try {
   assertRoute(repinned.request, ARCHITECTURE);
   await effects[1]?.();
 
-  // Fold decisions resolve the architecture function on every turn instead of
-  // retaining create-time Agent.options.
+  // Fold decisions resolve the architecture function on every turn and request
+  // refresh instead of retaining create-time Agent.options.
   const foldRoutes = [];
   const foldListeners = [];
   let liveBinding = {
@@ -304,6 +304,14 @@ try {
   for (const { listener } of foldListeners.filter(({ type }) => type === "session/event")) {
     await listener(foldSession, turnEnd);
   }
+  assertRoute(foldRoutes.at(-1), ALTERNATE);
+
+  const foldRequest = foldListeners.find(({ type }) => type === "agent/request")?.listener;
+  assert.equal(typeof foldRequest, "function");
+  const decisionsBeforeRequest = foldRoutes.length;
+  const requestResult = await foldRequest({ turn: 2, step: 1 }, async () => "assembled");
+  assert.equal(requestResult, "assembled");
+  assert.equal(foldRoutes.length, decisionsBeforeRequest + 1, "request assembly refreshes the pending fold decision");
   assertRoute(foldRoutes.at(-1), ALTERNATE);
   directArchitect.detach(foldAgent);
 

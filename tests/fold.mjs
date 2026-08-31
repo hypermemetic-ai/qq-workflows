@@ -6,7 +6,33 @@ import {
   createFolder,
   decideFold,
   guardContext,
+  pairBoundaries,
 } from "../src/fold.mjs";
+
+function appendTurn(events, {
+  turn,
+  source = { kind: "operator" },
+  reason = "complete",
+  close = true,
+  text = `message ${turn}`,
+} = {}) {
+  let seq = (events.at(-1)?.seq ?? -1) + 1;
+  events.push({ seq: seq++, type: "turn/start", data: { turn } });
+  events.push({
+    seq: seq++,
+    type: "user/message",
+    data: { turn, source, content: [{ type: "text", text }] },
+  });
+  if (close) {
+    events.push({
+      seq: seq++,
+      type: "assistant/message",
+      data: { turn, message: { content: [{ type: "text", text: `answer ${turn}` }] } },
+    });
+    events.push({ seq: seq++, type: "turn/end", data: { turn, reason } });
+  }
+  return events;
+}
 
 function conversation(pairTexts) {
   const events = [];
@@ -40,6 +66,64 @@ function conversation(pairTexts) {
     reason: "two-turn-floor",
     pairs: 2,
   });
+}
+
+{
+  const events = conversation(["one", "two", "three"]);
+  const beforeOpen = decideFold({ events, q: 10_000 });
+  appendTurn(events, { turn: 4, close: false, text: "current direct request" });
+
+  assert.equal(pairBoundaries(events).length, 3, "the completed-only boundary view remains available");
+  const withOpen = pairBoundaries(events, { includeOpen: true });
+  assert.equal(withOpen.length, 4, "an open direct operator request is a protected current pair");
+  assert.equal(withOpen.at(-1).turn, 4);
+  assert.equal(withOpen.at(-1).endSeq, events.at(-1).seq);
+
+  const refreshed = decideFold({ events, q: 10_000 });
+  assert.equal(beforeOpen.endSeq, 3, "the stale N-1/N tail would drop only the first pair");
+  assert.equal(refreshed.endSeq, 7, "N/current N+1 protects the open request and evicts the older completed pair");
+}
+
+{
+  const events = conversation(["one", "two"]);
+  appendTurn(events, {
+    turn: 3,
+    source: { kind: "plugin", plugin: "qq-workflows", form: "relay" },
+    close: false,
+    text: "relay packet",
+  });
+
+  assert.equal(pairBoundaries(events, { includeOpen: true }).length, 2, "an open relay-only turn is not a pair");
+  assert.deepEqual(decideFold({ events, q: 10_000 }), {
+    action: "keep",
+    reason: "two-turn-floor",
+    pairs: 2,
+  });
+
+  let seq = events.at(-1).seq + 1;
+  events.push({
+    seq: seq++,
+    type: "assistant/message",
+    data: { turn: 3, message: { content: [{ type: "text", text: "relay response" }] } },
+  });
+  events.push({ seq: seq++, type: "turn/end", data: { turn: 3, reason: "complete" } });
+  assert.equal(pairBoundaries(events, { includeOpen: true }).length, 2, "a completed relay-only turn is not a pair");
+  assert.equal(decideFold({ events, q: 10_000 }).pairs, 2, "relay completion cannot evict a protected direct pair");
+}
+
+{
+  const events = [];
+  appendTurn(events, { turn: 1, reason: "interrupted" });
+  assert.equal(pairBoundaries(events).length, 0, "an interrupted operator stretch is not complete");
+  assert.equal(pairBoundaries(events, { includeOpen: true }).length, 1, "the interrupted operator stretch remains protected while open");
+
+  appendTurn(events, { turn: 2, text: "resume" });
+  const resumed = pairBoundaries(events, { includeOpen: true });
+  assert.equal(resumed.length, 1, "interrupted and resumed turns form one operator+architect pair");
+  assert.equal(resumed[0].turn, 1);
+  assert.equal(resumed[0].startSeq, 0);
+  assert.equal(resumed[0].endSeq, events.at(-1).seq);
+  assert.equal(resumed[0].events.length, events.length);
 }
 
 {
