@@ -14,6 +14,7 @@ from pathlib import Path
 import random
 import re
 import shutil
+import signal
 import subprocess
 import statistics
 import sys
@@ -58,6 +59,112 @@ HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 class BenchmarkError(RuntimeError):
     pass
+
+
+class BenchmarkCancelled(BenchmarkError):
+    pass
+
+
+class ProcessGroupRegistry:
+    """Own reviewer/proxy sessions and cascade TERM/KILL on controller signals."""
+
+    def __init__(self, grace_seconds: float = 1.0) -> None:
+        self.grace_seconds = grace_seconds
+        self.cancelled = threading.Event()
+        self._lock = threading.RLock()
+        self._processes: dict[int, subprocess.Popen[Any]] = {}
+        self._kill_deadline: float | None = None
+
+    @staticmethod
+    def _signal(process: subprocess.Popen[Any], signum: signal.Signals) -> None:
+        # The leader can exit before its descendants, so always address the PGID.
+        try:
+            os.killpg(process.pid, signum)
+        except ProcessLookupError:
+            pass
+
+    @staticmethod
+    def _group_exists(process: subprocess.Popen[Any]) -> bool:
+        try:
+            os.killpg(process.pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+
+    def register(self, process: subprocess.Popen[Any]) -> None:
+        with self._lock:
+            self._processes[process.pid] = process
+            cancelled = self.cancelled.is_set()
+            deadline = self._kill_deadline
+        if cancelled:
+            signum = signal.SIGKILL if deadline is not None and time.monotonic() >= deadline else signal.SIGTERM
+            self._signal(process, signum)
+
+    def unregister(self, process: subprocess.Popen[Any]) -> None:
+        with self._lock:
+            self._processes.pop(process.pid, None)
+
+    def _force_after_grace(self) -> None:
+        with self._lock:
+            deadline = self._kill_deadline
+        if deadline is None:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
+        with self._lock:
+            processes = tuple(self._processes.values())
+        for process in processes:
+            self._signal(process, signal.SIGKILL)
+
+    def cancel(self) -> None:
+        with self._lock:
+            first = not self.cancelled.is_set()
+            self.cancelled.set()
+            if first:
+                self._kill_deadline = time.monotonic() + self.grace_seconds
+            processes = tuple(self._processes.values())
+        for process in processes:
+            self._signal(process, signal.SIGTERM)
+        if first:
+            threading.Thread(
+                target=self._force_after_grace,
+                name="grok-benchmark-cancellation-watchdog",
+                daemon=True,
+            ).start()
+
+    def raise_if_cancelled(self) -> None:
+        if self.cancelled.is_set():
+            raise BenchmarkCancelled("benchmark execution was cancelled")
+
+    def stop(self, process: subprocess.Popen[Any]) -> None:
+        try:
+            deadline = time.monotonic() + self.grace_seconds
+            self._signal(process, signal.SIGTERM)
+            while time.monotonic() < deadline:
+                process.poll()  # Reap the leader so it does not keep an empty PGID alive.
+                if not self._group_exists(process):
+                    break
+                time.sleep(0.02)
+            process.poll()
+            if self._group_exists(process):
+                self._signal(process, signal.SIGKILL)
+            try:
+                process.wait(timeout=self.grace_seconds)
+            except subprocess.TimeoutExpired:
+                self._signal(process, signal.SIGKILL)
+                process.wait(timeout=self.grace_seconds)
+        finally:
+            self.unregister(process)
+
+
+_CHILD_GROUPS = ProcessGroupRegistry()
+
+
+def _handle_cancellation_signal(_signum: int, _frame: Any) -> None:
+    # Avoid an asynchronous exception in a worker lifecycle. Registration sees
+    # the cancelled state and closes the Popen/register signal race.
+    _CHILD_GROUPS.cancel()
 
 
 class RuntimeUnblock(BenchmarkError):
@@ -537,38 +644,38 @@ def sanitized_child_environment() -> dict[str, str]:
 def start_proxy(directory: Path, upstream: str, api_key: str) -> tuple[subprocess.Popen[bytes], str]:
     ready = directory / "proxy-ready.json"
     proxy_output = directory / "provider"
-    stdout = (directory / "proxy.stdout").open("wb")
-    stderr = (directory / "proxy.stderr").open("wb")
     environment = sanitized_child_environment()
     environment["GROK_BENCH_PROXY_UPSTREAM"] = upstream
     environment["GROK_BENCH_PROXY_API_KEY"] = api_key
-    process = subprocess.Popen(
-        [sys.executable, str(HERE / "capture_proxy.py"), "--output", str(proxy_output),
-         "--ready-file", str(ready)],
-        stdout=stdout,
-        stderr=stderr,
-        env=environment,
-    )
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        if ready.is_file():
-            value = read_json(ready)
-            return process, value["base_url"]
-        if process.poll() is not None:
-            break
-        time.sleep(0.05)
-    process.terminate()
-    raise BenchmarkError("capture proxy did not become ready")
+    _CHILD_GROUPS.raise_if_cancelled()
+    with (directory / "proxy.stdout").open("wb") as stdout, (directory / "proxy.stderr").open("wb") as stderr:
+        process = subprocess.Popen(
+            [sys.executable, str(HERE / "capture_proxy.py"), "--output", str(proxy_output),
+             "--ready-file", str(ready)],
+            stdout=stdout,
+            stderr=stderr,
+            env=environment,
+            start_new_session=True,
+        )
+    _CHILD_GROUPS.register(process)
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            _CHILD_GROUPS.raise_if_cancelled()
+            if ready.is_file():
+                value = read_json(ready)
+                return process, value["base_url"]
+            if process.poll() is not None:
+                break
+            time.sleep(0.05)
+        raise BenchmarkError("capture proxy did not become ready")
+    except BaseException:
+        _CHILD_GROUPS.stop(process)
+        raise
 
 
 def stop_proxy(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is None:
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
+    _CHILD_GROUPS.stop(process)
 
 
 def normalize_usage(value: Any, *, complete: bool) -> dict[str, int | None]:
@@ -875,6 +982,7 @@ def run_one(
     pass_index: int = 1,
     start_barrier: threading.Barrier | None = None,
 ) -> dict[str, Any]:
+    _CHILD_GROUPS.raise_if_cancelled()
     # Required immediately before every arm, not merely once at run start.
     integrity_before = case_integrity(case, corpus_path, repository)
     stage_root = Path(tempfile.mkdtemp(prefix=f"grok-review-{case['id']}-{arm['id']}-"))
@@ -958,6 +1066,7 @@ def run_one(
             if isinstance(error, threading.BrokenBarrierError):
                 raise BenchmarkError(f"arm launch barrier failed for {case['id']}/{arm['id']}") from error
             raise
+    _CHILD_GROUPS.raise_if_cancelled()
     started_at = datetime.now(timezone.utc).isoformat()
     started_ns = time.monotonic_ns()
     returncode: int | None = None
@@ -969,23 +1078,17 @@ def run_one(
                 command, cwd=sandbox, env=child_environment,
                 stdout=stdout, stderr=stderr, start_new_session=True,
             )
+            _CHILD_GROUPS.register(process)
             try:
                 returncode = process.wait(timeout=config["execution"]["timeout_seconds"])
             except subprocess.TimeoutExpired:
                 timeout = True
                 execution_error = "timeout"
-                try:
-                    os.killpg(process.pid, 15)
-                except ProcessLookupError:
-                    pass
-                try:
-                    returncode = process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    try:
-                        os.killpg(process.pid, 9)
-                    except ProcessLookupError:
-                        pass
-                    returncode = process.wait(timeout=5)
+            finally:
+                # Always close the session, including descendants left behind by
+                # a reviewer whose launcher has already exited.
+                _CHILD_GROUPS.stop(process)
+                returncode = process.returncode
         except OSError as error:
             execution_error = f"{type(error).__name__}: {error}"
     wall_seconds = (time.monotonic_ns() - started_ns) / 1_000_000_000
@@ -997,6 +1100,7 @@ def run_one(
             proxy_usage = aggregate_proxy_records(proxy_records)
         except BenchmarkError as error:
             execution_error = f"{execution_error + '; ' if execution_error else ''}{error}"
+    _CHILD_GROUPS.raise_if_cancelled()
 
     normalized_payload: dict[str, Any] | None = None
     result_error: str | None = None
@@ -1282,6 +1386,7 @@ def write_run_reports(root: Path, config: dict[str, Any], manifest: dict[str, An
 
 
 def command_run(args: argparse.Namespace) -> int:
+    _CHILD_GROUPS.raise_if_cancelled()
     config = validate_config(args.config)
     corpus = validate_corpus(args.corpus)
     readiness = runtime_readiness(config, corpus, args.corpus)
@@ -1377,6 +1482,7 @@ def command_run(args: argparse.Namespace) -> int:
                     except BaseException as error:
                         infrastructure_errors[arm_id] = f"{type(error).__name__}: {error}"
 
+            _CHILD_GROUPS.raise_if_cancelled()
             start_values = []
             for arm_id in arm_wave:
                 normalized = normalized_by_arm.get(arm_id)
@@ -1416,7 +1522,9 @@ def command_run(args: argparse.Namespace) -> int:
                 )
             wave_number += 1
             if wave_number != total_waves and config["execution"]["cooldown_seconds"]:
-                time.sleep(config["execution"]["cooldown_seconds"])
+                if _CHILD_GROUPS.cancelled.wait(config["execution"]["cooldown_seconds"]):
+                    _CHILD_GROUPS.raise_if_cancelled()
+    _CHILD_GROUPS.raise_if_cancelled()
     write_run_reports(root, config, run_manifest)
     print(canonical_json(run_manifest), end="")
     return 1 if any(item["failure"] is not None for item in run_manifest["results"]) else 0
@@ -1638,14 +1746,26 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = parser().parse_args()
+    previous_handlers = {
+        signum: signal.signal(signum, _handle_cancellation_signal)
+        for signum in (signal.SIGTERM, signal.SIGINT)
+    }
     try:
-        return args.function(args)
+        result = args.function(args)
+        _CHILD_GROUPS.raise_if_cancelled()
+        return result
+    except BenchmarkCancelled as error:
+        print(f"CANCELLED: {error}", file=sys.stderr)
+        return 130
     except RuntimeUnblock as error:
         print_unblock(error)
         return 2
     except BenchmarkError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
 
 
 if __name__ == "__main__":

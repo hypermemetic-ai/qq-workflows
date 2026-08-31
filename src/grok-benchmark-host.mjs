@@ -261,6 +261,9 @@ export function createBenchmarkHostLauncher({
     if (!job.cancelPromise) {
       job.cancelPromise = (async () => {
         setStatus(job, { state: "cancelling", cancelled: true, cancellation_reason: reason });
+        // runner.py handles TERM and cascades it through its registered bridge/
+        // benchmark sessions; benchmark.py in turn reaps reviewer/proxy groups.
+        // Their 3s/1s watchdogs complete before this 5s host fallback.
         try { killProcessGroup(job.child.pid, "SIGTERM"); } catch (error) {
           if (error?.code !== "ESRCH") throw error;
         }

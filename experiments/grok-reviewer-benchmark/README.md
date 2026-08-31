@@ -96,8 +96,10 @@ All routes are under:
 - `POST /pilot` — fixed `host/runner.py pilot`; requires `repeat_count: 1`.
 - `POST /matrix` — fixed `host/runner.py matrix`; allows `repeat_count: 1..5`.
 - `GET /status` — authenticated polling for the current/last job.
-- `POST /cancel` with `{}` — terminate the tracked process group, escalating
-  from TERM to KILL after five seconds if needed.
+- `POST /cancel` with `{}` — terminate the tracked process tree. The benchmark
+  controller propagates TERM to reviewer/proxy sessions and escalates after one
+  second; the runner does the same for the benchmark and bridge after three
+  seconds; the host retains a five-second top-level KILL fallback.
 
 A launch body is exactly:
 
@@ -116,7 +118,9 @@ artifacts are written below:
 
 They include `stdout.log`, `stderr.log`, and atomically updated `status.json`.
 HMR/plugin disposal unregisters all routes and awaits cancellation of a live
-process group; it does not silently detach a benchmark job.
+process tree. Both Python controller layers register detached child sessions,
+close the spawn/registration race, and reap descendant groups before exiting, so
+the host cannot report `cancelled` while a bridge or paid reviewer remains live.
 
 ## Required execution staging and spend guard
 
@@ -267,5 +271,7 @@ npm test
 
 The Node host-launcher test uses a temporary inert Python runner to validate
 fixed argv, authentication, descriptor constraints, one-job locking, polling,
-cancellation, and disposal. The bridge tests use
+and cancellation/disposal of nested detached controller and reviewer sessions.
+The Python tests also cover TERM-ignoring descendants and cancellation racing a
+new registration. The bridge tests use
 `tests/fixtures/fake_grok_adapter.mjs` only.

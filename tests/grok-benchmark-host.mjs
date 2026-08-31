@@ -67,6 +67,18 @@ async function eventually(action, predicate, timeout = 5000) {
   throw new Error("timed out waiting for fixture process");
 }
 
+function readProcessTree(path) {
+  try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; }
+}
+
+function fixtureIsReady(path) {
+  try { return readFileSync(`${path}.ready`, "utf8") === "ready"; } catch { return false; }
+}
+
+function processIsLive(pid) {
+  try { return readFileSync(`/proc/${pid}/stat`, "utf8").split(" ")[2] !== "Z"; } catch { return false; }
+}
+
 const root = await mkdtemp(join(tmpdir(), "qq-benchmark-host-"));
 try {
   const repository = join(root, "qq-workflows");
@@ -74,12 +86,64 @@ try {
   const fixtureDirectory = join(repository, "fixtures");
   mkdirSync(runtime, { recursive: true, mode: 0o700 });
   mkdirSync(fixtureDirectory, { recursive: true, mode: 0o700 });
+  const reviewer = join(fixtureDirectory, "reviewer.py");
+  writeFileSync(reviewer, [
+    "#!/usr/bin/env python3",
+    "import pathlib, signal, sys, time",
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)",
+    "pathlib.Path(sys.argv[1]).write_text('ready')",
+    "time.sleep(30)",
+    "",
+  ].join("\n"), { mode: 0o700 });
+  const controller = join(fixtureDirectory, "controller.py");
+  writeFileSync(controller, [
+    "#!/usr/bin/env python3",
+    "import json, os, signal, subprocess, sys, time",
+    "reviewer_ready = sys.argv[1] + '.reviewer-ready'",
+    "child = subprocess.Popen([sys.executable, sys.argv[2], reviewer_ready], start_new_session=True)",
+    "def stop(_signum, _frame):",
+    "    try: os.killpg(child.pid, signal.SIGTERM)",
+    "    except ProcessLookupError: pass",
+    "    try: child.wait(timeout=0.2)",
+    "    except subprocess.TimeoutExpired:",
+    "        try: os.killpg(child.pid, signal.SIGKILL)",
+    "        except ProcessLookupError: pass",
+    "        child.wait(timeout=1)",
+    "    raise SystemExit(130)",
+    "signal.signal(signal.SIGTERM, stop)",
+    "signal.signal(signal.SIGINT, stop)",
+    "while not os.path.isfile(reviewer_ready): time.sleep(0.01)",
+    "with open(sys.argv[1], 'w', encoding='utf-8') as output:",
+    "    json.dump({'controller': os.getpid(), 'reviewer': child.pid}, output)",
+    "raise SystemExit(child.wait())",
+    "",
+  ].join("\n"), { mode: 0o700 });
   const runner = join(fixtureDirectory, "runner.py");
   writeFileSync(runner, [
     "#!/usr/bin/env python3",
-    "import sys, time",
+    "import os, signal, subprocess, sys, time",
     "print('fixture argv:', ' '.join(sys.argv[1:]), flush=True)",
-    "time.sleep(30 if '--run-id' in sys.argv and sys.argv[sys.argv.index('--run-id') + 1] == 'cancel-me' else 0.05)",
+    "run_id = sys.argv[sys.argv.index('--run-id') + 1]",
+    "if run_id not in {'cancel-me', 'dispose-me'}:",
+    "    time.sleep(0.05)",
+    "    raise SystemExit(0)",
+    "root = sys.argv[sys.argv.index('--root') + 1]",
+    "marker = os.path.join(root, run_id + '-tree.json')",
+    `child = subprocess.Popen([sys.executable, ${JSON.stringify(controller)}, marker, ${JSON.stringify(reviewer)}], start_new_session=True)`,
+    "def stop(_signum, _frame):",
+    "    try: os.killpg(child.pid, signal.SIGTERM)",
+    "    except ProcessLookupError: pass",
+    "    try: child.wait(timeout=1)",
+    "    except subprocess.TimeoutExpired:",
+    "        try: os.killpg(child.pid, signal.SIGKILL)",
+    "        except ProcessLookupError: pass",
+    "        child.wait(timeout=1)",
+    "    raise SystemExit(130)",
+    "signal.signal(signal.SIGTERM, stop)",
+    "signal.signal(signal.SIGINT, stop)",
+    "while not os.path.isfile(marker): time.sleep(0.01)",
+    "with open(marker + '.ready', 'w', encoding='utf-8') as output: output.write('ready')",
+    "raise SystemExit(child.wait())",
     "",
   ].join("\n"), { mode: 0o700 });
   const descriptor = join(repository, BENCHMARK_DESCRIPTOR);
@@ -199,6 +263,12 @@ try {
   });
   assert.equal(result.status, 202);
   assert.equal(result.body.repeat_count, 3);
+  const cancelTreePath = join(runtime, "cancel-me-tree.json");
+  const cancelTree = await eventually(
+    () => readProcessTree(cancelTreePath),
+    (value) => fixtureIsReady(cancelTreePath) && value
+      && processIsLive(value.controller) && processIsLive(value.reviewer),
+  );
   const collision = await call(server, "pilot", {
     token,
     body: { runtime_root: runtime, run_id: "cancel-me", repeat_count: 1 },
@@ -207,6 +277,10 @@ try {
   const cancelled = await call(server, "cancel", { token, body: {} });
   assert.equal(cancelled.status, 200);
   assert.equal(cancelled.body.state, "cancelled");
+  await eventually(
+    () => [processIsLive(cancelTree.controller), processIsLive(cancelTree.reviewer)],
+    (live) => live.every((value) => value === false),
+  );
   const matrixStatus = readFileSync(join(runtime, "host-jobs", "cancel-me-matrix", "status.json"), "utf8");
   assert.equal(matrixStatus.includes(token), false);
   assert.match(matrixStatus, /"repeat_count": 3/);
@@ -217,9 +291,19 @@ try {
     body: { runtime_root: runtime, run_id: "dispose-me", repeat_count: 2 },
   });
   assert.equal(result.status, 202);
+  const disposeTreePath = join(runtime, "dispose-me-tree.json");
+  const disposeTree = await eventually(
+    () => readProcessTree(disposeTreePath),
+    (value) => fixtureIsReady(disposeTreePath) && value
+      && processIsLive(value.controller) && processIsLive(value.reviewer),
+  );
   await host.dispose();
   assert.equal(server.routes.size, 0);
-  assert.equal(host.status().state, "cancelled", "disposal tracks and cancels the live process group");
+  assert.equal(host.status().state, "cancelled", "disposal tracks and cancels the live process tree");
+  await eventually(
+    () => [processIsLive(disposeTree.controller), processIsLive(disposeTree.reviewer)],
+    (live) => live.every((value) => value === false),
+  );
 
   console.log("grok benchmark host launcher tests passed");
 } finally {

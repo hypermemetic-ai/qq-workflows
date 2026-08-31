@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -62,6 +63,60 @@ def pilot_observation(arm_id: str, effective_config: dict[str, object]) -> dict[
             },
         },
     }
+
+
+class HostProcessCancellationTests(unittest.TestCase):
+    @staticmethod
+    def assert_not_live(test: unittest.TestCase, pid: int) -> None:
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                state = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[2]
+            except (FileNotFoundError, ProcessLookupError):
+                return
+            if state == "Z":
+                return
+            time.sleep(0.02)
+        test.fail(f"process {pid} remained live after host cancellation")
+
+    def test_registry_reaps_detached_controller_descendants_and_late_spawn(self) -> None:
+        registry = runner.ProcessGroupRegistry(grace_seconds=0.15)
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "pids.json"
+            script = (
+                "import json, os, pathlib, signal, subprocess, sys, time\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "ready = pathlib.Path(sys.argv[1] + '.child-ready')\n"
+                'child_code = "import pathlib,signal,sys,time; '
+                'signal.signal(signal.SIGTERM, signal.SIG_IGN); '
+                'pathlib.Path(sys.argv[1]).write_text(\'ready\'); time.sleep(60)"\n'
+                "child = subprocess.Popen([sys.executable, '-c', child_code, str(ready)])\n"
+                "while not ready.is_file(): time.sleep(0.01)\n"
+                "pathlib.Path(sys.argv[1]).write_text(json.dumps([os.getpid(), child.pid]))\n"
+                "time.sleep(60)\n"
+            )
+            process = subprocess.Popen(
+                [sys.executable, "-c", script, str(marker)],
+                start_new_session=True,
+            )
+            registry.register(process)
+            deadline = time.monotonic() + 2
+            while not marker.is_file() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(marker.is_file())
+            pids = json.loads(marker.read_text(encoding="utf-8"))
+            registry.cancel()
+            process.wait(timeout=2)
+            registry.stop(process)
+            for pid in pids:
+                self.assert_not_live(self, pid)
+
+            time.sleep(0.2)
+            late = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+            registry.register(late)
+            late.wait(timeout=2)
+            registry.stop(late)
+            self.assertLess(late.returncode, 0)
 
 
 class HostProvisionTests(unittest.TestCase):

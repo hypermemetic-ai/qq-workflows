@@ -23,6 +23,7 @@ import signal
 import subprocess
 import sys
 import time
+import threading
 import uuid
 from typing import Any, Iterable
 
@@ -81,6 +82,113 @@ class HostRunnerError(RuntimeError):
     pass
 
 
+class HostRunnerCancelled(HostRunnerError):
+    pass
+
+
+class ProcessGroupRegistry:
+    """Track child sessions and synchronously cascade host cancellation to them."""
+
+    def __init__(self, grace_seconds: float = 3.0) -> None:
+        self.grace_seconds = grace_seconds
+        self.cancelled = threading.Event()
+        self._lock = threading.RLock()
+        self._processes: dict[int, subprocess.Popen[Any]] = {}
+        self._kill_deadline: float | None = None
+
+    @staticmethod
+    def _signal(process: subprocess.Popen[Any], signum: signal.Signals) -> None:
+        # Address the PGID even if its original leader has exited: descendants
+        # can keep the group alive after Popen.poll() reports completion.
+        try:
+            os.killpg(process.pid, signum)
+        except ProcessLookupError:
+            pass
+
+    @staticmethod
+    def _group_exists(process: subprocess.Popen[Any]) -> bool:
+        try:
+            os.killpg(process.pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+
+    def register(self, process: subprocess.Popen[Any]) -> None:
+        with self._lock:
+            self._processes[process.pid] = process
+            cancelled = self.cancelled.is_set()
+            deadline = self._kill_deadline
+        if cancelled:
+            signum = signal.SIGKILL if deadline is not None and time.monotonic() >= deadline else signal.SIGTERM
+            self._signal(process, signum)
+
+    def unregister(self, process: subprocess.Popen[Any]) -> None:
+        with self._lock:
+            self._processes.pop(process.pid, None)
+
+    def _force_after_grace(self) -> None:
+        with self._lock:
+            deadline = self._kill_deadline
+        if deadline is None:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
+        with self._lock:
+            processes = tuple(self._processes.values())
+        for process in processes:
+            self._signal(process, signal.SIGKILL)
+
+    def cancel(self) -> None:
+        with self._lock:
+            first = not self.cancelled.is_set()
+            self.cancelled.set()
+            if first:
+                self._kill_deadline = time.monotonic() + self.grace_seconds
+            processes = tuple(self._processes.values())
+        for process in processes:
+            self._signal(process, signal.SIGTERM)
+        if first:
+            threading.Thread(
+                target=self._force_after_grace,
+                name="grok-host-cancellation-watchdog",
+                daemon=True,
+            ).start()
+
+    def raise_if_cancelled(self) -> None:
+        if self.cancelled.is_set():
+            raise HostRunnerCancelled("host benchmark job was cancelled")
+
+    def stop(self, process: subprocess.Popen[Any]) -> None:
+        try:
+            deadline = time.monotonic() + self.grace_seconds
+            self._signal(process, signal.SIGTERM)
+            while time.monotonic() < deadline:
+                process.poll()  # Reap the leader so it does not keep an empty PGID alive.
+                if not self._group_exists(process):
+                    break
+                time.sleep(0.02)
+            process.poll()
+            if self._group_exists(process):
+                self._signal(process, signal.SIGKILL)
+            try:
+                process.wait(timeout=self.grace_seconds)
+            except subprocess.TimeoutExpired:
+                self._signal(process, signal.SIGKILL)
+                process.wait(timeout=self.grace_seconds)
+        finally:
+            self.unregister(process)
+
+
+_CHILD_GROUPS = ProcessGroupRegistry()
+
+
+def _handle_cancellation_signal(_signum: int, _frame: Any) -> None:
+    # Do not raise from the handler: it may run in the Popen/register gap. The
+    # registry closes that race and the waiting controller exits after reaping.
+    _CHILD_GROUPS.cancel()
+
+
 def canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
 
@@ -107,13 +215,27 @@ def git_environment() -> dict[str, str]:
 
 def run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None,
         capture: bool = True, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
+    """Run a command in a registered session so host cancellation reaches its tree."""
+    _CHILD_GROUPS.raise_if_cancelled()
+    process = subprocess.Popen(
         command, cwd=cwd, env=env,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE if capture else None,
         stderr=subprocess.PIPE if capture else None,
-        text=True, check=False,
+        text=True, start_new_session=True,
     )
+    _CHILD_GROUPS.register(process)
+    try:
+        stdout, stderr = process.communicate()
+    except BaseException:
+        _CHILD_GROUPS.stop(process)
+        raise
+    else:
+        # Reap the whole session even on success; a controller must not daemonize
+        # an untracked descendant and then report completion.
+        _CHILD_GROUPS.stop(process)
+    result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    _CHILD_GROUPS.raise_if_cancelled()
     if check and result.returncode != 0:
         detail = (result.stderr or result.stdout or "command failed").strip()
         raise HostRunnerError(f"{command[0]} failed ({result.returncode}): {detail}")
@@ -461,6 +583,7 @@ def launcher_command(path: Path) -> str:
 def wait_ready(process: subprocess.Popen[bytes], ready: Path, timeout: float = 10) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        _CHILD_GROUPS.raise_if_cancelled()
         if ready.is_file():
             try:
                 value = json.loads(ready.read_text(encoding="utf-8"))
@@ -496,28 +619,25 @@ def bridge(models_source: Path, dsh_home: Path, directory: Path):
     environment["GROK_BENCH_BRIDGE_KEYS_JSON"] = json.dumps(client_keys, separators=(",", ":"))
     environment["GROK_BENCH_BRIDGE_ADMIN_KEY"] = admin_key
     try:
+        _CHILD_GROUPS.raise_if_cancelled()
         process = subprocess.Popen([
             "node", str(BRIDGE_PATH), "--models-source", str(models_source),
             "--ready-file", str(ready), "--log", str(log),
         ], env=environment, stdout=stdout, stderr=stderr, start_new_session=True)
+        _CHILD_GROUPS.register(process)
     except BaseException:
         stdout.close()
         stderr.close()
         raise
     try:
+        _CHILD_GROUPS.raise_if_cancelled()
         evidence = wait_ready(process, ready)
         if evidence.get("concurrent_requests") is not True or not evidence.get("auth_ready_url"):
             raise HostRunnerError("xai-auth bridge lacks concurrency/readiness evidence")
         endpoints = {arm_id: (evidence["base_url"], key) for arm_id, key in client_keys.items()}
         yield endpoints, (evidence["auth_ready_url"], admin_key), evidence
     finally:
-        if process.poll() is None:
-            os.killpg(process.pid, signal.SIGTERM)
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait(timeout=5)
+        _CHILD_GROUPS.stop(process)
         stdout.close()
         stderr.close()
 
@@ -877,11 +997,23 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = parser().parse_args()
+    previous_handlers = {
+        signum: signal.signal(signum, _handle_cancellation_signal)
+        for signum in (signal.SIGTERM, signal.SIGINT)
+    }
     try:
-        return args.function(args)
+        result = args.function(args)
+        _CHILD_GROUPS.raise_if_cancelled()
+        return result
+    except HostRunnerCancelled as error:
+        print(f"HOST RUNNER CANCELLED: {error}", file=sys.stderr)
+        return 130
     except HostRunnerError as error:
         print(f"HOST RUNNER BLOCKED: {error}", file=sys.stderr)
         return 2
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
 
 
 if __name__ == "__main__":
