@@ -353,6 +353,91 @@ class HostProvisionTests(unittest.TestCase):
             with self.assertRaisesRegex(runner.HostRunnerError, "PR-Agent requires"):
                 runner.execution_environment(args, state, {}, auth_readiness)
 
+    def test_fixed_host_execution_uses_root_contained_runtime_pins(self) -> None:
+        parser = runner.parser()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            models = root / "runtime-pins" / "qq-models"
+            core = root / "runtime-pins" / "qq-core"
+            models.mkdir(parents=True)
+            core.mkdir()
+            args = parser.parse_args(["pilot", "--root", str(root), "--run-id", "paired-v2"])
+            self.assertIsNone(args.qq_models_source)
+            self.assertIsNone(args.qq_core_source)
+            state = {"sources": {"pr-agent": {"runtime": {"status": "skipped-test-only"}}}}
+            with mock.patch.object(runner, "load_state", return_value=state), mock.patch.object(
+                runner, "verify_models_source", return_value={"path": str(models)},
+            ) as verify_models, mock.patch.object(
+                runner, "verify_core_source", return_value={"path": str(core)},
+            ) as verify_core, self.assertRaisesRegex(runner.HostRunnerError, "runtime is not installed"):
+                args.function(args)
+            verify_models.assert_called_once_with(models)
+            verify_core.assert_called_once_with(core)
+            self.assertEqual(args.qq_models_source, models)
+            self.assertEqual(args.qq_core_source, core)
+
+            explicit_models = root / "diagnostic-models"
+            explicit_core = root / "diagnostic-core"
+            override = parser.parse_args([
+                "pilot", "--root", str(root), "--run-id", "paired-v2",
+                "--qq-models-source", str(explicit_models),
+                "--qq-core-source", str(explicit_core),
+            ])
+            self.assertEqual(
+                runner.resolve_runtime_sources(root, override.qq_models_source, override.qq_core_source),
+                (explicit_models, explicit_core),
+            )
+            self.assertEqual(
+                runner.resolve_runtime_sources(root, explicit_models, None),
+                (explicit_models, core),
+            )
+
+    def test_default_runtime_pins_fail_closed_when_absent_or_unsafe(self) -> None:
+        parser = runner.parser()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            args = parser.parse_args(["pilot", "--root", str(root), "--run-id", "paired-v2"])
+            with mock.patch.object(runner, "load_state", return_value={}), mock.patch.object(
+                runner, "bridge",
+            ) as start_bridge, self.assertRaisesRegex(runner.HostRunnerError, "runtime pin directory is absent"):
+                args.function(args)
+            start_bridge.assert_not_called()
+
+            pins = root / "runtime-pins"
+            pins.mkdir()
+            (pins / "qq-core").mkdir()
+            with self.assertRaisesRegex(runner.HostRunnerError, "qq-models runtime pin is absent"):
+                runner.resolve_runtime_sources(root, None, None)
+
+            with tempfile.TemporaryDirectory() as outside_directory:
+                outside = Path(outside_directory).resolve()
+                (pins / "qq-models").symlink_to(outside, target_is_directory=True)
+                with self.assertRaisesRegex(runner.HostRunnerError, "not a symlink"):
+                    runner.resolve_runtime_sources(root, None, None)
+
+    def test_default_runtime_pins_reject_non_owner_controlled_and_wrong_content(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            models = root / "runtime-pins" / "qq-models"
+            core = root / "runtime-pins" / "qq-core"
+            models.mkdir(parents=True)
+            core.mkdir()
+            models.chmod(0o775)
+            with self.assertRaisesRegex(runner.HostRunnerError, "must be owner-controlled"):
+                runner.resolve_runtime_sources(root, None, None)
+            models.chmod(0o755)
+
+            models_source, core_source = runner.resolve_runtime_sources(root, None, None)
+            self.assertEqual((models_source, core_source), (models, core))
+            args = runner.parser().parse_args(["pilot", "--root", str(root), "--run-id", "paired-v2"])
+            with mock.patch.object(runner, "load_state", return_value={}), mock.patch.object(
+                runner, "git", side_effect=["0" * 40 + "\n", "1" * 40 + "\n"],
+            ), mock.patch.object(runner, "bridge") as start_bridge, self.assertRaisesRegex(
+                runner.HostRunnerError, "qq-models source mismatch",
+            ):
+                args.function(args)
+            start_bridge.assert_not_called()
+
     def test_host_cli_has_only_staged_fixed_execution_and_matrix_requires_pilot(self) -> None:
         parser = runner.parser()
         self.assertIs(parser.parse_args(["pilot", "--root", "/tmp/root", "--run-id", "paired-v1"]).function,
@@ -360,6 +445,8 @@ class HostProvisionTests(unittest.TestCase):
         matrix = parser.parse_args(["matrix", "--root", "/tmp/root", "--run-id", "paired-v1", "--repeat-count", "3"])
         self.assertIs(matrix.function, runner.command_matrix)
         self.assertEqual(matrix.repeat_count, 3)
+        self.assertIsNone(matrix.qq_models_source)
+        self.assertIsNone(matrix.qq_core_source)
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parser.parse_args(["run", "--root", "/tmp/root"])
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

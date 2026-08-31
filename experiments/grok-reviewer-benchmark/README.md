@@ -125,7 +125,13 @@ the host cannot report `cancelled` while a bridge or paid reviewer remains live.
 ## Required execution staging and spend guard
 
 Use the already verified cached runtime root. Do not provision or make provider
-calls during implementation/QA.
+calls during implementation/QA. The fixed host commands intentionally pass no
+runtime-source arguments: `pilot` and `matrix` default to the owner-controlled,
+canonical clones at `<runtime_root>/runtime-pins/qq-models` and
+`<runtime_root>/runtime-pins/qq-core`, then verify their frozen commit/tree/package
+content before bridge startup. Missing, symlinked, escaping, writable-by-other, or
+incorrect pins fail closed; there is no fallback to mutable sibling checkouts.
+Direct CLI source overrides remain available only for offline/operator diagnostics.
 
 1. Create the private descriptor for one run ID.
 2. Launch exactly one paired pilot via `POST /pilot` with `repeat_count: 1`.

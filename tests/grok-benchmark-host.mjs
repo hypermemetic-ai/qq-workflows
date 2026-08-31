@@ -254,6 +254,7 @@ try {
   assert.equal(statSync(pilotStdoutPath).mode & 0o777, 0o600);
   assert.equal(pilotStatus.includes(token), false);
   assert.match(pilotStdout, /^fixture argv: pilot --root /);
+  assert.doesNotMatch(pilotStdout, /--qq-(?:models|core)-source/, "fixed host argv leaves runtime pins at root-contained defaults");
   assert.doesNotMatch(pilotStdout, /command|oauth|bearer/i);
 
   writeDescriptor({ runId: "cancel-me" });
