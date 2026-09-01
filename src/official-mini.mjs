@@ -72,9 +72,30 @@ const MINI_WRAPPED_BASH = Symbol.for("qq.officialMiniWrappedBash");
 const MINI_MOUNT = Symbol.for("qq.officialMiniMount");
 const MINI_SHELL_ISOLATION = Symbol.for("qq.officialMiniShellIsolation");
 const MOUNT_GENERATION = Object.freeze({});
-const submits = new WeakMap();
-const shellIsolations = new WeakMap();
-const completed = new WeakSet();
+const SHARED_SUBMITS = Symbol.for("qq.officialMiniSubmitBindings");
+const SHARED_SHELL_ISOLATIONS = Symbol.for("qq.officialMiniShellIsolations");
+const SHARED_COMPLETED = Symbol.for("qq.officialMiniCompletedAgents");
+
+function sharedWeakStore(key, create, expected) {
+  const current = globalThis[key];
+  if (current instanceof expected) return current;
+  const store = create();
+  try {
+    Object.defineProperty(globalThis, key, { value: store, configurable: false });
+  } catch {
+    // Another HMR generation may have won definition between lookup and write.
+    if (globalThis[key] instanceof expected) return globalThis[key];
+    throw new Error("mini cannot establish its HMR-stable capability store");
+  }
+  return store;
+}
+
+// DSH may expose non-extensible Agent/Session/Context proxies. Their symbol
+// property fallback cannot retain capabilities, so these weak stores must span
+// same-process module replacement. Keys remain weak and never enter tool JSON.
+const submits = sharedWeakStore(SHARED_SUBMITS, () => new WeakMap(), WeakMap);
+const shellIsolations = sharedWeakStore(SHARED_SHELL_ISOLATIONS, () => new WeakMap(), WeakMap);
+const completed = sharedWeakStore(SHARED_COMPLETED, () => new WeakSet(), WeakSet);
 const consecutiveFormatErrors = new WeakMap();
 const lastResponseHadBash = new WeakMap();
 const observationCache = new Map();
@@ -546,6 +567,10 @@ export function wrapMiniBash(base, { interceptCompletion = true } = {}) {
     ...(output ? { output } : {}),
     async execute(args, exec) {
       if (interceptCompletion && isMiniSweCompletionCommand(args?.command)) {
+        if (isCompleted(exec?.agent)) {
+          try { exec?.concludeTurn?.(); } catch { /* accepted completion remains terminal */ }
+          return syntheticResult("COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n", 0);
+        }
         const submit = submitFor(exec?.agent);
         if (!submit) return syntheticResult("Submission unavailable: this child is not owned by Land.\n", 1);
         const result = await submit({ agent: exec?.agent, ref: "HEAD" });

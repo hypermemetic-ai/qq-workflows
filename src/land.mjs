@@ -7,7 +7,7 @@
 // external task record archives only after the merge/cleanup succeeds.
 
 import { randomUUID } from "node:crypto";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
@@ -546,9 +546,10 @@ export async function publishCandidate(run, state, { mainRoot = state.mainRoot, 
 }
 
 export const DEFAULT_REQUIRED_TEST = Object.freeze({ command: "npm", args: Object.freeze(["test"]), timeout: 120_000 });
+export const NO_REQUIRED_TEST = "<none>";
 export const TEST_OUTPUT_MAX_CHARS = 8_000;
 
-function normalizedTestCommand(value = DEFAULT_REQUIRED_TEST) {
+function normalizedTestCommand(value) {
   const command = String(value?.command ?? "").trim();
   const args = Array.isArray(value?.args) ? value.args.map((item) => String(item)) : [];
   const timeout = Number.isSafeInteger(value?.timeout) && value.timeout > 0 ? value.timeout : DEFAULT_REQUIRED_TEST.timeout;
@@ -569,10 +570,82 @@ export async function stageDelegatedWorkspace(run, state) {
   return oid;
 }
 
-/** Run the one repository-configured suite and bind it to an unchanged tree. */
-export async function runRequiredTests(run, state, { testCommand = DEFAULT_REQUIRED_TEST, env = process.env } = {}) {
-  const suite = normalizedTestCommand(testCommand);
+function noRequiredTest(reason) {
+  return Object.freeze({ suite: null, source: "repository-none", reason });
+}
+
+/** Select validation from explicit configuration or the exact projected repository. */
+export function selectRequiredTest(state, { testCommand, tree = "unknown" } = {}) {
+  if (testCommand != null) {
+    return Object.freeze({ suite: normalizedTestCommand(testCommand), source: "configured", reason: "" });
+  }
+  if (!state?.workspace) throw new Error("required validation selection requires a delegated workspace");
+  const manifest = join(state.workspace, "package.json");
+  let info;
+  try {
+    info = lstatSync(manifest);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return noRequiredTest("No required test command is configured and the projected tree has no package.json test declaration.");
+    }
+    throw new Error(`cannot select required validation for projected tree ${tree}: cannot inspect package.json: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!info.isFile() || info.isSymbolicLink()) {
+    throw new Error(`cannot select required validation for projected tree ${tree}: package.json must be an ordinary file; fix the projected manifest or configure testCommand explicitly`);
+  }
+  if (info.size > 1_000_000) {
+    throw new Error(`cannot select required validation for projected tree ${tree}: package.json exceeds 1000000 bytes; reduce it or configure testCommand explicitly`);
+  }
+  let manifestValue;
+  try {
+    manifestValue = JSON.parse(readFileSync(manifest, "utf8"));
+  } catch (error) {
+    throw new Error(`cannot select required validation for projected tree ${tree}: package.json is invalid JSON (${error instanceof Error ? error.message : String(error)}); fix the projected manifest or configure testCommand explicitly`);
+  }
+  if (!manifestValue || typeof manifestValue !== "object" || Array.isArray(manifestValue)) {
+    throw new Error(`cannot select required validation for projected tree ${tree}: package.json must contain an object; fix the projected manifest or configure testCommand explicitly`);
+  }
+  if (!Object.hasOwn(manifestValue, "scripts")) {
+    return noRequiredTest("No required test command is configured and projected package.json does not declare scripts.test.");
+  }
+  if (!manifestValue.scripts || typeof manifestValue.scripts !== "object" || Array.isArray(manifestValue.scripts)) {
+    throw new Error(`cannot select required validation for projected tree ${tree}: package.json scripts must be an object; fix scripts.test or configure testCommand explicitly`);
+  }
+  if (!Object.hasOwn(manifestValue.scripts, "test")) {
+    return noRequiredTest("No required test command is configured and projected package.json does not declare scripts.test.");
+  }
+  if (typeof manifestValue.scripts.test !== "string" || !manifestValue.scripts.test.trim()) {
+    throw new Error(`cannot select required validation for projected tree ${tree}: package.json scripts.test must be a non-empty string; fix it or configure testCommand explicitly`);
+  }
+  return Object.freeze({
+    suite: normalizedTestCommand(DEFAULT_REQUIRED_TEST),
+    source: "repository-package-script",
+    reason: "Projected package.json declares scripts.test.",
+  });
+}
+
+/** Run selected validation and bind its result to an unchanged projected tree. */
+export async function runRequiredTests(run, state, { testCommand, env = process.env } = {}) {
   const preTree = await stageDelegatedWorkspace(run, state);
+  const selection = selectRequiredTest(state, { testCommand, tree: preTree });
+  if (!selection.suite) {
+    const postTree = await stageDelegatedWorkspace(run, state);
+    const mutation = preTree !== postTree
+      ? `Required validation selection observed changed commit-eligible workspace content (${preTree} -> ${postTree}).`
+      : "";
+    return Object.freeze({
+      command: NO_REQUIRED_TEST,
+      status: mutation ? "fail" : "not-required",
+      exitCode: mutation ? 1 : null,
+      output: boundFormattedText([mutation, selection.reason].filter(Boolean).join("\n"), TEST_OUTPUT_MAX_CHARS, "test output"),
+      preTree,
+      postTree,
+      ref: "",
+      createdAt: new Date().toISOString(),
+      selection: selection.source,
+    });
+  }
+  const suite = selection.suite;
   const isolated = isolatedCommand({
     workspace: state.workspace,
     command: suite.command,
@@ -598,15 +671,26 @@ export async function runRequiredTests(run, state, { testCommand = DEFAULT_REQUI
     postTree,
     ref: "",
     createdAt: new Date().toISOString(),
+    selection: selection.source,
   });
 }
 
-export function testEvidenceMatches(evidence, tree, testCommand = DEFAULT_REQUIRED_TEST) {
-  const suite = normalizedTestCommand(testCommand);
-  return evidence?.status === "pass"
-    && evidence.command === suite.display
-    && evidence.preTree === tree
-    && evidence.postTree === tree;
+export function testEvidenceMatches(evidence, tree, testCommand, state) {
+  if (evidence?.preTree !== tree || evidence?.postTree !== tree) return false;
+  let selection;
+  try {
+    selection = selectRequiredTest(state, { testCommand, tree });
+  } catch {
+    return false;
+  }
+  if (!selection.suite) {
+    return evidence.status === "not-required"
+      && evidence.command === NO_REQUIRED_TEST
+      && evidence.selection === selection.source;
+  }
+  return evidence.status === "pass"
+    && evidence.command === selection.suite.display
+    && (!evidence.selection || evidence.selection === selection.source);
 }
 
 /** Commit the already-tested staged tree using host-owned identity/capability. */
@@ -810,9 +894,9 @@ export function createLand({
   run = runCommand,
   github = createGitHubClient(run),
   env = process.env,
-  testCommand = DEFAULT_REQUIRED_TEST,
+  testCommand,
 } = {}) {
-  const requiredTest = normalizedTestCommand(testCommand);
+  const requiredTest = testCommand == null ? null : normalizedTestCommand(testCommand);
   const childTools = new Map();
   const childOwners = new Map();
   const settlementPromises = new Map();
@@ -2089,7 +2173,11 @@ export function createLand({
     const task = [
       state.look === 1 ? "Look 1." : "Look 2, the final look. There is no third look.",
       `Review ref ${state.ref} against delegated base ${state.baseRef}.`,
-      evidence ? `Required tests: ${evidence.command}; ${evidence.status}; exit ${evidence.exitCode}; tree ${evidence.postTree}; candidate ${evidence.ref || state.ref}. Do not rerun tests.` : "Required test evidence is unavailable.",
+      evidence
+        ? evidence.status === "not-required"
+          ? `Required validation: no suite selected from the projected repository; tree ${evidence.postTree}; candidate ${evidence.ref || state.ref}. ${evidence.output}`
+          : `Required tests: ${evidence.command}; ${evidence.status}; exit ${evidence.exitCode}; tree ${evidence.postTree}; candidate ${evidence.ref || state.ref}. Do not rerun tests.`
+        : "Required test evidence is unavailable.",
       prior ? `Prior look-1 rejection:\n${prior}` : "",
     ].filter(Boolean).join("\n\n");
     const workflowRole = "qa";
@@ -2305,13 +2393,13 @@ export function createLand({
       if (state.workspace) {
         const tree = await stageDelegatedWorkspace(run, state);
         let evidence = state.testEvidence;
-        const matchingPass = testEvidenceMatches(evidence, tree, requiredTest);
-        if (!matchingPass) {
+        const matchingEvidence = testEvidenceMatches(evidence, tree, requiredTest, state);
+        if (!matchingEvidence) {
           evidence = await runRequiredTests(run, state, { testCommand: requiredTest, env });
           state = store.save({ ...state, testEvidence: evidence });
         }
-        if (evidence.status !== "pass") {
-          throw new Error(`required tests failed (${evidence.command}, exit ${evidence.exitCode}): ${evidence.output || "no output"}`);
+        if (evidence.status !== "pass" && evidence.status !== "not-required") {
+          throw new Error(`required validation failed (${evidence.command}, exit ${evidence.exitCode}): ${evidence.output || "no output"}`);
         }
         sha = await commitDelegatedWorkspace(run, state, evidence.postTree);
         evidence = { ...evidence, ref: sha };

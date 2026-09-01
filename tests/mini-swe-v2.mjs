@@ -10,6 +10,8 @@ import {
   miniSetup,
   wrapMiniBash,
 } from "../src/official-mini.mjs";
+import { withChildSettlement } from "../src/child-settlement.mjs";
+import { buildDoneTool } from "../src/land-tools.mjs";
 
 assert.equal(MINI_SWE_COMPLETION_COMMAND, "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT");
 
@@ -102,6 +104,80 @@ assert.deepEqual(submissions, ["new"]);
 assert.equal(reboundResult.exitCode, 0);
 assert.equal(reboundResult.stdout.text, "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n");
 assert.equal(concluded, 1);
+const reboundReplay = await reboundBash.execute(
+  { command: MINI_SWE_COMPLETION_COMMAND },
+  { agent: reboundAgent, callId: "rebound-submit-replay", concludeTurn() { concluded++; } },
+);
+assert.deepEqual(submissions, ["new"], "accepted Mini completion is a monotonic terminal handoff");
+assert.equal(reboundReplay.exitCode, 0);
+assert.equal(concluded, 2);
 disposeNewSubmit();
+
+// Real HMR evaluates a replacement module with fresh module-local state. DSH
+// may expose non-extensible proxies, so symbol properties cannot carry the
+// binding. The weak capability store must bridge those module generations.
+const hmrOld = await import(`../src/official-mini.mjs?hmr-old=${Date.now()}`);
+const hmrNew = await import(`../src/official-mini.mjs?hmr-new=${Date.now()}`);
+const hmrSession = Object.preventExtensions({});
+const hmrCtx = Object.preventExtensions({});
+const hmrAgent = Object.preventExtensions({ session: hmrSession, ctx: hmrCtx });
+let hmrSubmissions = 0;
+const disposeHmrSubmit = hmrOld.bindMiniSubmit(hmrAgent, async () => {
+  hmrSubmissions++;
+  return { status: "ok" };
+});
+const hmrOldBash = hmrOld.wrapMiniBash({
+  name: "bash",
+  parameters: { type: "object", properties: {} },
+  async execute() { throw new Error("HMR completion reached the underlying shell"); },
+});
+const hmrNewBash = hmrNew.wrapMiniBash({
+  name: "bash",
+  parameters: { type: "object", properties: {} },
+  async execute() { throw new Error("replacement HMR completion reached the underlying shell"); },
+});
+let hmrIsolatedCommand = "";
+const disposeHmrIsolation = hmrOld.bindMiniShellIsolation(hmrAgent, (command) => `isolated:${command}`);
+const hmrShellBash = hmrNew.wrapMiniBash({
+  name: "bash",
+  parameters: { type: "object", properties: {} },
+  async execute(args) {
+    hmrIsolatedCommand = args.command;
+    return { kind: "foreground", exitCode: 0, stdout: { text: "ok\n" }, stderr: { text: "" } };
+  },
+});
+await hmrShellBash.execute({ command: "pwd" }, { agent: hmrAgent });
+assert.equal(hmrIsolatedCommand, "isolated:export PAGER=cat MANPAGER=cat GIT_PAGER=cat LESS=-R PIP_PROGRESS_BAR=off TQDM_DISABLE=1; pwd", "replacement module retains Land shell isolation");
+disposeHmrIsolation();
+assert.equal((await hmrOldBash.execute(
+  { command: MINI_SWE_COMPLETION_COMMAND },
+  { agent: hmrAgent, callId: "hmr-submit", concludeTurn() {} },
+)).exitCode, 0);
+assert.equal((await hmrNewBash.execute(
+  { command: MINI_SWE_COMPLETION_COMMAND },
+  { agent: hmrAgent, callId: "hmr-submit-replay", concludeTurn() {} },
+)).exitCode, 0);
+assert.equal(hmrSubmissions, 1, "replacement module sees accepted completion without losing or re-entering its submit binding");
+disposeHmrSubmit();
+
+let doneSubmissions = 0;
+let failDoneSettlement;
+const doneTool = buildDoneTool({
+  async submit() {
+    doneSubmissions++;
+    return withChildSettlement(
+      { status: "ok", outcome: "prepared result" },
+      { arm({ onFailure }) { failDoneSettlement = onFailure; } },
+    );
+  },
+});
+let doneConcluded = 0;
+assert.equal((await doneTool.execute({}, { callId: "done-1", concludeTurn() { doneConcluded++; } })).status, "ok");
+assert.equal((await doneTool.execute({}, { callId: "done-2", concludeTurn() { doneConcluded++; } })).status, "ok");
+assert.equal(doneSubmissions, 1, "accepted generic done cannot re-enter its durable submit sink");
+assert.equal(doneConcluded, 2);
+failDoneSettlement();
+assert.equal((await doneTool.execute({}, { callId: "done-3", concludeTurn() { doneConcluded++; } })).status, "ok");
+assert.equal(doneSubmissions, 2, "a failed authoritative result reopens the existing retry path");
 
 console.log("mini-swe-v2 tests passed");

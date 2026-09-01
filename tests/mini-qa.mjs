@@ -140,8 +140,9 @@ assert.equal(tools[0].isConcurrencySafe(), false);
 const fakeAgent = { session: { id: "session-review", header: { kind: "mini-qa" } }, ctx: {} };
 const order = [];
 let submitCount = 0;
+let validationCount = 0;
 bindMiniQaSubmit(fakeAgent, {
-  oracle: { validateFindings: async (value) => value },
+  oracle: { validateFindings: async (value) => { validationCount++; return value; } },
   submit: async ({ verdict }) => {
     assert.equal(verdict.verdict, "pass");
     submitCount++;
@@ -166,6 +167,8 @@ const submittedAgain = await tools[0].execute({ findings: [] }, {
 });
 assert.equal(submittedAgain.status, "ok");
 assert.equal(submittedAgain.alreadySubmitted, true);
+assert.equal(submitCount, 1, "accepted review cannot re-enter its durable submit sink");
+assert.equal(validationCount, 1, "accepted review cannot restart validation");
 assert.deepEqual(order, ["arm", "conclude", "conclude-again"]);
 
 const persistedAgent = { session: { id: "session-persisted-review", header: { kind: "mini-qa" } }, ctx: {} };

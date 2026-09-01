@@ -17,6 +17,8 @@ export const RUN_TESTS_TOOL_NAME = "run_tests";
 export const LAND_TOOL_NAME = "land";
 
 export function buildDoneTool({ submit } = {}) {
+  let accepted = false;
+  let acceptedOutput;
   return {
     name: DONE_TOOL_NAME,
     description: "Submit this worktree for land or review. The exact task is in the Git-private task artifact. The packet is a bounded changed-file summary plus diff pointers. Do not merge.",
@@ -45,11 +47,28 @@ export function buildDoneTool({ submit } = {}) {
     },
     async execute(args, exec) {
       try {
+        if (accepted) {
+          try { exec?.concludeTurn?.(); } catch { /* accepted submission remains terminal */ }
+          return childToolOutput(acceptedOutput);
+        }
         if (typeof submit !== "function") return refusal("done is unavailable");
         const result = await submit({ agent: exec?.agent, ref: args?.ref || "HEAD" });
         if (result?.status !== "refused") {
-          armChildSettlement(result, exec);
           const output = childToolOutput(result);
+          accepted = true;
+          acceptedOutput = output;
+          try {
+            armChildSettlement(result, exec, {
+              onFailure() {
+                accepted = false;
+                acceptedOutput = undefined;
+              },
+            });
+          } catch (error) {
+            accepted = false;
+            acceptedOutput = undefined;
+            throw error;
+          }
           try { exec?.concludeTurn?.(); } catch { /* accepted result remains armed */ }
           return output;
         }
@@ -65,7 +84,7 @@ export function buildDoneTool({ submit } = {}) {
 export function buildRunTestsTool({ runTests } = {}) {
   return {
     name: RUN_TESTS_TOOL_NAME,
-    description: "Run the repository-configured required test suite once and durably bind its host-observed result to the exact workspace tree.",
+    description: "Select required validation from explicit configuration or the projected repository, run it when required, and durably bind the host-observed result to the exact workspace tree.",
     parameters: {},
     output: {
       schema: {
@@ -81,8 +100,9 @@ export function buildRunTestsTool({ runTests } = {}) {
       },
       render: (_args, value) => [textBlock(value?.status === "pass"
         ? `${value.command} passed for workspace tree ${value.tree}.`
-        : `${value?.command || "required tests"} failed${Number.isInteger(value?.exitCode) ? ` (exit ${value.exitCode})` : ""}.
-${value?.output || value?.reason || ""}`)],
+        : value?.status === "not-required"
+          ? `No required test suite was selected for workspace tree ${value.tree}.\n${value.output || ""}`
+          : `${value?.command || "required tests"} failed${Number.isInteger(value?.exitCode) ? ` (exit ${value.exitCode})` : ""}.\n${value?.output || value?.reason || ""}`)],
     },
     isConcurrencySafe() { return false; },
     async execute(_args, exec) {
