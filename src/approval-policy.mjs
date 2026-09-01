@@ -1,7 +1,8 @@
-// Workflow chairs and custom children are unattended execution contexts. Keep
-// their independently resolved sandbox policy intact, but make approval asks
-// deterministic so routine work never stalls on an interactive prompt.
+// Architect chairs may interact with the host approval service for sanctioned
+// one-shot escalation. Workflow children remain unattended execution contexts,
+// so their independently resolved sandbox policy uses deterministic rejection.
 
+export const INTERACTIVE_APPROVAL_POLICY = "ask";
 export const NON_INTERACTIVE_APPROVAL_POLICY = "never";
 
 export function effectiveApprovalPolicy(events = []) {
@@ -12,15 +13,22 @@ export function effectiveApprovalPolicy(events = []) {
   return undefined;
 }
 
-export function pinNonInteractiveApproval(agentOrSession, { delegated = false } = {}) {
+function pinApproval(agentOrSession, policy, data = {}) {
   const session = agentOrSession?.session ?? agentOrSession;
   if (!session || typeof session.append !== "function") {
-    throw new Error("non-interactive approval requires a writable session");
+    throw new Error("approval policy requires a writable session");
   }
-  if (effectiveApprovalPolicy(session.events) === NON_INTERACTIVE_APPROVAL_POLICY) return false;
-  session.append("approval/policy", {
-    policy: NON_INTERACTIVE_APPROVAL_POLICY,
+  if (effectiveApprovalPolicy(session.events) === policy) return false;
+  session.append("approval/policy", { policy, ...data });
+  return true;
+}
+
+export function pinInteractiveApproval(agentOrSession) {
+  return pinApproval(agentOrSession, INTERACTIVE_APPROVAL_POLICY);
+}
+
+export function pinNonInteractiveApproval(agentOrSession, { delegated = false } = {}) {
+  return pinApproval(agentOrSession, NON_INTERACTIVE_APPROVAL_POLICY, {
     ...(delegated ? { source: "delegation" } : {}),
   });
-  return true;
 }

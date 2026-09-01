@@ -2,14 +2,21 @@
 import assert from "node:assert/strict";
 
 import {
-  sanitizeArchitectBashArguments,
-  sanitizeArchitectBashParameters,
+  optionalizeArchitectBashParameters,
   wrapArchitectBash,
 } from "../src/architect-bash.mjs";
+import {
+  sanitizeProjectsBashArguments,
+  sanitizeProjectsBashParameters,
+  wrapProjectsBash,
+} from "../src/projects-bash.mjs";
 import { capObservationTool, OBSERVATION_MAX_CHARS } from "../src/observation.mjs";
 
+// Reproduce the live host composition: escalation controls exist as properties
+// and are model-required in both top-level and nested schema branches.
 const parameters = {
   type: "object",
+  title: "Host bash input",
   properties: {
     command: { type: "string" },
     description: { type: "string" },
@@ -17,12 +24,15 @@ const parameters = {
     workdir: { type: "string" },
     run_in_background: { type: "boolean" },
     sandbox_permissions: { type: "string", enum: ["workspace-write", "danger-full-access"] },
-    justification: { type: "string" },
+    justification: { type: "string", minLength: 1 },
   },
   required: ["command", "sandbox_permissions", "justification"],
   allOf: [
     { required: ["command", "sandbox_permissions"] },
-    { if: { properties: { workdir: { type: "string" } } }, then: { required: ["workdir", "justification"] } },
+    {
+      if: { properties: { workdir: { type: "string" } } },
+      then: { required: ["workdir", "justification"] },
+    },
   ],
 };
 const hostCalls = [];
@@ -47,57 +57,142 @@ const base = {
   },
 };
 
-const sanitizedSchema = sanitizeArchitectBashParameters(parameters);
-assert.notEqual(sanitizedSchema, parameters);
-assert.deepEqual(Object.keys(sanitizedSchema.properties), [
+const optionalSchema = optionalizeArchitectBashParameters(parameters);
+assert.notEqual(optionalSchema, parameters);
+assert.notEqual(optionalSchema.properties, parameters.properties);
+assert.deepEqual(
+  optionalSchema.properties,
+  parameters.properties,
+  "architect keeps every host property and its exact schema contract",
+);
+assert.ok(optionalSchema.properties.sandbox_permissions, "escalation mode remains model-visible");
+assert.ok(optionalSchema.properties.justification, "escalation justification remains model-visible");
+assert.deepEqual(optionalSchema.required, ["command"]);
+assert.deepEqual(optionalSchema.allOf[0].required, ["command"]);
+assert.deepEqual(optionalSchema.allOf[1].then.required, ["workdir"]);
+assert.equal(optionalSchema.title, parameters.title, "non-required schema fields are unchanged");
+assert.deepEqual(
+  parameters.required,
+  ["command", "sandbox_permissions", "justification"],
+  "the host schema is not mutated",
+);
+assert.deepEqual(parameters.allOf[0].required, ["command", "sandbox_permissions"]);
+assert.deepEqual(parameters.allOf[1].then.required, ["workdir", "justification"]);
+assert.equal(optionalizeArchitectBashParameters(null), null);
+
+const architectBash = wrapArchitectBash(base);
+assert.notEqual(architectBash, base);
+assert.equal(architectBash.name, base.name);
+assert.equal(architectBash.description, base.description);
+assert.equal(architectBash.output, output);
+assert.equal(architectBash.isConcurrencySafe, isConcurrencySafe);
+assert.equal(architectBash.finalizeContent, finalizeContent);
+assert.equal(architectBash.isConcurrencySafe(), true);
+assert.deepEqual(architectBash.parameters, optionalSchema);
+assert.equal(wrapArchitectBash(architectBash), architectBash, "architect wrapping is HMR-idempotent");
+
+const exec = { marker: "exec context" };
+const routineArgs = {
+  command: "pwd",
+  description: "inspect workspace",
+  timeoutMs: 1_000,
+  workdir: "/workspace",
+  run_in_background: false,
+};
+assert.equal(architectBash.execute(routineArgs, exec), hostResult);
+assert.equal(hostCalls[0].args, routineArgs, "routine architect arguments reach the host unchanged");
+assert.equal(hostCalls[0].exec, exec, "the execution context reaches the host unchanged");
+assert.equal("sandbox_permissions" in hostCalls[0].args, false, "routine calls omit escalation mode");
+assert.equal("justification" in hostCalls[0].args, false, "routine calls omit escalation justification");
+
+const escalationArgs = {
+  command: "cargo build --release --locked --package qq-session-indexd --bin qq-session-indexd",
+  description: "retry a sandbox-denied repository build",
+  timeoutMs: 1_000,
+  workdir: "/workspace",
+  run_in_background: false,
+  sandbox_permissions: "danger-full-access",
+  justification: "Cargo needs to update the user registry cache outside the workspace.",
+};
+assert.equal(architectBash.execute(escalationArgs, exec), hostResult);
+assert.equal(hostCalls[1].args, escalationArgs, "architect escalation arguments reach the host unchanged");
+assert.equal(hostCalls[1].exec, exec);
+assert.equal(hostCalls[1].args.sandbox_permissions, "danger-full-access");
+assert.equal(hostCalls[1].args.justification, escalationArgs.justification);
+
+// Observation capping remains a transparent, composable wrapper. Either order
+// preserves the optionalized schema and exact execute arguments across HMR.
+const cappedArchitectBash = capObservationTool(architectBash);
+assert.notEqual(cappedArchitectBash, architectBash);
+assert.equal(wrapArchitectBash(cappedArchitectBash), cappedArchitectBash);
+assert.equal(capObservationTool(cappedArchitectBash), cappedArchitectBash);
+const cappedRoutineArgs = { command: "git status --short" };
+assert.equal(cappedArchitectBash.execute(cappedRoutineArgs, exec), hostResult);
+assert.equal(hostCalls[2].args, cappedRoutineArgs);
+assert.equal("sandbox_permissions" in hostCalls[2].args, false);
+assert.equal("justification" in hostCalls[2].args, false);
+const cappedFirst = wrapArchitectBash(capObservationTool(base));
+assert.deepEqual(cappedFirst.parameters, optionalSchema);
+const cappedFirstEscalationArgs = { ...escalationArgs };
+assert.equal(cappedFirst.execute(cappedFirstEscalationArgs, exec), hostResult);
+assert.equal(hostCalls[3].args, cappedFirstEscalationArgs);
+
+const oversized = "x".repeat(OBSERVATION_MAX_CHARS + 1);
+const rendered = cappedArchitectBash.output.render({}, { content: [{ type: "text", text: oversized }] });
+assert.match(rendered[0].text, /environment output truncated/);
+const finalized = cappedArchitectBash.finalizeContent({}, { content: [{ type: "text", text: oversized }] });
+assert.match(finalized[0].text, /environment output truncated/);
+
+// Projects has standing danger-full-access/never and therefore uses a distinct
+// sanitizer: the controls are hidden and dropped because no wider mode exists.
+const projectsSchema = sanitizeProjectsBashParameters(parameters);
+assert.notEqual(projectsSchema, parameters);
+assert.deepEqual(Object.keys(projectsSchema.properties), [
   "command",
   "description",
   "timeoutMs",
   "workdir",
   "run_in_background",
 ]);
-assert.deepEqual(sanitizedSchema.required, ["command"]);
-assert.deepEqual(sanitizedSchema.allOf[0].required, ["command"]);
-assert.deepEqual(sanitizedSchema.allOf[1].then.required, ["workdir"]);
-assert.ok(parameters.properties.sandbox_permissions, "the host schema is not mutated");
-assert.deepEqual(parameters.required, ["command", "sandbox_permissions", "justification"]);
-
-const originalArgs = {
-  command: "pwd",
-  description: "inspect workspace",
-  timeoutMs: 1_000,
-  workdir: "/workspace",
-  run_in_background: false,
-  sandbox_permissions: "danger-full-access",
-  justification: "must never reach host bash",
-};
-assert.deepEqual(sanitizeArchitectBashArguments(originalArgs), {
-  command: "pwd",
-  description: "inspect workspace",
-  timeoutMs: 1_000,
-  workdir: "/workspace",
+assert.deepEqual(projectsSchema.required, ["command"]);
+assert.deepEqual(projectsSchema.allOf[0].required, ["command"]);
+assert.deepEqual(projectsSchema.allOf[1].then.required, ["workdir"]);
+assert.ok(parameters.properties.sandbox_permissions, "Projects does not mutate the host schema");
+assert.deepEqual(sanitizeProjectsBashArguments(escalationArgs), {
+  command: escalationArgs.command,
+  description: escalationArgs.description,
+  timeoutMs: escalationArgs.timeoutMs,
+  workdir: escalationArgs.workdir,
   run_in_background: false,
 });
-assert.equal(originalArgs.sandbox_permissions, "danger-full-access", "caller arguments are not mutated");
+assert.equal(escalationArgs.sandbox_permissions, "danger-full-access", "Projects does not mutate caller args");
 
-const wrapped = wrapArchitectBash(base);
-assert.notEqual(wrapped, base);
-assert.equal(wrapped.name, base.name);
-assert.equal(wrapped.description, base.description);
-assert.equal(wrapped.output, output);
-assert.equal(wrapped.isConcurrencySafe, isConcurrencySafe);
-assert.equal(wrapped.finalizeContent, finalizeContent);
-assert.equal(wrapped.isConcurrencySafe(), true);
-assert.equal(wrapArchitectBash(wrapped), wrapped, "architect bash wrapping is idempotent");
+const projectsBash = wrapProjectsBash(base);
+assert.notEqual(projectsBash, base);
+assert.equal(projectsBash.name, base.name);
+assert.equal(projectsBash.description, base.description);
+assert.equal(projectsBash.output, output);
+assert.equal(projectsBash.isConcurrencySafe, isConcurrencySafe);
+assert.equal(projectsBash.finalizeContent, finalizeContent);
+assert.equal(wrapProjectsBash(projectsBash), projectsBash, "Projects wrapping is HMR-idempotent");
+const legacyProjectsBash = {
+  ...projectsBash,
+  [Symbol.for("qq.workflows.architectWrappedBash")]: true,
+};
+assert.equal(
+  wrapProjectsBash(legacyProjectsBash),
+  legacyProjectsBash,
+  "Projects recognizes the pre-split non-escalating wrapper across HMR",
+);
 
-const exec = { marker: "exec context" };
-assert.equal(wrapped.execute(originalArgs, exec), hostResult, "the base executor result is preserved");
+hostCalls.length = 0;
+assert.equal(projectsBash.execute(escalationArgs, exec), hostResult);
 assert.deepEqual(hostCalls, [{
   args: {
-    command: "pwd",
-    description: "inspect workspace",
-    timeoutMs: 1_000,
-    workdir: "/workspace",
+    command: escalationArgs.command,
+    description: escalationArgs.description,
+    timeoutMs: escalationArgs.timeoutMs,
+    workdir: escalationArgs.workdir,
     run_in_background: false,
   },
   exec,
@@ -105,19 +200,12 @@ assert.deepEqual(hostCalls, [{
 assert.equal("sandbox_permissions" in hostCalls[0].args, false);
 assert.equal("justification" in hostCalls[0].args, false);
 
-// Observation capping remains a separate, composable wrapper and retains the
-// architect marker, so either wrapper can encounter its own HMR-era result.
-const capped = capObservationTool(wrapped);
-assert.notEqual(capped, wrapped);
-assert.equal(wrapArchitectBash(capped), capped);
-assert.equal(capObservationTool(capped), capped);
-const oversized = "x".repeat(OBSERVATION_MAX_CHARS + 1);
-const rendered = capped.output.render({}, { content: [{ type: "text", text: oversized }] });
-assert.match(rendered[0].text, /environment output truncated/);
-const finalized = capped.finalizeContent({}, { content: [{ type: "text", text: oversized }] });
-assert.match(finalized[0].text, /environment output truncated/);
+const cappedProjectsBash = capObservationTool(projectsBash);
+assert.notEqual(cappedProjectsBash, projectsBash);
+assert.equal(wrapProjectsBash(cappedProjectsBash), cappedProjectsBash);
+assert.equal(capObservationTool(cappedProjectsBash), cappedProjectsBash);
 
-// Non-bash inherited definitions continue to receive observation capping only.
+// Non-bash inherited definitions still receive observation capping only.
 const read = {
   name: "read",
   parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },

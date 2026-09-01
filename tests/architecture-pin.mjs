@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createArchitect } from "../src/architect.mjs";
-import { effectiveApprovalPolicy, pinNonInteractiveApproval } from "../src/approval-policy.mjs";
+import { effectiveApprovalPolicy, pinInteractiveApproval } from "../src/approval-policy.mjs";
 import { DEFAULT_Q } from "../src/fold.mjs";
 import { apply } from "../src/plugin.mjs";
 import { createSelectionStore } from "../src/selection.mjs";
@@ -108,7 +108,10 @@ function hostSelectedAgent(cwd) {
 
   const session = {
     id: SESSION_ID,
-    events: [{ type: "sandbox/mode", data: { mode: "workspace-write" } }],
+    events: [
+      { type: "sandbox/mode", data: { mode: "workspace-write" } },
+      { type: "approval/policy", data: { policy: "never" } },
+    ],
     header: { cwd },
     append(type, data) {
       this.events.push({ type, data });
@@ -194,14 +197,21 @@ try {
 
   apply(ctx, config);
 
-  assert.equal(effectiveApprovalPolicy(agent.session.events), "never");
+  assert.equal(effectiveApprovalPolicy(agent.session.events), "ask");
   assert.deepEqual(
     agent.session.events.filter((event) => event.type === "sandbox/mode"),
     [{ type: "sandbox/mode", data: { mode: "workspace-write" } }],
     "architect approval pin preserves the sandbox override",
   );
-  assert.equal(agent.session.events.filter((event) => event.type === "approval/policy").length, 1);
-  assert.equal(pinNonInteractiveApproval(agent), false, "approval pin is idempotent");
+  assert.deepEqual(
+    agent.session.events.filter((event) => event.type === "approval/policy"),
+    [
+      { type: "approval/policy", data: { policy: "never" } },
+      { type: "approval/policy", data: { policy: "ask" } },
+    ],
+    "an already-live architect ending in never is migrated to interactive approval",
+  );
+  assert.equal(pinInteractiveApproval(agent), false, "interactive approval pin is idempotent");
 
   const pinned = await agent.ctx.request();
   assertPrompt(pinned.prompt, ARCHITECTURE);
@@ -242,7 +252,7 @@ try {
   apply(ctx, config);
   assert.equal(effects.length, 2);
   const repinned = await agent.ctx.request();
-  assert.equal(agent.session.events.filter((event) => event.type === "approval/policy").length, 1, "HMR does not duplicate the approval pin");
+  assert.equal(agent.session.events.filter((event) => event.type === "approval/policy").length, 2, "HMR does not duplicate the migrated approval pin");
   assertPrompt(repinned.prompt, ARCHITECTURE);
   assertRoute(repinned.request, ARCHITECTURE);
   await effects[1]?.();

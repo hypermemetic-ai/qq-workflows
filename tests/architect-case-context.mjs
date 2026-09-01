@@ -188,6 +188,13 @@ function createPrompt() {
   assert.match(ARCHITECT_PROMPT, /delegate/i);
   assert.match(ARCHITECT_PROMPT, /other architects through relay/i);
   assert.match(ARCHITECT_PROMPT, /Never communicate directly with another architect's children/i);
+  assert.match(ARCHITECT_PROMPT, /standing `workspace-write` sandbox/i);
+  assert.match(ARCHITECT_PROMPT, /omit `sandbox_permissions` and `justification` from routine bash calls/i);
+  assert.match(ARCHITECT_PROMPT, /actually fails with a sandbox denial/i);
+  assert.match(ARCHITECT_PROMPT, /retry that exact command once/i);
+  assert.match(ARCHITECT_PROMPT, /narrowest strictly wider `sandbox_permissions`/i);
+  assert.match(ARCHITECT_PROMPT, /host approval prompt obtain operator consent/i);
+  assert.match(ARCHITECT_PROMPT, /rejected or cancelled.*final/i);
   assert.match(ARCHITECT_PROMPT, /own children only through workflow-owned tools/i);
 
   const dir = mkdtempSync(join(tmpdir(), "qq-plan-doc."));
