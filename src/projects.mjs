@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { wrapArchitectBash } from "./architect-bash.mjs";
+import { wrapProjectsBash } from "./projects-bash.mjs";
 import { isArchitectCandidate } from "./architect.mjs";
 import { allowInherited, PROJECTS_INHERITED_TOOLS } from "./hide-harness.mjs";
 
@@ -95,7 +95,7 @@ export function createProjectsWorkflow({ ctx } = {}) {
     if (!tools || typeof tools.register !== "function" || typeof tools.get !== "function") return;
     const base = tools.get("bash", record.agent);
     if (!base) return;
-    const wrapped = wrapArchitectBash(base);
+    const wrapped = wrapProjectsBash(base);
     if (wrapped === base) return;
     const off = tools.register(wrapped);
     if (typeof off === "function") record.toolOff = off;

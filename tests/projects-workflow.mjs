@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import { ARCHITECT_INHERITED_TOOLS, PROJECTS_INHERITED_TOOLS } from "../src/hide-harness.mjs";
 import { apply, PROJECTS_LABEL } from "../src/plugin.mjs";
+import { effectiveApprovalPolicy } from "../src/approval-policy.mjs";
 import { isProjectsCandidate, PROJECTS_PRESET, PROJECTS_PROMPT_NAME } from "../src/projects.mjs";
 import { createSelectionStore } from "../src/selection.mjs";
 
@@ -36,6 +37,10 @@ function toolHarness() {
         justification: { type: "string" },
       },
       required: ["command", "sandbox_permissions", "justification"],
+      allOf: [
+        { required: ["command", "sandbox_permissions"] },
+        { then: { required: ["workdir", "justification"] } },
+      ],
     },
     isConcurrencySafe() { return true; },
     execute(args, exec) {
@@ -247,39 +252,49 @@ try {
   assert.ok(ordinary.tools.registered.includes("case_write"), "ordinary architect still receives architect tools");
 
   const architectBash = ordinary.tools.get("bash");
-  assert.notEqual(architectBash, ordinary.tools.hostBash, "architect bash shadows the inherited host definition");
+  assert.notEqual(architectBash, ordinary.tools.hostBash, "architect bash optionalizes the inherited host definition");
   assert.deepEqual(Object.keys(architectBash.parameters.properties), [
     "command", "description", "timeoutMs", "workdir", "run_in_background",
+    "sandbox_permissions", "justification",
   ]);
   assert.deepEqual(architectBash.parameters.required, ["command"]);
+  assert.deepEqual(architectBash.parameters.allOf[0].required, ["command"]);
+  assert.deepEqual(architectBash.parameters.allOf[1].then.required, ["workdir"]);
   assert.equal(architectBash.isConcurrencySafe(), true, "host concurrency semantics are preserved");
   const bashExec = { agent: ordinary.agent };
-  const bashResult = await architectBash.execute({
+  const routineArgs = {
     command: "pwd",
     description: "ordinary workspace command",
     timeoutMs: 1_000,
     workdir: ordinaryRoot,
     run_in_background: false,
+  };
+  const routineResult = await architectBash.execute(routineArgs, bashExec);
+  assert.equal(routineResult.exitCode, 0);
+  assert.equal(ordinary.tools.hostCalls[0].args, routineArgs, "routine architect args reach the host unchanged");
+  assert.equal("sandbox_permissions" in ordinary.tools.hostCalls[0].args, false);
+  assert.equal("justification" in ordinary.tools.hostCalls[0].args, false);
+  const escalationArgs = {
+    command: "cargo build --release --locked --package qq-session-indexd --bin qq-session-indexd",
+    description: "retry a sandbox-denied repository build",
+    timeoutMs: 1_000,
+    workdir: ordinaryRoot,
+    run_in_background: false,
     sandbox_permissions: "danger-full-access",
-    justification: "must be stripped",
-  }, bashExec);
-  assert.equal(bashResult.exitCode, 0);
-  assert.deepEqual(ordinary.tools.hostCalls, [{
-    args: {
-      command: "pwd",
-      description: "ordinary workspace command",
-      timeoutMs: 1_000,
-      workdir: ordinaryRoot,
-      run_in_background: false,
-    },
-    exec: bashExec,
-  }]);
+    justification: "Cargo needs to update the user registry cache outside the workspace.",
+  };
+  const escalationResult = await architectBash.execute(escalationArgs, bashExec);
+  assert.equal(escalationResult.exitCode, 0);
+  assert.equal(ordinary.tools.hostCalls[1].args, escalationArgs, "escalation args reach the host unchanged");
+  assert.deepEqual(ordinary.tools.hostCalls.map(({ exec }) => exec), [bashExec, bashExec]);
   const projectsBash = projects.tools.get("bash");
   assert.notEqual(projectsBash, projects.tools.hostBash, "Projects bash shadows host definition to sanitize sandbox escalation");
   assert.deepEqual(Object.keys(projectsBash.parameters.properties), [
     "command", "description", "timeoutMs", "workdir", "run_in_background",
   ]);
   assert.deepEqual(projectsBash.parameters.required, ["command"]);
+  assert.deepEqual(projectsBash.parameters.allOf[0].required, ["command"]);
+  assert.deepEqual(projectsBash.parameters.allOf[1].then.required, ["workdir"]);
   const projectsBashExec = { agent: projects.agent };
   const projectsBashResult = await projectsBash.execute({
     command: "ls",
@@ -317,6 +332,12 @@ try {
   assert.equal(service.caseFile(PROJECTS_ID), null);
 
   assert.deepEqual(pinned, [{ id: PROJECTS_ID, preset: PROJECTS_PRESET }]);
+  assert.equal(effectiveApprovalPolicy(ordinary.agent.session.events), "ask", "architect receives interactive approval");
+  assert.equal(
+    effectiveApprovalPolicy(projects.agent.session.events),
+    undefined,
+    "Projects does not receive the architect ask pin; its danger-full-access preset remains authoritative",
+  );
   assert.ok(hung.some((entry) => entry.id === PROJECTS_ID && entry.label === PROJECTS_LABEL));
   assert.ok(hung.some((entry) => entry.id === ORDINARY_ID && entry.label === "workflows:architect"));
 
