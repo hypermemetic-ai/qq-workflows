@@ -271,6 +271,23 @@ try {
   };
   adoptionStore.save({ ...adoptedRecord, testEvidence: evidence });
   assert.deepEqual(adoptionStore.load(adoptedId).testEvidence, evidence, "test evidence survives durable restart normalization");
+  const notRequiredEvidence = {
+    command: "<none>",
+    status: "not-required",
+    exitCode: null,
+    output: "Projected repository declares no required suite.",
+    preTree: "c".repeat(40),
+    postTree: "c".repeat(40),
+    ref: "",
+    createdAt: "2026-08-29T00:00:01.000Z",
+    selection: "repository-none",
+  };
+  adoptionStore.save({ ...adoptedRecord, testEvidence: notRequiredEvidence });
+  assert.deepEqual(
+    adoptionStore.load(adoptedId).testEvidence,
+    notRequiredEvidence,
+    "tree-bound no-required selection evidence survives durable restart normalization",
+  );
   const structuredPending = {
     sessionUuid: "session-77777777-7777-4777-8777-777777777777",
     role: "qa",

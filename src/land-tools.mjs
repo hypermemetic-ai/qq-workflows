@@ -84,7 +84,7 @@ export function buildDoneTool({ submit } = {}) {
 export function buildRunTestsTool({ runTests } = {}) {
   return {
     name: RUN_TESTS_TOOL_NAME,
-    description: "Run the repository-configured required test suite once and durably bind its host-observed result to the exact workspace tree.",
+    description: "Select required validation from explicit configuration or the projected repository, run it when required, and durably bind the host-observed result to the exact workspace tree.",
     parameters: {},
     output: {
       schema: {
@@ -100,8 +100,9 @@ export function buildRunTestsTool({ runTests } = {}) {
       },
       render: (_args, value) => [textBlock(value?.status === "pass"
         ? `${value.command} passed for workspace tree ${value.tree}.`
-        : `${value?.command || "required tests"} failed${Number.isInteger(value?.exitCode) ? ` (exit ${value.exitCode})` : ""}.
-${value?.output || value?.reason || ""}`)],
+        : value?.status === "not-required"
+          ? `No required test suite was selected for workspace tree ${value.tree}.\n${value.output || ""}`
+          : `${value?.command || "required tests"} failed${Number.isInteger(value?.exitCode) ? ` (exit ${value.exitCode})` : ""}.\n${value?.output || value?.reason || ""}`)],
     },
     isConcurrencySafe() { return false; },
     async execute(_args, exec) {
