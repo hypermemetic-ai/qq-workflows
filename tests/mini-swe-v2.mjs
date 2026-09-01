@@ -22,7 +22,8 @@ const task = renderMiniSweTask("Fix the issue", {
   machine: "test-machine",
 });
 const completionWarning = "Do not combine it with any other command. <important>After this command, you cannot continue working on this task.</important>";
-assert.match(task, /Optionally call run_tests once/);
+assert.match(task, /Run relevant tests with bash as needed/);
+assert.doesNotMatch(task, /run_tests|required tests/i);
 assert.match(task, /host stages and commits/);
 assert.match(task, /no writable Git metadata or network credentials/);
 assert.equal(task.split(MINI_SWE_COMPLETION_COMMAND).length - 1, 2);
@@ -113,11 +114,11 @@ assert.equal(reboundReplay.exitCode, 0);
 assert.equal(concluded, 2);
 disposeNewSubmit();
 
-let doneSubmissions = 0;
+let doneTerminalTransitions = 0;
 let failDoneSettlement;
 const doneTool = buildDoneTool({
   async submit() {
-    doneSubmissions++;
+    doneTerminalTransitions++;
     return withChildSettlement(
       { status: "ok", outcome: "prepared result" },
       { arm({ onFailure }) { failDoneSettlement = onFailure; } },
@@ -127,10 +128,10 @@ const doneTool = buildDoneTool({
 let doneConcluded = 0;
 assert.equal((await doneTool.execute({}, { callId: "done-1", concludeTurn() { doneConcluded++; } })).status, "ok");
 assert.equal((await doneTool.execute({}, { callId: "done-2", concludeTurn() { doneConcluded++; } })).status, "ok");
-assert.equal(doneSubmissions, 1, "accepted generic done cannot re-enter its durable submit sink");
+assert.equal(doneTerminalTransitions, 1, "one successful done produces exactly one terminal submit transition");
 assert.equal(doneConcluded, 2);
 failDoneSettlement();
 assert.equal((await doneTool.execute({}, { callId: "done-3", concludeTurn() { doneConcluded++; } })).status, "ok");
-assert.equal(doneSubmissions, 2, "a failed authoritative result reopens the existing retry path");
+assert.equal(doneTerminalTransitions, 2, "a failed authoritative settlement reopens the existing retry path");
 
 console.log("mini-swe-v2 tests passed");

@@ -7,7 +7,7 @@
 // external task record archives only after the merge/cleanup succeeds.
 
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
@@ -44,7 +44,7 @@ import {
   miniSetup,
   renderMiniSweTask,
 } from "./official-mini.mjs";
-import { buildDoneTool, buildRunTestsTool } from "./land-tools.mjs";
+import { buildDoneTool } from "./land-tools.mjs";
 import {
   bindMiniQaSubmit,
   ensureMiniQaMounted,
@@ -545,20 +545,6 @@ export async function publishCandidate(run, state, { mainRoot = state.mainRoot, 
   return Object.freeze({ candidateOid, localType: "commit", remoteOid: fetchedOid, remoteType: "commit", remoteRef, evidenceRef });
 }
 
-export const DEFAULT_REQUIRED_TEST = Object.freeze({ command: "npm", args: Object.freeze(["test"]), timeout: 120_000 });
-export const NO_REQUIRED_TEST = "<none>";
-export const TEST_OUTPUT_MAX_CHARS = 8_000;
-
-function normalizedTestCommand(value) {
-  const command = String(value?.command ?? "").trim();
-  const args = Array.isArray(value?.args) ? value.args.map((item) => String(item)) : [];
-  const timeout = Number.isSafeInteger(value?.timeout) && value.timeout > 0 ? value.timeout : DEFAULT_REQUIRED_TEST.timeout;
-  if (!command || command.length > 120 || args.some((arg) => arg.length > 240)) {
-    throw new Error("required test command is invalid");
-  }
-  return Object.freeze({ command, args: Object.freeze(args), timeout, display: [command, ...args].join(" ") });
-}
-
 /** Synchronize ordinary child files and return Git's exact commit-eligible tree. */
 export async function stageDelegatedWorkspace(run, state) {
   if (!state?.workspace) throw new Error("host staging requires a metadata-free delegated workspace");
@@ -570,133 +556,9 @@ export async function stageDelegatedWorkspace(run, state) {
   return oid;
 }
 
-function noRequiredTest(reason) {
-  return Object.freeze({ suite: null, source: "repository-none", reason });
-}
-
-/** Select validation from explicit configuration or the exact projected repository. */
-export function selectRequiredTest(state, { testCommand, tree = "unknown" } = {}) {
-  if (testCommand != null) {
-    return Object.freeze({ suite: normalizedTestCommand(testCommand), source: "configured", reason: "" });
-  }
-  if (!state?.workspace) throw new Error("required validation selection requires a delegated workspace");
-  const manifest = join(state.workspace, "package.json");
-  let info;
-  try {
-    info = lstatSync(manifest);
-  } catch (error) {
-    if (error?.code === "ENOENT") {
-      return noRequiredTest("No required test command is configured and the projected tree has no package.json test declaration.");
-    }
-    throw new Error(`cannot select required validation for projected tree ${tree}: cannot inspect package.json: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  if (!info.isFile() || info.isSymbolicLink()) {
-    throw new Error(`cannot select required validation for projected tree ${tree}: package.json must be an ordinary file; fix the projected manifest or configure testCommand explicitly`);
-  }
-  if (info.size > 1_000_000) {
-    throw new Error(`cannot select required validation for projected tree ${tree}: package.json exceeds 1000000 bytes; reduce it or configure testCommand explicitly`);
-  }
-  let manifestValue;
-  try {
-    manifestValue = JSON.parse(readFileSync(manifest, "utf8"));
-  } catch (error) {
-    throw new Error(`cannot select required validation for projected tree ${tree}: package.json is invalid JSON (${error instanceof Error ? error.message : String(error)}); fix the projected manifest or configure testCommand explicitly`);
-  }
-  if (!manifestValue || typeof manifestValue !== "object" || Array.isArray(manifestValue)) {
-    throw new Error(`cannot select required validation for projected tree ${tree}: package.json must contain an object; fix the projected manifest or configure testCommand explicitly`);
-  }
-  if (!Object.hasOwn(manifestValue, "scripts")) {
-    return noRequiredTest("No required test command is configured and projected package.json does not declare scripts.test.");
-  }
-  if (!manifestValue.scripts || typeof manifestValue.scripts !== "object" || Array.isArray(manifestValue.scripts)) {
-    throw new Error(`cannot select required validation for projected tree ${tree}: package.json scripts must be an object; fix scripts.test or configure testCommand explicitly`);
-  }
-  if (!Object.hasOwn(manifestValue.scripts, "test")) {
-    return noRequiredTest("No required test command is configured and projected package.json does not declare scripts.test.");
-  }
-  if (typeof manifestValue.scripts.test !== "string" || !manifestValue.scripts.test.trim()) {
-    throw new Error(`cannot select required validation for projected tree ${tree}: package.json scripts.test must be a non-empty string; fix it or configure testCommand explicitly`);
-  }
-  return Object.freeze({
-    suite: normalizedTestCommand(DEFAULT_REQUIRED_TEST),
-    source: "repository-package-script",
-    reason: "Projected package.json declares scripts.test.",
-  });
-}
-
-/** Run selected validation and bind its result to an unchanged projected tree. */
-export async function runRequiredTests(run, state, { testCommand, env = process.env } = {}) {
-  const preTree = await stageDelegatedWorkspace(run, state);
-  const selection = selectRequiredTest(state, { testCommand, tree: preTree });
-  if (!selection.suite) {
-    const postTree = await stageDelegatedWorkspace(run, state);
-    const mutation = preTree !== postTree
-      ? `Required validation selection observed changed commit-eligible workspace content (${preTree} -> ${postTree}).`
-      : "";
-    return Object.freeze({
-      command: NO_REQUIRED_TEST,
-      status: mutation ? "fail" : "not-required",
-      exitCode: mutation ? 1 : null,
-      output: boundFormattedText([mutation, selection.reason].filter(Boolean).join("\n"), TEST_OUTPUT_MAX_CHARS, "test output"),
-      preTree,
-      postTree,
-      ref: "",
-      createdAt: new Date().toISOString(),
-      selection: selection.source,
-    });
-  }
-  const suite = selection.suite;
-  const isolated = isolatedCommand({
-    workspace: state.workspace,
-    command: suite.command,
-    args: suite.args,
-    writable: true,
-    env,
-  });
-  const result = await run(isolated.command, isolated.args, { cwd: state.workspace, timeout: suite.timeout });
-  const postTree = await stageDelegatedWorkspace(run, state);
-  const exitCode = Number.isInteger(result?.code) ? result.code : 1;
-  const combined = [String(result?.stdout ?? ""), String(result?.stderr ?? "")].filter(Boolean).join("\n");
-  const output = boundFormattedText(combined, TEST_OUTPUT_MAX_CHARS, "test output");
-  const status = exitCode === 0 && preTree === postTree ? "pass" : "fail";
-  const mutation = exitCode === 0 && preTree !== postTree
-    ? `Required tests changed commit-eligible workspace content (${preTree} -> ${postTree}).`
-    : "";
-  return Object.freeze({
-    command: suite.display,
-    status,
-    exitCode: mutation ? 1 : exitCode,
-    output: boundFormattedText([mutation, output].filter(Boolean).join("\n"), TEST_OUTPUT_MAX_CHARS, "test output"),
-    preTree,
-    postTree,
-    ref: "",
-    createdAt: new Date().toISOString(),
-    selection: selection.source,
-  });
-}
-
-export function testEvidenceMatches(evidence, tree, testCommand, state) {
-  if (evidence?.preTree !== tree || evidence?.postTree !== tree) return false;
-  let selection;
-  try {
-    selection = selectRequiredTest(state, { testCommand, tree });
-  } catch {
-    return false;
-  }
-  if (!selection.suite) {
-    return evidence.status === "not-required"
-      && evidence.command === NO_REQUIRED_TEST
-      && evidence.selection === selection.source;
-  }
-  return evidence.status === "pass"
-    && evidence.command === selection.suite.display
-    && (!evidence.selection || evidence.selection === selection.source);
-}
-
-/** Commit the already-tested staged tree using host-owned identity/capability. */
-export async function commitDelegatedWorkspace(run, state, tree) {
-  const stagedTree = await stageDelegatedWorkspace(run, state);
-  if (stagedTree !== tree) throw new Error("workspace changed after required tests; run_tests evidence is stale");
+/** Synchronize, stage, and commit child files using host-owned identity/capability. */
+export async function commitDelegatedWorkspace(run, state) {
+  await stageDelegatedWorkspace(run, state);
   const changed = await run("git", ["diff", "--cached", "--quiet", "HEAD", "--"], { cwd: state.worktree });
   if (changed?.code === 1) {
     const title = String(state.brief || state.branch || "Land candidate").trim().split("\n")[0].replace(/^#+\s*/, "").slice(0, 200) || "Land candidate";
@@ -894,9 +756,7 @@ export function createLand({
   run = runCommand,
   github = createGitHubClient(run),
   env = process.env,
-  testCommand,
 } = {}) {
-  const requiredTest = testCommand == null ? null : normalizedTestCommand(testCommand);
   const childTools = new Map();
   const childOwners = new Map();
   const settlementPromises = new Map();
@@ -1647,27 +1507,9 @@ export function createLand({
     childTools.get(sessionId)?.();
     const submit = (args) => trackChildSubmission(sessionId, (submission) =>
       done({ ...args, delegationId, postTool: true, submission }));
-    const runTests = async () => {
-      let state = store.load(delegationId);
-      if (!state || state.implementationSession !== sessionId
-        || (state.status !== "running" && state.status !== "revising")) {
-        return { status: "refused", reason: "run_tests requires the active implementation child" };
-      }
-      const evidence = await runRequiredTests(run, state, { testCommand: requiredTest, env });
-      state = store.save({ ...state, testEvidence: evidence });
-      return {
-        status: evidence.status,
-        command: evidence.command,
-        exitCode: evidence.exitCode,
-        output: evidence.output,
-        tree: evidence.postTree,
-        delegationId: state.delegationId,
-      };
-    };
     const disposers = [];
     if (isMiniAgent(child)) disposers.push(bindMiniSubmit(child, submit));
     else disposers.push(registerTools(child, [buildDoneTool({ submit })]));
-    disposers.push(registerTools(child, [buildRunTestsTool({ runTests })]));
     disposers.push(bindMiniShellIsolation(child, (command) => {
       const current = store.load(delegationId);
       if (!current?.workspace) throw new Error("implementation shell requires a metadata-free workspace");
@@ -2169,15 +2011,9 @@ export function createLand({
     state = await ensureTaskArtifact(state);
     const parentSession = state.parentSessionUuid || state.architectSession;
     const prior = state.look === 2 ? state.blockedReason : "";
-    const evidence = state.testEvidence;
     const task = [
       state.look === 1 ? "Look 1." : "Look 2, the final look. There is no third look.",
       `Review ref ${state.ref} against delegated base ${state.baseRef}.`,
-      evidence
-        ? evidence.status === "not-required"
-          ? `Required validation: no suite selected from the projected repository; tree ${evidence.postTree}; candidate ${evidence.ref || state.ref}. ${evidence.output}`
-          : `Required tests: ${evidence.command}; ${evidence.status}; exit ${evidence.exitCode}; tree ${evidence.postTree}; candidate ${evidence.ref || state.ref}. Do not rerun tests.`
-        : "Required test evidence is unavailable.",
       prior ? `Prior look-1 rejection:\n${prior}` : "",
     ].filter(Boolean).join("\n\n");
     const workflowRole = "qa";
@@ -2203,7 +2039,7 @@ export function createLand({
   async function startImplementation(state, verdict) {
     state = await ensureTaskArtifact(state);
     const parentSession = state.parentSessionUuid || state.architectSession;
-    const user = `QA rejected the proposal. ${verdict.feedback || verdict.summary} Address the findings, optionally call run_tests, then use the completion command. The host stages and commits the workspace.`;
+    const user = `QA rejected the proposal. ${verdict.feedback || verdict.summary} Address the findings, run relevant tests with bash as needed, then use the completion command. The host stages and commits the workspace.`;
     const planned = planPhase(state, "implementation", { delta: user });
     const pending = planned.pendingPhase;
     const spawned = await spawnChild({
@@ -2391,19 +2227,8 @@ export function createLand({
     try {
       let sha;
       if (state.workspace) {
-        const tree = await stageDelegatedWorkspace(run, state);
-        let evidence = state.testEvidence;
-        const matchingEvidence = testEvidenceMatches(evidence, tree, requiredTest, state);
-        if (!matchingEvidence) {
-          evidence = await runRequiredTests(run, state, { testCommand: requiredTest, env });
-          state = store.save({ ...state, testEvidence: evidence });
-        }
-        if (evidence.status !== "pass" && evidence.status !== "not-required") {
-          throw new Error(`required validation failed (${evidence.command}, exit ${evidence.exitCode}): ${evidence.output || "no output"}`);
-        }
-        sha = await commitDelegatedWorkspace(run, state, evidence.postTree);
-        evidence = { ...evidence, ref: sha };
-        state = store.save({ ...state, ref: sha, testEvidence: evidence });
+        sha = await commitDelegatedWorkspace(run, state);
+        state = store.save({ ...state, ref: sha });
       } else {
         const revision = await checked(
           run, "git", ["rev-parse", "--verify", `${ref}^{commit}`], { cwd: state.worktree }, "ref is not a commit",
@@ -2577,7 +2402,6 @@ export function createLand({
           status: "revising",
           implementationSession: "",
           qaSession: sessionId,
-          testEvidence: null,
         }));
         const result = {
           status: "ok",
@@ -2770,7 +2594,7 @@ export function createLand({
   function recoveryContinuation(role) {
     const shared = "The previous host process did not continue: DSH restored the latest durable transcript and preserved working tree, and any interrupted command outcome remains unknown. Inspect the current diff, git status, and test state before retrying side effects. Continue the same durable work order in this exact session; do not start a replacement task or session.";
     return role === "qa"
-      ? `Recovery continuation. ${shared} Keep the workspace read-only and use persisted test evidence rather than rerunning required tests.`
+      ? `Recovery continuation. ${shared} Keep the workspace read-only.`
       : `Recovery continuation. ${shared}`;
   }
 

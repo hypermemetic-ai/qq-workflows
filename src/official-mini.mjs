@@ -83,7 +83,7 @@ const FORMAT_ERROR = [
   "Tool call error:",
   "",
   "<error>",
-  "Every response needs to use bash or run_tests at least once.",
+  "Every response needs to use bash at least once.",
   "</error>",
   "",
   "Call the bash tool with your command as the argument:",
@@ -157,7 +157,7 @@ function messageHasAction(event) {
   if (event?.type !== "assistant/message") return undefined;
   const content = event?.data?.message?.content ?? event?.message?.content;
   if (!Array.isArray(content)) return false;
-  return content.some((block) => block?.type === "tool-call" && (block?.name === "bash" || block?.name === "run_tests"));
+  return content.some((block) => block?.type === "tool-call" && block?.name === "bash");
 }
 
 function markCompleted(agent) {

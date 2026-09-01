@@ -306,7 +306,7 @@ try {
   assert.match(recovered.steers[0].content[0].text, /outcome remains unknown/);
   assert.equal(recovered.agent.session.header.kind, "mini-code");
   assert.equal(recovered.definitions.has("bash"), true);
-  assert.equal(recovered.definitions.has("run_tests"), true);
+  assert.equal(recovered.definitions.has("run_tests"), false);
   assert.deepEqual(land.ownedChildren(), [CURRENT]);
   assert.ok(labels.some(({ id, label }) => id === CURRENT && label === `${DELEGATION_LABEL_PREFIX}${DELEGATION}`));
   assert.ok(labels.some(({ id, label }) => id === CURRENT && label === `${DELEGATION_PHASE_LABEL_PREFIX}implementation`));
@@ -342,7 +342,7 @@ try {
   assert.equal(resumeCalls, 1);
   assert.equal(generic.agent.session.header.kind, "mini-code");
   assert.equal(generic.definitions.has("bash"), true);
-  assert.equal(generic.definitions.has("run_tests"), true);
+  assert.equal(generic.definitions.has("run_tests"), false);
   assert.equal(generic.steers.length, 0, "an already-live child is never given a duplicate continuation");
   assert.ok(land.ownedChildren().includes(LIVE_CURRENT));
   assert.ok(labels.some(({ id, label }) => id === LIVE_CURRENT && label === `${DELEGATION_LABEL_PREFIX}${LIVE_DELEGATION}`));
@@ -372,7 +372,6 @@ try {
   );
   assert.equal(recoveredQa.steers.length, 1);
   assert.match(recoveredQa.steers[0].content[0].text, /Keep the workspace read-only/);
-  assert.match(recoveredQa.steers[0].content[0].text, /rather than rerunning required tests/);
   assert.equal(readFileSync(store.fileFor(QA_DELEGATION), "utf8"), qaBytes);
 
   // A second durable record cannot steal an exact current child already bound
@@ -440,7 +439,7 @@ try {
   assert.equal(hmr.sessionUuid, CURRENT);
   assert.equal(resumeCalls, 4, "HMR adoption does not perform another DSH resume");
   assert.deepEqual(replacementLand.ownedChildren(), [CURRENT]);
-  assert.equal(recovered.definitions.has("run_tests"), true, "replacement controller restores child tools");
+  assert.equal(recovered.definitions.has("run_tests"), false, "replacement controller does not restore removed host-test tooling");
   await replacementLand.dispose();
 
   // If HMR starts while DSH is restoring an inactive exact session, disposal

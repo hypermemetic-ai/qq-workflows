@@ -13,7 +13,6 @@ function refusal(reason) {
 }
 
 export const DONE_TOOL_NAME = "done";
-export const RUN_TESTS_TOOL_NAME = "run_tests";
 export const LAND_TOOL_NAME = "land";
 
 export function buildDoneTool({ submit } = {}) {
@@ -73,42 +72,6 @@ export function buildDoneTool({ submit } = {}) {
           return output;
         }
         return result;
-      } catch (error) {
-        return refusal(error instanceof Error ? error.message : String(error));
-      }
-    },
-  };
-}
-
-
-export function buildRunTestsTool({ runTests } = {}) {
-  return {
-    name: RUN_TESTS_TOOL_NAME,
-    description: "Select required validation from explicit configuration or the projected repository, run it when required, and durably bind the host-observed result to the exact workspace tree.",
-    parameters: {},
-    output: {
-      schema: {
-        type: "object",
-        additionalProperties: true,
-        properties: {
-          status: { type: "string" },
-          command: { type: "string" },
-          exitCode: { type: "number" },
-          output: { type: "string" },
-          reason: { type: "string" },
-        },
-      },
-      render: (_args, value) => [textBlock(value?.status === "pass"
-        ? `${value.command} passed for workspace tree ${value.tree}.`
-        : value?.status === "not-required"
-          ? `No required test suite was selected for workspace tree ${value.tree}.\n${value.output || ""}`
-          : `${value?.command || "required tests"} failed${Number.isInteger(value?.exitCode) ? ` (exit ${value.exitCode})` : ""}.\n${value?.output || value?.reason || ""}`)],
-    },
-    isConcurrencySafe() { return false; },
-    async execute(_args, exec) {
-      try {
-        if (typeof runTests !== "function") return refusal("run_tests is unavailable");
-        return await runTests({ agent: exec?.agent });
       } catch (error) {
         return refusal(error instanceof Error ? error.message : String(error));
       }

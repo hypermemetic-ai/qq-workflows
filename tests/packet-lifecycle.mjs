@@ -259,35 +259,6 @@ try {
   assert.equal(adoptedRecord.brief, task, "adoption persists only semantic task bytes");
   assert.equal(readFileSync(adoptedRecord.taskArtifact.path, "utf8"), task, "adoption creates exact task artifact before first prompt");
   assert.equal(adoptedRecord.taskArtifact.sha256, taskDigest(task));
-  const evidence = {
-    command: "npm test",
-    status: "pass",
-    exitCode: 0,
-    output: "ok",
-    preTree: "a".repeat(40),
-    postTree: "a".repeat(40),
-    ref: "b".repeat(40),
-    createdAt: "2026-08-29T00:00:00.000Z",
-  };
-  adoptionStore.save({ ...adoptedRecord, testEvidence: evidence });
-  assert.deepEqual(adoptionStore.load(adoptedId).testEvidence, evidence, "test evidence survives durable restart normalization");
-  const notRequiredEvidence = {
-    command: "<none>",
-    status: "not-required",
-    exitCode: null,
-    output: "Projected repository declares no required suite.",
-    preTree: "c".repeat(40),
-    postTree: "c".repeat(40),
-    ref: "",
-    createdAt: "2026-08-29T00:00:01.000Z",
-    selection: "repository-none",
-  };
-  adoptionStore.save({ ...adoptedRecord, testEvidence: notRequiredEvidence });
-  assert.deepEqual(
-    adoptionStore.load(adoptedId).testEvidence,
-    notRequiredEvidence,
-    "tree-bound no-required selection evidence survives durable restart normalization",
-  );
   const structuredPending = {
     sessionUuid: "session-77777777-7777-4777-8777-777777777777",
     role: "qa",
@@ -362,7 +333,7 @@ try {
     assert.match(live.agent.inbox.nextTurn[0].content[0].text, /Exact task artifact: \.git\/qq-workflows\/task\.md/);
     assert.doesNotMatch(live.agent.inbox.nextTurn[0].content[0].text, new RegExp(taskMarker));
     assert.equal(live.definitions.has(role === "qa" ? "submit_review" : "done"), true, `${role} completion tool is installed before recovery succeeds`);
-    assert.equal(live.definitions.has("run_tests"), role === "implementation", "run_tests is implementation-only");
+    assert.equal(live.definitions.has("run_tests"), false, "host-required tests are absent from every child lifecycle");
     if (role === "qa") assert.equal(live.definitions.has("bash"), true, "QA retains its single read-only Bash tool");
     await recoveryLand.dispose();
   }
