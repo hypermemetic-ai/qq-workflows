@@ -263,6 +263,10 @@ export function wrapMiniResearchBash(base) {
       const command = String(args?.command ?? "");
       const binding = bindingFor(exec?.agent);
       if (isMiniSweCompletionCommand(command)) {
+        if (isCompleted(exec?.agent)) {
+          try { exec?.concludeTurn?.(); } catch { /* accepted completion remains terminal */ }
+          return syntheticResult("COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n", 0);
+        }
         if (!binding) return syntheticResult("", 1, "Submission unavailable: this child is not owned by research.\n");
         const result = await binding.submit({ agent: exec?.agent });
         if (result?.status === "refused") return syntheticResult("", 1, `Submission refused: ${result.reason || "unknown reason"}\n`);

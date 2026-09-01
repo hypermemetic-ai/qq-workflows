@@ -10,6 +10,8 @@ import {
   miniSetup,
   wrapMiniBash,
 } from "../src/official-mini.mjs";
+import { withChildSettlement } from "../src/child-settlement.mjs";
+import { buildDoneTool } from "../src/land-tools.mjs";
 
 assert.equal(MINI_SWE_COMPLETION_COMMAND, "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT");
 
@@ -102,6 +104,33 @@ assert.deepEqual(submissions, ["new"]);
 assert.equal(reboundResult.exitCode, 0);
 assert.equal(reboundResult.stdout.text, "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n");
 assert.equal(concluded, 1);
+const reboundReplay = await reboundBash.execute(
+  { command: MINI_SWE_COMPLETION_COMMAND },
+  { agent: reboundAgent, callId: "rebound-submit-replay", concludeTurn() { concluded++; } },
+);
+assert.deepEqual(submissions, ["new"], "accepted Mini completion is a monotonic terminal handoff");
+assert.equal(reboundReplay.exitCode, 0);
+assert.equal(concluded, 2);
 disposeNewSubmit();
+
+let doneSubmissions = 0;
+let failDoneSettlement;
+const doneTool = buildDoneTool({
+  async submit() {
+    doneSubmissions++;
+    return withChildSettlement(
+      { status: "ok", outcome: "prepared result" },
+      { arm({ onFailure }) { failDoneSettlement = onFailure; } },
+    );
+  },
+});
+let doneConcluded = 0;
+assert.equal((await doneTool.execute({}, { callId: "done-1", concludeTurn() { doneConcluded++; } })).status, "ok");
+assert.equal((await doneTool.execute({}, { callId: "done-2", concludeTurn() { doneConcluded++; } })).status, "ok");
+assert.equal(doneSubmissions, 1, "accepted generic done cannot re-enter its durable submit sink");
+assert.equal(doneConcluded, 2);
+failDoneSettlement();
+assert.equal((await doneTool.execute({}, { callId: "done-3", concludeTurn() { doneConcluded++; } })).status, "ok");
+assert.equal(doneSubmissions, 2, "a failed authoritative result reopens the existing retry path");
 
 console.log("mini-swe-v2 tests passed");

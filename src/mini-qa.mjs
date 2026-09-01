@@ -196,6 +196,10 @@ export function buildMiniQaTools() {
     },
     isConcurrencySafe() { return false; },
     async execute(args, exec) {
+      if (isCompleted(exec?.agent)) {
+        try { exec?.concludeTurn?.(); } catch { /* accepted review remains terminal */ }
+        return { status: "ok", alreadySubmitted: true };
+      }
       const binding = bindingFor(exec?.agent);
       if (!binding) return { status: "refused", reason: "submit_review is unavailable" };
       try {

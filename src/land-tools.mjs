@@ -17,6 +17,8 @@ export const RUN_TESTS_TOOL_NAME = "run_tests";
 export const LAND_TOOL_NAME = "land";
 
 export function buildDoneTool({ submit } = {}) {
+  let accepted = false;
+  let acceptedOutput;
   return {
     name: DONE_TOOL_NAME,
     description: "Submit this worktree for land or review. The exact task is in the Git-private task artifact. The packet is a bounded changed-file summary plus diff pointers. Do not merge.",
@@ -45,11 +47,28 @@ export function buildDoneTool({ submit } = {}) {
     },
     async execute(args, exec) {
       try {
+        if (accepted) {
+          try { exec?.concludeTurn?.(); } catch { /* accepted submission remains terminal */ }
+          return childToolOutput(acceptedOutput);
+        }
         if (typeof submit !== "function") return refusal("done is unavailable");
         const result = await submit({ agent: exec?.agent, ref: args?.ref || "HEAD" });
         if (result?.status !== "refused") {
-          armChildSettlement(result, exec);
           const output = childToolOutput(result);
+          accepted = true;
+          acceptedOutput = output;
+          try {
+            armChildSettlement(result, exec, {
+              onFailure() {
+                accepted = false;
+                acceptedOutput = undefined;
+              },
+            });
+          } catch (error) {
+            accepted = false;
+            acceptedOutput = undefined;
+            throw error;
+          }
           try { exec?.concludeTurn?.(); } catch { /* accepted result remains armed */ }
           return output;
         }

@@ -546,6 +546,10 @@ export function wrapMiniBash(base, { interceptCompletion = true } = {}) {
     ...(output ? { output } : {}),
     async execute(args, exec) {
       if (interceptCompletion && isMiniSweCompletionCommand(args?.command)) {
+        if (isCompleted(exec?.agent)) {
+          try { exec?.concludeTurn?.(); } catch { /* accepted completion remains terminal */ }
+          return syntheticResult("COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n", 0);
+        }
         const submit = submitFor(exec?.agent);
         if (!submit) return syntheticResult("Submission unavailable: this child is not owned by Land.\n", 1);
         const result = await submit({ agent: exec?.agent, ref: "HEAD" });
