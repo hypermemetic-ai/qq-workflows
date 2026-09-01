@@ -293,7 +293,6 @@ export function apply(ctx, config = {}) {
     tasks: null,
     run: config.runCommand,
     github: config.github,
-    testCommand: config.testCommand,
   });
   const research = createResearch({
     ctx,

@@ -57,7 +57,7 @@ export function renderMiniQaTask({ task } = {}) {
     "- Do not report style, preferences, speculative risks, or optional improvements.",
     "- Do not edit files, commit, or otherwise change the worktree.",
     "- Bash runs with the entire workspace read-only and without network credentials; do not attempt mutations.",
-    "- Required tests already passed for the candidate recorded in the phase delta. Do not rerun them.",
+    "- You may run tests through bash as ordinary review work when useful; no host-required test result is implied by the phase delta.",
     "- Do not run the Mini completion command.",
     "- Every response must call bash or submit_review.",
     "- It is correct to report zero findings.",
