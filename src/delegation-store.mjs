@@ -328,6 +328,10 @@ function normalize(raw) {
   if (TERMINAL_STATUSES.has(raw.status) && (current || pendingPhase || raw.transitioning === true)) {
     throw new Error(`qq-workflows: terminal delegation ${raw.id} has an active phase pointer`);
   }
+  const localSyncStatus = optionalString(raw.localSyncStatus);
+  if (localSyncStatus && localSyncStatus !== "complete" && localSyncStatus !== "deferred") {
+    throw new Error(`qq-workflows: delegation ${raw.id} local sync status is invalid`);
+  }
   const reportEnvelopeId = optionalString(raw.reportEnvelopeId);
   if (reportEnvelopeId && !UUID_ID.test(reportEnvelopeId)) {
     throw new Error(`qq-workflows: delegation ${raw.id} report envelope id is invalid`);
@@ -368,6 +372,11 @@ function normalize(raw) {
     qaVerdict: raw.qaVerdict && typeof raw.qaVerdict === "object" ? { ...raw.qaVerdict } : null,
     blockedReason: optionalString(raw.blockedReason),
     landedAt: optionalString(raw.landedAt),
+    landedRef: optionalString(raw.landedRef),
+    publishedRef: optionalString(raw.publishedRef),
+    pullRequest: optionalString(raw.pullRequest),
+    localSyncStatus,
+    localSyncReason: optionalString(raw.localSyncReason),
     inspectError: optionalString(raw.inspectError),
     reportPending: raw.reportPending === true,
     reportEnvelopeId,
@@ -476,6 +485,11 @@ export function createDelegationStore(dirPath, { onChange } = {}) {
         qaVerdict: fields.qaVerdict,
         blockedReason: fields.blockedReason,
         landedAt: fields.landedAt,
+        landedRef: fields.landedRef,
+        publishedRef: fields.publishedRef,
+        pullRequest: fields.pullRequest,
+        localSyncStatus: fields.localSyncStatus,
+        localSyncReason: fields.localSyncReason,
         inspectError: fields.inspectError,
         reportPending: fields.reportPending,
         reportEnvelopeId: fields.reportEnvelopeId,

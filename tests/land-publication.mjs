@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   createGitHubClient,
+  formatOutcome,
   githubRepositoryFromOrigin,
   landWorktree,
   publishCandidate,
+  runCommand,
   reconcileReviewBase,
 } from "../src/land.mjs";
 
@@ -251,6 +253,138 @@ for (const test of [
     await assert.rejects(landWorktree(run, { ...state, mainRoot, worktree }, { github: {} }), /no changes relative/);
     assert.equal(calls.some((call) => call.includes("push")), false);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
+}
+
+
+// A dirty primary checkout defers only local synchronization. Publication and
+// remote merge proceed from the clean reviewed capsule without changing one
+// byte in the primary index, tracked file, or untracked file.
+{
+  const scratch = mkdtempSync(join(tmpdir(), "qq-land-dirty-primary."));
+  const origin = join(scratch, "origin.git");
+  const seed = join(scratch, "seed");
+  const mainRoot = join(scratch, "main");
+  const worktree = join(scratch, "reviewed");
+  const integration = join(scratch, "integration");
+  const branch = "feat/dirty-primary-publication";
+  const calls = [];
+  const cleanEnv = { ...process.env };
+  for (const name of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"] ) {
+    delete cleanEnv[name];
+  }
+  const run = async (command, args, options = {}) => {
+    calls.push({ command, args: [...args], cwd: options.cwd });
+    const env = { ...cleanEnv, ...(options.env ?? {}) };
+    for (const name of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"] ) {
+      delete env[name];
+    }
+    return runCommand(command, args, { ...options, env });
+  };
+  const git = async (cwd, ...args) => {
+    const result = await run("git", args, { cwd });
+    assert.equal(result.code, 0, `git ${args.join(" ")} failed: ${result.stderr}`);
+    return result.stdout.trim();
+  };
+
+  try {
+    mkdirSync(seed);
+    await git(scratch, "init", "--bare", "--initial-branch=main", origin);
+    await git(seed, "init", "--initial-branch=main");
+    await git(seed, "config", "user.name", "Land Test");
+    await git(seed, "config", "user.email", "land-test@example.invalid");
+    writeFileSync(join(seed, "tracked.txt"), "base\n");
+    await git(seed, "add", "tracked.txt");
+    await git(seed, "commit", "-m", "base");
+    const baseRef = await git(seed, "rev-parse", "HEAD");
+    await git(seed, "remote", "add", "origin", origin);
+    await git(seed, "push", "-u", "origin", "main");
+
+    await git(scratch, "clone", origin, mainRoot);
+    await git(scratch, "clone", origin, worktree);
+    await git(worktree, "config", "user.name", "Land Test");
+    await git(worktree, "config", "user.email", "land-test@example.invalid");
+    await git(worktree, "checkout", "-b", branch);
+    writeFileSync(join(worktree, "proposal.txt"), "reviewed change\n");
+    await git(worktree, "add", "proposal.txt");
+    await git(worktree, "commit", "-m", "publish despite dirty primary");
+    const candidate = await git(worktree, "rev-parse", "HEAD");
+
+    // Give the primary simultaneous staged, unstaged, and untracked state.
+    // Snapshot after the final index write and before Land observes it.
+    writeFileSync(join(mainRoot, "tracked.txt"), "staged local work\n");
+    await git(mainRoot, "add", "tracked.txt");
+    writeFileSync(join(mainRoot, "tracked.txt"), "staged plus unstaged local work\n");
+    writeFileSync(join(mainRoot, "untracked.txt"), "untracked local work\n");
+    const primaryHeadBefore = await git(mainRoot, "rev-parse", "HEAD");
+    const indexBefore = readFileSync(join(mainRoot, ".git", "index"));
+    const trackedBefore = readFileSync(join(mainRoot, "tracked.txt"));
+    const untrackedBefore = readFileSync(join(mainRoot, "untracked.txt"));
+
+    let opened = false;
+    let merged = false;
+    const github = {
+      async openPullRequest({ headRef, headBranch, baseBranch }) {
+        assert.equal(headRef, candidate);
+        assert.equal(headBranch, branch);
+        assert.equal(baseBranch, "main");
+        opened = true;
+        return "https://github.example/owner/repo/pull/77";
+      },
+      async mergePullRequest({ headRef, headBranch }) {
+        assert.equal(opened, true, "publication opens the reviewed PR before merge");
+        assert.equal(headRef, candidate);
+        assert.equal(headBranch, branch);
+        await git(scratch, "clone", origin, integration);
+        await git(integration, "config", "user.name", "Land Test");
+        await git(integration, "config", "user.email", "land-test@example.invalid");
+        await git(integration, "fetch", "origin", branch);
+        await git(integration, "merge", "--no-ff", `origin/${branch}`, "-m", "merge reviewed proposal");
+        await git(integration, "push", "origin", "main");
+        merged = true;
+      },
+    };
+
+    const landed = await landWorktree(run, {
+      id: state.id,
+      delegationId: state.delegationId,
+      mainRoot,
+      worktree,
+      baseBranch: "main",
+      baseRef,
+      branch,
+      ref: candidate,
+    }, { github });
+
+    assert.equal(merged, true);
+    assert.equal(landed.landedRef, candidate);
+    assert.equal(landed.publishedRef, `refs/heads/${branch}`);
+    assert.equal(landed.pullRequest, "https://github.example/owner/repo/pull/77");
+    assert.equal(landed.localSyncStatus, "deferred");
+    assert.match(landed.localSyncReason, /staged, unstaged, or untracked changes; left untouched/);
+    assert.equal(existsSync(worktree), true, "deferred local sync retains the reviewed clean worktree");
+    const outcome = formatOutcome(landed, "landed");
+    assert.match(outcome, new RegExp(`Implementation delegation ${state.delegationId}: landed\.`));
+    assert.match(outcome, new RegExp(`Landed commit: ${candidate}`));
+    assert.match(outcome, new RegExp(`Published ref: refs/heads/${branch}`));
+    assert.match(outcome, /Pull request: https:\/\/github\.example\/owner\/repo\/pull\/77/);
+    assert.match(outcome, /Local main sync: deferred .* staged, unstaged, or untracked changes; left untouched/);
+    assert.doesNotMatch(outcome, /blocked|Mark: fail/i);
+
+    // Check byte identity before issuing any further command in the primary.
+    assert.deepEqual(readFileSync(join(mainRoot, ".git", "index")), indexBefore, "Land does not refresh or rewrite the dirty primary index");
+    assert.deepEqual(readFileSync(join(mainRoot, "tracked.txt")), trackedBefore, "Land preserves staged and unstaged bytes");
+    assert.deepEqual(readFileSync(join(mainRoot, "untracked.txt")), untrackedBefore, "Land preserves untracked bytes");
+    assert.equal(await git(mainRoot, "rev-parse", "HEAD"), primaryHeadBefore, "dirty local main is not fast-forwarded");
+    const remoteHead = await git(scratch, `--git-dir=${origin}`, "rev-parse", "main");
+    await git(scratch, `--git-dir=${origin}`, "merge-base", "--is-ancestor", candidate, remoteHead);
+    assert.equal(
+      calls.some((call) => call.cwd === mainRoot && call.args[0] === "merge"),
+      false,
+      "no local merge is attempted for a dirty primary",
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 console.log("land publication: ok");
