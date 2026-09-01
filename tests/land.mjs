@@ -53,6 +53,17 @@ try {
   assert.equal(created.delegationId, delegationId);
   assert.deepEqual(created.current, { sessionUuid: childId, role: "implementation", phaseEpoch: 1 });
   assert.equal(store.byDelegation(delegationId).id, delegationId);
+  const landingMetadata = store.save({
+    ...created,
+    landedRef: "b".repeat(40),
+    publishedRef: "refs/heads/feat/change",
+    pullRequest: "https://github.example/owner/repo/pull/77",
+    localSyncStatus: "deferred",
+    localSyncReason: "primary checkout has local changes; left untouched",
+  });
+  assert.equal(landingMetadata.localSyncStatus, "deferred");
+  assert.equal(store.load(delegationId).landedRef, "b".repeat(40), "landing metadata survives durable normalization");
+  assert.equal(store.load(delegationId).localSyncReason, "primary checkout has local changes; left untouched");
   assert.throws(
     () => store.create({ id: "land-not-an-id", delegationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
     /authoritative UUID/,

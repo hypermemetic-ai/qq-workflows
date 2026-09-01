@@ -99,7 +99,7 @@ ${value?.output || value?.reason || ""}`)],
 export function buildLandTool({ invoke } = {}) {
   return {
     name: LAND_TOOL_NAME,
-    description: "Publish a git worktree through a merge-commit PR to origin/main, then fast-forward local main. Implementer done already does this; call from the architect or base chair for an existing worktree.",
+    description: "Publish a git worktree through a merge-commit PR to origin/main. Fast-forward local main only when its primary checkout is clean; otherwise report remote landing with local sync deferred. Implementer done already does this; call from the architect or base chair for an existing worktree.",
     parameters: {
       worktree: {
         type: "string",

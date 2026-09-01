@@ -258,6 +258,16 @@ export function formatOutcome(state, kind) {
   const diagnostics = [
     state?.ref ? `Ref: ${boundedPacketLine(state.ref, 120)}` : "",
     status === "landed" ? `Base branch: ${boundedPacketLine(state?.baseBranch || "main", 120)}` : "",
+    status === "landed" && state?.landedRef ? `Landed commit: ${boundedPacketLine(state.landedRef, 120)}` : "",
+    status === "landed" && state?.publishedRef ? `Published ref: ${boundedPacketLine(state.publishedRef, 240)}` : "",
+    status === "landed" && state?.pullRequest ? `Pull request: ${boundedPacketLine(state.pullRequest, 500)}` : "",
+    status === "landed" && state?.localSyncStatus === "complete" ? "Local main sync: complete" : "",
+    status === "landed" && state?.localSyncStatus === "deferred"
+      ? `Local main sync: deferred — ${boundFormattedText(state.localSyncReason || "primary checkout left untouched", 1_000, "local sync reason")}`
+      : "",
+    status === "landed" && state?.localSyncStatus === "deferred" && state?.worktree
+      ? `Retained worktree: ${boundedPacketLine(state.worktree)}`
+      : "",
     status === "blocked" ? `Blocked reason: ${boundFormattedText(state?.blockedReason || "blocked", 2_000, "blocked reason")}` : "",
     status === "blocked" && state?.worktree ? `Retained worktree: ${boundedPacketLine(state.worktree)}` : "",
     state?.archiveError ? `Task archive diagnostic: ${boundFormattedText(state.archiveError, 1_000, "archive diagnostic")}` : "",
@@ -628,20 +638,37 @@ export async function commitDelegatedWorkspace(run, state, tree) {
   return candidate;
 }
 
+const PRIMARY_INSPECTION_ENV = Object.freeze({ ...process.env, GIT_OPTIONAL_LOCKS: "0" });
+
+async function localMainSyncReadiness(run, mainRoot, baseBranch) {
+  const branch = await run(
+    "git", ["symbolic-ref", "--quiet", "--short", "HEAD"],
+    { cwd: mainRoot, env: PRIMARY_INSPECTION_ENV },
+  );
+  if (branch?.code !== 0) {
+    return { ready: false, reason: "primary checkout is detached or its branch cannot be inspected; left untouched" };
+  }
+  const branchName = String(branch.stdout ?? "").trim();
+  if (branchName !== baseBranch) {
+    return { ready: false, reason: `primary checkout is on ${branchName || "an unknown branch"}, not ${baseBranch}; left untouched` };
+  }
+  const status = await run(
+    "git", ["status", "--porcelain", "--untracked-files=all"],
+    { cwd: mainRoot, env: PRIMARY_INSPECTION_ENV },
+  );
+  if (status?.code !== 0) {
+    return { ready: false, reason: `primary checkout status could not be inspected; left untouched (${reason(status, "git status failed")})` };
+  }
+  if (String(status.stdout ?? "").trim()) {
+    return { ready: false, reason: "primary checkout has staged, unstaged, or untracked changes; left untouched" };
+  }
+  return { ready: true, reason: "" };
+}
+
 export async function landWorktree(run, state, { github = createGitHubClient(run) } = {}) {
   const mainRoot = await realpath(state.mainRoot);
   const worktree = await realpath(state.worktree);
   if (mainRoot === worktree) throw new Error("land refuses to merge from the main checkout");
-  const branch = await checked(
-    run, "git", ["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: mainRoot }, "main checkout is detached",
-  );
-  if (branch.stdout.trim() !== state.baseBranch) {
-    throw new Error(`main checkout is on ${branch.stdout.trim()}, not ${state.baseBranch}`);
-  }
-  const mainStatus = await checked(
-    run, "git", ["status", "--porcelain", "--untracked-files=all"], { cwd: mainRoot }, "cannot inspect main checkout",
-  );
-  if (String(mainStatus.stdout ?? "").trim()) throw new Error("main checkout is dirty");
   const worktreeStatus = await checked(
     run, "git", ["status", "--porcelain", "--untracked-files=all"], { cwd: worktree }, "cannot inspect delegated worktree",
   );
@@ -701,34 +728,48 @@ export async function landWorktree(run, state, { github = createGitHubClient(run
     { cwd: mainRoot },
     "pull request merge is not present on origin",
   );
-  await checked(
-    run,
-    "git",
-    ["merge", "--ff-only", `origin/${state.baseBranch}`],
-    { cwd: mainRoot },
-    "local main fast-forward failed",
-  );
 
-  const localHead = await checked(
-    run,
-    "git",
-    ["rev-parse", "--verify", "HEAD"],
-    { cwd: mainRoot },
-    "cannot verify local main after fast-forward",
-  );
-  const originHead = await checked(
-    run,
-    "git",
-    ["rev-parse", "--verify", `origin/${state.baseBranch}`],
-    { cwd: mainRoot },
-    "cannot verify origin main after fast-forward",
-  );
-  if (localHead.stdout.trim() !== originHead.stdout.trim()) {
-    throw new Error("local main does not match origin/main after fast-forward");
+  // Remote landing is authoritative. Synchronizing the operator's primary
+  // checkout is optional and must never overwrite or block on unrelated local
+  // work. Disable optional locks while inspecting so even index stat-cache
+  // refreshes cannot change a dirty primary checkout.
+  const landing = {
+    ...state,
+    landedRef: publication.candidateOid,
+    publishedRef: publication.remoteRef,
+    pullRequest,
+    localSyncStatus: "deferred",
+    localSyncReason: "",
+  };
+  const readiness = await localMainSyncReadiness(run, mainRoot, state.baseBranch);
+  if (!readiness.ready) {
+    return { ...landing, localSyncReason: readiness.reason };
   }
 
-  // No cleanup is allowed until landing and the local fast-forward have
-  // both succeeded. A failed land remains inspectable and retryable.
+  const fastForward = await run(
+    "git", ["merge", "--ff-only", `origin/${state.baseBranch}`], { cwd: mainRoot },
+  );
+  if (fastForward?.code !== 0) {
+    return {
+      ...landing,
+      localSyncReason: `local main fast-forward was deferred; origin/${state.baseBranch} is landed (${reason(fastForward, "git merge failed")})`,
+    };
+  }
+
+  const localHead = await run("git", ["rev-parse", "--verify", "HEAD"], { cwd: mainRoot });
+  const originHead = await run("git", ["rev-parse", "--verify", `origin/${state.baseBranch}`], { cwd: mainRoot });
+  if (localHead?.code !== 0 || originHead?.code !== 0
+    || localHead.stdout.trim() !== originHead.stdout.trim()) {
+    return {
+      ...landing,
+      localSyncReason: `local main fast-forward completed but could not be verified against origin/${state.baseBranch}`,
+    };
+  }
+  landing.localSyncStatus = "complete";
+
+  // Cleanup remains gated on both authoritative remote landing and successful
+  // local synchronization. A deferred sync retains the clean proposal capsule
+  // and publication evidence for precise operator follow-up.
   const isWorktree = existsSync(join(worktree, ".git")) && !existsSync(join(worktree, ".git", "HEAD"));
   if (isWorktree) {
     await checked(
@@ -743,10 +784,10 @@ export async function landWorktree(run, state, { github = createGitHubClient(run
   }
   if (state.workspace) rmSync(state.workspace, { recursive: true, force: true });
   await run("git", ["branch", "-D", state.branch], { cwd: mainRoot });
-  // Publication failures retain this evidence ref. A fully landed proposal no
-  // longer needs the duplicate object pointer.
+  // Publication failures and deferred local sync retain this evidence ref. A
+  // fully synchronized landing no longer needs the duplicate object pointer.
   await run("git", ["update-ref", "-d", publication.evidenceRef], { cwd: mainRoot });
-  return state;
+  return landing;
 }
 
 function registerTools(child, definitions) {
@@ -2173,7 +2214,15 @@ export function createLand({
     let next = store.save(beginPhaseTransition(state, { status: "landing" }));
     let kind = "landed";
     try {
-      await landWorktree(run, next, { github });
+      const landed = await landWorktree(run, next, { github });
+      next = store.save({
+        ...next,
+        landedRef: landed.landedRef,
+        publishedRef: landed.publishedRef,
+        pullRequest: landed.pullRequest,
+        localSyncStatus: landed.localSyncStatus,
+        localSyncReason: landed.localSyncReason,
+      });
     } catch (error) {
       kind = "blocked";
       next = store.save(finishWorkflow(next, {
