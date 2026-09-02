@@ -1683,6 +1683,7 @@ export function createLand({
     const kind = state.reportKind || (state.status === "landed" ? "landed" : "blocked");
     const report = await deliverRequiredPacket(state, kind, state.reportFromSession || owner.sessionId, { directOnly: true });
     if (report.delivered) {
+      clearRememberedSettlement(owner);
       if (owner.externalDisposed) forgetChildOwner(owner);
       else await disposeChild(owner.sessionId, "pending report delivered");
     }
@@ -1760,16 +1761,35 @@ export function createLand({
     if (!sessionId) return false;
     let state = store.bySession(sessionId);
     if (!state) return false;
-    if (state.status === "blocked" || state.status === "landed") {
+    const reportRecovery = state.reportPending && state.reportFromSession === sessionId;
+    const settlementRecovery = state.settlementSession === sessionId
+      && SETTLEMENT_TRANSITIONS.has(state.settlementTransition);
+    const terminal = state.status === "blocked" || state.status === "landed";
+    if (terminal && !reportRecovery && !settlementRecovery) {
       void disposeChild(sessionId, `stale ${state.status} delegation child`, { force: true, wait: false });
       return true;
     }
     const pending = state.pendingPhase?.sessionUuid === sessionId ? state.pendingPhase : null;
     const recoverable = state.current?.sessionUuid === sessionId
-      || state.settlementSession === sessionId
+      || settlementRecovery
       || pending
-      || (state.reportPending && state.reportFromSession === sessionId);
+      || reportRecovery;
     if (!recoverable) return false;
+    if (terminal) {
+      // Landing can remove the completed worktree before its architect packet is
+      // delivered. Terminal recovery only needs exact handle ownership and the
+      // lifecycle listeners; active-phase sandbox and tool bindings are neither
+      // usable nor necessary here.
+      pinNonInteractiveApproval(child, { delegated: true });
+      const retained = child?.[CHILD_AGENT_HANDLE] ?? child?.[AGENT_HANDLE];
+      if (!retained) return false;
+      const role = state.qaSession === sessionId ? "qa" : "implementation";
+      const workflowRole = workflowRoleForState(state, sessionId, child?.session?.header?.delegationPhaseRole || role);
+      const owner = retainChild(retained, { child, role, workflowRole, delegationId: state.id });
+      if (reportRecovery) void retryPendingReport(owner, state);
+      else resumeRememberedSettlement(owner, state);
+      return true;
+    }
     let owner;
     if (pending) {
       owner = retainPendingChild(child, state, pending);

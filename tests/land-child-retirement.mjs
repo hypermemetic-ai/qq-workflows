@@ -125,6 +125,11 @@ function registryWith(fixture) {
     store: entries,
     get(candidateId) { return live.get(candidateId) ?? null; },
     list() { return [...live.values()]; },
+    enter(agent) {
+      const candidateId = agent.session.id;
+      live.set(candidateId, agent);
+      entries.set(candidateId, { id: candidateId, agent, announced: true });
+    },
     detachEntered(candidate) {
       if (entries.get(candidate.id) !== candidate) return;
       entries.delete(candidate.id);
@@ -132,6 +137,19 @@ function registryWith(fixture) {
       detachCount++;
     },
     detachCount: () => detachCount,
+  };
+}
+
+function parentAgent(received) {
+  return {
+    id: PARENT,
+    status: "idle",
+    inbox: { nextTurn: [], nextStep: [] },
+    session: { id: PARENT, events: [] },
+    steer(message) {
+      this.inbox.nextStep.push(message);
+      received.push(message);
+    },
   };
 }
 
@@ -326,6 +344,90 @@ try {
   assert.deepEqual(passLand.ownedChildren(), []);
   assert.equal(sent.length, 1, "terminal landing reports exactly once");
   await passLand.dispose();
+
+  // A crash/HMR can occur after landing is durable but before its required
+  // architect packet is delivered. The replacement controller must retain the
+  // exact child as the retry driver rather than treating it as stale terminal
+  // work. A missing parent leaves both the report and child recoverable.
+  const pendingEnvelopeId = passStore.load(PASS_DELEGATION).reportEnvelopeId;
+  passStore.save({
+    ...passStore.load(PASS_DELEGATION),
+    reportPending: true,
+    reportKind: "landed",
+    reportFromSession: QA_PASS,
+    settlementSession: QA_PASS,
+    settlementCallId: "report-overlapped-settlement",
+    settlementTransition: "dispose",
+  });
+  const pendingFixture = qaChild({ id: QA_PASS, delegationId: PASS_DELEGATION, cwd: worktree });
+  pendingFixture.agent.status = "idle";
+  const pendingRegistry = registryWith(pendingFixture);
+  const pendingLand = createLand({
+    ctx: context([]),
+    store: passStore,
+    agents: pendingRegistry,
+    run,
+    github,
+    env: gitEnv,
+  });
+  assert.equal(pendingLand.resumeChild(pendingFixture.agent), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assertLive(pendingRegistry, pendingFixture, "a landed child remains live while its architect report is pending");
+  assert.equal(passStore.load(PASS_DELEGATION).reportPending, true);
+  assert.equal(passStore.load(PASS_DELEGATION).settlementSession, QA_PASS, "failed report retry keeps overlapping settlement recovery durable");
+  assert.equal(pendingFixture.cancelCount(), 0, "report recovery cannot force-stop its retry driver");
+  assert.equal(pendingFixture.disposeCount(), 0);
+  assert.deepEqual(pendingLand.ownedChildren(), [QA_PASS]);
+
+  // Once the parent is live, another idempotent resume retries the same durable
+  // envelope and retires the child only after direct delivery succeeds.
+  const retriedPackets = [];
+  const parent = parentAgent(retriedPackets);
+  pendingRegistry.enter(parent);
+  assert.equal(pendingLand.resumeChild(pendingFixture.agent), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(retriedPackets.length, 1);
+  assert.equal(retriedPackets[0].id, pendingEnvelopeId, "restart retry preserves the durable report envelope id");
+  assert.equal(passStore.load(PASS_DELEGATION).reportPending, false);
+  assert.equal(passStore.load(PASS_DELEGATION).settlementSession, "", "successful report retry clears superseded settlement recovery");
+  assert.equal(pendingRegistry.get(QA_PASS), null, "reported landed child is retired after restart recovery");
+  assert.equal(pendingRegistry.list().includes(pendingFixture.agent), false);
+  assert.equal(pendingRegistry.get(PARENT), parent, "report recovery does not disturb the architect session");
+  assert.equal(pendingFixture.cancelCount(), 0);
+  assert.equal(pendingFixture.disposeCount(), 1);
+  assert.deepEqual(pendingLand.ownedChildren(), []);
+  await pendingLand.dispose();
+
+  // Terminal state can also be durable while an exact post-tool settlement is
+  // remembered. HMR must re-arm that settlement and retire at the idle/result
+  // boundary without force cancellation.
+  const rememberedCallId = "remembered-terminal-settlement";
+  passStore.save({
+    ...passStore.load(PASS_DELEGATION),
+    settlementSession: QA_PASS,
+    settlementCallId: rememberedCallId,
+    settlementTransition: "dispose",
+  });
+  const rememberedFixture = qaChild({ id: QA_PASS, delegationId: PASS_DELEGATION, cwd: worktree });
+  rememberedFixture.agent.status = "idle";
+  await commitToolResult(rememberedFixture, rememberedCallId);
+  const rememberedRegistry = registryWith(rememberedFixture);
+  const rememberedLand = createLand({
+    ctx: context([]),
+    store: passStore,
+    agents: rememberedRegistry,
+    run,
+    github,
+    env: gitEnv,
+  });
+  assert.equal(rememberedLand.resumeChild(rememberedFixture.agent), true);
+  assert.equal(await rememberedLand.whenSettled(QA_PASS), true);
+  assert.equal(rememberedRegistry.get(QA_PASS), null);
+  assert.equal(rememberedFixture.cancelCount(), 0, "remembered settlement uses idle retirement, not stale force-stop");
+  assert.equal(rememberedFixture.disposeCount(), 1);
+  assert.equal(passStore.load(PASS_DELEGATION).settlementSession, "");
+  assert.deepEqual(rememberedLand.ownedChildren(), []);
+  await rememberedLand.dispose();
 
   // HMR/restart cleanup also retires a historical idle child leaked by an older
   // controller after its delegation was already durably landed. It must never
