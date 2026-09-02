@@ -5,6 +5,7 @@ import { AGENT_HANDLE, adoptAgentHandle } from "./agent-handle.mjs";
 import { forceStopAgent, retireAgent } from "./force-stop.mjs";
 import { pinNonInteractiveApproval } from "./approval-policy.mjs";
 import { withChildSettlement } from "./child-settlement.mjs";
+import { bindChildWorkflowSend } from "./child-workflow-send.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
 import { CHILD_ORIGIN, isArchitectCandidate } from "./architect.mjs";
 import {
@@ -161,6 +162,7 @@ export function createResearch({
     if (options.force) {
       clearBinding(id);
       if (owner) {
+        clearOwnerWorkflowSend(owner);
         clearOwnerLifecycle(owner, { notifyFailure: false });
         // detachEntered emits agent/disposed synchronously. Mark disposal before
         // detaching so releaseChild treats this as an owned stop.
@@ -193,6 +195,7 @@ export function createResearch({
           log(ctx, "warn", `qq-workflows: failed to dispose research child ${id} (${reason}): ${error instanceof Error ? error.message : String(error)}`);
         } finally {
           if (disposed) {
+            clearOwnerWorkflowSend(owner);
             try { if (owner.child?.[AGENT_HANDLE] === owner.handle) delete owner.child[AGENT_HANDLE]; } catch { /* non-extensible Agent */ }
             if (owners.get(id) === owner) owners.delete(id);
           } else {
@@ -261,6 +264,83 @@ export function createResearch({
     owner.lifecycleOffs = offs;
   }
 
+  function childSendRefusal(reason) {
+    return { status: "refused", reason };
+  }
+
+  async function sendFromOwnedChild(owner, { agent, message } = {}) {
+    if (closing) return childSendRefusal("workflow_send is unavailable because the owning controller is closing");
+    if (!owner || owner.disposePromise || owners.get(owner.sessionId) !== owner
+      || owner.child !== agent || sessionIdOf(agent) !== owner.sessionId) {
+      return childSendRefusal("workflow_send requires the exact current owned child");
+    }
+    if (typeof message !== "string" || !message.trim()) {
+      return childSendRefusal("workflow_send requires a non-empty message");
+    }
+
+    const state = store.byDelegation(owner.delegationId);
+    const phase = currentPhase(state);
+    if (!state || state.id !== owner.delegationId) {
+      return childSendRefusal("workflow_send has no durable delegation for this child");
+    }
+    if (state.status === "completed" || state.status === "blocked" || !phase.sessionUuid) {
+      return childSendRefusal(`delegation is terminal (${state.status})`);
+    }
+    if (phase.sessionUuid !== owner.sessionId
+      || phase.role !== owner.workflowRole
+      || phase.phaseEpoch !== owner.phaseEpoch) {
+      return childSendRefusal("workflow_send caller is not the durable current workflow phase");
+    }
+
+    const liveChild = agents?.get?.(phase.sessionUuid);
+    const liveParent = agents?.get?.(state.parentSessionUuid);
+    if (liveChild !== owner.child || sessionIdOf(liveChild) !== phase.sessionUuid) {
+      return childSendRefusal("current workflow child is not owned and live");
+    }
+    if (!liveParent || sessionIdOf(liveParent) !== state.parentSessionUuid || !isArchitectCandidate(liveParent)) {
+      return childSendRefusal("owning workflow parent is not live");
+    }
+
+    const relay = relayOf(ctx);
+    if (!relay || typeof relay.send !== "function") {
+      return childSendRefusal("workflow_send requires qq-relay");
+    }
+    try {
+      return await relay.send({
+        fromId: phase.sessionUuid,
+        to: state.parentSessionUuid,
+        message,
+        delivery: "default",
+      });
+    } catch (error) {
+      return childSendRefusal(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function bindOwnerWorkflowSend(owner, state) {
+    const phase = currentPhase(state);
+    if (!owner) return false;
+    if (phase.sessionUuid !== owner.sessionId) {
+      clearOwnerWorkflowSend(owner);
+      return false;
+    }
+    owner.delegationId = state.id;
+    owner.workflowRole = phase.role;
+    owner.phaseEpoch = phase.phaseEpoch;
+    const previous = owner.workflowSendOff;
+    owner.workflowSendOff = bindChildWorkflowSend(owner.child, {
+      send: (request) => sendFromOwnedChild(owner, request),
+    });
+    try { previous?.(); } catch { /* replacement binding is authoritative */ }
+    return true;
+  }
+
+  function clearOwnerWorkflowSend(owner) {
+    const dispose = owner?.workflowSendOff;
+    if (owner) owner.workflowSendOff = null;
+    try { dispose?.(); } catch { /* teardown is best effort */ }
+  }
+
   function retain(created, child) {
     const id = sessionIdOf(child);
     if (!id) throw new Error("research AgentHandle has no child session");
@@ -278,6 +358,10 @@ export function createResearch({
       settlements: new Map(),
       lifecycleOffs: [],
       disposePromise: null,
+      delegationId: "",
+      workflowRole: "",
+      phaseEpoch: 0,
+      workflowSendOff: null,
     };
     owners.set(id, owner);
     installOwnerLifecycle(owner);
@@ -443,6 +527,7 @@ export function createResearch({
 
   function bindReview(child, state) {
     miniQaSetup(child?.ctx ?? child);
+    bindOwnerWorkflowSend(owners.get(sessionIdOf(child)), state);
     const oracle = createResearchOracle(state.root);
     clearBinding(sessionIdOf(child));
     const dispose = bindMiniQaSubmit(child, {
@@ -544,6 +629,7 @@ export function createResearch({
 
   function bindResearch(child, state) {
     ensureMiniResearchMounted(child);
+    bindOwnerWorkflowSend(owners.get(sessionIdOf(child)), state);
     const runtime = runtimeFor(state);
     clearBinding(sessionIdOf(child));
     const dispose = bindMiniResearch(child, {
@@ -643,6 +729,7 @@ export function createResearch({
     const owner = owners.get(id);
     const disposing = Boolean(owner?.disposePromise);
     if (owner) {
+      clearOwnerWorkflowSend(owner);
       clearOwnerLifecycle(owner, { notifyFailure: !disposing });
       owners.delete(id);
       if (!disposing) {
@@ -744,7 +831,10 @@ export function createResearch({
     for (const id of [...bindings.keys()]) clearBinding(id);
     // HMR detaches ownership only. Live DSH handles remain on their Agents and
     // the next controller reclaims them from the shared AGENT_HANDLE capability.
-    for (const owner of owners.values()) clearOwnerLifecycle(owner);
+    for (const owner of owners.values()) {
+      clearOwnerWorkflowSend(owner);
+      clearOwnerLifecycle(owner);
+    }
     owners.clear();
   }
 

@@ -25,6 +25,7 @@ const completionWarning = "Do not combine it with any other command. <important>
 assert.match(task, /Run relevant tests with bash as needed/);
 assert.doesNotMatch(task, /run_tests|required tests/i);
 assert.match(task, /host stages and commits/);
+assert.match(task, /MUST call bash, workflow_send, or the read-only session_history/);
 assert.match(task, /no writable Git metadata or network credentials/);
 assert.equal(task.split(MINI_SWE_COMPLETION_COMMAND).length - 1, 2);
 assert.equal(task.split(completionWarning).length - 1, 2);
@@ -58,7 +59,7 @@ const miniCtx = {
   on() { return () => {}; },
 };
 miniSetup(miniCtx);
-assert.deepEqual(operations, ["allow", "get:bash", "get:bash", "register:bash"]);
+assert.deepEqual(operations, ["allow", "get:bash", "get:bash", "register:bash", "register:workflow_send"]);
 
 let failedLookups = 0;
 let failedRegistrations = 0;

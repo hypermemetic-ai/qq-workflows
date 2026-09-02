@@ -180,6 +180,8 @@ try {
   createRunning(store, { delegationId: CLOSING_LIVE_DELEGATION, child: CLOSING_LIVE_CURRENT });
 
   const live = new Map();
+  const liveParent = { session: { id: PARENT, header: {} } };
+  let parentIsLive = false;
   const resumedChildren = new Map();
   const resumeOptions = [];
   const labels = [];
@@ -190,7 +192,7 @@ try {
   const registryEntries = new Map();
   const agents = {
     store: registryEntries,
-    get(id) { return live.get(id) ?? null; },
+    get(id) { return id === PARENT && parentIsLive ? liveParent : (live.get(id) ?? null); },
     list() { return [...live.values()]; },
     detachEntered(entry) {
       if (registryEntries.get(entry.id) !== entry) return;
@@ -227,10 +229,21 @@ try {
       return fixture.handle;
     },
   };
+  const relayed = [];
   const relay = {
     hang(id, label) { labels.push({ id, label }); },
     clear() { return true; },
     alias(id) { return id === CURRENT ? "recovering" : "live"; },
+    async send(args) {
+      relayed.push(args);
+      return {
+        status: "sent",
+        message_id: `40000000-0000-4000-8000-${String(relayed.length).padStart(12, "0")}`,
+        to: args.to,
+        to_alias: "private-parent-alias",
+        delivery: args.delivery,
+      };
+    },
   };
   const ctx = {
     get(name) { return name === "qq-relay" ? relay : null; },
@@ -312,6 +325,35 @@ try {
   assert.ok(labels.some(({ id, label }) => id === CURRENT && label === `${DELEGATION_PHASE_LABEL_PREFIX}implementation`));
   assert.equal(readFileSync(store.fileFor(DELEGATION), "utf8"), originalBytes, "successful recovery never rewrites delegation state");
 
+  const recoveredSend = recovered.definitions.get("workflow_send");
+  assert.ok(recoveredSend, "recovered implementation receives child-local workflow_send");
+  assert.match(
+    (await recoveredSend.execute({ message: "parent?" }, { agent: recovered.agent })).reason,
+    /parent is not live/,
+  );
+  assert.equal(relayed.length, 0, "missing live parent refuses before relay");
+  parentIsLive = true;
+  const childReceipt = await recoveredSend.execute({ message: "implementation update" }, { agent: recovered.agent });
+  assert.deepEqual(childReceipt, { status: "sent", message_id: "40000000-0000-4000-8000-000000000001" });
+  assert.deepEqual(relayed.at(-1), {
+    fromId: CURRENT,
+    to: PARENT,
+    message: "implementation update",
+    delivery: "default",
+  });
+  assert.match(
+    (await recoveredSend.execute({ message: "foreign" }, { agent: { session: { id: CURRENT } } })).reason,
+    /unowned or stale/,
+  );
+  const beforeTransition = store.load(DELEGATION);
+  store.save({ ...beforeTransition, transitioning: true });
+  assert.match(
+    (await recoveredSend.execute({ message: "too late" }, { agent: recovered.agent })).reason,
+    /transitioning/,
+  );
+  assert.equal(relayed.length, 1);
+  store.save({ ...store.load(DELEGATION), transitioning: false });
+
   // Idempotent retry is already-live and rebinds the same exact owner without a
   // second resume or continuation.
   const retry = await land.workflowResume({ delegationId: DELEGATION, parentSessionUuid: PARENT });
@@ -373,6 +415,18 @@ try {
   assert.equal(recoveredQa.steers.length, 1);
   assert.match(recoveredQa.steers[0].content[0].text, /Keep the workspace read-only/);
   assert.equal(readFileSync(store.fileFor(QA_DELEGATION), "utf8"), qaBytes);
+  const qaSend = recoveredQa.definitions.get("workflow_send");
+  assert.ok(qaSend, "recovered QA receives child-local workflow_send");
+  assert.deepEqual(await qaSend.execute({ message: "QA update" }, { agent: recoveredQa.agent }), {
+    status: "sent",
+    message_id: "40000000-0000-4000-8000-000000000002",
+  });
+  assert.deepEqual(relayed.at(-1), {
+    fromId: QA_CURRENT,
+    to: PARENT,
+    message: "QA update",
+    delivery: "default",
+  });
 
   // A second durable record cannot steal an exact current child already bound
   // to another live delegation controller.
@@ -402,6 +456,10 @@ try {
   assert.deepEqual(stopCancel, { kind: "disposed" });
   assert.equal(live.has(LIVE_CURRENT), false);
   assert.equal(registryEntries.has(LIVE_CURRENT), false);
+  const stoppedSend = generic.definitions.get("workflow_send");
+  const terminalBytes = readFileSync(store.fileFor(LIVE_DELEGATION), "utf8");
+  assert.match((await stoppedSend.execute({ message: "after stop" }, { agent: generic.agent })).reason, /unowned or stale/);
+  assert.equal(readFileSync(store.fileFor(LIVE_DELEGATION), "utf8"), terminalBytes, "terminal child send cannot mutate durable completion");
   const stopRetry = await land.workflowStop({ delegationId: LIVE_DELEGATION, parentSessionUuid: PARENT });
   assert.equal(stopRetry.status, "ok", "blocked stop retries remain idempotent cleanup operations");
   releaseStopDispose();
@@ -429,6 +487,10 @@ try {
   assert.equal(land.ownedChildren().includes(WAKE_FAILED_CURRENT), false);
 
   await land.dispose();
+  assert.match(
+    (await recoveredSend.execute({ message: "between generations" }, { agent: recovered.agent })).reason,
+    /unowned or stale/,
+  );
 
   // HMR disposal deactivates only this controller generation and deliberately
   // leaves the DSH AgentHandle on the exact live child. A replacement
@@ -440,7 +502,20 @@ try {
   assert.equal(resumeCalls, 4, "HMR adoption does not perform another DSH resume");
   assert.deepEqual(replacementLand.ownedChildren(), [CURRENT]);
   assert.equal(recovered.definitions.has("run_tests"), false, "replacement controller does not restore removed host-test tooling");
+  const beforeHmrSend = relayed.length;
+  assert.deepEqual(await recoveredSend.execute({ message: "after HMR" }, { agent: recovered.agent }), {
+    status: "sent",
+    message_id: `40000000-0000-4000-8000-${String(beforeHmrSend + 1).padStart(12, "0")}`,
+  });
+  assert.equal(relayed.length, beforeHmrSend + 1);
+  assert.deepEqual(relayed.at(-1), {
+    fromId: CURRENT,
+    to: PARENT,
+    message: "after HMR",
+    delivery: "default",
+  });
   await replacementLand.dispose();
+  assert.match((await recoveredSend.execute({ message: "disposed" }, { agent: recovered.agent })).reason, /unowned or stale/);
 
   // If HMR starts while DSH is restoring an inactive exact session, disposal
   // waits for the accepted recovery transition. The transition may retain and

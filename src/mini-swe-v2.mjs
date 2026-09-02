@@ -82,7 +82,7 @@ export function renderMiniSweTask(task, info) {
     "**CRITICAL REQUIREMENTS:**",
     "",
     "- Your response SHOULD include reasoning text explaining what you're doing",
-    "- Your response MUST call bash or the read-only session_history tool at least once",
+    "- Your response MUST call bash, workflow_send, or the read-only session_history tool at least once",
     "- Use session_history only for compacted current-session context: search with 1–5 literal clues, expand an exact seq with context, then verify referenced files/current state",
     "- Directory or environment variable changes are not persistent. Every action is executed in a new subshell.",
     "- However, you can prefix any action with `MY_ENV_VAR=MY_VALUE cd /path/to/working/dir && ...` or write/load environment variables from files",
