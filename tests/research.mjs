@@ -21,7 +21,11 @@ writeFileSync(join(repo, "README.md"), "fixture repository\n");
 const parentId = "session-44444444-4444-4444-8444-444444444444";
 const parent = { session: { id: parentId, header: { cwd: repo } }, options: {} };
 const sent = [];
+// Keep historical children for transcript assertions, separately from the DSH
+// live registry whose entries must disappear on completed settlement.
 const children = [];
+const liveChildren = new Map();
+const liveEntries = new Map();
 
 function childContext() {
   const registered = [];
@@ -82,7 +86,14 @@ function childContext() {
 }
 
 const agents = {
-  get(id) { return children.find((child) => child.session.id === id); },
+  store: liveEntries,
+  get(id) { return liveChildren.get(id); },
+  list() { return [...liveChildren.values()]; },
+  detachEntered(entry) {
+    if (liveEntries.get(entry.id) !== entry) return;
+    liveEntries.delete(entry.id);
+    liveChildren.delete(entry.id);
+  },
   async create(options) {
     const ctx = childContext();
     const child = {
@@ -103,6 +114,8 @@ const agents = {
     options.setup?.(ctx);
     const handle = { agent: child, async dispose() { child.disposeCount++; child.disposed = true; } };
     children.push(child);
+    liveChildren.set(child.session.id, child);
+    liveEntries.set(child.session.id, { id: child.session.id, agent: child, announced: true });
     return handle;
   },
 };
@@ -380,6 +393,9 @@ assert.equal(children[0].disposeCount, 0, "matching result alone does not dispos
 await setAgentStatus(children[0], "idle");
 assert.equal(await research.whenSettled(children[0].session.id), true);
 assert.equal(children[0].disposeCount, 1, "research child disposes after exact result commit and idle");
+assert.equal(agents.get(children[0].session.id), undefined, "settled research child leaves agents.get");
+assert.equal(agents.list().includes(children[0]), false, "settled research child leaves agents.list");
+assert.equal(agents.store.has(children[0].session.id), false, "settled research child detaches from the concrete registry");
 const review = children[1];
 assert.equal(review.session.header.kind, "mini-qa");
 assert.deepEqual(
@@ -422,6 +438,9 @@ assert.equal(review.disposeCount, 0, "idle alone cannot settle QA before the mat
 await commitToolResult(review, reviewCallId, { isError: true });
 assert.equal(await research.whenSettled(review.session.id), true);
 assert.equal(review.disposeCount, 1, "saved QA pass settles after its matching error envelope commits and the child is idle");
+assert.equal(agents.get(review.session.id), undefined, "settled research QA leaves agents.get");
+assert.equal(agents.list().includes(review), false, "settled research QA leaves agents.list");
+assert.equal(agents.store.has(review.session.id), false, "settled research QA detaches from the concrete registry");
 assert.equal(sent.length, 2);
 assert.equal(sent[0].to, children[0].session.id);
 assert.equal(sent[0].message, "Check the fixture carefully.");

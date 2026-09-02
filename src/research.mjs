@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 
 import { AGENT_HANDLE, adoptAgentHandle } from "./agent-handle.mjs";
-import { forceStopAgent } from "./force-stop.mjs";
+import { forceStopAgent, retireAgent } from "./force-stop.mjs";
 import { pinNonInteractiveApproval } from "./approval-policy.mjs";
 import { withChildSettlement } from "./child-settlement.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
@@ -187,11 +187,8 @@ export function createResearch({
       owner.disposePromise = (async () => {
         let disposed = false;
         try {
-          if (!owner.handle || typeof owner.handle.dispose !== "function") {
-            throw new Error("owned child has no recoverable AgentHandle");
-          }
-          await owner.handle.dispose();
-          disposed = true;
+          disposed = await retireAgent({ agents, agent: owner.child, handle: owner.handle });
+          if (!disposed) throw new Error("exact child remained in the live agent registry");
         } catch (error) {
           log(ctx, "warn", `qq-workflows: failed to dispose research child ${id} (${reason}): ${error instanceof Error ? error.message : String(error)}`);
         } finally {

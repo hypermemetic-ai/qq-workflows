@@ -30,7 +30,7 @@ import { materializeTaskArtifact } from "./task-artifact.mjs";
 import { createQaVerdict } from "./qa-verdict.mjs";
 import { RepoOracle } from "./repo-oracle.mjs";
 import { AGENT_HANDLE, adoptAgentHandle } from "./agent-handle.mjs";
-import { forceStopAgent } from "./force-stop.mjs";
+import { forceStopAgent, retireAgent } from "./force-stop.mjs";
 import { pinNonInteractiveApproval } from "./approval-policy.mjs";
 import { assertChildSandbox, isolatedCommand, isolatedShellCommand, pinChildSandbox } from "./child-isolation.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
@@ -1453,23 +1453,31 @@ export function createLand({
       clearOwnerLifecycle(owner);
       clearChildLabels(ctx, owner);
       owner.disposePromise = (async () => {
+        let retired = false;
         try {
-          await owner.handle?.dispose?.();
+          retired = await retireAgent({ agents, agent: owner.child, handle: owner.handle });
+          if (!retired) throw new Error("exact child remained in the live agent registry");
         } catch (error) {
           logLine(
             ctx,
             "warn",
-            `qq-workflows: failed to dispose ${owner.role} child ${sessionId} (${reason}): ${error instanceof Error ? error.message : String(error)}`,
+            `qq-workflows: failed to retire ${owner.role} child ${sessionId} (${reason}): ${error instanceof Error ? error.message : String(error)}`,
           );
         } finally {
-          clearControllerBinding(owner);
-          clearRetainedHandle(owner);
-          if (childOwners.get(sessionId) === owner) childOwners.delete(sessionId);
+          if (retired) {
+            clearControllerBinding(owner);
+            clearRetainedHandle(owner);
+            if (childOwners.get(sessionId) === owner) childOwners.delete(sessionId);
+          } else {
+            // Preserve the exact handle and durable controller binding so HMR or
+            // an explicit retry can finish a partially failed live teardown.
+            owner.disposePromise = null;
+          }
         }
+        return retired;
       })();
     }
-    await owner.disposePromise;
-    return true;
+    return owner.disposePromise;
   }
 
   async function releaseChild(agentOrId) {
@@ -1675,6 +1683,7 @@ export function createLand({
     const kind = state.reportKind || (state.status === "landed" ? "landed" : "blocked");
     const report = await deliverRequiredPacket(state, kind, state.reportFromSession || owner.sessionId, { directOnly: true });
     if (report.delivered) {
+      clearRememberedSettlement(owner);
       if (owner.externalDisposed) forgetChildOwner(owner);
       else await disposeChild(owner.sessionId, "pending report delivered");
     }
@@ -1752,16 +1761,35 @@ export function createLand({
     if (!sessionId) return false;
     let state = store.bySession(sessionId);
     if (!state) return false;
-    if (state.status === "blocked") {
-      void disposeChild(sessionId, "stale blocked delegation child", { force: true, wait: false });
+    const reportRecovery = state.reportPending && state.reportFromSession === sessionId;
+    const settlementRecovery = state.settlementSession === sessionId
+      && SETTLEMENT_TRANSITIONS.has(state.settlementTransition);
+    const terminal = state.status === "blocked" || state.status === "landed";
+    if (terminal && !reportRecovery && !settlementRecovery) {
+      void disposeChild(sessionId, `stale ${state.status} delegation child`, { force: true, wait: false });
       return true;
     }
     const pending = state.pendingPhase?.sessionUuid === sessionId ? state.pendingPhase : null;
     const recoverable = state.current?.sessionUuid === sessionId
-      || state.settlementSession === sessionId
+      || settlementRecovery
       || pending
-      || (state.reportPending && state.reportFromSession === sessionId);
+      || reportRecovery;
     if (!recoverable) return false;
+    if (terminal) {
+      // Landing can remove the completed worktree before its architect packet is
+      // delivered. Terminal recovery only needs exact handle ownership and the
+      // lifecycle listeners; active-phase sandbox and tool bindings are neither
+      // usable nor necessary here.
+      pinNonInteractiveApproval(child, { delegated: true });
+      const retained = child?.[CHILD_AGENT_HANDLE] ?? child?.[AGENT_HANDLE];
+      if (!retained) return false;
+      const role = state.qaSession === sessionId ? "qa" : "implementation";
+      const workflowRole = workflowRoleForState(state, sessionId, child?.session?.header?.delegationPhaseRole || role);
+      const owner = retainChild(retained, { child, role, workflowRole, delegationId: state.id });
+      if (reportRecovery) void retryPendingReport(owner, state);
+      else resumeRememberedSettlement(owner, state);
+      return true;
+    }
     let owner;
     if (pending) {
       owner = retainPendingChild(child, state, pending);
@@ -2059,9 +2087,15 @@ export function createLand({
     }
   }
 
+  async function retireSettledChild(sessionId, reason) {
+    if (!await disposeChild(sessionId, reason)) {
+      throw new Error(`completed child ${sessionId} did not leave the live agent registry`);
+    }
+  }
+
   async function applyPostResultTransition({ sessionId, delegationId, transition, result }) {
     if (transition === "dispose") {
-      await disposeChild(sessionId, "tool result settled");
+      await retireSettledChild(sessionId, "tool result settled");
       return;
     }
     if (transition === "finish_land") {
@@ -2069,7 +2103,7 @@ export function createLand({
       if (!current) return;
       if (current.status === "landed"
         || (current.status === "blocked" && current.qaVerdict?.verdict !== "pass")) {
-        await disposeChild(sessionId, "qa pass already settled");
+        await retireSettledChild(sessionId, "qa pass already settled");
         return;
       }
       if (current.qaSession !== sessionId || current.qaVerdict?.verdict !== "pass") {
@@ -2079,7 +2113,7 @@ export function createLand({
       return;
     }
     if (transition === "start_qa") {
-      await disposeChild(sessionId, "implementation done tool result settled");
+      await retireSettledChild(sessionId, "implementation done tool result settled");
       const current = store.load(delegationId);
       if (!current || current.status !== "reviewing") return;
       if (current.qaSession) {
@@ -2101,7 +2135,7 @@ export function createLand({
       return;
     }
     if (transition === "start_implementation") {
-      await disposeChild(sessionId, "qa look 1 tool result settled");
+      await retireSettledChild(sessionId, "qa look 1 tool result settled");
       const current = store.load(delegationId);
       if (!current || current.status !== "revising") return;
       if (current.implementationSession) {
