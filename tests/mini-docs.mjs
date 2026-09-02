@@ -125,16 +125,16 @@ assert.equal(miniDocs.isMiniDocsAgent({ header: { kind: "mini-docs" } }), true);
 assert.equal(miniDocs.isMiniDocsAgent({ session: { header: { agentPreset: "mini-docs" } } }), true);
 assert.equal(miniDocs.isMiniDocsAgent({ session: { header: { kind: "mini" } } }), false);
 
-// Persona, bash-only catalog, and Mini's model-visible command-only schema.
+// Persona, optional current-history recall, and Mini's model-visible command schema.
 const mounted = createAgentContext();
 miniDocs.miniDocsSetup(mounted.ctx, { env: { QQ_INDEX_WRITER_PROMPT: WRITER_PROMPT } });
 assert.equal(mounted.runtimeSuppressed(), true);
-assert.deepEqual(mounted.sections, [{
-  name: "deployment:persona",
-  order: 0,
-  text: WRITER_PROMPT,
-  complete: true,
-}]);
+assert.equal(mounted.sections.length, 1);
+assert.equal(mounted.sections[0].name, miniDocs.MINI_DOCS_PERSONA_SECTION);
+assert.equal(mounted.sections[0].order, miniDocs.MINI_DOCS_PERSONA_ORDER);
+assert.equal(mounted.sections[0].complete, true);
+assert.ok(mounted.sections[0].text.startsWith(WRITER_PROMPT));
+assert.match(mounted.sections[0].text, /session_history/);
 assert.deepEqual(mounted.operations.slice(0, 2), ["allow", "register:bash"]);
 assert.deepEqual(mounted.surfaceCalls, [{ agent: mounted.agent, names: ["bash", "read_image"] }]);
 assert.deepEqual(mounted.registeredTools.map((tool) => tool.name), ["bash"]);
@@ -153,7 +153,7 @@ assert.equal(Object.isFrozen(headlessMount.provideCalls[0].value), true);
 assert.equal(Object.isFrozen(headlessMount.provideCalls[0].value.surface), true);
 assert.equal(typeof headlessMount.provideCalls[0].value.surface.allow, "function");
 assert.deepEqual(headlessMount.operations.slice(0, 2), ["provide:qq-core", "register:bash"]);
-assert.equal(headlessMount.sections[0].text, WRITER_PROMPT);
+assert.ok(headlessMount.sections[0].text.startsWith(WRITER_PROMPT));
 assert.deepEqual(headlessMount.registeredTools.map((tool) => tool.name), ["bash"]);
 
 // The docs sentinel concludes successfully without reaching host bash or Land.
@@ -233,7 +233,7 @@ assert.equal(completionAgent.steers.length, 0);
 const nextGeneration = await import(`../src/mini-docs.mjs?hmr=${Date.now()}`);
 nextGeneration.miniDocsSetup(mounted.ctx, { env: { QQ_INDEX_WRITER_PROMPT: "replacement writer" } });
 assert.equal(mounted.sections.length, 1);
-assert.equal(mounted.sections[0].text, "replacement writer");
+assert.ok(mounted.sections[0].text.startsWith("replacement writer"));
 assert.deepEqual(mounted.registeredTools.map((tool) => tool.name), ["bash"]);
 assert.deepEqual(mounted.surfaceCalls, [
   { agent: mounted.agent, names: ["bash", "read_image"] },
@@ -254,11 +254,11 @@ try {
   process.env.QQ_INDEX_WRITER_PROMPT = "process writer";
   const processEnvMount = createAgentContext();
   miniDocs.miniDocsSetup(processEnvMount.ctx);
-  assert.equal(processEnvMount.sections[0].text, "process writer");
+  assert.ok(processEnvMount.sections[0].text.startsWith("process writer"));
 
   const configEnvMount = createAgentContext();
   miniDocs.miniDocsSetup(configEnvMount.ctx, { env: { QQ_INDEX_WRITER_PROMPT: "config writer" } });
-  assert.equal(configEnvMount.sections[0].text, "config writer");
+  assert.ok(configEnvMount.sections[0].text.startsWith("config writer"));
 
   const blankEnvMount = createAgentContext();
   assert.throws(
@@ -307,7 +307,7 @@ try {
   const pluginDocsHarness = createAgentContext();
   const pluginDocsAgent = docsAgent("plugin-docs", pluginDocsHarness.ctx, { agentPreset: "mini-docs" });
   assert.equal(pluginInternals.syncLiveDelegationChild(null, pluginDocsAgent), false);
-  assert.equal(pluginDocsHarness.sections[0].text, WRITER_PROMPT);
+  assert.ok(pluginDocsHarness.sections[0].text.startsWith(WRITER_PROMPT));
   assert.deepEqual(pluginDocsHarness.registeredTools.map((tool) => tool.name), ["bash"]);
   await pluginDocsHarness.registeredTools[0].execute(
     { command: miniDocs.MINI_DOCS_COMPLETION_COMMAND },

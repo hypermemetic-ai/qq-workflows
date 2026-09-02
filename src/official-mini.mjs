@@ -11,6 +11,7 @@ import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { open } from "node:fs/promises";
 
 import { armChildSettlement } from "./child-settlement.mjs";
+import { childServicesReady, installChildConversationServices, messageHasChildAction, observeLiveChildSetup } from "./child-conversation-services.mjs";
 import { allowInherited, MINI_INHERITED_TOOLS } from "./hide-harness.mjs";
 import {
   OBSERVATION_HEAD_CHARS,
@@ -58,7 +59,7 @@ export {
 export const MINI_KIND = "mini-code";
 export const LEGACY_MINI_KIND = "mini-coder";
 const OLDEST_MINI_KIND = "mini";
-export const MINI_TOOLS = Object.freeze(["bash"]);
+export const MINI_TOOLS = Object.freeze(["bash", "session_history"]);
 export const MINI_GLOBAL_ALLOW = MINI_INHERITED_TOOLS;
 export const MINI_PERSONA_SECTION = "deployment:persona";
 export const MINI_PERSONA_ORDER = 0;
@@ -83,7 +84,7 @@ const FORMAT_ERROR = [
   "Tool call error:",
   "",
   "<error>",
-  "Every response needs to use bash at least once.",
+  "Every response needs to call bash or session_history at least once.",
   "</error>",
   "",
   "Call the bash tool with your command as the argument:",
@@ -157,7 +158,7 @@ function messageHasAction(event) {
   if (event?.type !== "assistant/message") return undefined;
   const content = event?.data?.message?.content ?? event?.message?.content;
   if (!Array.isArray(content)) return false;
-  return content.some((block) => block?.type === "tool-call" && block?.name === "bash");
+  return messageHasChildAction(event, ["bash"]);
 }
 
 function markCompleted(agent) {
@@ -663,8 +664,9 @@ export function miniSetup(agentCtx) {
   // are intentionally restart-only: they expose a different tool surface and
   // have no disposer that can make an in-place HMR migration honest.
   if (isOfficialWrappedBash(currentBash)) {
-    ownMount(agentCtx, [installFormatRecovery(agentCtx)]);
-    return;
+    const childServices = installChildConversationServices(agentCtx);
+    ownMount(agentCtx, [installFormatRecovery(agentCtx), childServices]);
+    return childServicesReady(childServices);
   }
 
   const prompt = promptOf(agentCtx);
@@ -674,7 +676,10 @@ export function miniSetup(agentCtx) {
     lifts.push(installMiniPersona(agentCtx));
     lifts.push(installMiniTools(agentCtx));
     lifts.push(installFormatRecovery(agentCtx));
+    const childServices = installChildConversationServices(agentCtx);
+    lifts.push(childServices);
     ownMount(agentCtx, lifts);
+    return childServicesReady(childServices);
   } catch (error) {
     for (const lift of lifts.reverse()) {
       try { lift?.(); } catch { /* best effort rollback */ }
@@ -686,7 +691,8 @@ export function miniSetup(agentCtx) {
 /** Restore the persisted Mini preset when DSH recreates a child session. */
 export function ensureMiniMounted(agent) {
   if (!isMiniAgent(agent)) return false;
-  miniSetup(agent?.ctx ?? agent);
+  const readiness = miniSetup(agent?.ctx ?? agent);
+  observeLiveChildSetup(agent, readiness, "mini-code");
   return true;
 }
 

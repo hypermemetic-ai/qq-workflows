@@ -27,7 +27,7 @@ assert.equal(isMiniAgent({ header: { kind: "mini-coder" } }), true);
 assert.equal(isMiniAgent({ header: { kind: "mini" } }), true);
 assert.equal(isMiniAgent({ header: { kind: "mini" } }), true, "legacy coding sessions still resume");
 assert.equal(MINI_RESEARCH_KIND, "mini-research");
-assert.deepEqual(MINI_RESEARCH_TOOLS, ["bash"]);
+assert.deepEqual(MINI_RESEARCH_TOOLS, ["bash", "session_history"]);
 assert.deepEqual(MINI_RESEARCH_GLOBAL_ALLOW, ["bash", "read_image"]);
 assert.equal(MINI_RESEARCH_SYSTEM_PROMPT, "You are a helpful assistant that can research questions using a computer.");
 assert.equal(MINI_RESEARCH_SYSTEM_PROMPT.includes("\n"), false, "the v2 system prompt stays one line");
@@ -36,6 +36,7 @@ assert.match(researchTask, /^Please research the exact question in question\.md\
 assert.doesNotMatch(researchTask, /THIS QUESTION MUST NOT BE INLINED/);
 assert.match(researchTask, /## Recommended Workflow/);
 assert.match(researchTask, /web-search 'query'/);
+assert.match(researchTask, /session_history/);
 assert.match(researchTask, new RegExp(MINI_SWE_COMPLETION_COMMAND));
 const reviewTask = renderMiniResearchReviewTask({
   question: "QUESTION CONTENT MUST NOT BE INLINED",

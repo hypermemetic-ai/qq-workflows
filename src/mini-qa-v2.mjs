@@ -2,7 +2,7 @@ export const MINI_QA_SYSTEM_PROMPT = "You are a helpful assistant that can revie
 
 export const MINI_QA_KIND = "mini-qa";
 export const LEGACY_MINI_QA_KIND = "mini-review";
-export const MINI_QA_TOOL_NAMES = Object.freeze(["bash", "submit_review"]);
+export const MINI_QA_TOOL_NAMES = Object.freeze(["bash", "submit_review", "session_history"]);
 
 function deepFreeze(value) {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
@@ -59,7 +59,8 @@ export function renderMiniQaTask({ task } = {}) {
     "- Bash runs with the entire workspace read-only and without network credentials; do not attempt mutations.",
     "- You may run tests through bash as ordinary review work when useful; no host-required test result is implied by the phase delta.",
     "- Do not run the Mini completion command.",
-    "- Every response must call bash or submit_review.",
+    "- Every response must call bash, session_history, or submit_review.",
+    "- Use session_history only for compacted current-session context: search with 1–5 literal clues, expand an exact seq with context, then verify referenced files/current state.",
     "- It is correct to report zero findings.",
     '- Finish with "submit_review".',
   ].join("\n");

@@ -107,10 +107,10 @@ assert.match(rendered, /may run tests through bash as ordinary review work when 
 assert.match(rendered, /no host-required test result is implied by the phase delta/i);
 assert.doesNotMatch(rendered, /Required tests already passed|Do not rerun them/);
 assert.match(rendered, /Do not run the Mini completion command/);
-assert.match(rendered, /Every response must call bash or submit_review/);
+assert.match(rendered, /Every response must call bash, session_history, or submit_review/);
 assert.doesNotMatch(rendered, /sed -i|COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT/);
 assert.ok(rendered.endsWith('- Finish with "submit_review".'));
-assert.deepEqual(MINI_QA_TOOL_NAMES, ["bash", "submit_review"]);
+assert.deepEqual(MINI_QA_TOOL_NAMES, ["bash", "submit_review", "session_history"]);
 for (const removed of [
   "MINI_QA_GREP_SCHEMA",
   "MINI_QA_GLOB_SCHEMA",
@@ -275,7 +275,7 @@ assert.equal(runtimeSuppressed, true);
 assert.equal(mountedSections.length, 1);
 assert.equal(mountedSections[0].complete, true);
 assert.equal(mountedSections[0].text, MINI_QA_SYSTEM_PROMPT);
-assert.deepEqual(mountedTools.map((tool) => tool.name), MINI_QA_TOOL_NAMES);
+assert.deepEqual(mountedTools.map((tool) => tool.name), MINI_QA_TOOL_NAMES.filter((name) => name !== "session_history"));
 assert.deepEqual(surfaceCalls, [{ agent: mountAgent, names: ["bash", "read_image"] }]);
 assert.deepEqual(mountOperations.slice(0, 3), ["allow", "register:bash", "register:submit_review"]);
 assert.equal(mountedTools[0].isConcurrencySafe(), false);
@@ -308,7 +308,7 @@ const formatAgent = {
 mountedListeners.find((item) => item.type === "agent/turn-stopping").fn({ agent: formatAgent });
 assert.equal(steers.length, 1);
 const steerText = steers[0].content[0].text;
-assert.match(steerText, /bash or submit_review/);
+assert.match(steerText, /bash, session_history, or submit_review/);
 assert.doesNotMatch(steerText, /\b(?:grep|glob|view)\b|COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT/);
 
 const durablyCompletedAgent = {
@@ -325,7 +325,7 @@ mountedListeners.find((item) => item.type === "agent/turn-stopping").fn({ agent:
 const nextGeneration = await import(`../src/mini-qa.mjs?hmr=${Date.now()}`);
 nextGeneration.miniQaSetup(mountCtx);
 assert.equal(mountedSections.length, 1);
-assert.deepEqual(mountedTools.map((tool) => tool.name), MINI_QA_TOOL_NAMES);
+assert.deepEqual(mountedTools.map((tool) => tool.name), MINI_QA_TOOL_NAMES.filter((name) => name !== "session_history"));
 assert.deepEqual(surfaceCalls, [
   { agent: mountAgent, names: ["bash", "read_image"] },
   { agent: mountAgent, names: ["bash", "read_image"] },

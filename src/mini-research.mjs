@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { armChildSettlement } from "./child-settlement.mjs";
+import { childServicesReady, installChildConversationServices, messageHasChildAction, observeLiveChildSetup } from "./child-conversation-services.mjs";
 import { allowInherited, MINI_INHERITED_TOOLS } from "./hide-harness.mjs";
 import { buildMiniObservationSync } from "./official-mini.mjs";
 import {
@@ -16,7 +17,7 @@ import {
 export * from "./mini-research-v2.mjs";
 
 export const MINI_RESEARCH_KIND = "mini-research";
-export const MINI_RESEARCH_TOOLS = Object.freeze(["bash"]);
+export const MINI_RESEARCH_TOOLS = Object.freeze(["bash", "session_history"]);
 export const MINI_RESEARCH_GLOBAL_ALLOW = MINI_INHERITED_TOOLS;
 export const MINI_RESEARCH_PERSONA_SECTION = "deployment:persona";
 export const MINI_RESEARCH_PERSONA_ORDER = 0;
@@ -37,7 +38,7 @@ const FORMAT_ERROR = [
   "Tool call error:",
   "",
   "<error>",
-  "Every response needs to use the bash tool at least once.",
+  "Every response needs to call bash or session_history at least once.",
   "</error>",
   "",
   "Use bash to inspect the capsule, gather evidence, or finish with the completion command alone.",
@@ -99,7 +100,7 @@ function messageHasBash(event) {
   if (event?.type !== "assistant/message") return undefined;
   const content = event?.data?.message?.content ?? event?.message?.content;
   if (!Array.isArray(content)) return false;
-  return content.some((block) => block?.type === "tool-call" && block?.name === "bash");
+  return messageHasChildAction(event, ["bash"]);
 }
 
 function installFormatRecovery(agentCtx) {
@@ -347,15 +348,19 @@ export function miniResearchSetup(agentCtx) {
   allowInherited(agentCtx, agentCtx.agent, MINI_INHERITED_TOOLS);
   const tools = toolsOf(agentCtx);
   if (tools?.get?.("bash")?.[WRAPPED]) {
-    ownMount(agentCtx, [installFormatRecovery(agentCtx)]);
-    return;
+    const childServices = installChildConversationServices(agentCtx);
+    ownMount(agentCtx, [installFormatRecovery(agentCtx), childServices]);
+    return childServicesReady(childServices);
   }
   const lifts = [];
   try {
     lifts.push(installPersona(agentCtx));
     lifts.push(installTools(agentCtx));
     lifts.push(installFormatRecovery(agentCtx));
+    const childServices = installChildConversationServices(agentCtx);
+    lifts.push(childServices);
     ownMount(agentCtx, lifts);
+    return childServicesReady(childServices);
   } catch (error) {
     for (const lift of lifts.reverse()) try { lift?.(); } catch { /* rollback */ }
     throw error;
@@ -364,7 +369,8 @@ export function miniResearchSetup(agentCtx) {
 
 export function ensureMiniResearchMounted(agent) {
   if (!isMiniResearchAgent(agent)) return false;
-  miniResearchSetup(agent?.ctx ?? agent);
+  const readiness = miniResearchSetup(agent?.ctx ?? agent);
+  observeLiveChildSetup(agent, readiness, "mini-research");
   return true;
 }
 
