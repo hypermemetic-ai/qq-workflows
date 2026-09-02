@@ -34,6 +34,9 @@ const env = {
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_CONFIG_GLOBAL: "/dev/null",
 };
+delete env.GIT_DIR;
+delete env.GIT_WORK_TREE;
+delete env.GIT_INDEX_FILE;
 const git = (...args) => execFileSync("git", args, { cwd: repo, env, encoding: "utf8" }).trim();
 git("init", "-b", "main");
 git("config", "user.name", "mini-qa-test");
@@ -42,6 +45,8 @@ mkdirSync(join(repo, "src"));
 writeFileSync(join(repo, "src/auth.py"), "def authorize(user):\n    return False\nunchanged = True\n");
 writeFileSync(join(repo, "src/delete.txt"), "anchor\nremove me\ntail\n");
 writeFileSync(join(repo, "src/delete-first.txt"), "only line\n");
+writeFileSync(join(repo, "src/old.py"), "unchanged first\nold second\nunchanged third\nunchanged fourth\n");
+writeFileSync(join(repo, "src/pure-old.py"), "pure first\npure second\n");
 git("add", ".");
 git("commit", "-m", "base");
 const base = git("rev-parse", "HEAD");
@@ -49,6 +54,9 @@ writeFileSync(join(repo, "src/auth.py"), "def authorize(user):\n    return user.
 writeFileSync(join(repo, "src/delete.txt"), "anchor\ntail\n");
 writeFileSync(join(repo, "src/delete-first.txt"), "");
 writeFileSync(join(repo, "head-only.txt"), "head evidence\n");
+git("mv", "src/old.py", "src/new.py");
+git("mv", "src/pure-old.py", "src/pure-new.py");
+writeFileSync(join(repo, "src/new.py"), "unchanged first\nnew second\nunchanged third\nunchanged fourth\n");
 git("add", ".");
 git("commit", "-m", "head");
 const head = git("rev-parse", "HEAD");
@@ -116,6 +124,23 @@ await assert.rejects(
   /must not contain \.\./,
 );
 
+const renamedFinding = await new RepoOracle(base, head, { gitDir: join(repo, ".git") }).validateFindings([
+  { path: "src/new.py", line: 2, body: "The renamed implementation changed this behavior." },
+]);
+assert.equal(renamedFinding.length, 1);
+await assert.rejects(
+  new RepoOracle(base, head, { gitDir: join(repo, ".git") }).validateFindings([
+    { path: "src/new.py", line: 1, body: "This line is unchanged across the rename." },
+  ]),
+  /not a HEAD-side changed line/,
+);
+await assert.rejects(
+  new RepoOracle(base, head, { gitDir: join(repo, ".git") }).validateFindings([
+    { path: "src/pure-new.py", line: 1, body: "A pure rename has no changed HEAD lines." },
+  ]),
+  /not in the diff|not a HEAD-side changed line/,
+);
+
 const noInspectionOracle = new RepoOracle(base, head, {
   gitDir: join(repo, ".git"),
   command: async () => assert.fail("empty findings must not launch Git inspection"),
@@ -128,6 +153,9 @@ const scopedOracle = new RepoOracle(base, head, {
   async command(args) {
     scopedCommands.push(args);
     if (args[0] === "ls-tree") return { code: 0, stdout: "src/auth.py\n", stderr: "" };
+    if (args.includes("--name-status")) {
+      return { code: 0, stdout: "R090\0src/old-auth.py\0src/auth.py\0", stderr: "" };
+    }
     if (args[0] === "diff") {
       return {
         code: 0,
@@ -151,10 +179,16 @@ const duplicatePathFindings = await scopedOracle.validateFindings([
   { path: "src/auth.py", line: 2, body: "second defect" },
 ]);
 assert.equal(duplicatePathFindings.length, 2);
-assert.deepEqual(scopedCommands.map(([command]) => command).sort(), ["diff", "ls-tree"]);
-for (const args of scopedCommands) {
-  assert.deepEqual(args.slice(args.indexOf("--") + 1), [":(literal)src/auth.py"]);
-}
+assert.deepEqual(scopedCommands.map(([command]) => command).sort(), ["diff", "diff", "ls-tree"]);
+const renameCommand = scopedCommands.find((args) => args.includes("--name-status"));
+assert.deepEqual(renameCommand.slice(renameCommand.indexOf("--") + 1), []);
+const treeCommand = scopedCommands.find(([command]) => command === "ls-tree");
+assert.deepEqual(treeCommand.slice(treeCommand.indexOf("--") + 1), [":(literal)src/auth.py"]);
+const patchCommand = scopedCommands.find((args) => args[0] === "diff" && !args.includes("--name-status"));
+assert.deepEqual(patchCommand.slice(patchCommand.indexOf("--") + 1), [
+  ":(literal)src/auth.py",
+  ":(literal)src/old-auth.py",
+]);
 
 assert.equal(MINI_QA_SYSTEM_PROMPT, "You are a helpful assistant that can review code changes in a repository.");
 const rendered = renderMiniQaTask({

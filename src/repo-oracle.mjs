@@ -18,6 +18,22 @@ function trimFinalEmptyLine(lines) {
   return lines;
 }
 
+function parseRenameSources(source) {
+  const fields = String(source ?? "").split("\0");
+  if (fields.at(-1) === "") fields.pop();
+  const sources = new Map();
+  for (let index = 0; index < fields.length;) {
+    const status = fields[index++];
+    const oldPath = fields[index++];
+    const newPath = fields[index++];
+    if (!/^R\d{1,3}$/.test(status) || !oldPath || !newPath) {
+      throw new Error("cannot parse renamed paths");
+    }
+    sources.set(newPath, oldPath);
+  }
+  return sources;
+}
+
 export function parseChangedLineIndex(source, headPaths = new Set()) {
   const index = new Map();
   let path = "";
@@ -134,14 +150,28 @@ export class RepoOracle {
 
   async #changedLinesFor(paths) {
     const pathspecs = paths.map((path) => `:(literal)${path}`);
-    const [tree, diff] = await Promise.all([
+    // A destination-only pathspec turns a rename into a new-file patch. Find
+    // rename pairs globally, then keep the potentially large patch path-bounded.
+    const [tree, renames] = await Promise.all([
       this.#command(["ls-tree", "-r", "--name-only", this.#headSha, "--", ...pathspecs]),
       this.#command([
-        "diff", "--no-ext-diff", "--no-textconv", "-U0", "--no-color",
-        `${this.#baseSha}...${this.#headSha}`, "--", ...pathspecs,
+        "diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z",
+        "--find-renames", "--diff-filter=R", `${this.#baseSha}...${this.#headSha}`, "--",
       ]),
     ]);
     if (tree.code !== 0) throw new Error(String(tree.stderr || "cannot inspect head tree").trim());
+    if (renames.code !== 0) throw new Error(String(renames.stderr || "cannot inspect changed lines").trim());
+    const renameSources = parseRenameSources(renames.stdout);
+    const diffPaths = new Set(paths);
+    for (const path of paths) {
+      const source = renameSources.get(path);
+      if (source) diffPaths.add(source);
+    }
+    const diff = await this.#command([
+      "diff", "--no-ext-diff", "--no-textconv", "-U0", "--no-color", "--find-renames",
+      `${this.#baseSha}...${this.#headSha}`, "--",
+      ...[...diffPaths].map((path) => `:(literal)${path}`),
+    ]);
     if (diff.code !== 0) throw new Error(String(diff.stderr || "cannot inspect changed lines").trim());
     const headPaths = new Set(trimFinalEmptyLine(String(tree.stdout).split("\n")));
     return parseChangedLineIndex(diff.stdout, headPaths);
