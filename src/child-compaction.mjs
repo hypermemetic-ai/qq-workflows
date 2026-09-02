@@ -50,7 +50,13 @@ export function isPreviousCompiledCheckpoint(message) {
 export function previousCompiledSummary(message) {
   if (!isPreviousCompiledCheckpoint(message)) return "";
   const text = textContent(message.content);
-  return text.slice(text.indexOf(COMPILER_MARKER));
+  const lines = text.slice(text.indexOf(COMPILER_MARKER)).replace(/\r\n/g, "\n").split("\n");
+  const last = lines.findLastIndex((line) => line !== "");
+  // BasicCompactionEngine owns this outer envelope. Remove only its closing tag
+  // at the final logical position; identical user content inside the summary is
+  // not a boundary.
+  if (last >= 0 && lines[last] === "</compacted-summary>") lines.splice(last, 1);
+  return lines.join("\n").trimEnd();
 }
 
 /** Map replayed DSH messages to their exact durable events by stable message id. */
@@ -59,7 +65,12 @@ export function adaptDshMessages(input, agent) {
   const events = agent?.session?.events;
   if (!Array.isArray(events)) throw new TypeError("child conversation compiler requires the owner session log");
   const byMessageId = new Map();
+  const toolNameByCallId = new Map();
   for (const event of events) {
+    if (event?.type === "tool/call") {
+      const callId = event.data?.callId ?? event.data?.id;
+      if (callId != null && typeof event.data?.name === "string") toolNameByCallId.set(callId, event.data.name);
+    }
     const message = messageOfEvent(event);
     if (!message?.id || !Number.isSafeInteger(event?.seq)) continue;
     if (byMessageId.has(message.id)) throw new Error(`child conversation compiler found duplicate message id ${String(message.id)}`);
@@ -80,11 +91,16 @@ export function adaptDshMessages(input, agent) {
     else if (event.type === "tool/result" || message.source?.kind === "tool") role = "tool-result";
     else if (event.type === "user/message") role = "user";
     else throw new Error(`child conversation compiler cannot adapt ${String(event.type)}`);
+    const resultBlock = role === "tool-result"
+      ? message.content?.find?.((block) => block?.type === "tool-result")
+      : undefined;
+    const callId = message.source?.callId ?? resultBlock?.toolCallId ?? resultBlock?.callId;
     records.push({
       seq: event.seq,
       role,
       content: message.content,
       source: message.source,
+      ...(role === "tool-result" ? { toolName: toolNameByCallId.get(callId) ?? "" } : {}),
     });
   }
   return { records, previousSummary };

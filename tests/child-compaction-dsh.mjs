@@ -99,7 +99,7 @@ assert.deepEqual(replacement.sourceEventSeqs, [first.startSeq, first.summarySeq,
 assert.equal(session.events[first.endSeq].type, "compaction/end");
 
 // Repeated compaction consumes the prior deterministic checkpoint, merges it once,
-// and keeps fresh chronology before retained older chronology.
+// and keeps retained older chronology before the fresh chronological tail.
 session.append("step/end", { turn: 1, step: 1 });
 const freshUser = session.append("user/message", userText("followup"), { surfaceOp: "append" });
 session.append("step/start", { turn: 1, step: 2 });
@@ -117,9 +117,9 @@ for (const match of compiled.matchAll(/#(\d+)/g)) {
   const seq = Number(match[1]);
   assert.equal(session.events[seq]?.seq, seq, `compiled seq ${seq} resolves in the exact DSH log`);
 }
-assert.match(compiled, new RegExp(`#${freshAssistant.seq} assistant:`));
-const retainedOlder = compiled.indexOf("#3 assistant:");
-if (retainedOlder >= 0) assert.ok(compiled.indexOf(`#${freshAssistant.seq} assistant:`) < retainedOlder);
+assert.match(compiled, new RegExp(`Fresh cancellation verification passed[\\s\\S]*\\(#${freshAssistant.seq}\\)`));
+const retainedOlder = compiled.indexOf("Implemented the retry workflow");
+if (retainedOlder >= 0) assert.ok(retainedOlder < compiled.indexOf("Fresh cancellation verification passed"));
 assert.deepEqual(replacement.sourceEventSeqs, [second.startSeq, second.summarySeq, ...second.shadowedSeqs]);
 assert.deepEqual(llmCalls, []);
 await mountedSession.owner.dispose();
@@ -153,7 +153,7 @@ const mountedTools = await mounted(tools);
 const paired = await mountedTools.engine.compactRegion(1, 5, mountedTools.agent, new AbortController().signal);
 assert.deepEqual(paired.shadowedSeqs, [1, 3, 5]);
 const pairedText = tools.events[paired.summarySeq].data.summary[0].text;
-assert.match(pairedText, /bash\(command=/);
+assert.match(pairedText, /\* bash "npm test" \(#3\)/);
 assert.doesNotMatch(pairedText, /SECRET_TOOL_BODY/);
 assert.deepEqual(tools.events[tools.surface.nodes[0]].sourceEventSeqs, [paired.startSeq, paired.summarySeq, 1, 3, 5]);
 await mountedTools.owner.dispose();
