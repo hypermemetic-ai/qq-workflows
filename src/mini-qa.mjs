@@ -22,11 +22,38 @@ export const MINI_QA_PERSONA_ORDER = 0;
 const MINI_QA_BINDING = Symbol.for("qq.miniQaBinding");
 const MINI_QA_COMPLETED = Symbol.for("qq.miniQaCompleted");
 const MINI_QA_MOUNT = Symbol.for("qq.miniQaMount");
+const MINI_QA_SHARED_STATE = Symbol.for("@hypermemetic-ai/qq-workflows/mini-qa-shared-state/v1");
 const MOUNT_GENERATION = Object.freeze({});
-const bindings = new WeakMap();
-const completed = new WeakSet();
-const consecutiveFormatErrors = new WeakMap();
-const lastResponseHadTool = new WeakMap();
+
+function sharedMiniQaState() {
+  const existing = globalThis[MINI_QA_SHARED_STATE];
+  if (existing?.bindings instanceof WeakMap && existing?.completed instanceof WeakSet
+    && existing?.consecutiveFormatErrors instanceof WeakMap
+    && existing?.lastResponseHadTool instanceof WeakMap) return existing;
+  const state = Object.freeze({
+    bindings: new WeakMap(),
+    completed: new WeakSet(),
+    consecutiveFormatErrors: new WeakMap(),
+    lastResponseHadTool: new WeakMap(),
+  });
+  Object.defineProperty(globalThis, MINI_QA_SHARED_STATE, {
+    value: state,
+    configurable: false,
+    enumerable: false,
+    writable: false,
+  });
+  return state;
+}
+
+// DSH may expose non-extensible Agent/Session proxies, so symbol properties are
+// only a cross-version fallback. The global symbol-owned weak collections are
+// authoritative across live query-import/HMR module generations.
+const {
+  bindings,
+  completed,
+  consecutiveFormatErrors,
+  lastResponseHadTool,
+} = sharedMiniQaState();
 
 const FORMAT_ERROR = [
   "Tool call error:",
@@ -82,7 +109,7 @@ export function bindMiniQaSubmit(agent, oracleOrBinding, maybeSubmit) {
 
 function bindingFor(agent) {
   for (const key of keysOf(agent)) {
-    const binding = key[MINI_QA_BINDING] ?? bindings.get(key);
+    const binding = bindings.get(key) ?? key[MINI_QA_BINDING];
     if (binding?.oracle && typeof binding.submit === "function") return binding;
   }
   return null;
@@ -211,7 +238,10 @@ export function buildMiniQaTools() {
         let verdict;
         let findings;
         if (!bindingIsCompleted(binding, exec?.agent)) {
-          findings = await binding.oracle.validateFindings(args.findings);
+          if (!Array.isArray(args.findings)) throw new Error("findings must be an array");
+          findings = args.findings.length === 0
+            ? []
+            : await binding.oracle.validateFindings(args.findings);
           verdict = createQaVerdict(reviewFindingsToVerdictInput(findings));
         }
         const result = await binding.submit({ agent: exec?.agent, verdict, findings });
