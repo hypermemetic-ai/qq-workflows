@@ -1,38 +1,36 @@
 # `@hypermemetic-ai/qq-workflows`
 
-Private ESM package for named DSH workflows, delegation capsules, QA, and GitHub PR landing. Its main module is [`src/plugin.mjs`](src/plugin.mjs); the package metadata explicitly allows the core to boot when this plugin is absent.
+A private ESM package for named DSH workflows, delegation capsules, QA, and GitHub PR landing. It provides an optional plugin—the package metadata explicitly states that core boots when this plugin is absent. The default package entry point is [`src/plugin.mjs`](src/plugin.mjs); [`package.json`](package.json) is the authoritative export and task manifest.
 
-## Commands
+## Run the established checks
 
-No repository-specific install or start script is declared. The established validation command is:
+The only repository command declared by the package is:
 
 ```sh
 npm test
 ```
 
-The test script clears `GIT_DIR` and `GIT_WORK_TREE`, then runs the tracked Node test sequence serially. See [`package.json`](package.json) for the authoritative export map and exact test list.
+That script first unsets `GIT_DIR` and `GIT_WORK_TREE`, then runs the Node test programs in sequence. No install, start, or standalone run script is declared in [`package.json`](package.json), so this repository does not establish one here.
 
-## System map
+## Route a change
 
-Use the package export map as the public-module index; the links below select the main boundaries rather than inventorying every export.
+The package export map provides the safest high-level map. Start at the declared source boundary, use the focused tests for the same area while iterating, and run the full `npm test` chain before considering the change complete.
 
-- **Plugin and workflow control:** [`src/plugin.mjs`](src/plugin.mjs) is the package entry point. Start workflow-level changes in [`src/architect.mjs`](src/architect.mjs), with [`src/command.mjs`](src/command.mjs), [`src/context.mjs`](src/context.mjs), and [`src/transition.mjs`](src/transition.mjs) as separately exported surfaces.
-- **Delegation, mini execution, and QA:** [`src/official-mini.mjs`](src/official-mini.mjs) backs the `./mini-code` export; [`src/delegation-store.mjs`](src/delegation-store.mjs), [`src/child-isolation.mjs`](src/child-isolation.mjs), [`src/mini-qa.mjs`](src/mini-qa.mjs), and [`src/qa-verdict.mjs`](src/qa-verdict.mjs) are the corresponding focused entry points.
-- **Git and PR landing:** route landing work through [`src/land.mjs`](src/land.mjs), [`src/land-tools.mjs`](src/land-tools.mjs), and [`src/git.mjs`](src/git.mjs).
-- **Research:** the exported research surface starts at [`src/research.mjs`](src/research.mjs), with separate evidence, web, session, oracle, and store modules under `src/`; begin with [`src/research-evidence.mjs`](src/research-evidence.mjs) when changing the shared evidence layer.
-
-## Change routing
-
-| Change | Canonical source | Closest established tests |
+| Area | Canonical source entry points | Focused tests |
 | --- | --- | --- |
-| Workflow architecture | [`src/architect.mjs`](src/architect.mjs) | [`tests/architect-bash.mjs`](tests/architect-bash.mjs), [`tests/architect-case-context.mjs`](tests/architect-case-context.mjs), [`tests/architect-repository-index.mjs`](tests/architect-repository-index.mjs), [`tests/architecture-pin.mjs`](tests/architecture-pin.mjs) |
-| Landing and publication | [`src/land.mjs`](src/land.mjs), [`src/land-tools.mjs`](src/land-tools.mjs) | [`tests/land.mjs`](tests/land.mjs), [`tests/land-publication.mjs`](tests/land-publication.mjs) |
-| Git handling | [`src/git.mjs`](src/git.mjs) | [`tests/git-geometry.mjs`](tests/git-geometry.mjs) |
-| QA | [`src/mini-qa.mjs`](src/mini-qa.mjs), [`src/qa-verdict.mjs`](src/qa-verdict.mjs) | [`tests/mini-qa.mjs`](tests/mini-qa.mjs) |
-| Research pipeline | [`src/research.mjs`](src/research.mjs) | [`tests/research.mjs`](tests/research.mjs), [`tests/research-evidence.mjs`](tests/research-evidence.mjs), [`tests/research-web.mjs`](tests/research-web.mjs), [`tests/research-sessions.mjs`](tests/research-sessions.mjs), [`tests/research-oracle.mjs`](tests/research-oracle.mjs) |
-| Mini Docs | [`src/mini-docs.mjs`](src/mini-docs.mjs) | [`tests/mini-docs.mjs`](tests/mini-docs.mjs) |
-| Child isolation | [`src/child-isolation.mjs`](src/child-isolation.mjs) | [`tests/child-isolation.mjs`](tests/child-isolation.mjs) |
+| Plugin and command surface | [`src/plugin.mjs`](src/plugin.mjs), [`src/tools.mjs`](src/tools.mjs), [`src/command.mjs`](src/command.mjs), [`src/settings.mjs`](src/settings.mjs) | [`tests/settings.mjs`](tests/settings.mjs), [`tests/snapshots.mjs`](tests/snapshots.mjs) |
+| Architecture and repository context | [`src/architect.mjs`](src/architect.mjs), [`src/repository-index.mjs`](src/repository-index.mjs), [`src/repo-oracle.mjs`](src/repo-oracle.mjs) | [`tests/architect-case-context.mjs`](tests/architect-case-context.mjs), [`tests/architect-repository-index.mjs`](tests/architect-repository-index.mjs), [`tests/architecture-pin.mjs`](tests/architecture-pin.mjs) |
+| Mini execution, QA, and docs | [`src/official-mini.mjs`](src/official-mini.mjs) (the `./mini-code` export), [`src/mini-qa.mjs`](src/mini-qa.mjs), [`src/mini-docs.mjs`](src/mini-docs.mjs) | [`tests/mini-swe-v2.mjs`](tests/mini-swe-v2.mjs), [`tests/mini-qa.mjs`](tests/mini-qa.mjs), [`tests/mini-docs.mjs`](tests/mini-docs.mjs) |
+| Research | [`src/research.mjs`](src/research.mjs), [`src/mini-research.mjs`](src/mini-research.mjs), [`src/research-evidence.mjs`](src/research-evidence.mjs), [`src/research-web.mjs`](src/research-web.mjs), [`src/research-sessions.mjs`](src/research-sessions.mjs) | [`tests/research.mjs`](tests/research.mjs), [`tests/mini-research.mjs`](tests/mini-research.mjs), [`tests/research-evidence.mjs`](tests/research-evidence.mjs), [`tests/research-web.mjs`](tests/research-web.mjs), [`tests/research-sessions.mjs`](tests/research-sessions.mjs) |
+| Git and PR landing | [`src/land.mjs`](src/land.mjs), [`src/land-tools.mjs`](src/land-tools.mjs), [`src/git.mjs`](src/git.mjs) | [`tests/land.mjs`](tests/land.mjs), [`tests/land-publication.mjs`](tests/land-publication.mjs), [`tests/git-geometry.mjs`](tests/git-geometry.mjs) |
+| Child conversations and compilation | [`src/child-conversation-services.mjs`](src/child-conversation-services.mjs), [`src/child-compaction.mjs`](src/child-compaction.mjs), [`src/child-isolation.mjs`](src/child-isolation.mjs), [`src/conversation-compiler/index.mjs`](src/conversation-compiler/index.mjs) | [`tests/child-conversation-services.mjs`](tests/child-conversation-services.mjs), [`tests/child-compaction.mjs`](tests/child-compaction.mjs), [`tests/child-isolation.mjs`](tests/child-isolation.mjs), [`tests/conversation-compiler.mjs`](tests/conversation-compiler.mjs) |
 
-Run the full suite after changes to heavily shared modules—especially [`src/official-mini.mjs`](src/official-mini.mjs), [`src/research-evidence.mjs`](src/research-evidence.mjs), and [`src/child-settlement.mjs`](src/child-settlement.mjs), which have the highest relative-module fan-in.
+Focused filenames are routing aids, not evidence that a test is exhaustive.
 
-For the separate reviewer-benchmark workspace, start with [`experiments/grok-reviewer-benchmark/README.md`](experiments/grok-reviewer-benchmark/README.md).
+## Repository boundaries
+
+- [`src/`](src/plugin.mjs) contains every declared package export and is the only directory selected by the package `files` field.
+- [`tests/`](tests/architect-bash.mjs) contains the package test chain. The chain is explicit in [`package.json`](package.json); add or rename a test there when it must join the standard run.
+- [`experiments/`](experiments/grok-reviewer-benchmark/README.md) is outside both the package `files` selection and the `npm test` command. Follow the documentation within an experiment rather than assuming the package workflow; the reviewer benchmark starts at its [`README`](experiments/grok-reviewer-benchmark/README.md).
+
+Because the package is declared with `"type": "module"`, its JavaScript sources and test entry points use the ESM `.mjs` boundary. Changes to public entry points should begin with the export map in [`package.json`](package.json), rather than relying on similarly named files alone.
