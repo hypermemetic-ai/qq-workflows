@@ -17,7 +17,7 @@ import {
 export * from "./mini-research-v2.mjs";
 
 export const MINI_RESEARCH_KIND = "mini-research";
-export const MINI_RESEARCH_TOOLS = Object.freeze(["bash", "session_history"]);
+export const MINI_RESEARCH_TOOLS = Object.freeze(["bash", "workflow_send", "session_history"]);
 export const MINI_RESEARCH_GLOBAL_ALLOW = MINI_INHERITED_TOOLS;
 export const MINI_RESEARCH_PERSONA_SECTION = "deployment:persona";
 export const MINI_RESEARCH_PERSONA_ORDER = 0;
@@ -38,7 +38,7 @@ const FORMAT_ERROR = [
   "Tool call error:",
   "",
   "<error>",
-  "Every response needs to call bash or session_history at least once.",
+  "Every response needs to call bash, workflow_send, or session_history at least once.",
   "</error>",
   "",
   "Use bash to inspect the capsule, gather evidence, or finish with the completion command alone.",

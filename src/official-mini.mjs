@@ -59,7 +59,7 @@ export {
 export const MINI_KIND = "mini-code";
 export const LEGACY_MINI_KIND = "mini-coder";
 const OLDEST_MINI_KIND = "mini";
-export const MINI_TOOLS = Object.freeze(["bash", "session_history"]);
+export const MINI_TOOLS = Object.freeze(["bash", "workflow_send", "session_history"]);
 export const MINI_GLOBAL_ALLOW = MINI_INHERITED_TOOLS;
 export const MINI_PERSONA_SECTION = "deployment:persona";
 export const MINI_PERSONA_ORDER = 0;
@@ -84,7 +84,7 @@ const FORMAT_ERROR = [
   "Tool call error:",
   "",
   "<error>",
-  "Every response needs to call bash or session_history at least once.",
+  "Every response needs to call bash, workflow_send, or session_history at least once.",
   "</error>",
   "",
   "Call the bash tool with your command as the argument:",

@@ -9,7 +9,7 @@ const ADAPTER_NAME = "qq-workflows:mini-docs";
 
 export const MINI_DOCS_KIND = "mini-docs";
 export const MINI_DOCS_COMPLETION_COMMAND = "echo COMPLETE_DOCS_AND_EXIT";
-export const MINI_DOCS_TOOLS = Object.freeze(["bash", "session_history"]);
+export const MINI_DOCS_TOOLS = Object.freeze(["bash", "workflow_send", "session_history"]);
 export const MINI_DOCS_PERSONA_SECTION = "deployment:persona";
 export const MINI_DOCS_PERSONA_ORDER = 0;
 
@@ -27,7 +27,7 @@ const FORMAT_ERROR = [
   "Tool call error:",
   "",
   "<error>",
-  "Every response needs to call bash or session_history.",
+  "Every response needs to call bash, workflow_send, or session_history.",
   "</error>",
   "",
   "Call bash to continue working, or finish by calling bash with:",
@@ -121,7 +121,7 @@ function writerPrompt(config) {
   if (typeof prompt !== "string" || prompt.trim() === "") {
     throw new Error("mini-docs requires a non-blank QQ_INDEX_WRITER_PROMPT");
   }
-  return `${prompt}\n\n${CHILD_SESSION_HISTORY_INSTRUCTIONS}`;
+  return `${prompt}\n\n${CHILD_SESSION_HISTORY_INSTRUCTIONS}\nUse workflow_send({message}) to contact the owning parent without supplying routing identifiers.`;
 }
 
 function installPersona(holder, config) {

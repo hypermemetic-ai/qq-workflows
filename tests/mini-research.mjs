@@ -27,7 +27,7 @@ assert.equal(isMiniAgent({ header: { kind: "mini-coder" } }), true);
 assert.equal(isMiniAgent({ header: { kind: "mini" } }), true);
 assert.equal(isMiniAgent({ header: { kind: "mini" } }), true, "legacy coding sessions still resume");
 assert.equal(MINI_RESEARCH_KIND, "mini-research");
-assert.deepEqual(MINI_RESEARCH_TOOLS, ["bash", "session_history"]);
+assert.deepEqual(MINI_RESEARCH_TOOLS, ["bash", "workflow_send", "session_history"]);
 assert.deepEqual(MINI_RESEARCH_GLOBAL_ALLOW, ["bash", "read_image"]);
 assert.equal(MINI_RESEARCH_SYSTEM_PROMPT, "You are a helpful assistant that can research questions using a computer.");
 assert.equal(MINI_RESEARCH_SYSTEM_PROMPT.includes("\n"), false, "the v2 system prompt stays one line");
@@ -152,9 +152,9 @@ const mountCtx = {
   on() { return () => {}; },
 };
 miniResearchSetup(mountCtx);
-assert.deepEqual(operations, ["allow", "get:bash", "get:bash", "register:bash"]);
+assert.deepEqual(operations, ["allow", "get:bash", "get:bash", "register:bash", "register:workflow_send"]);
 assert.deepEqual(allowed, [{ agent: mountAgent, names: ["bash", "read_image"] }]);
-assert.deepEqual(registered, ["bash"]);
+assert.deepEqual(registered, ["bash", "workflow_send"]);
 assert.equal(sections[0].complete, true);
 
 // A failed surface assignment aborts before the host bash is read or wrapped.

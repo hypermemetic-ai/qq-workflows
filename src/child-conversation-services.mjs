@@ -1,11 +1,13 @@
 import { installChildCompaction } from "./child-compaction.mjs";
 import { installChildSessionHistory } from "./child-session-history.mjs";
+import { installChildWorkflowSend } from "./child-workflow-send.mjs";
 
-/** Compose the two current-child services under one rollback-safe HMR lift. */
+/** Compose current-child recall, messaging, and compaction under one rollback-safe HMR lift. */
 export function installChildConversationServices(agentCtx) {
   const lifts = [];
   try {
     lifts.push(installChildSessionHistory(agentCtx));
+    lifts.push(installChildWorkflowSend(agentCtx));
     lifts.push(installChildCompaction(agentCtx));
   } catch (error) {
     for (const lift of lifts.reverse()) {
@@ -54,6 +56,6 @@ export function messageHasChildAction(event, completionTools) {
   if (event?.type !== "assistant/message") return undefined;
   const content = event?.data?.message?.content ?? event?.message?.content;
   if (!Array.isArray(content)) return false;
-  const names = new Set([...(completionTools ?? []), "session_history"]);
+  const names = new Set([...(completionTools ?? []), "session_history", "workflow_send"]);
   return content.some((block) => block?.type === "tool-call" && names.has(block?.name));
 }

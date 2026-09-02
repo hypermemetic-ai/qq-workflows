@@ -35,6 +35,7 @@ import { pinNonInteractiveApproval } from "./approval-policy.mjs";
 import { assertChildSandbox, isolatedCommand, isolatedShellCommand, pinChildSandbox } from "./child-isolation.mjs";
 import { childCreateOptions, childRoute } from "./child-model.mjs";
 import { withChildSettlement } from "./child-settlement.mjs";
+import { bindChildWorkflowSend } from "./child-workflow-send.mjs";
 import {
   bindMiniShellIsolation,
   bindMiniSubmit,
@@ -1305,6 +1306,78 @@ export function createLand({
     }
   }
 
+  function childSendRefusal(reason) {
+    return { status: "refused", reason };
+  }
+
+  async function sendFromOwnedChild(owner, { agent, message } = {}) {
+    if (closing) return childSendRefusal("workflow_send is unavailable because the owning controller is closing");
+    if (!owner || owner.disposePromise || childOwners.get(owner.sessionId) !== owner
+      || owner.child !== agent || sessionIdOf(agent) !== owner.sessionId) {
+      return childSendRefusal("workflow_send requires the exact current owned child");
+    }
+    if (typeof message !== "string" || !message.trim()) {
+      return childSendRefusal("workflow_send requires a non-empty message");
+    }
+
+    const state = store.load(owner.delegationId);
+    if (!state || state.id !== owner.delegationId) {
+      return childSendRefusal("workflow_send has no durable delegation for this child");
+    }
+    if (state.status === "landed" || state.status === "blocked") {
+      return childSendRefusal(`delegation is terminal (${state.status})`);
+    }
+    if (state.transitioning || state.pendingPhase) {
+      return childSendRefusal("delegation is transitioning between workflow phases");
+    }
+    const current = state.current;
+    if (!current || current.sessionUuid !== owner.sessionId
+      || current.role !== owner.workflowRole
+      || current.phaseEpoch !== owner.phaseEpoch
+      || !Number.isSafeInteger(current.phaseEpoch)) {
+      return childSendRefusal("workflow_send caller is not the durable current workflow phase");
+    }
+
+    const parentSessionUuid = state.parentSessionUuid || state.architectSession;
+    const liveChild = agents?.get?.(current.sessionUuid);
+    const liveParent = agents?.get?.(parentSessionUuid);
+    if (liveChild !== owner.child || sessionIdOf(liveChild) !== current.sessionUuid) {
+      return childSendRefusal("current workflow child is not owned and live");
+    }
+    if (!liveParent || sessionIdOf(liveParent) !== parentSessionUuid || !isLandCandidate(liveParent)) {
+      return childSendRefusal("owning workflow parent is not live");
+    }
+
+    const relay = relayOf(ctx);
+    if (!relay || typeof relay.send !== "function") {
+      return childSendRefusal("workflow_send requires qq-relay");
+    }
+    try {
+      return await relay.send({
+        fromId: current.sessionUuid,
+        to: parentSessionUuid,
+        message,
+        delivery: "default",
+      });
+    } catch (error) {
+      return childSendRefusal(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function bindOwnerWorkflowSend(owner) {
+    const previous = owner.workflowSendOff;
+    owner.workflowSendOff = bindChildWorkflowSend(owner.child, {
+      send: (request) => sendFromOwnedChild(owner, request),
+    });
+    try { previous?.(); } catch { /* replacement binding is authoritative */ }
+  }
+
+  function clearOwnerWorkflowSend(owner) {
+    const dispose = owner?.workflowSendOff;
+    if (owner) owner.workflowSendOff = null;
+    try { dispose?.(); } catch { /* teardown is best effort */ }
+  }
+
   function retainChild(handle, { child = handle?.agent ?? handle, role, workflowRole, delegationId } = {}) {
     // Accepted controller transitions may finish while closing, but no caller
     // can establish ownership after the controller has drained those promises.
@@ -1323,11 +1396,19 @@ export function createLand({
     if (foreign?.active && foreign.controller !== controllerBinding) {
       throw new Error(`current workflow child ${sessionId} is owned by another live controller`);
     }
+    const durable = delegationId ? store.load(delegationId) : null;
+    const durablePhase = [durable?.current, durable?.pendingPhase]
+      .find((phase) => phase?.sessionUuid === sessionId);
+    const resolvedPhaseEpoch = durablePhase?.phaseEpoch
+      ?? child?.session?.header?.delegationPhaseEpoch
+      ?? 0;
     const existing = childOwners.get(sessionId);
     if (existing) {
       if (existing.handle !== handle) throw new Error(`land already owns child ${sessionId}`);
-      if (workflowRole) existing.workflowRole = workflowRole;
+      if (workflowRole || durablePhase?.role) existing.workflowRole = durablePhase?.role || workflowRole;
       if (delegationId) existing.delegationId = delegationId;
+      if (Number.isSafeInteger(resolvedPhaseEpoch) && resolvedPhaseEpoch > 0) existing.phaseEpoch = resolvedPhaseEpoch;
+      bindOwnerWorkflowSend(existing);
       hangChildLabels(ctx, existing);
       return existing;
     }
@@ -1337,7 +1418,8 @@ export function createLand({
       child,
       handle,
       role: role || child?.session?.header?.delegationRole || "implementation",
-      workflowRole: workflowRole || child?.session?.header?.delegationPhaseRole || (role === "qa" ? "qa" : "implementation"),
+      workflowRole: durablePhase?.role || workflowRole || child?.session?.header?.delegationPhaseRole || (role === "qa" ? "qa" : "implementation"),
+      phaseEpoch: Number.isSafeInteger(resolvedPhaseEpoch) ? resolvedPhaseEpoch : 0,
       delegationId: delegationId || child?.session?.header?.delegationId || "",
       workflowLabels: new Set(),
       disposePromise: null,
@@ -1347,6 +1429,7 @@ export function createLand({
       qaSettleOff: null,
       activeSubmissions: new Set(),
       activeTransitions: new Set(),
+      workflowSendOff: null,
       controllerRecord,
     };
     try {
@@ -1358,6 +1441,7 @@ export function createLand({
       throw new Error(`land cannot bind durable controller ownership for ${sessionId}`, { cause: error });
     }
     childOwners.set(sessionId, owner);
+    bindOwnerWorkflowSend(owner);
     hangChildLabels(ctx, owner);
     installOwnerLifecycle(owner);
     try {
@@ -1390,6 +1474,7 @@ export function createLand({
   function forgetChildOwner(owner) {
     if (!owner) return;
     clearChildTools(owner.sessionId);
+    clearOwnerWorkflowSend(owner);
     clearOwnerLifecycle(owner);
     clearChildLabels(ctx, owner);
     clearControllerBinding(owner);
@@ -1401,6 +1486,7 @@ export function createLand({
   function detachChildOwner(owner) {
     if (!owner) return false;
     clearChildTools(owner.sessionId);
+    clearOwnerWorkflowSend(owner);
     clearOwnerLifecycle(owner, { notifyFailure: false });
     clearChildLabels(ctx, owner);
     clearControllerBinding(owner);
@@ -1422,6 +1508,7 @@ export function createLand({
     if (options.force) {
       if (owner) {
         clearChildTools(sessionId);
+        clearOwnerWorkflowSend(owner);
         clearOwnerLifecycle(owner, { notifyFailure: false });
         clearChildLabels(ctx, owner);
         // detachEntered emits agent/disposed synchronously. Mark disposal before
@@ -1465,6 +1552,7 @@ export function createLand({
           );
         } finally {
           if (retired) {
+            clearOwnerWorkflowSend(owner);
             clearControllerBinding(owner);
             clearRetainedHandle(owner);
             if (childOwners.get(sessionId) === owner) childOwners.delete(sessionId);
@@ -1643,6 +1731,11 @@ export function createLand({
         taskArtifact,
         ...git,
       });
+      if (owner) {
+        owner.workflowRole = record.current.role;
+        owner.phaseEpoch = record.current.phaseEpoch;
+        bindOwnerWorkflowSend(owner);
+      }
       try {
         child.session.header.delegationId = record.delegationId;
         child.session.header.delegationPhaseEpoch = record.phaseEpoch;

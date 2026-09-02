@@ -23,7 +23,7 @@ export function renderMiniResearchTask() {
     "",
     "## Command Execution Rules",
     "",
-    "Every response must call bash or the read-only session_history tool at least once. Invoke each host evidence command as a standalone bash command:",
+    "Every response must call bash, workflow_send, or the read-only session_history tool at least once. Invoke each host evidence command as a standalone bash command:",
     "",
     "```bash",
     "web-search 'query'",

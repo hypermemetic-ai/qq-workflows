@@ -59,7 +59,7 @@ const FORMAT_ERROR = [
   "Tool call error:",
   "",
   "<error>",
-  "Every response needs to call bash, session_history, or submit_review.",
+  "Every response needs to call bash, workflow_send, session_history, or submit_review.",
   "</error>",
   "",
   "Use bash to inspect specific evidence, or finish with submit_review.",

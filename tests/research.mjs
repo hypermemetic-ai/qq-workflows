@@ -24,6 +24,7 @@ const sent = [];
 // Keep historical children for transcript assertions, separately from the DSH
 // live registry whose entries must disappear on completed settlement.
 const children = [];
+let parentIsLive = false;
 const liveChildren = new Map();
 const liveEntries = new Map();
 
@@ -87,7 +88,7 @@ function childContext() {
 
 const agents = {
   store: liveEntries,
-  get(id) { return liveChildren.get(id); },
+  get(id) { return id === parentId && parentIsLive ? parent : liveChildren.get(id); },
   list() { return [...liveChildren.values()]; },
   detachEntered(entry) {
     if (liveEntries.get(entry.id) !== entry) return;
@@ -140,7 +141,16 @@ let coreRootLookups = 0;
 const ctx = {
   get(name) {
     if (name === "qq-relay") return {
-      async send(message) { sent.push(message); return { status: "sent" }; },
+      async send(message) {
+        sent.push(message);
+        return {
+          status: "sent",
+          message_id: `cccccccc-cccc-4ccc-8ccc-${String(sent.length).padStart(12, "0")}`,
+          to: message.to,
+          to_alias: "private-alias",
+          delivery: message.delivery,
+        };
+      },
     };
     if (name === "qq-core") return {
       gitRootForDelegate(cwd) {
@@ -286,7 +296,7 @@ const resumedReviewHandle = { agent: resumedReview, async dispose() { resumedRev
 Object.defineProperty(resumedReview, AGENT_HANDLE, { value: resumedReviewHandle, configurable: true });
 const restartedResearch = createResearch({ ctx, store: restartedStore, agents, parentDir: restartDir, env: {} });
 assert.equal(restartedResearch.resumeChild(resumedReview), true, "resumeChild rebinds the upgraded reviewing child");
-assert.deepEqual(resumedReviewCtx.registered.map((tool) => tool.name), ["bash", "submit_review"]);
+assert.deepEqual(resumedReviewCtx.registered.map((tool) => tool.name), ["bash", "submit_review", "workflow_send"]);
 restartedResearch.dispose();
 assert.equal(resumedReview[AGENT_HANDLE], resumedReviewHandle, "HMR detaches without dropping the live handle capability");
 const completedLegacy = restartedStore.load(reviewByQa.id);
@@ -343,7 +353,7 @@ const provider = {
   async search() { return [{ title: "Fixture", url: "https://fixture.test/evidence", snippet: "lead" }]; },
   async get(url) { return { source: url, status: 200, contentType: "text/html", content: "<p>fixture evidence supports the answer</p>" }; },
 };
-const research = createResearch({ ctx, store, agents, parentDir, webProvider: provider, env: {} });
+let research = createResearch({ ctx, store, agents, parentDir, webProvider: provider, env: {} });
 const delegationId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const started = await research.invoke({ agent: parent, question: "What does the fixture show?", delegationId });
 assert.equal(started.status, "ok", started.reason);
@@ -372,6 +382,25 @@ assert.match(spawnedResearchTask, /^Please research the exact question in questi
 assert.doesNotMatch(spawnedResearchTask, /What does the fixture show\?/);
 assert.match(spawnedResearchTask, /## Recommended Workflow/);
 assert.deepEqual(children[0].ctx.surfaceCalls, [{ agent: children[0], names: ["bash", "read_image"] }]);
+assert.deepEqual(children[0].ctx.registered.map((tool) => tool.name), ["bash", "workflow_send"]);
+const researchSend = children[0].ctx.registered.find((tool) => tool.name === "workflow_send");
+assert.match((await researchSend.execute({ message: "is parent live?" }, { agent: children[0] })).reason, /parent is not live/);
+const sentBeforeHmr = sent.length;
+research.dispose();
+assert.match((await researchSend.execute({ message: "between controllers" }, { agent: children[0] })).reason, /unowned or stale/);
+research = createResearch({ ctx, store, agents, parentDir, webProvider: provider, env: {} });
+assert.equal(research.resumeChild(children[0]), true, "replacement research controller rebinds exact live phase");
+parentIsLive = true;
+assert.deepEqual(await researchSend.execute({ message: "research update" }, { agent: children[0] }), {
+  status: "sent",
+  message_id: `cccccccc-cccc-4ccc-8ccc-${String(sentBeforeHmr + 1).padStart(12, "0")}`,
+});
+assert.deepEqual(sent.at(-1), {
+  fromId: children[0].session.id,
+  to: parentId,
+  message: "research update",
+  delivery: "default",
+});
 const researchBash = children[0].ctx.registered.find((tool) => tool.name === "bash");
 assert.equal((await researchBash.execute({ command: "web-search 'fixture'" }, { agent: children[0] })).exitCode, 0);
 assert.equal((await researchBash.execute({ command: "web-get W001" }, { agent: children[0] })).exitCode, 0);
@@ -384,6 +413,10 @@ const completed = await researchBash.execute({ command: MINI_SWE_COMPLETION_COMM
 assert.equal(completed.exitCode, 0, completed.stderr?.text);
 assert.equal(concluded, 1);
 assert.equal(children.length, 2, "accepted research spawns one fresh review context");
+assert.match(
+  (await researchSend.execute({ message: "stale research phase" }, { agent: children[0] })).reason,
+  /not the durable current workflow phase/,
+);
 assert.equal(children[0].disposeCount, 0, "accepted handler does not dispose before its tool result commits");
 await commitToolResult(children[0], "unrelated-call");
 assert.equal(children[0].disposeCount, 0, "unrelated tool results cannot settle the child");
@@ -404,7 +437,7 @@ assert.deepEqual(
   "custom QA child starts non-interactive",
 );
 assert.deepEqual(review.ctx.surfaceCalls, [{ agent: review, names: ["bash", "read_image"] }]);
-assert.deepEqual(review.ctx.registered.map((tool) => tool.name), ["bash", "submit_review"]);
+assert.deepEqual(review.ctx.registered.map((tool) => tool.name), ["bash", "submit_review", "workflow_send"]);
 const reviewBash = review.ctx.registered.find((tool) => tool.name === "bash");
 assert.equal(reviewBash.isConcurrencySafe(), false);
 assert.deepEqual(Object.keys(reviewBash.parameters.properties), ["command"]);
@@ -427,10 +460,25 @@ assert.doesNotMatch(spawnedReviewTask, /The fixture supports the answer/);
 assert.doesNotMatch(spawnedReviewTask, /"ref":"W001"/);
 assert.match(spawnedReviewTask, /Use ordinary bash in this capsule/);
 assert.match(spawnedReviewTask, /unsupported claims/);
+const reviewSend = review.ctx.registered.find((tool) => tool.name === "workflow_send");
+const sentBeforeReview = sent.length;
+assert.deepEqual(await reviewSend.execute({ message: "review update" }, { agent: review }), {
+  status: "sent",
+  message_id: `cccccccc-cccc-4ccc-8ccc-${String(sentBeforeReview + 1).padStart(12, "0")}`,
+});
+assert.deepEqual(sent.at(-1), {
+  fromId: review.session.id,
+  to: parentId,
+  message: "review update",
+  delivery: "default",
+});
 const submit = review.ctx.registered.find((tool) => tool.name === "submit_review");
 const reviewCallId = "research-review-call";
 const reviewResult = await submit.execute({ findings: [] }, { agent: review, callId: reviewCallId, concludeTurn() {} });
 assert.equal(reviewResult.status, "ok", reviewResult.reason);
+const completedBytes = readFileSync(store.fileFor(started.delegationId), "utf8");
+assert.match((await reviewSend.execute({ message: "after completion" }, { agent: review })).reason, /terminal \(completed\)/);
+assert.equal(readFileSync(store.fileFor(started.delegationId), "utf8"), completedBytes, "terminal child send leaves durable completion unchanged");
 assert.equal(review.disposeCount, 0, "QA remains live until its result is durable and idle");
 await setAgentStatus(review, "idle");
 await new Promise((resolve) => setTimeout(resolve, 0));
@@ -441,13 +489,17 @@ assert.equal(review.disposeCount, 1, "saved QA pass settles after its matching e
 assert.equal(agents.get(review.session.id), undefined, "settled research QA leaves agents.get");
 assert.equal(agents.list().includes(review), false, "settled research QA leaves agents.list");
 assert.equal(agents.store.has(review.session.id), false, "settled research QA detaches from the concrete registry");
-assert.equal(sent.length, 2);
+assert.equal(sent.length, 4);
 assert.equal(sent[0].to, children[0].session.id);
 assert.equal(sent[0].message, "Check the fixture carefully.");
-assert.equal(sent[1].to, parentId);
-assert.match(sent[1].message, /Citation check: passed/);
-assert.match(sent[1].message, /Review findings: 0/);
-assert.match(sent[1].message, /Immutable answer path:/);
+assert.deepEqual(sent.slice(1, 3).map(({ fromId, to, message, delivery }) => ({ fromId, to, message, delivery })), [
+  { fromId: children[0].session.id, to: parentId, message: "research update", delivery: "default" },
+  { fromId: review.session.id, to: parentId, message: "review update", delivery: "default" },
+]);
+assert.equal(sent[3].to, parentId);
+assert.match(sent[3].message, /Citation check: passed/);
+assert.match(sent[3].message, /Review findings: 0/);
+assert.match(sent[3].message, /Immutable answer path:/);
 assert.equal(store.load(started.delegationId).status, "completed");
 const mixedCaseStop = await research.workflowStop({
   delegationId: mixedCaseDelegationId,

@@ -137,7 +137,7 @@ assert.ok(mounted.sections[0].text.startsWith(WRITER_PROMPT));
 assert.match(mounted.sections[0].text, /session_history/);
 assert.deepEqual(mounted.operations.slice(0, 2), ["allow", "register:bash"]);
 assert.deepEqual(mounted.surfaceCalls, [{ agent: mounted.agent, names: ["bash", "read_image"] }]);
-assert.deepEqual(mounted.registeredTools.map((tool) => tool.name), ["bash"]);
+assert.deepEqual(mounted.registeredTools.map((tool) => tool.name), ["bash", "workflow_send"]);
 assert.deepEqual(Object.keys(mounted.registeredTools[0].parameters.properties), ["command"]);
 assert.equal("sandbox_permissions" in mounted.registeredTools[0].parameters.properties, false);
 assert.equal(mounted.registeredTools[0].isConcurrencySafe(), false);
@@ -154,7 +154,7 @@ assert.equal(Object.isFrozen(headlessMount.provideCalls[0].value.surface), true)
 assert.equal(typeof headlessMount.provideCalls[0].value.surface.allow, "function");
 assert.deepEqual(headlessMount.operations.slice(0, 2), ["provide:qq-core", "register:bash"]);
 assert.ok(headlessMount.sections[0].text.startsWith(WRITER_PROMPT));
-assert.deepEqual(headlessMount.registeredTools.map((tool) => tool.name), ["bash"]);
+assert.deepEqual(headlessMount.registeredTools.map((tool) => tool.name), ["bash", "workflow_send"]);
 
 // The docs sentinel concludes successfully without reaching host bash or Land.
 const completionAgent = docsAgent("session-docs-complete", mounted.ctx);
@@ -234,7 +234,7 @@ const nextGeneration = await import(`../src/mini-docs.mjs?hmr=${Date.now()}`);
 nextGeneration.miniDocsSetup(mounted.ctx, { env: { QQ_INDEX_WRITER_PROMPT: "replacement writer" } });
 assert.equal(mounted.sections.length, 1);
 assert.ok(mounted.sections[0].text.startsWith("replacement writer"));
-assert.deepEqual(mounted.registeredTools.map((tool) => tool.name), ["bash"]);
+assert.deepEqual(mounted.registeredTools.map((tool) => tool.name), ["bash", "workflow_send"]);
 assert.deepEqual(mounted.surfaceCalls, [
   { agent: mounted.agent, names: ["bash", "read_image"] },
   { agent: mounted.ctx.agent, names: ["bash", "read_image"] },
@@ -294,7 +294,7 @@ assert.equal(failedSurfaceMount.sections.length, 0);
 const explicitHarness = createAgentContext();
 const explicitAgent = docsAgent("explicit-docs", explicitHarness.ctx);
 assert.equal(miniDocs.ensureMiniDocsMounted(explicitAgent, { env: { QQ_INDEX_WRITER_PROMPT: WRITER_PROMPT } }), true);
-assert.deepEqual(explicitHarness.registeredTools.map((tool) => tool.name), ["bash"]);
+assert.deepEqual(explicitHarness.registeredTools.map((tool) => tool.name), ["bash", "workflow_send"]);
 const unrelatedHarness = createAgentContext();
 assert.equal(miniDocs.ensureMiniDocsMounted(docsAgent("not-docs", unrelatedHarness.ctx, { kind: "mini-code" }), { env: { QQ_INDEX_WRITER_PROMPT: WRITER_PROMPT } }), false);
 assert.equal(unrelatedHarness.registeredTools.length, 0);
@@ -308,7 +308,7 @@ try {
   const pluginDocsAgent = docsAgent("plugin-docs", pluginDocsHarness.ctx, { agentPreset: "mini-docs" });
   assert.equal(pluginInternals.syncLiveDelegationChild(null, pluginDocsAgent), false);
   assert.ok(pluginDocsHarness.sections[0].text.startsWith(WRITER_PROMPT));
-  assert.deepEqual(pluginDocsHarness.registeredTools.map((tool) => tool.name), ["bash"]);
+  assert.deepEqual(pluginDocsHarness.registeredTools.map((tool) => tool.name), ["bash", "workflow_send"]);
   await pluginDocsHarness.registeredTools[0].execute(
     { command: miniDocs.MINI_DOCS_COMPLETION_COMMAND },
     { agent: pluginDocsAgent },

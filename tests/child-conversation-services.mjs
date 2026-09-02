@@ -59,10 +59,10 @@ function harness(kind) {
 }
 
 const setups = [
-  ["mini-code", (ctx) => miniSetup(ctx), ["bash", "session_history"]],
-  ["mini-research", (ctx) => miniResearchSetup(ctx), ["bash", "session_history"]],
-  ["mini-qa", (ctx) => miniQaSetup(ctx), ["bash", "submit_review", "session_history"]],
-  ["mini-docs", (ctx) => miniDocsSetup(ctx, { env: { QQ_INDEX_WRITER_PROMPT: "writer" } }), ["bash", "session_history"]],
+  ["mini-code", (ctx) => miniSetup(ctx), ["bash", "session_history", "workflow_send"]],
+  ["mini-research", (ctx) => miniResearchSetup(ctx), ["bash", "session_history", "workflow_send"]],
+  ["mini-qa", (ctx) => miniQaSetup(ctx), ["bash", "submit_review", "session_history", "workflow_send"]],
+  ["mini-docs", (ctx) => miniDocsSetup(ctx, { env: { QQ_INDEX_WRITER_PROMPT: "writer" } }), ["bash", "session_history", "workflow_send"]],
 ];
 for (const [kind, setup, expectedTools] of setups) {
   const mounted = harness(kind);
@@ -84,6 +84,11 @@ const historyOnly = {
   data: { message: { content: [{ type: "tool-call", name: "session_history", arguments: { action: "search", queries: ["clue"] } }] } },
 };
 for (const tools of [["bash"], ["bash", "submit_review"]]) assert.equal(messageHasChildAction(historyOnly, tools), true);
+const workflowSendOnly = {
+  type: "assistant/message",
+  data: { message: { content: [{ type: "tool-call", name: "workflow_send", arguments: { message: "update" } }] } },
+};
+for (const tools of [["bash"], ["bash", "submit_review"]]) assert.equal(messageHasChildAction(workflowSendOnly, tools), true);
 assert.equal(messageHasChildAction({ type: "assistant/message", data: { message: { content: [{ type: "text", text: "no action" }] } } }, ["bash"]), false);
 
 // A rejected nested engine startup rolls back the paired recall tool as one service unit.
@@ -94,7 +99,7 @@ rejected.ctx.plugin = () => ({
   dispose() { rejectedDisposals++; },
 });
 const rejectedLift = installChildConversationServices(rejected.ctx);
-assert.deepEqual(rejected.tools.map(({ name }) => name), ["session_history"]);
+assert.deepEqual(rejected.tools.map(({ name }) => name), ["session_history", "workflow_send"]);
 await assert.rejects(rejectedLift.ready, /engine startup failed/);
 assert.deepEqual(rejected.tools, []);
 assert.equal(rejectedDisposals, 1);
@@ -106,6 +111,7 @@ const nextGeneration = await import(`../src/official-mini.mjs?child-services-hmr
 nextGeneration.miniSetup(mounted.ctx);
 assert.equal(mounted.tools.filter(({ name }) => name === "session_history").length, 1);
 assert.equal(mounted.tools.filter(({ name }) => name === "bash").length, 1);
+assert.equal(mounted.tools.filter(({ name }) => name === "workflow_send").length, 1);
 assert.equal(mounted.disposedEngines(), 1);
 
 console.log("child conversation services: ok");
