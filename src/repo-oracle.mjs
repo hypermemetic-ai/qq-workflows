@@ -104,10 +104,14 @@ export class RepoOracle {
       });
       return { code: 0, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
     } catch (error) {
+      const stderr = error?.stderr;
+      const diagnostic = stderr !== undefined && stderr !== null && String(stderr).trim()
+        ? stderr
+        : error?.message || "git command failed";
       return {
         code: Number.isInteger(error?.code) ? error.code : 1,
         stdout: error?.stdout ?? (options.encoding === null ? Buffer.alloc(0) : ""),
-        stderr: error?.stderr ?? error?.message ?? "git command failed",
+        stderr: diagnostic,
       };
     }
   }
@@ -128,21 +132,40 @@ export class RepoOracle {
     return this.#changedLinePromise;
   }
 
+  async #changedLinesFor(paths) {
+    const pathspecs = paths.map((path) => `:(literal)${path}`);
+    const [tree, diff] = await Promise.all([
+      this.#command(["ls-tree", "-r", "--name-only", this.#headSha, "--", ...pathspecs]),
+      this.#command([
+        "diff", "--no-ext-diff", "--no-textconv", "-U0", "--no-color",
+        `${this.#baseSha}...${this.#headSha}`, "--", ...pathspecs,
+      ]),
+    ]);
+    if (tree.code !== 0) throw new Error(String(tree.stderr || "cannot inspect head tree").trim());
+    if (diff.code !== 0) throw new Error(String(diff.stderr || "cannot inspect changed lines").trim());
+    const headPaths = new Set(trimFinalEmptyLine(String(tree.stdout).split("\n")));
+    return parseChangedLineIndex(diff.stdout, headPaths);
+  }
+
   async validateFindings(findings) {
     if (!Array.isArray(findings)) throw new Error("findings must be an array");
-    const changed = await this.changedLines();
-    return findings.map((finding, index) => {
+    const normalized = findings.map((finding, index) => {
       if (!finding || typeof finding !== "object" || Array.isArray(finding)) throw new Error(`finding ${index + 1} must be an object`);
       const keys = Object.keys(finding).sort().join(",");
       if (keys !== "body,line,path") throw new Error(`finding ${index + 1} must contain only path, line, and body`);
       const path = validateRepoPath(finding.path, { label: `finding ${index + 1} path` });
       if (!Number.isInteger(finding.line) || finding.line < 0) throw new Error(`finding ${index + 1} line must be a non-negative integer`);
       if (typeof finding.body !== "string" || !finding.body.trim()) throw new Error(`finding ${index + 1} body must be non-empty`);
-      if (!changed.has(path)) throw new Error(`finding ${index + 1} path is not in the diff: ${path}`);
-      if (!changed.get(path).has(finding.line)) {
-        throw new Error(`finding ${index + 1} line is not a HEAD-side changed line: ${path}:${finding.line}`);
-      }
       return { path, line: finding.line, body: finding.body.trim() };
+    });
+    if (normalized.length === 0) return normalized;
+    const changed = await this.#changedLinesFor([...new Set(normalized.map(({ path }) => path))]);
+    return normalized.map((finding, index) => {
+      if (!changed.has(finding.path)) throw new Error(`finding ${index + 1} path is not in the diff: ${finding.path}`);
+      if (!changed.get(finding.path).has(finding.line)) {
+        throw new Error(`finding ${index + 1} line is not a HEAD-side changed line: ${finding.path}:${finding.line}`);
+      }
+      return finding;
     });
   }
 }

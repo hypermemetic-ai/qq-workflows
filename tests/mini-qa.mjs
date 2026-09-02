@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -66,6 +66,31 @@ assert.equal(typeof oracle.grep, "undefined");
 assert.equal(typeof oracle.glob, "undefined");
 assert.equal(typeof oracle.view, "undefined");
 
+// Empty child-process stderr must not hide a concrete stdout maxBuffer error.
+const fakeGitBin = join(root, "fake-git-bin");
+mkdirSync(fakeGitBin);
+const fakeGit = join(fakeGitBin, "git");
+writeFileSync(fakeGit, `#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = "diff" ]; then
+    /usr/bin/yes x | /usr/bin/head -c 17000000
+    exit 0
+  fi
+done
+printf 'src/auth.py\n'
+`);
+chmodSync(fakeGit, 0o700);
+const originalPath = process.env.PATH;
+try {
+  process.env.PATH = `${fakeGitBin}:${originalPath}`;
+  await assert.rejects(
+    new RepoOracle(base, head, { gitDir: join(repo, ".git") }).changedLines(),
+    /maxBuffer|stdout/i,
+  );
+} finally {
+  process.env.PATH = originalPath;
+}
+
 const findings = await oracle.validateFindings([
   { path: "src/auth.py", line: 2, body: "Non-admin users can now authorize when is_admin is truthy." },
   { path: "src/delete.txt", line: 1, body: "Deleting the second record joins incompatible entries at the anchor." },
@@ -90,6 +115,46 @@ await assert.rejects(
   ]),
   /must not contain \.\./,
 );
+
+const noInspectionOracle = new RepoOracle(base, head, {
+  gitDir: join(repo, ".git"),
+  command: async () => assert.fail("empty findings must not launch Git inspection"),
+});
+assert.deepEqual(await noInspectionOracle.validateFindings([]), []);
+
+const scopedCommands = [];
+const scopedOracle = new RepoOracle(base, head, {
+  gitDir: join(repo, ".git"),
+  async command(args) {
+    scopedCommands.push(args);
+    if (args[0] === "ls-tree") return { code: 0, stdout: "src/auth.py\n", stderr: "" };
+    if (args[0] === "diff") {
+      return {
+        code: 0,
+        stdout: [
+          "diff --git a/src/auth.py b/src/auth.py",
+          "--- a/src/auth.py",
+          "+++ b/src/auth.py",
+          "@@ -2 +2 @@",
+          "-    return False",
+          "+    return user.is_admin",
+          "",
+        ].join("\n"),
+        stderr: "",
+      };
+    }
+    return { code: 1, stdout: "", stderr: `unexpected command: ${args.join(" ")}` };
+  },
+});
+const duplicatePathFindings = await scopedOracle.validateFindings([
+  { path: "src/auth.py", line: 2, body: "first defect" },
+  { path: "src/auth.py", line: 2, body: "second defect" },
+]);
+assert.equal(duplicatePathFindings.length, 2);
+assert.deepEqual(scopedCommands.map(([command]) => command).sort(), ["diff", "ls-tree"]);
+for (const args of scopedCommands) {
+  assert.deepEqual(args.slice(args.indexOf("--") + 1), [":(literal)src/auth.py"]);
+}
 
 assert.equal(MINI_QA_SYSTEM_PROMPT, "You are a helpful assistant that can review code changes in a repository.");
 const rendered = renderMiniQaTask({
@@ -145,7 +210,7 @@ const order = [];
 let submitCount = 0;
 let validationCount = 0;
 bindMiniQaSubmit(fakeAgent, {
-  oracle: { validateFindings: async (value) => { validationCount++; return value; } },
+  oracle: { validateFindings: async () => { validationCount++; assert.fail("empty pass must not inspect the diff"); } },
   submit: async ({ verdict }) => {
     assert.equal(verdict.verdict, "pass");
     submitCount++;
@@ -171,8 +236,33 @@ const submittedAgain = await tools[0].execute({ findings: [] }, {
 assert.equal(submittedAgain.status, "ok");
 assert.equal(submittedAgain.alreadySubmitted, true);
 assert.equal(submitCount, 1, "accepted review cannot re-enter its durable submit sink");
-assert.equal(validationCount, 1, "accepted review cannot restart validation");
+assert.equal(validationCount, 0, "empty pass and its idempotent close are oracle-independent");
 assert.deepEqual(order, ["arm", "conclude", "conclude-again"]);
+
+const findingAgent = { session: { id: "session-finding-review", header: { kind: "mini-qa" } }, ctx: {} };
+const submittedFinding = { path: "src/auth.py", line: 2, body: "authorization regressed" };
+let findingValidationCount = 0;
+bindMiniQaSubmit(findingAgent, {
+  oracle: {
+    async validateFindings(value) {
+      findingValidationCount++;
+      assert.deepEqual(value, [submittedFinding]);
+      return value;
+    },
+  },
+  async submit({ verdict, findings: validated }) {
+    assert.equal(verdict.verdict, "fail");
+    assert.deepEqual(validated, [submittedFinding]);
+    return { status: "ok", verdict: "fail" };
+  },
+});
+const findingSubmit = await buildMiniQaTools()[0].execute(
+  { findings: [submittedFinding] },
+  { agent: findingAgent },
+);
+assert.equal(findingSubmit.status, "ok");
+assert.equal(findingSubmit.verdict, "fail");
+assert.equal(findingValidationCount, 1, "non-empty findings retain changed-line validation");
 
 const persistedAgent = { session: { id: "session-persisted-review", header: { kind: "mini-qa" } }, ctx: {} };
 let persistedConcluded = 0;
@@ -204,6 +294,64 @@ assert.throws(
   () => bindMiniQaSubmit({ session: {} }, { submit() {} }),
   /requires an oracle and submit function/,
 );
+
+function nonExtensibleQaAgent(id) {
+  const ctx = Object.preventExtensions({});
+  const session = Object.preventExtensions({ id, header: { kind: "mini-qa" } });
+  return Object.preventExtensions({ session, ctx });
+}
+
+// A real HMR generation must see fallback state bound by the old generation
+// even when DSH proxies reject all symbol writes.
+const hmrNonce = Date.now();
+const oldGeneration = await import(`../src/mini-qa.mjs?hmr=old-${hmrNonce}`);
+const nextGeneration = await import(`../src/mini-qa.mjs?hmr=next-${hmrNonce}`);
+const crossGenerationAgent = nonExtensibleQaAgent("session-cross-generation-review");
+let crossGenerationSubmits = 0;
+const disposeCrossGeneration = oldGeneration.bindMiniQaSubmit(crossGenerationAgent, {
+  oracle: { validateFindings: async () => assert.fail("cross-generation empty pass must not inspect the diff") },
+  submit: async () => {
+    crossGenerationSubmits++;
+    return { status: "ok", verdict: "pass" };
+  },
+});
+const crossGenerationSubmit = await nextGeneration.buildMiniQaTools()[0].execute(
+  { findings: [] },
+  { agent: crossGenerationAgent },
+);
+assert.equal(crossGenerationSubmit.status, "ok");
+assert.equal(crossGenerationSubmits, 1, "new HMR tool reaches the old generation binding");
+const crossGenerationClose = await oldGeneration.buildMiniQaTools()[0].execute(
+  { findings: [] },
+  { agent: crossGenerationAgent },
+);
+assert.equal(crossGenerationClose.alreadySubmitted, true);
+assert.equal(crossGenerationSubmits, 1, "accepted completion state is shared across HMR generations");
+disposeCrossGeneration();
+
+// Replacing a shared binding remains identity-safe: stale generation cleanup
+// cannot remove a newer generation's binding.
+const replacementAgent = nonExtensibleQaAgent("session-replaced-generation-review");
+let replacementSubmits = 0;
+const disposeOldBinding = oldGeneration.bindMiniQaSubmit(replacementAgent, {
+  oracle: { validateFindings: async (value) => value },
+  submit: async () => assert.fail("stale HMR binding must not be used"),
+});
+const disposeNewBinding = nextGeneration.bindMiniQaSubmit(replacementAgent, {
+  oracle: { validateFindings: async () => assert.fail("replacement empty pass must not inspect the diff") },
+  submit: async () => {
+    replacementSubmits++;
+    return { status: "ok", verdict: "pass" };
+  },
+});
+disposeOldBinding();
+const replacementSubmit = await buildMiniQaTools()[0].execute(
+  { findings: [] },
+  { agent: replacementAgent },
+);
+assert.equal(replacementSubmit.status, "ok");
+assert.equal(replacementSubmits, 1);
+disposeNewBinding();
 
 // A new module generation replaces, rather than stacks on, a live mount.
 const mountedTools = [];
@@ -322,8 +470,26 @@ bindMiniQaSubmit(durablyCompletedAgent, {
   isCompleted: () => true,
 });
 mountedListeners.find((item) => item.type === "agent/turn-stopping").fn({ agent: durablyCompletedAgent });
-const nextGeneration = await import(`../src/mini-qa.mjs?hmr=${Date.now()}`);
+
+// HMR between assistant/message and turn-stopping must preserve the old
+// generation's valid-tool observation and avoid a false format correction.
+const crossGenerationFormatSession = { id: "session-cross-generation-format" };
+let crossGenerationFormatSteers = 0;
+const crossGenerationFormatAgent = {
+  session: crossGenerationFormatSession,
+  ctx: mountCtx,
+  steer() { crossGenerationFormatSteers++; },
+};
+mountedListeners.find((item) => item.type === "session/event").fn(
+  crossGenerationFormatSession,
+  {
+    type: "assistant/message",
+    data: { message: { content: [{ type: "tool-call", name: "bash", arguments: { command: "true" } }] } },
+  },
+);
 nextGeneration.miniQaSetup(mountCtx);
+mountedListeners.find((item) => item.type === "agent/turn-stopping").fn({ agent: crossGenerationFormatAgent });
+assert.equal(crossGenerationFormatSteers, 0);
 assert.equal(mountedSections.length, 1);
 assert.deepEqual(mountedTools.map((tool) => tool.name), MINI_QA_TOOL_NAMES.filter((name) => name !== "session_history"));
 assert.deepEqual(surfaceCalls, [
