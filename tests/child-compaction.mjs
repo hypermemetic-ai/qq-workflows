@@ -20,7 +20,7 @@ class FakeBasicCompactionEngine {
 
 const prior = {
   id: "prior", role: "user", source: { kind: "plugin", plugin: "compact" },
-  content: [{ type: "text", text: `checkpoint wrapper\n${COMPILER_MARKER}\n\n## Session Goal\n- #0 old goal\n\n## Commits\n- None recorded.\n\n## Outstanding Context\n- #0 stale task\n\n## User Preferences\n- None recorded.\n\n## Chronological Brief\n- #0 user: old goal` }],
+  content: [{ type: "text", text: `checkpoint wrapper\n<compacted-summary>\n${COMPILER_MARKER}\n\n## Session Goal\n- #0 old goal\n\n## Commits\n- None recorded.\n\n## Outstanding Context\n- #0 stale task\n\n## User Preferences\n- None recorded.\n\n## Chronological Brief\n- #0 user: old goal\n</compacted-summary>` }],
 };
 const user = { id: "u1", role: "user", source: { kind: "user" }, content: [{ type: "text", text: "new goal" }] };
 const assistant = { id: "a1", role: "assistant", source: { kind: "model", provider: "x", model: "y" }, content: [{ type: "text", text: "work complete; no outstanding tasks remain" }] };
@@ -36,6 +36,7 @@ const adapted = adaptDshMessages({ messages: [prior, user, assistant, result] },
 assert.equal(isPreviousCompiledCheckpoint(prior), true);
 assert.deepEqual(adapted.records.map(({ seq, role }) => [seq, role]), [[3, "user"], [8, "assistant"], [9, "tool-result"]]);
 assert.match(adapted.previousSummary, /old goal/);
+assert.doesNotMatch(adapted.previousSummary, /<\/?compacted-summary>/);
 assert.throws(() => adaptDshMessages({ messages: [{ ...user, id: "unknown" }] }, agent), /cannot resolve/);
 
 const Child = createChildCompactionEngineClass(FakeBasicCompactionEngine);
@@ -46,10 +47,12 @@ const engine = new Child({ llm: { stream() { streamCalls.push(true); } } }, CHIL
 const summary = await engine.summarize({ messages: [prior, user, assistant, result] }, agent, new AbortController().signal);
 assert.deepEqual(streamCalls, []);
 assert.deepEqual({ provider: summary.provider, model: summary.model }, CHILD_COMPILER_IDENTITY);
-assert.match(summary.summary[0].text, /#3 user: new goal/);
-assert.match(summary.summary[0].text, /#8 assistant: work complete/);
+assert.match(summary.summary[0].text, /new goal \(#3\)/);
+assert.match(summary.summary[0].text, /work complete; no outstanding tasks remain \(#8\)/);
 assert.doesNotMatch(summary.summary[0].text, /large output/);
-assert.doesNotMatch(summary.summary[0].text.match(/## Outstanding Context([\s\S]*?)## User Preferences/)[1], /stale task/);
+assert.doesNotMatch(summary.summary[0].text, /stale task/);
+assert.doesNotMatch(summary.summary[0].text, /^## /m);
+assert.doesNotMatch(summary.summary[0].text, /None recorded\./);
 
 let receivedClass;
 let receivedConfig;

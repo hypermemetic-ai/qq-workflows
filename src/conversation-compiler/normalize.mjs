@@ -1,102 +1,116 @@
-import { WRAP_COLUMNS } from "./constants.mjs";
+import { TUI_SAFE_LINE_CHARS } from "./constants.mjs";
+import { textOf } from "./content.mjs";
+import { sanitize } from "./sanitize.mjs";
+import { parseToolArgs } from "./tool-args.mjs";
 
-/** Normalize newlines and horizontal whitespace without destroying paragraph boundaries. */
-export function normalizeText(value) {
-  return String(value ?? "")
-    .replaceAll("\r\n", "\n")
-    .replaceAll("\r", "\n")
-    .split("\n")
-    .map((line) => line.replaceAll(/[\t ]+/g, " ").trim())
-    .join("\n")
-    .replaceAll(/\n{3,}/g, "\n\n")
-    .trim();
-}
+const sourceIndexOf = (message, messageIndex) =>
+  Number.isSafeInteger(message?.seq) && message.seq >= 0 ? message.seq : messageIndex;
 
-/** Reference-style significant words: punctuation around a token is not counted. */
-export function significantWords(value) {
-  return String(value ?? "").match(/[\p{L}\p{N}_./:@%+="'-]+/gu) ?? [];
-}
-
-export function truncateWords(value, head, tail = 0) {
-  const text = normalizeText(value).replaceAll(/\s+/g, " ");
-  const matches = [...text.matchAll(/[\p{L}\p{N}_./:@%+="'-]+/gu)];
-  if (matches.length <= head + tail) return text;
-  const headMatch = matches[Math.max(0, head - 1)];
-  const headEnd = headMatch.index + headMatch[0].length;
-  if (tail <= 0) return `${text.slice(0, headEnd).trimEnd()} …`;
-  const tailStart = matches[matches.length - tail].index;
-  return `${text.slice(0, headEnd).trimEnd()} … ${text.slice(tailStart).trimStart()}`;
-}
-
-/** Replace heredoc payloads, retaining the command, delimiter, and following commands. */
-export function compressHeredoc(value) {
-  const lines = String(value ?? "").replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
-  const output = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const match = line.match(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/);
-    if (!match) {
-      output.push(line);
-      continue;
+const normalizeOne = (message, messageIndex) => {
+  const sourceIndex = sourceIndexOf(message, messageIndex);
+  if (message?.role === "user") {
+    const blocks = [];
+    const text = sanitize(textOf(message.content));
+    if (text) blocks.push({ kind: "user", text, sourceIndex });
+    if (message.content && typeof message.content !== "string") {
+      for (const part of message.content) {
+        if (part?.type === "image") {
+          blocks.push({ kind: "user", text: `[image: ${part.mimeType}]`, sourceIndex });
+        }
+      }
     }
-    const delimiter = match[2];
-    let end = index + 1;
-    while (end < lines.length && lines[end].trim() !== delimiter) end += 1;
-    if (end >= lines.length) {
-      output.push(line);
-      continue;
+    return blocks.length > 0 ? blocks : [{ kind: "user", text: "", sourceIndex }];
+  }
+
+  if (message?.role === "bashExecution") {
+    const command = message.command ?? "";
+    const output = message.output ?? "";
+    return [{ kind: "bash", command, output, exitCode: message.exitCode, sourceIndex }];
+  }
+
+  if (message?.role === "toolResult" || message?.role === "tool-result") {
+    return [{
+      kind: "tool_result",
+      name: message.toolName ?? message.name ?? "",
+      text: sanitize(textOf(message.content)),
+      sourceIndex,
+    }];
+  }
+
+  if (message?.role === "assistant") {
+    if (!message.content) return [];
+    if (typeof message.content === "string") {
+      return [{ kind: "assistant", text: sanitize(message.content), sourceIndex }];
     }
-    output.push(line, `… ${Math.max(0, end - index - 1)} lines omitted …`, lines[end]);
-    index = end;
+    const blocks = [];
+    for (const part of message.content) {
+      if (part?.type === "text") {
+        blocks.push({ kind: "assistant", text: sanitize(part.text), sourceIndex });
+      } else if (part?.type === "toolCall" || part?.type === "tool-call") {
+        blocks.push({
+          kind: "tool_call",
+          name: typeof part.name === "string" ? part.name : "",
+          args: parseToolArgs(part.arguments ?? part.input),
+          sourceIndex,
+        });
+      }
+    }
+    return blocks;
   }
-  return output.join("\n");
-}
+  return [];
+};
 
-export function oneLine(value) {
-  return normalizeText(value).replaceAll(/\s+/g, " ");
-}
+export const normalize = (messages) =>
+  (Array.isArray(messages) ? messages : []).flatMap((message, index) => normalizeOne(message, index));
 
-/** Deterministic hard wrapping; long unbroken identifiers are split rather than exceeding the contract. */
-export function wrapLine(value, width = WRAP_COLUMNS, continuation = "  ") {
-  const text = String(value ?? "");
-  if (text.length <= width) return text;
-  const lines = [];
-  let remaining = text;
-  let prefix = "";
-  while (remaining.length + prefix.length > width) {
-    const room = Math.max(1, width - prefix.length);
-    let cut = remaining.lastIndexOf(" ", room);
-    if (cut < Math.floor(room / 2)) cut = room;
-    lines.push(prefix + remaining.slice(0, cut).trimEnd());
-    remaining = remaining.slice(cut).trimStart();
-    prefix = continuation;
-  }
-  lines.push(prefix + remaining);
-  return lines.join("\n");
-}
+// Compatibility helpers retained for callers of the landed module surface.
+export const normalizeText = (value) => sanitize(value)
+  .split("\n")
+  .map((line) => line.replace(/[\t ]+/g, " ").trim())
+  .join("\n")
+  .replace(/\n{3,}/g, "\n\n")
+  .trim();
 
-export function wrapParagraphs(value, width = WRAP_COLUMNS) {
-  return String(value ?? "").split("\n").map((line) => wrapLine(line, width)).join("\n");
-}
+export const significantWords = (value) => String(value ?? "").match(/[\p{L}\p{N}_./:@%+="'-]+/gu) ?? [];
 
-export function stableJson(value) {
+export const oneLine = (value) => normalizeText(value).replace(/\s+/g, " ");
+export const normalizedKey = (value) => oneLine(value).toLowerCase();
+
+export const stableJson = (value) => {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
-}
+};
 
-export function normalizedKey(value) {
-  return oneLine(value).toLocaleLowerCase();
-}
-
-export function unique(values, key = normalizedKey) {
+export const unique = (values, key = normalizedKey) => {
   const result = [];
   const seen = new Set();
-  for (const value of values) {
+  for (const value of values ?? []) {
     const identity = key(value);
     if (!identity || seen.has(identity)) continue;
     seen.add(identity);
     result.push(value);
   }
   return result;
-}
+};
+
+export const wrapLine = (value, width = TUI_SAFE_LINE_CHARS, continuation = "  ") => {
+  const text = String(value ?? "");
+  if (text.length <= width) return text;
+  const lines = [];
+  let remaining = text;
+  let prefix = "";
+  while (remaining && prefix.length + remaining.length > width) {
+    const available = Math.max(20, width - prefix.length);
+    let splitAt = remaining.lastIndexOf(" ", available);
+    if (splitAt < Math.floor(available * 0.5)) splitAt = available;
+    lines.push(prefix + remaining.slice(0, splitAt).trimEnd());
+    remaining = remaining.slice(splitAt).trimStart();
+    prefix = continuation;
+  }
+  if (remaining) lines.push(prefix + remaining);
+  return lines.join("\n");
+};
+
+export const wrapParagraphs = (value, width = TUI_SAFE_LINE_CHARS) =>
+  String(value ?? "").split("\n").map((line) => wrapLine(line, width)).join("\n");
