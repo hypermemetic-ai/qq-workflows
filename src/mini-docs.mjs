@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
 
 import { wrapMiniBash } from "./official-mini.mjs";
+import { childServicesReady, installChildConversationServices, messageHasChildAction, observeLiveChildSetup } from "./child-conversation-services.mjs";
+import { CHILD_SESSION_HISTORY_INSTRUCTIONS } from "./child-session-history.mjs";
 import { allowInherited, MINI_INHERITED_TOOLS } from "./hide-harness.mjs";
 
 const ADAPTER_NAME = "qq-workflows:mini-docs";
 
 export const MINI_DOCS_KIND = "mini-docs";
 export const MINI_DOCS_COMPLETION_COMMAND = "echo COMPLETE_DOCS_AND_EXIT";
-export const MINI_DOCS_TOOLS = Object.freeze(["bash"]);
+export const MINI_DOCS_TOOLS = Object.freeze(["bash", "session_history"]);
 export const MINI_DOCS_PERSONA_SECTION = "deployment:persona";
 export const MINI_DOCS_PERSONA_ORDER = 0;
 
@@ -25,7 +27,7 @@ const FORMAT_ERROR = [
   "Tool call error:",
   "",
   "<error>",
-  "Every response needs to call bash.",
+  "Every response needs to call bash or session_history.",
   "</error>",
   "",
   "Call bash to continue working, or finish by calling bash with:",
@@ -74,7 +76,7 @@ function messageHasBash(event) {
   if (event?.type !== "assistant/message") return undefined;
   const content = event?.data?.message?.content ?? event?.message?.content;
   if (!Array.isArray(content)) return false;
-  return content.some((block) => block?.type === "tool-call" && block?.name === "bash");
+  return messageHasChildAction(event, ["bash"]);
 }
 
 function installFormatRecovery(agentCtx) {
@@ -119,7 +121,7 @@ function writerPrompt(config) {
   if (typeof prompt !== "string" || prompt.trim() === "") {
     throw new Error("mini-docs requires a non-blank QQ_INDEX_WRITER_PROMPT");
   }
-  return prompt;
+  return `${prompt}\n\n${CHILD_SESSION_HISTORY_INSTRUCTIONS}`;
 }
 
 function installPersona(holder, config) {
@@ -216,7 +218,10 @@ export function miniDocsSetup(agentCtx, config = {}) {
     lifts.push(installPersona(agentCtx, config));
     lifts.push(installTools(agentCtx));
     lifts.push(installFormatRecovery(agentCtx));
+    const childServices = installChildConversationServices(agentCtx);
+    lifts.push(childServices);
     ownMount(agentCtx, lifts);
+    return childServicesReady(childServices);
   } catch (error) {
     for (const lift of lifts.reverse()) {
       try { lift?.(); } catch { /* best effort rollback */ }
@@ -227,6 +232,7 @@ export function miniDocsSetup(agentCtx, config = {}) {
 
 export function ensureMiniDocsMounted(agent, config = {}) {
   if (!isMiniDocsAgent(agent)) return false;
-  miniDocsSetup(agent?.ctx ?? agent, config);
+  const readiness = miniDocsSetup(agent?.ctx ?? agent, config);
+  observeLiveChildSetup(agent, readiness, "mini-docs");
   return true;
 }

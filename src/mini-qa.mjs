@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { armChildSettlement, childToolOutput } from "./child-settlement.mjs";
+import { childServicesReady, installChildConversationServices, messageHasChildAction, observeLiveChildSetup } from "./child-conversation-services.mjs";
 import { allowInherited, MINI_INHERITED_TOOLS } from "./hide-harness.mjs";
 import { createQaVerdict } from "./qa-verdict.mjs";
 import { wrapMiniBash } from "./official-mini.mjs";
@@ -31,7 +32,7 @@ const FORMAT_ERROR = [
   "Tool call error:",
   "",
   "<error>",
-  "Every response needs to call bash or submit_review.",
+  "Every response needs to call bash, session_history, or submit_review.",
   "</error>",
   "",
   "Use bash to inspect specific evidence, or finish with submit_review.",
@@ -123,7 +124,7 @@ function messageHasReviewTool(event) {
   if (event?.type !== "assistant/message") return undefined;
   const content = event?.data?.message?.content ?? event?.message?.content;
   if (!Array.isArray(content)) return false;
-  return content.some((block) => block?.type === "tool-call" && MINI_QA_TOOL_NAMES.includes(block?.name));
+  return messageHasChildAction(event, MINI_QA_TOOL_NAMES);
 }
 
 function installFormatRecovery(agentCtx) {
@@ -304,7 +305,10 @@ export function miniQaSetup(agentCtx, options = {}) {
     lifts.push(installPersona(agentCtx, options.prompt ?? MINI_QA_SYSTEM_PROMPT));
     lifts.push(installTools(agentCtx));
     lifts.push(installFormatRecovery(agentCtx));
+    const childServices = installChildConversationServices(agentCtx);
+    lifts.push(childServices);
     ownMount(agentCtx, lifts);
+    return childServicesReady(childServices);
   } catch (error) {
     for (const lift of lifts.reverse()) {
       try { lift?.(); } catch { /* best effort rollback */ }
@@ -315,7 +319,8 @@ export function miniQaSetup(agentCtx, options = {}) {
 
 export function ensureMiniQaMounted(agent) {
   if (!isMiniQaAgent(agent)) return false;
-  miniQaSetup(agent?.ctx ?? agent);
+  const readiness = miniQaSetup(agent?.ctx ?? agent);
+  observeLiveChildSetup(agent, readiness, "mini-qa");
   return true;
 }
 
