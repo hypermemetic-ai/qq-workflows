@@ -10,6 +10,7 @@ import {
   isMiniSweCompletionCommand,
   withNativeBashDescription,
 } from "./mini-swe-v2.mjs";
+import { writablePathsSchemaFrom } from "./writable-paths.mjs";
 import {
   MINI_RESEARCH_SYSTEM_PROMPT,
 } from "./mini-research-v2.mjs";
@@ -257,7 +258,13 @@ export function wrapMiniResearchBash(base) {
     ...base,
     [WRAPPED]: true,
     description: MINI_SWE_BASH_SCHEMA.description,
-    parameters: structuredClone(MINI_SWE_BASH_SCHEMA.parameters),
+    parameters: {
+      ...structuredClone(MINI_SWE_BASH_SCHEMA.parameters),
+      properties: {
+        ...structuredClone(MINI_SWE_BASH_SCHEMA.parameters.properties),
+        writable_paths: writablePathsSchemaFrom(base.parameters),
+      },
+    },
     isConcurrencySafe() { return false; },
     ...(output ? { output } : {}),
     async execute(args, exec) {

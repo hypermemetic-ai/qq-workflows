@@ -11,6 +11,7 @@ import {
   wrapProjectsBash,
 } from "../src/projects-bash.mjs";
 import { capObservationTool, OBSERVATION_MAX_CHARS } from "../src/observation.mjs";
+import { WRITABLE_PATHS_SCHEMA, exposeWritablePaths } from "../src/writable-paths.mjs";
 
 // Reproduce the live host composition: escalation controls exist as properties
 // and are model-required in both top-level and nested schema branches.
@@ -61,10 +62,25 @@ const optionalSchema = optionalizeArchitectBashParameters(parameters);
 assert.notEqual(optionalSchema, parameters);
 assert.notEqual(optionalSchema.properties, parameters.properties);
 assert.deepEqual(
-  optionalSchema.properties,
+  Object.fromEntries(Object.entries(optionalSchema.properties).filter(([name]) => name !== "writable_paths")),
   parameters.properties,
   "architect keeps every host property and its exact schema contract",
 );
+assert.deepEqual(optionalSchema.properties.writable_paths, WRITABLE_PATHS_SCHEMA);
+assert.equal(Object.hasOwn(parameters.properties, "writable_paths"), false, "fallback exposure does not mutate the host schema");
+const hostWritableSchema = {
+  ...parameters,
+  properties: {
+    ...parameters.properties,
+    writable_paths: { type: "array", items: { type: "string", format: "host-path" }, maxItems: 8 },
+  },
+};
+assert.deepEqual(
+  optionalizeArchitectBashParameters(hostWritableSchema).properties.writable_paths,
+  hostWritableSchema.properties.writable_paths,
+  "a newer host's exact writable_paths schema wins over the compatibility fallback",
+);
+assert.notEqual(exposeWritablePaths(hostWritableSchema).properties.writable_paths, hostWritableSchema.properties.writable_paths);
 assert.ok(optionalSchema.properties.sandbox_permissions, "escalation mode remains model-visible");
 assert.ok(optionalSchema.properties.justification, "escalation justification remains model-visible");
 assert.deepEqual(optionalSchema.required, ["command"]);
@@ -136,6 +152,14 @@ assert.deepEqual(cappedFirst.parameters, optionalSchema);
 const cappedFirstEscalationArgs = { ...escalationArgs };
 assert.equal(cappedFirst.execute(cappedFirstEscalationArgs, exec), hostResult);
 assert.equal(hostCalls[3].args, cappedFirstEscalationArgs);
+const writableArgs = {
+  command: "cargo build && tool-index refresh",
+  writable_paths: ["~/.cargo", "/var/tmp/tool-index"],
+};
+assert.equal(architectBash.execute(writableArgs, exec), hostResult);
+assert.equal(hostCalls[4].args, writableArgs, "multi-root path requests reach the host unchanged");
+assert.equal(hostCalls[4].args.writable_paths, writableArgs.writable_paths);
+assert.equal("sandbox_permissions" in hostCalls[4].args, false, "path grants do not require coarse escalation");
 
 const oversized = "x".repeat(OBSERVATION_MAX_CHARS + 1);
 const rendered = cappedArchitectBash.output.render({}, { content: [{ type: "text", text: oversized }] });
@@ -158,14 +182,16 @@ assert.deepEqual(projectsSchema.required, ["command"]);
 assert.deepEqual(projectsSchema.allOf[0].required, ["command"]);
 assert.deepEqual(projectsSchema.allOf[1].then.required, ["workdir"]);
 assert.ok(parameters.properties.sandbox_permissions, "Projects does not mutate the host schema");
-assert.deepEqual(sanitizeProjectsBashArguments(escalationArgs), {
+const projectsInapplicableArgs = { ...escalationArgs, writable_paths: ["~/.cargo"] };
+assert.deepEqual(sanitizeProjectsBashArguments(projectsInapplicableArgs), {
   command: escalationArgs.command,
   description: escalationArgs.description,
   timeoutMs: escalationArgs.timeoutMs,
   workdir: escalationArgs.workdir,
   run_in_background: false,
 });
-assert.equal(escalationArgs.sandbox_permissions, "danger-full-access", "Projects does not mutate caller args");
+assert.equal(projectsInapplicableArgs.sandbox_permissions, "danger-full-access", "Projects does not mutate caller args");
+assert.deepEqual(projectsInapplicableArgs.writable_paths, ["~/.cargo"]);
 
 const projectsBash = wrapProjectsBash(base);
 assert.notEqual(projectsBash, base);
@@ -186,7 +212,7 @@ assert.equal(
 );
 
 hostCalls.length = 0;
-assert.equal(projectsBash.execute(escalationArgs, exec), hostResult);
+assert.equal(projectsBash.execute(projectsInapplicableArgs, exec), hostResult);
 assert.deepEqual(hostCalls, [{
   args: {
     command: escalationArgs.command,

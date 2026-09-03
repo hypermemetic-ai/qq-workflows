@@ -189,12 +189,15 @@ function createPrompt() {
   assert.match(ARCHITECT_PROMPT, /other architects through relay/i);
   assert.match(ARCHITECT_PROMPT, /Never communicate directly with another architect's children/i);
   assert.match(ARCHITECT_PROMPT, /standing `workspace-write` sandbox/i);
-  assert.match(ARCHITECT_PROMPT, /omit `sandbox_permissions` and `justification` from routine bash calls/i);
-  assert.match(ARCHITECT_PROMPT, /actually fails with a sandbox denial/i);
-  assert.match(ARCHITECT_PROMPT, /retry that exact command once/i);
-  assert.match(ARCHITECT_PROMPT, /narrowest strictly wider `sandbox_permissions`/i);
-  assert.match(ARCHITECT_PROMPT, /host approval prompt obtain operator consent/i);
-  assert.match(ARCHITECT_PROMPT, /rejected or cancelled.*final/i);
+  assert.match(ARCHITECT_PROMPT, /omit permission fields.*only write inside the workspace/i);
+  assert.match(ARCHITECT_PROMPT, /exact narrow directory roots with bash `writable_paths`/i);
+  assert.match(ARCHITECT_PROMPT, /silently reuses grants for the logical project/i);
+  assert.match(ARCHITECT_PROMPT, /remembers newly approved folder grants/i);
+  assert.match(ARCHITECT_PROMPT, /rejection or cancellation denies only the current request/i);
+  assert.match(ARCHITECT_PROMPT, /ask the operator whether that exact broad folder is truly needed/i);
+  assert.match(ARCHITECT_PROMPT, /danger-full-access` only as rare break-glass/i);
+  assert.match(ARCHITECT_PROMPT, /never for routine package caches/i);
+  assert.doesNotMatch(ARCHITECT_PROMPT, /retry that exact command once|do not retry or ask again/i);
   assert.match(ARCHITECT_PROMPT, /own children only through workflow-owned tools/i);
 
   const dir = mkdtempSync(join(tmpdir(), "qq-plan-doc."));

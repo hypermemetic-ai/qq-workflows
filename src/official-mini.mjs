@@ -44,6 +44,7 @@ import {
   isMiniSweCompletionCommand,
   renderMiniSweTask,
 } from "./mini-swe-v2.mjs";
+import { writablePathsSchemaFrom } from "./writable-paths.mjs";
 
 export {
   MINI_SWE_COMPLETION_COMMAND,
@@ -541,7 +542,13 @@ export function wrapMiniBash(base, { interceptCompletion = true } = {}) {
     ...base,
     [MINI_WRAPPED_BASH]: true,
     description: MINI_SWE_BASH_SCHEMA.description,
-    parameters: structuredClone(MINI_SWE_BASH_SCHEMA.parameters),
+    parameters: {
+      ...structuredClone(MINI_SWE_BASH_SCHEMA.parameters),
+      properties: {
+        ...structuredClone(MINI_SWE_BASH_SCHEMA.parameters.properties),
+        writable_paths: writablePathsSchemaFrom(base.parameters),
+      },
+    },
     // Upstream DefaultAgent executes multiple actions sequentially.
     isConcurrencySafe() { return false; },
     ...(output ? { output } : {}),
@@ -570,6 +577,9 @@ export function wrapMiniBash(base, { interceptCompletion = true } = {}) {
       return base.execute({
         command: isolate ? isolate(requested) : requested,
         description: "Execute Mini SWE bash command",
+        ...(args && typeof args === "object" && Object.hasOwn(args, "writable_paths")
+          ? { writable_paths: args.writable_paths }
+          : {}),
       }, exec);
     },
     finalizeContent(exec, result) {

@@ -1,10 +1,10 @@
 // Projects already runs with the host's widest standing sandbox and cannot
 // legitimately escalate. Keep its ordinary bash contract while removing
-// escalation-only controls from both the model schema and execution.
+// inapplicable permission controls from both model schema and execution.
 
 const PROJECTS_WRAPPED_BASH = Symbol.for("qq.workflows.projectsWrappedBash");
 const LEGACY_NON_ESCALATING_BASH = Symbol.for("qq.workflows.architectWrappedBash");
-const INAPPLICABLE_BASH_ARGUMENTS = new Set(["sandbox_permissions", "justification"]);
+const INAPPLICABLE_BASH_ARGUMENTS = new Set(["sandbox_permissions", "justification", "writable_paths"]);
 
 function withoutInapplicableRequiredEntries(schema, seen = new Set()) {
   if (!schema || typeof schema !== "object" || seen.has(schema)) return schema;
@@ -22,30 +22,32 @@ function withoutInapplicableRequiredEntries(schema, seen = new Set()) {
   return schema;
 }
 
-/** Return a detached JSON Schema with Projects-inapplicable escalation controls hidden. */
+/** Return a detached JSON Schema with Projects-inapplicable permission controls hidden. */
 export function sanitizeProjectsBashParameters(parameters) {
   if (!parameters || typeof parameters !== "object") return parameters;
   const sanitized = structuredClone(parameters);
   if (sanitized.properties && typeof sanitized.properties === "object") {
     delete sanitized.properties.sandbox_permissions;
     delete sanitized.properties.justification;
+    delete sanitized.properties.writable_paths;
   }
   return withoutInapplicableRequiredEntries(sanitized);
 }
 
-/** Copy ordinary arguments without forwarding host escalation controls. */
+/** Copy ordinary arguments without forwarding host permission controls. */
 export function sanitizeProjectsBashArguments(args) {
   if (!args || typeof args !== "object") return args;
   const sanitized = { ...args };
   delete sanitized.sandbox_permissions;
   delete sanitized.justification;
+  delete sanitized.writable_paths;
   return sanitized;
 }
 
 /**
  * Shadow inherited host bash for Projects sessions only.
  *
- * All behavior except the model-visible schema and the two inapplicable execute
+ * All behavior except the model-visible schema and inapplicable permission
  * arguments remains delegated to the base definition. The global symbols make
  * repeated and pre-rename wrapping idempotent across HMR.
  */

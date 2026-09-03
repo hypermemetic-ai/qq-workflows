@@ -16,6 +16,7 @@ import {
   OBSERVATION_MAX_CHARS,
   OBSERVATION_TAIL_CHARS,
 } from "./observation.mjs";
+import { WRITABLE_PATHS_SCHEMA } from "./writable-paths.mjs";
 
 export const MINI_SWE_REPOSITORY = "https://github.com/SWE-agent/mini-swe-agent";
 export const MINI_SWE_SHA = "25941c89cfbc91eb40b3f8756348c91d9977d57e";
@@ -85,6 +86,8 @@ export function renderMiniSweTask(task, info) {
     "- Your response MUST call bash, workflow_send, or the read-only session_history tool at least once",
     "- Use session_history only for compacted current-session context: search with 1–5 literal clues, expand an exact seq with context, then verify referenced files/current state",
     "- Directory or environment variable changes are not persistent. Every action is executed in a new subshell.",
+    "- The workspace is writable by default. For an external write, declare only the exact narrow directory roots in bash `writable_paths`; the host remembers approved folders for the logical project.",
+    "- Do not use `danger-full-access` for routine cache or data folders. Protected broad roots are refused; request a narrower child folder, while a rejection affects only that request.",
     "- However, you can prefix any action with `MY_ENV_VAR=MY_VALUE cd /path/to/working/dir && ...` or write/load environment variables from files",
     `- Submit and finish by issuing the following command; the host stages and commits: \`${MINI_SWE_COMPLETION_COMMAND}\`.`,
     "  Do not combine it with any other command. <important>After this command, you cannot continue working on this task.</important>",
@@ -179,6 +182,7 @@ export const MINI_SWE_BASH_SCHEMA = Object.freeze({
         type: "string",
         description: "The bash command to execute",
       }),
+      writable_paths: WRITABLE_PATHS_SCHEMA,
     }),
     required: Object.freeze(["command"]),
   }),
