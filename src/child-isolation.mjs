@@ -64,17 +64,32 @@ function cleanPath(env = process.env) {
 }
 
 /**
- * One command inside a metadata-read-only, credential-empty, no-network
- * namespace. The caller invokes bwrap directly; no model command is parsed.
+ * One command inside a metadata-read-only, no-network namespace. When
+ * preserveOuterWritePolicy is true, the caller must already be running inside
+ * DSH's fully enforcing filesystem sandbox: this nested namespace preserves
+ * its exact writable mounts instead of rebuilding a narrower allow-list from
+ * untrusted model arguments. The caller invokes bwrap directly; no model
+ * command is parsed.
  */
-export function isolatedCommand({ workspace, gitDir, command, args = [], writable = true, env = process.env } = {}) {
+export function isolatedCommand({
+  workspace,
+  gitDir,
+  command,
+  args = [],
+  writable = true,
+  preserveOuterWritePolicy = false,
+  env = process.env,
+} = {}) {
   if (!workspace || !command) throw new Error("isolated command requires workspace and command");
+  if (preserveOuterWritePolicy && !writable) {
+    throw new Error("preserving the outer write policy requires a writable child workspace");
+  }
   const bwrap = String(env?.QQ_WORKFLOWS_BWRAP || "/usr/bin/bwrap");
   const bind = writable ? "--bind" : "--ro-bind";
   const privateHome = join(workspace, ".qq-workflows-home");
-  mkdirSync(privateHome, { recursive: true });
+  if (!preserveOuterWritePolicy) mkdirSync(privateHome, { recursive: true });
   const tmpParents = [];
-  if (workspace.startsWith("/tmp/")) {
+  if (!preserveOuterWritePolicy && workspace.startsWith("/tmp/")) {
     const parts = workspace.split("/").filter(Boolean);
     let current = "";
     for (const part of parts.slice(0, -1)) {
@@ -88,18 +103,23 @@ export function isolatedCommand({ workspace, gitDir, command, args = [], writabl
     "--unshare-net",
     "--unshare-ipc",
     "--unshare-pid",
-    "--ro-bind", "/", "/",
-    "--tmpfs", "/tmp",
-    "--tmpfs", "/run/user",
-    ...tmpParents,
+    preserveOuterWritePolicy ? "--bind" : "--ro-bind", "/", "/",
+    ...(!preserveOuterWritePolicy ? [
+      "--tmpfs", "/tmp",
+      "--tmpfs", "/run/user",
+      ...tmpParents,
+    ] : []),
     bind, workspace, workspace,
+    ...(preserveOuterWritePolicy && gitDir ? ["--ro-bind", gitDir, gitDir] : []),
     "--dev", "/dev",
     "--proc", "/proc",
-    "--tmpfs", privateHome,
+    ...(!preserveOuterWritePolicy ? ["--tmpfs", privateHome] : []),
     "--chdir", workspace,
     "--clearenv",
     "--setenv", "PATH", cleanPath(env),
-    "--setenv", "HOME", privateHome,
+    ...(preserveOuterWritePolicy && env?.HOME
+      ? ["--setenv", "HOME", String(env.HOME)]
+      : !preserveOuterWritePolicy ? ["--setenv", "HOME", privateHome] : []),
     "--setenv", "LANG", "C.UTF-8",
     "--setenv", "LC_ALL", "C.UTF-8",
     "--setenv", "NO_COLOR", "1",

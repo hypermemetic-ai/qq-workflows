@@ -114,6 +114,74 @@ try {
   });
   assert.equal((await runCommand(network.command, network.args, { cwd: workspace })).code, 0, "child has no routed network interface");
 
+  // Implementation commands are nested inside the fully enforcing host
+  // sandbox. Preserve that outer mount graph so host-authorized project roots
+  // remain writable without ever passing raw model path strings to bwrap.
+  const home = join(root, "home");
+  const cargo = join(home, ".cargo");
+  const ssh = join(home, ".ssh");
+  const buildCache = join(root, "build-cache");
+  mkdirSync(cargo, { recursive: true });
+  mkdirSync(ssh, { recursive: true });
+  mkdirSync(buildCache);
+  assert.throws(() => isolatedCommand({
+    workspace,
+    command: "true",
+    writable: false,
+    preserveOuterWritePolicy: true,
+  }), /requires a writable child workspace/);
+  const inherited = isolatedCommand({
+    workspace,
+    gitDir,
+    command: "bash",
+    args: [
+      "-c",
+      [
+        "printf 'workspace\n' > inherited.txt",
+        "printf 'cargo\n' > \"$HOME/.cargo/cache\"",
+        "printf 'build\n' > \"$1/cache\"",
+        "if (printf 'denied\n' > \"$HOME/.ssh/nope\") 2>/dev/null; then exit 41; fi",
+        "if (printf 'forged\n' > \"$GIT_DIR/sentinel\") 2>/dev/null; then exit 42; fi",
+      ].join("; "),
+      "bash",
+      buildCache,
+    ],
+    writable: true,
+    preserveOuterWritePolicy: true,
+    env: { ...process.env, HOME: home },
+  });
+  assert.deepEqual(inherited.args.slice(5, 8), ["--bind", "/", "/"], "inner root preserves the outer write policy");
+  assert.equal(inherited.args.includes("--tmpfs"), false, "inner overlays cannot hide an authorized root");
+  const gitBind = inherited.args.findIndex((value, index) => value === "--ro-bind"
+    && inherited.args[index + 1] === gitDir && inherited.args[index + 2] === gitDir);
+  assert.notEqual(gitBind, -1, "authoritative Git metadata is explicitly read-only in the inherited view");
+  const homeEnv = inherited.args.findIndex((value, index) => value === "--setenv"
+    && inherited.args[index + 1] === "HOME");
+  assert.equal(inherited.args[homeEnv + 2], home, "tilde expansion still addresses the host-authorized home child");
+
+  // This outer profile stands in for host validation: it grants exactly cargo
+  // and buildCache in addition to the workspace, but not the sibling ssh root.
+  const outer = [
+    "--die-with-parent",
+    "--new-session",
+    "--ro-bind", "/", "/",
+    "--bind", workspace, workspace,
+    "--bind", cargo, cargo,
+    "--bind", buildCache, buildCache,
+    "--dev", "/dev",
+    "--proc", "/proc",
+    "--",
+    inherited.command,
+    ...inherited.args,
+  ];
+  const inheritedResult = await runCommand("/usr/bin/bwrap", outer, { cwd: workspace });
+  assert.equal(inheritedResult.code, 0, inheritedResult.stderr);
+  assert.equal(readFileSync(join(workspace, "inherited.txt"), "utf8"), "workspace\n");
+  assert.equal(readFileSync(join(cargo, "cache"), "utf8"), "cargo\n", "authorized ~/.cargo survives inner isolation");
+  assert.equal(readFileSync(join(buildCache, "cache"), "utf8"), "build\n", "a second authorized root survives inner isolation");
+  assert.equal(existsSync(join(ssh, "nope")), false, "an unapproved sibling stays read-only");
+  assert.equal(readFileSync(join(gitDir, "sentinel"), "utf8"), "safe\n", "metadata stays read-only");
+
   const wrapped = isolatedShellCommand({ workspace, worktree: join(root, "capsule"), command: "printf '%s' tricky", writable: true });
   assert.match(wrapped, /--unshare-net/);
   assert.match(wrapped, /--clearenv/);

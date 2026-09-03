@@ -68,6 +68,11 @@ isolation wrapper. That inner sandbox must receive canonical authorized roots
 through a trusted post-validation host seam (or preserve an already enforced
 outer filesystem policy); it must never mount the raw model-supplied strings.
 This package's request forwarding is not evidence that a path was approved.
+Land implementation children use the latter strategy: after requiring full DSH
+filesystem enforcement, their nested network/metadata namespace preserves the
+outer mount policy and explicitly re-applies read-only Git metadata. It does not
+add mounts from `writable_paths` or mask authorized `$HOME`/temporary children.
+QA children retain the narrower read-only inner filesystem.
 
 Current coarse `sandbox_permissions` fields remain visible on architect bash
 for migration and exceptional break-glass use. Routine cache and data-folder

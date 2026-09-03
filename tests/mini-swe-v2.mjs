@@ -7,6 +7,7 @@ import {
   renderMiniSweTask,
 } from "../src/mini-swe-v2.mjs";
 import {
+  bindMiniShellIsolation,
   bindMiniSubmit,
   miniSetup,
   wrapMiniBash,
@@ -106,6 +107,23 @@ assert.equal(miniNativeCalls[0].args.description, "Execute Mini SWE bash command
 assert.equal(miniNativeCalls[0].args.writable_paths, miniWritableArgs.writable_paths);
 assert.equal(miniNativeCalls[0].exec, miniExec);
 assert.equal("sandbox_permissions" in miniNativeCalls[0].args, false);
+
+// The workflow-owned inner isolation seam never receives unvalidated model
+// paths. It preserves the outer host policy; only base.execute receives the
+// declaration so the host can validate and authorize it first.
+const isolatedAgent = { session: {}, ctx: {} };
+const isolationCalls = [];
+const disposeIsolation = bindMiniShellIsolation(isolatedAgent, (...values) => {
+  isolationCalls.push(values);
+  return `inner:${values[0]}`;
+});
+await nativeMiniBash.execute(miniWritableArgs, { agent: isolatedAgent });
+assert.equal(miniNativeCalls.length, 2);
+assert.equal(miniNativeCalls[1].args.writable_paths, miniWritableArgs.writable_paths);
+assert.deepEqual(isolationCalls, [[miniNativeCalls[0].args.command]], "raw path declarations never reach the inner isolation seam");
+assert.equal(isolationCalls[0][0].includes("~/.cargo"), false);
+assert.match(miniNativeCalls[1].args.command, /^inner:/);
+disposeIsolation();
 
 // A stale HMR generation must not erase a newer completion binding when DSH
 // exposes non-extensible Agent/Session/Context proxies and the WeakMap is the
