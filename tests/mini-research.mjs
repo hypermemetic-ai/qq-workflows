@@ -90,7 +90,8 @@ assert.deepEqual(delegated, [{
   command: "printf ordinary",
   description: "Execute Mini Research bash command",
 }], "ordinary bash gains only the host-required description");
-assert.deepEqual(Object.keys(wrapped.parameters.properties), ["command"], "host-only description is not advertised");
+assert.deepEqual(Object.keys(wrapped.parameters.properties), ["command", "writable_paths"], "host-only description is not advertised");
+assert.equal(wrapped.parameters.properties.writable_paths.type, "array");
 const pipeline = await wrapped.execute({ command: "web-search alpha | cat" }, { agent });
 assert.equal(pipeline.exitCode, 2);
 assert.equal(delegated.length, 1, "evidence pipelines are never sent to native bash");

@@ -35,6 +35,7 @@ function toolHarness() {
         run_in_background: { type: "boolean" },
         sandbox_permissions: { type: "string" },
         justification: { type: "string" },
+        writable_paths: { type: "array", minItems: 1, items: { type: "string" } },
       },
       required: ["command", "sandbox_permissions", "justification"],
       allOf: [
@@ -255,7 +256,7 @@ try {
   assert.notEqual(architectBash, ordinary.tools.hostBash, "architect bash optionalizes the inherited host definition");
   assert.deepEqual(Object.keys(architectBash.parameters.properties), [
     "command", "description", "timeoutMs", "workdir", "run_in_background",
-    "sandbox_permissions", "justification",
+    "sandbox_permissions", "justification", "writable_paths",
   ]);
   assert.deepEqual(architectBash.parameters.required, ["command"]);
   assert.deepEqual(architectBash.parameters.allOf[0].required, ["command"]);
@@ -286,7 +287,16 @@ try {
   const escalationResult = await architectBash.execute(escalationArgs, bashExec);
   assert.equal(escalationResult.exitCode, 0);
   assert.equal(ordinary.tools.hostCalls[1].args, escalationArgs, "escalation args reach the host unchanged");
-  assert.deepEqual(ordinary.tools.hostCalls.map(({ exec }) => exec), [bashExec, bashExec]);
+  const writableArgs = {
+    command: "cargo build && tool-index refresh",
+    description: "use project cache folders",
+    writable_paths: ["~/.cargo", "/var/tmp/tool-index"],
+  };
+  const writableResult = await architectBash.execute(writableArgs, bashExec);
+  assert.equal(writableResult.exitCode, 0);
+  assert.equal(ordinary.tools.hostCalls[2].args, writableArgs, "declared external roots reach the host unchanged");
+  assert.equal("sandbox_permissions" in ordinary.tools.hostCalls[2].args, false);
+  assert.deepEqual(ordinary.tools.hostCalls.map(({ exec }) => exec), [bashExec, bashExec, bashExec]);
   const projectsBash = projects.tools.get("bash");
   assert.notEqual(projectsBash, projects.tools.hostBash, "Projects bash shadows host definition to sanitize sandbox escalation");
   assert.deepEqual(Object.keys(projectsBash.parameters.properties), [
@@ -304,6 +314,7 @@ try {
     run_in_background: false,
     sandbox_permissions: "danger-full-access",
     justification: "must be stripped to prevent non-widening escalation error",
+    writable_paths: ["~/.cargo"],
   }, projectsBashExec);
   assert.equal(projectsBashResult.exitCode, 0);
   assert.deepEqual(projects.tools.hostCalls, [{

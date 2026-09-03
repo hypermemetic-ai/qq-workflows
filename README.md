@@ -35,3 +35,47 @@ File names and export names identify these boundaries; consult the implementatio
 - **Conversation compilation:** keep changes within the [`conversation-compiler` entry point](src/conversation-compiler/index.mjs) and its focused tests; upstream attribution is recorded in [`ATTRIBUTION.md`](src/conversation-compiler/ATTRIBUTION.md).
 
 Experimental work is separate from the package surface. For the Grok reviewer benchmark, begin with its [experiment README](experiments/grok-reviewer-benchmark/README.md); the other experiment directories each carry their own tracked README.
+
+## External writable-folder contract
+
+Architect and delegated native-bash tools expose an optional
+`writable_paths` request field:
+
+```json
+{
+  "command": "cargo build",
+  "writable_paths": ["~/.cargo"]
+}
+```
+
+The value is a non-empty, duplicate-free array of directory path strings. It
+names recursive external write roots needed by that call; it does not request
+read access or `danger-full-access`. Workflow wrappers forward the array
+unchanged and intentionally do not decide whether a path is safe.
+
+The host (`qq-core`/DSH) is the authority for resolving a trusted logical
+project identity from the session workspace (linked Git worktrees should share
+their canonical common Git directory identity), canonicalizing paths,
+refusing protected broad roots, obtaining durable project-folder approval,
+persisting grants outside the repository, mounting granted roots in the OS
+sandbox, and listing/revoking grants. A rejection or cancellation applies only
+to the pending request. The approval/UI contract must identify each canonical
+folder and project and use a durable outcome (for example,
+`allowed-for-project`), not `allowed-once`.
+
+Delegated Mini commands also run inside a workflow-owned metadata/network
+isolation wrapper. That inner sandbox must receive canonical authorized roots
+through a trusted post-validation host seam (or preserve an already enforced
+outer filesystem policy); it must never mount the raw model-supplied strings.
+This package's request forwarding is not evidence that a path was approved.
+Land implementation children use the latter strategy: after requiring full DSH
+filesystem enforcement, their nested network/metadata namespace preserves the
+outer mount policy and explicitly re-applies read-only Git metadata. It does not
+add mounts from `writable_paths` or mask authorized `$HOME`/temporary children.
+QA children retain the narrower read-only inner filesystem.
+
+Current coarse `sandbox_permissions` fields remain visible on architect bash
+for migration and exceptional break-glass use. Routine cache and data-folder
+access should use `writable_paths`. The Projects operator chair already has its
+separate full-access preset, so its wrapper hides and drops path requests as
+inapplicable.

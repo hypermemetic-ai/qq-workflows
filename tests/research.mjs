@@ -440,7 +440,7 @@ assert.deepEqual(review.ctx.surfaceCalls, [{ agent: review, names: ["bash", "rea
 assert.deepEqual(review.ctx.registered.map((tool) => tool.name), ["bash", "submit_review", "workflow_send"]);
 const reviewBash = review.ctx.registered.find((tool) => tool.name === "bash");
 assert.equal(reviewBash.isConcurrencySafe(), false);
-assert.deepEqual(Object.keys(reviewBash.parameters.properties), ["command"]);
+assert.deepEqual(Object.keys(reviewBash.parameters.properties), ["command", "writable_paths"]);
 const ordinaryBash = await reviewBash.execute({ command: "web-search 'not intercepted'" }, { agent: review });
 assert.equal(ordinaryBash.exitCode, 0);
 assert.equal(review.ctx.hostBashCommands.length, 1);

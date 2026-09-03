@@ -1614,6 +1614,10 @@ export function createLand({
         worktree: current.worktree,
         command,
         writable: true,
+        // assertChildSandbox() has already established a full outer DSH
+        // boundary. Preserve its canonical workspace and project-grant mounts;
+        // never reconstruct them here from model-supplied writable_paths.
+        preserveOuterWritePolicy: true,
         env,
       });
     }));

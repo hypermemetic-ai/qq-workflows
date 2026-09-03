@@ -2,10 +2,12 @@
 import assert from "node:assert/strict";
 
 import {
+  MINI_SWE_BASH_SCHEMA,
   MINI_SWE_COMPLETION_COMMAND,
   renderMiniSweTask,
 } from "../src/mini-swe-v2.mjs";
 import {
+  bindMiniShellIsolation,
   bindMiniSubmit,
   miniSetup,
   wrapMiniBash,
@@ -27,6 +29,12 @@ assert.doesNotMatch(task, /run_tests|required tests/i);
 assert.match(task, /host stages and commits/);
 assert.match(task, /MUST call bash, workflow_send, or the read-only session_history/);
 assert.match(task, /no writable Git metadata or network credentials/);
+assert.match(task, /exact narrow directory roots in bash `writable_paths`/);
+assert.match(task, /host remembers approved folders for the logical project/);
+assert.match(task, /Do not use `danger-full-access` for routine cache or data folders/);
+assert.match(task, /rejection affects only that request/);
+assert.deepEqual(Object.keys(MINI_SWE_BASH_SCHEMA.parameters.properties), ["command", "writable_paths"]);
+assert.deepEqual(MINI_SWE_BASH_SCHEMA.parameters.required, ["command"]);
 assert.equal(task.split(MINI_SWE_COMPLETION_COMMAND).length - 1, 2);
 assert.equal(task.split(completionWarning).length - 1, 2);
 
@@ -75,6 +83,47 @@ assert.throws(() => miniSetup(failedSurfaceCtx), /official Mini surface failed/)
 assert.equal(failedLookups, 0);
 assert.equal(failedRegistrations, 0);
 
+
+// Reduced Mini schemas retain a newer host's exact path contract and ordinary
+// execution forwards every declared root through the native bash seam.
+const miniNativeCalls = [];
+const hostPathProperty = { type: "array", maxItems: 4, items: { type: "string", format: "host-path" } };
+const nativeMiniBash = wrapMiniBash({
+  name: "bash",
+  parameters: { type: "object", properties: { writable_paths: hostPathProperty } },
+  async execute(args, exec) {
+    miniNativeCalls.push({ args, exec });
+    return { kind: "foreground", stdout: { text: "ok", truncated: false }, stderr: { text: "", truncated: false } };
+  },
+}, { interceptCompletion: false });
+assert.deepEqual(nativeMiniBash.parameters.properties.writable_paths, hostPathProperty);
+assert.notEqual(nativeMiniBash.parameters.properties.writable_paths, hostPathProperty);
+const miniWritableArgs = { command: "cargo check", writable_paths: ["~/.cargo", "/var/tmp/build-cache"] };
+const miniExec = { marker: "mini exec" };
+await nativeMiniBash.execute(miniWritableArgs, miniExec);
+assert.equal(miniNativeCalls.length, 1);
+assert.match(miniNativeCalls[0].args.command, /; cargo check$/);
+assert.equal(miniNativeCalls[0].args.description, "Execute Mini SWE bash command");
+assert.equal(miniNativeCalls[0].args.writable_paths, miniWritableArgs.writable_paths);
+assert.equal(miniNativeCalls[0].exec, miniExec);
+assert.equal("sandbox_permissions" in miniNativeCalls[0].args, false);
+
+// The workflow-owned inner isolation seam never receives unvalidated model
+// paths. It preserves the outer host policy; only base.execute receives the
+// declaration so the host can validate and authorize it first.
+const isolatedAgent = { session: {}, ctx: {} };
+const isolationCalls = [];
+const disposeIsolation = bindMiniShellIsolation(isolatedAgent, (...values) => {
+  isolationCalls.push(values);
+  return `inner:${values[0]}`;
+});
+await nativeMiniBash.execute(miniWritableArgs, { agent: isolatedAgent });
+assert.equal(miniNativeCalls.length, 2);
+assert.equal(miniNativeCalls[1].args.writable_paths, miniWritableArgs.writable_paths);
+assert.deepEqual(isolationCalls, [[miniNativeCalls[0].args.command]], "raw path declarations never reach the inner isolation seam");
+assert.equal(isolationCalls[0][0].includes("~/.cargo"), false);
+assert.match(miniNativeCalls[1].args.command, /^inner:/);
+disposeIsolation();
 
 // A stale HMR generation must not erase a newer completion binding when DSH
 // exposes non-extensible Agent/Session/Context proxies and the WeakMap is the
