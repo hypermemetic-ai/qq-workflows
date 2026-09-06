@@ -21,7 +21,7 @@ assert.equal(
     "",
     "## Context",
     "",
-    "This operator message and your reply, plus at least the previous operator message and your reply, stay in context. Fill any gap below 2,048 conversation tokens with the most recent older text, trimming the oldest included exchange. Older conversation is dropped.",
+    "This exchange and the previous completed exchange stay in context, including their reasoning and tool traffic. Older exchanges are dropped. There is no token floor while normal Architect usage is being measured.",
     "",
     "## Teacher",
     "",

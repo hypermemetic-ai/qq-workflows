@@ -68,7 +68,7 @@ export async function completeArchitect({
     tools: toResponsesTools(tools),
     store: false,
     stream: true,
-    reasoning: { effort: reasoning },
+    reasoning: { effort: reasoning, context: "all_turns" },
   };
   signal?.throwIfAborted();
   await checkpoint?.("request", body);

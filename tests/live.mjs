@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { conversationTokens } from '../paseo-plugin/host/fold.mjs';
 import { runArchitectTurn } from '../paseo-plugin/host/loop.mjs';
 import { supervisedArchitect } from '../paseo-plugin/host/providers/architect-provider.mjs';
 import { createStore } from '../paseo-plugin/host/store.mjs';
@@ -24,17 +23,28 @@ try {
     checkpoint: (kind, value) => { if (kind === 'request') requests.push(value); },
     executeTool: (name, args) => runtime.handleTool(name, args, { cwd: dir, agentId: 'live-architect' }),
   });
-  assert.equal(result.ticket, 'LIVE_OK'); assert.ok(result.pairs.length >= 2);
+  assert.equal(result.ticket, 'LIVE_OK'); assert.equal(result.pairs.length, 2);
   assert.ok(requests.length);
-  assert.equal(requests[0].input.slice(1).filter(item => item.role).reduce((n, item) => n + conversationTokens(item.content), 0), 2048);
+  assert.equal(requests[0].input.length, 4);
   for (const request of requests) {
     assert.equal(request.instructions, ARCHITECT_SYSTEM_PROMPT);
     assert.equal(request.model, 'gpt-6-astra'); assert.equal(request.reasoning.effort, 'high');
     assert.deepEqual(request.tools.map(tool => tool.name), architectTools().map(tool => tool.name));
     assert.ok(JSON.stringify(request.input).includes('PREVIOUS_CONTEXT'));
     assert.ok(!JSON.stringify(request.input).includes('OLD_CONTEXT'));
-    assert.ok(!JSON.stringify(request.input).includes('SUBSTANTIAL_CONTEXT'), 'the oldest exchange is trimmed, including its early marker');
-    assert.ok(JSON.stringify(request.input).includes('Background entry 239'));
+    assert.ok(!JSON.stringify(request.input).includes('SUBSTANTIAL_CONTEXT'), 'older exchanges are excluded even after short replies');
+    assert.ok(!JSON.stringify(request.input).includes('Background entry 239'));
+    assert.equal(request.reasoning.context, 'all_turns');
   }
+  const followupRequests = [];
+  await runArchitectTurn({ cwd: dir, pairs: result.pairs,
+    operatorText: 'Reply briefly without using tools: what was the result of your previous ticket_write call?',
+    complete: request => supervisedArchitect(request, { store, turnKey: 'acceptance-followup' }),
+    checkpoint: (kind, value) => { if (kind === 'request') followupRequests.push(value); },
+    executeTool: () => { throw new Error('unexpected followup tool'); },
+  });
+  assert.ok(followupRequests[0].input.some(item => item.type === 'function_call_output'));
+  assert.ok(followupRequests[0].input.some(item => item.type === 'function_call' && item.name === 'ticket_write'));
+  console.log(`Live followup: ${followupRequests.length} actual requests replayed the previous complete tool exchange.`);
   console.log(`Live Architect: ${requests.length} actual Astra high requests; exact prompt, tool whitelist, ticket mutation and retained context verified`);
 } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }

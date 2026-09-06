@@ -67,7 +67,7 @@ Include the keys you have and restrict access to the file with `chmod 600`. Keep
 
 The ticket is created automatically. Child sessions and their status appear alongside the workspace ticket, and you can open them to follow the work.
 
-Architect retains the current and previous conversation exchanges, filling any gap below 2,048 conversation tokens with the most recent older text. The oldest included exchange is trimmed to fit. The [Paseo fork and its setup guide](https://github.com/hypermemetic-ai/paseo/blob/main/docs/architect-fork.md) makes the native conversation view follow that same selection; the stock app still shows its full archive. Put lasting decisions in the ticket rather than relying on older chat messages. If your project needs a particular test environment, describe it in an optional `.architect/scratch.md`; Architect will use that when planning tests.
+Architect retains the current and previous completed exchange, including reasoning and tool traffic. There is currently no token floor: normal Architect usage is being measured before choosing one. The [Paseo fork and its setup guide](https://github.com/hypermemetic-ai/paseo/blob/main/docs/architect-fork.md) makes the native conversation view follow that same selection; the stock app still shows its full archive. Put lasting decisions in the ticket rather than relying on older chat messages. If your project needs a particular test environment, describe it in an optional `.architect/scratch.md`; Architect will use that when planning tests.
 
 ## Updates and troubleshooting
 
@@ -113,3 +113,11 @@ paseo plugin install "${PASEO_HOME:-$HOME/.paseo}/plugins/architect-v08" --id ar
 ```
 
 The generated entries reuse this checkout's UI and host code. Keep the checkout available, and reload the plugin after updating it. Use a fresh output directory when regenerating the entries.
+
+### Measure Architect usage
+
+Run `node scripts/architect-usage.mjs --home "$HOME/.paseo-architect"` to report the selected daemon’s real Architect turns. Optional `--cwd /absolute/project/path` and `--source operator` or `--source wake` filters narrow the report. The report reads the local SQLite journal and makes no model calls.
+
+It records user/reply text, tool calls/results, reported reasoning tokens, characters, provider attempts and peak request size. Completed two-turn windows are grouped within each session. Aborted, failed and unfinished turns remain visible but do not set the baseline; missing reasoning usage or tool outcomes are explicitly excluded. Pinned instructions, the ticket and tool definitions are outside the conversation measurement. Text counts use `o200k_base` as an estimate; encrypted reasoning is never measured as characters. Collection starts with labelled turns after this update, excluding historical test and coding-session data. No floor is selected automatically.
+
+The proposed pressure-triggered replacement of reasoning/tool payloads with transcript pointers remains a separate change; this observation mode does not introduce automatic compaction.

@@ -1,8 +1,10 @@
-# Initial conversation-retention measurement
+# Historical conversation-retention measurement
 
-The selected policy is a **2,048-token conversation floor**, retaining the current and previous exchanges intact and filling only the missing tokens from older text. The oldest included exchange is trimmed to fit; Unicode boundaries may leave a small shortfall. The first replay found 1,024 was the smallest tested floor that avoided the measured short-turn losses; 2,048 was the operator’s final choice. This measurement does not establish an optimum for answer quality.
+This earlier experiment used a **2,048-token conversation floor**, retaining the current and previous exchanges intact and filling only the missing tokens from older text. The oldest included exchange is trimmed to fit; Unicode boundaries may leave a small shortfall. The first replay found 1,024 was the smallest tested floor that avoided the measured short-turn losses; 2,048 was the operator’s final choice. This measurement does not establish an optimum for answer quality.
 
 The table below records the original whole-exchange replay, before the operator requested trimming. It is historical measurement evidence, not a claim about the final window size. A behavioral regression test covers 1,900 recent tokens plus exactly 148 older tokens.
+
+The current observation period disables the floor and retains two full exchanges. These measurements used a Codex coding conversation and must not calibrate the Architect floor. Use `scripts/architect-usage.mjs` for new, labelled Architect-only measurements.
 
 ## Sample and method
 
