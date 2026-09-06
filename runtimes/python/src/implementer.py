@@ -15,8 +15,8 @@ from minisweagent.environments.local import LocalEnvironment
 from minisweagent.models.litellm_model import LitellmModel
 from minisweagent.models.utils.actions_toolcall import BASH_TOOL
 from minisweagent.exceptions import FormatError, Submitted
-from .supervision import Supervisor
-from .progress import worktree_state
+from shared.supervision import Supervisor
+from shared.progress import worktree_state
 
 DONE = {'type': 'function', 'function': {'name': 'done', 'description': 'Submit completed work to the host.', 'parameters': {'type': 'object', 'properties': {'answer': {'type': 'string'}}, 'required': ['answer'], 'additionalProperties': False}}}
 
@@ -142,6 +142,6 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as error:
-        from .recovery import failure_details
+        from shared.recovery import failure_details
         emit('failure', error=failure_details(error))
         raise

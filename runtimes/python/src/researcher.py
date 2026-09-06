@@ -1,9 +1,13 @@
+import argparse
+import threading
+import traceback
+from contextlib import redirect_stdout
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
-from .supervision import Supervisor
+from shared.supervision import Supervisor
 
 from smolagents import (
     ApiWebSearchTool,
@@ -15,8 +19,8 @@ from smolagents import (
     WebSearchTool,
 )
 
-from .loop_guard import LOOP_WARNING, LoopGuard
-from .recovery import DegenerationError, RetryingModel
+from shared.loop_guard import LOOP_WARNING, LoopGuard
+from shared.recovery import DegenerationError, RetryingModel, HEARTBEAT_LINE, failure_details
 
 INSTRUCTIONS = """You obtain knowledge for an architect.
 
@@ -79,7 +83,6 @@ class ZvecGrepSearchTool(Tool):
     output_type = "string"
 
     def forward(self, root: str, query: str | None = None) -> str:
-        from mini_researcher.agent import official_zg
         return official_zg(self.name, {'root': root, 'query': query})
 
 
@@ -102,12 +105,11 @@ class ZvecGrepRgTool(Tool):
     output_type = "string"
 
     def forward(self, root: str, command: str) -> str:
-        from mini_researcher.agent import official_zg
         return official_zg(self.name, {'root': root, 'command': command})
 
 
 def official_zg(name, arguments):
-    bridge = Path(__file__).resolve().parents[4] / 'paseo-plugin' / 'host' / 'zg-call.mjs'
+    bridge = Path(__file__).resolve().parents[3] / 'paseo-plugin' / 'host' / 'zg-call.mjs'
     completed = subprocess.run([os.environ.get('NODE', 'node'), str(bridge)], input=json.dumps({'name': name, 'arguments': arguments}), text=True, capture_output=True)
     if completed.returncode: raise RuntimeError(completed.stderr)
     return completed.stdout
@@ -219,3 +221,38 @@ def run_research(question: str, env=None):
         raise ValueError("question is empty")
     agent = build_agent(env)
     return agent.run(question)
+
+
+
+def _heartbeat(stop):
+    while not stop.wait(10):
+        print(HEARTBEAT_LINE, file=sys.stderr, flush=True)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Short bounded fact-finder. Prints the answer and exits.",
+    )
+    parser.add_argument("question", nargs="?", help="The exact question to answer")
+    args = parser.parse_args(argv)
+    question = args.question or sys.stdin.read()
+    stop = threading.Event()
+    beat = threading.Thread(target=_heartbeat, args=(stop,), daemon=True)
+    beat.start()
+    try:
+        with redirect_stdout(sys.stderr):
+            answer = run_research(question)
+        if not isinstance(answer, str) or not answer.strip(): raise ValueError("invalid completion: empty answer")
+        print(json.dumps({"version": 1, "kind": "research_completion", "ok": True, "answer": answer}, ensure_ascii=False), flush=True)
+        return 0
+    except Exception as error:
+        details = failure_details(error)
+        print(json.dumps({'version': 1, 'kind': 'research_completion', 'ok': False, 'error': details}), flush=True)
+        traceback.print_exc(file=sys.stderr)
+        return 1
+    finally:
+        stop.set()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

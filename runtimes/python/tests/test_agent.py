@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from mini_researcher.agent import (
+from researcher import (
     INSTRUCTIONS,
     BraveSearchTool,
     DoneTool,
@@ -13,8 +13,8 @@ from mini_researcher.agent import (
     rewrite_done_tool_call,
     run_research,
 )
-from mini_researcher.loop_guard import LOOP_WARNING, LoopGuard
-from mini_researcher.recovery import (
+from shared.loop_guard import LOOP_WARNING, LoopGuard
+from shared.recovery import (
     PermanentError,
     RecoveryExhausted,
     RetryingModel,
@@ -158,7 +158,7 @@ class RecoveryTests(unittest.TestCase):
 
 class LoopGuardTests(unittest.TestCase):
     def test_warns_then_stops_identical_actions(self):
-        from mini_researcher.recovery import DegenerationError
+        from shared.recovery import DegenerationError
 
         guard = LoopGuard()
         for _ in range(3):
@@ -193,9 +193,9 @@ class CliTests(unittest.TestCase):
         from io import StringIO
         from unittest.mock import patch
 
-        from mini_researcher import cli
+        import researcher as cli
 
-        with patch("mini_researcher.cli.run_research", return_value="ok") as run, \
+        with patch("researcher.run_research", return_value="ok") as run, \
              patch("sys.stdin", StringIO("from stdin\n")), \
              patch("sys.stdout", new_callable=StringIO) as out:
             rc = cli.main([])
@@ -207,9 +207,9 @@ class CliTests(unittest.TestCase):
         from io import StringIO
         from unittest.mock import patch
 
-        from mini_researcher import cli
+        import researcher as cli
 
-        with patch("mini_researcher.cli.run_research", return_value="ok") as run, \
+        with patch("researcher.run_research", return_value="ok") as run, \
              patch("sys.stdin", StringIO("from stdin\n")), \
              patch("sys.stdout", new_callable=StringIO):
             rc = cli.main(["from argv"])

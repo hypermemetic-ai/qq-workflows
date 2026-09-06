@@ -9,7 +9,7 @@ import { createRuntime as createHostRuntime } from "../paseo-plugin/host/runtime
 import { parseCreatedAgentJson, waitForHandleCwd } from "../paseo-plugin/host/spawn-agent.mjs";
 import { SPAWN_ENTRY } from "../paseo-plugin/host/config.mjs";
 import { ticketWrite } from "../paseo-plugin/host/workflow/ticket.mjs";
-import { execFileWithInput, extractResearcherAnswer, formatResearcherFailure, researcherUserMessage, resolveMiniResearcher, runMiniResearcher } from "../paseo-plugin/host/researcher.mjs";
+import { execFileWithInput, extractResearcherAnswer, formatResearcherFailure, researcherUserMessage, resolveResearcher, runResearcher } from "../paseo-plugin/host/researcher.mjs";
 
 // Routing assertions await host-owned work after checking the acknowledgement.
 function createRuntime(options = {}) {
@@ -83,13 +83,13 @@ assert.deepEqual(parseCreatedAgentJson('noise\n{"agentId":"a1","workspaceId":"w1
   cwd: "/tmp/x",
 });
 
-const resolved = resolveMiniResearcher(join(dirname(fileURLToPath(import.meta.url)), "../runtimes/python"));
-assert.ok(resolved.command.includes("mini-researcher") || resolved.args.includes("mini_researcher"));
+const resolved = resolveResearcher(join(dirname(fileURLToPath(import.meta.url)), "../runtimes/python"));
+assert.ok(resolved.command.includes("researcher") || resolved.args.includes("researcher"));
 assert.equal(researcherUserMessage("What is ACP?"), "What is ACP?");
 assert.match(researcherUserMessage("What is ACP?", "/ws"), /What is ACP\?/);
 assert.match(researcherUserMessage("What is ACP?", "/ws"), /Workspace root: \/ws/);
 const captured = [];
-const researched = await runMiniResearcher("What is ACP?", {
+const researched = await runResearcher("What is ACP?", {
   cwd: "/ws",
   execFileFn: async (command, args, opts) => {
     captured.push({ command, args, opts });
@@ -101,24 +101,24 @@ assert.equal(captured[0].args.some((arg) => String(arg).includes("What is ACP"))
 assert.match(captured[0].opts.input, /What is ACP\?/);
 assert.match(captured[0].opts.input, /Workspace root: \/ws/);
 assert.equal(Object.hasOwn(captured[0].opts ?? {}, "timeout"), false);
-const spawnFail = new Error("Command failed: /venv/bin/mini-researcher One permitted retry of the narrow provider-selection investigation");
+const spawnFail = new Error("Command failed: /venv/bin/researcher One permitted retry of the narrow provider-selection investigation");
 spawnFail.stderr = "litellm.llms.xai.common_utils.XaiException: Internal error during token generation";
 assert.equal(
   formatResearcherFailure(spawnFail),
   "litellm.llms.xai.common_utils.XaiException: Internal error during token generation",
 );
 assert.equal(
-  formatResearcherFailure(new Error("Command failed: /venv/bin/mini-researcher One permitted retry")),
-  "mini-researcher exited without output",
+  formatResearcherFailure(new Error("Command failed: /venv/bin/researcher One permitted retry")),
+  "researcher exited without output",
 );
 assert.equal(
-  formatResearcherFailure(new Error("Command failed: /venv/bin/mini-researcher One permitted retry\nhttpx.ReadTimeout")),
+  formatResearcherFailure(new Error("Command failed: /venv/bin/researcher One permitted retry\nhttpx.ReadTimeout")),
   "httpx.ReadTimeout",
 );
 const clipped = formatResearcherFailure({ stderr: `${"a".repeat(5000)}TIMEOUT_TAIL` });
 assert.equal(clipped.endsWith("TIMEOUT_TAIL"), true);
 assert.equal(clipped.includes("a".repeat(5000)), false);
-const failedSpawn = await runMiniResearcher("What is ACP?", {
+const failedSpawn = await runResearcher("What is ACP?", {
   cwd: "/ws",
   execFileFn: async () => {
     throw spawnFail;
@@ -150,7 +150,7 @@ const failedPipe = await execFileWithInput("python3", ["-c", "import sys; sys.st
 assert.match(failedPipe.stderr, /httpx.ReadTimeout/);
 assert.doesNotMatch(failedPipe.message, /ignored/);
 assert.throws(() => extractResearcherAnswer("Final answer: unstructured"), /not JSON/);
-const stderrOnly = await runMiniResearcher("What is ACP?", {
+const stderrOnly = await runResearcher("What is ACP?", {
   cwd: "/ws",
   execFileFn: async () => ({ stdout: "", stderr: "warning: ignored" }),
 }).then(
@@ -432,7 +432,7 @@ try {
 
   const argvDump = createRuntime({
     runResearch: async () => {
-      const error = new Error("Command failed: /venv/bin/mini-researcher One permitted retry of the narrow provider-selection investigation");
+      const error = new Error("Command failed: /venv/bin/researcher One permitted retry of the narrow provider-selection investigation");
       error.stderr = "httpx.ReadTimeout\nlitellm.llms.xai.common_utils.XaiException: timeout after 600.0 seconds";
       throw error;
     },

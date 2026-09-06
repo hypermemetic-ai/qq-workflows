@@ -35,10 +35,10 @@ export function formatResearcherFailure(error) {
     return "researcher question was too large to spawn";
   }
   if (typeof error?.code === "number") {
-    return `mini-researcher exited ${error.code} without output`;
+    return `researcher exited ${error.code} without output`;
   }
-  if (error?.code) return `mini-researcher failed: ${error.code}`;
-  return "mini-researcher exited without output";
+  if (error?.code) return `researcher failed: ${error.code}`;
+  return "researcher exited without output";
 }
 
 function stripCommandFailed(message) {
@@ -55,23 +55,23 @@ function clipResearcherError(text) {
   return t.slice(-RESEARCHER_ERROR_CLIP);
 }
 
-export function miniResearcherRoot(pluginRoot = PLUGIN_ROOT) {
+export function pythonRuntimeRoot(pluginRoot = PLUGIN_ROOT) {
   return join(pluginRoot, "..", "runtimes", "python");
 }
 
-export function resolveMiniResearcher(root = miniResearcherRoot()) {
-  const venvMini = join(root, ".venv", "bin", "mini-researcher");
+export function resolveResearcher(root = pythonRuntimeRoot()) {
+  const venvResearcher = join(root, ".venv", "bin", "researcher");
   const venvPython = join(root, ".venv", "bin", "python");
   const env = withResearchSecrets(process.env);
-  if (existsSync(venvMini)) {
-    return { command: venvMini, args: [], cwd: root, env };
+  if (existsSync(venvResearcher)) {
+    return { command: venvResearcher, args: [], cwd: root, env };
   }
   if (existsSync(venvPython)) {
-    return { command: venvPython, args: ["-m", "mini_researcher"], cwd: root, env };
+    return { command: venvPython, args: ["-m", "researcher"], cwd: root, env };
   }
   return {
     command: process.env.PYTHON ?? "python3",
-    args: ["-m", "mini_researcher"],
+    args: ["-m", "researcher"],
     cwd: root,
     env: { ...env, PYTHONPATH: join(root, "src") },
   };
@@ -84,10 +84,10 @@ export function researcherUserMessage(question, cwd) {
   return `${q}\n\nWorkspace root: ${workspace}`;
 }
 
-export async function runMiniResearcher(question, { root, cwd, hostUrl, jobId, restart: grantRestart, execFileFn = execFileWithInput } = {}) {
+export async function runResearcher(question, { root, cwd, hostUrl, jobId, restart: grantRestart, execFileFn = execFileWithInput } = {}) {
   const q = String(question ?? "").trim();
   if (!q) throw new Error("researcher question is empty");
-  const resolved = resolveMiniResearcher(root);
+  const resolved = resolveResearcher(root);
   const prompt = researcherUserMessage(q, cwd);
   const token = resolved.env.XAI_API_KEY || await loadGrokToken(resolved.env);
   const env = { ...resolved.env, ...(token ? { XAI_API_KEY: token } : {}), ...(hostUrl ? { ARCHITECT_HOST: hostUrl, ARCHITECT_JOB_ID: jobId } : {}) };
@@ -104,7 +104,7 @@ export async function runMiniResearcher(question, { root, cwd, hostUrl, jobId, r
       });
       const text = String(stdout ?? "").trim();
       if (!text) {
-        const empty = new Error("mini-researcher produced no output");
+        const empty = new Error("researcher produced no output");
         empty.failureClass = "invalid_output";
         throw empty;
       }
