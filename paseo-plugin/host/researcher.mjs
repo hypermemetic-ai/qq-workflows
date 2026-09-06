@@ -56,7 +56,7 @@ function clipResearcherError(text) {
 }
 
 export function miniResearcherRoot(pluginRoot = PLUGIN_ROOT) {
-  return join(pluginRoot, "..", "mini-researcher");
+  return join(pluginRoot, "..", "runtimes", "python");
 }
 
 export function resolveMiniResearcher(root = miniResearcherRoot()) {

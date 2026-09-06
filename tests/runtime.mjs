@@ -83,7 +83,7 @@ assert.deepEqual(parseCreatedAgentJson('noise\n{"agentId":"a1","workspaceId":"w1
   cwd: "/tmp/x",
 });
 
-const resolved = resolveMiniResearcher(join(dirname(fileURLToPath(import.meta.url)), "../mini-researcher"));
+const resolved = resolveMiniResearcher(join(dirname(fileURLToPath(import.meta.url)), "../runtimes/python"));
 assert.ok(resolved.command.includes("mini-researcher") || resolved.args.includes("mini_researcher"));
 assert.equal(researcherUserMessage("What is ACP?"), "What is ACP?");
 assert.match(researcherUserMessage("What is ACP?", "/ws"), /What is ACP\?/);

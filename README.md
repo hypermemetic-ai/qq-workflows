@@ -17,8 +17,8 @@ Run from the repository root:
 
 ```bash
 npm ci --prefix paseo-plugin
-python3 -m venv mini-researcher/.venv
-mini-researcher/.venv/bin/pip install -e './mini-researcher[dev]'
+python3 -m venv runtimes/python/.venv
+runtimes/python/.venv/bin/pip install -e './runtimes/python[dev]'
 npm run typecheck
 paseo plugin install "$PWD/paseo-plugin"
 paseo plugin reload architect
@@ -64,7 +64,7 @@ The [code guide](docs/architecture.md) maps the entry points and supporting modu
 | Directory | Contents |
 | --- | --- |
 | `paseo-plugin/` | Paseo UI, role adapters and durable host |
-| `mini-researcher/` | Python Researcher and Mini Implementer runtimes, with Python tests |
+| `runtimes/python/` | Python Researcher and Mini Implementer runtimes, with Python tests |
 | `tests/` | Workflow and plugin integration tests |
 | `.architect/` | Repository ticket, template and optional scratch recipe |
 | `docs/` | Architecture and verification notes |

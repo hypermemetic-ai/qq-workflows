@@ -23,7 +23,7 @@ startJsonRpcStdio({ async handler({ method, params }, { write }) {
   if (method === 'session/set_config_option') return { configOptions: [] };
   if (method !== 'session/prompt' || !session) throw new Error(`unsupported method or session: ${method}`);
   if (session.running) throw new Error('Mini already running');
-  const pythonRoot = join(PLUGIN_ROOT, '..', 'mini-researcher');
+  const pythonRoot = join(PLUGIN_ROOT, '..', 'runtimes', 'python');
   const token = process.env.XAI_API_KEY || await loadGrokToken();
   const child = spawn(join(pythonRoot, '.venv', 'bin', 'python'), ['-m', 'mini_researcher.implementer'], {
     cwd: session.cwd,

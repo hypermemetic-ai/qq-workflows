@@ -23,7 +23,7 @@ The Paseo plugin provides the UI and starts an independent host. Role adapters c
 - `host/providers/` contains model transports, supervised request boundaries, authentication and text-repetition detection.
 - `host/search/` contains the official ZG interface and guidance, plus web-search adapters.
 - `host/store.mjs` owns durable records, attempts, receipts and the acknowledged outbox. `recovery.mjs` defines recovery policy; `supervisor.mjs` applies it at runner boundaries.
-- `mini-researcher/src/mini_researcher/` contains the Python Researcher and upstream Mini wrapper. Provider errors and outcomes cross the Node/Python boundary as structured data.
+- `runtimes/python/src/mini_researcher/` contains the Python Researcher and upstream Mini wrapper. Provider errors and outcomes cross the Node/Python boundary as structured data.
 
 The executable entry-point paths stay stable for installed providers and surviving children. Host version detection includes nested source modules, so their changes participate in the drain-and-upgrade process.
 

@@ -6,7 +6,7 @@
   "description": "Ticket-driven planning, teaching, research, implementation and landing for Paseo.",
   "scripts": {
     "test": "node tests/run.mjs",
-    "test:python": "mini-researcher/.venv/bin/python -m pytest -q mini-researcher/tests",
+    "test:python": "runtimes/python/.venv/bin/python -m pytest -q runtimes/python/tests",
     "test:live": "LIVE_ARCHITECT=1 node tests/live.mjs",
     "typecheck": "npm run typecheck --prefix paseo-plugin"
   }

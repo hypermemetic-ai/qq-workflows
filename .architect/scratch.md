@@ -11,8 +11,8 @@ export PASEO_HOME="$ARCHITECT_SCRATCH/paseo"
 export PASEO_HOST="127.0.0.1:16867"
 mkdir -p "$PASEO_HOME" "$ARCHITECT_SCRATCH/repos"
 printf '{"pluginsEnabled":true}\n' > "$PASEO_HOME/config.json"
-python3 -m venv mini-researcher/.venv
-mini-researcher/.venv/bin/pip install -e './mini-researcher[dev]'
+python3 -m venv runtimes/python/.venv
+runtimes/python/.venv/bin/pip install -e './runtimes/python[dev]'
 npm ci --prefix paseo-plugin
 paseo daemon start --home "$PASEO_HOME" --listen "$PASEO_HOST" --no-relay --no-inject-mcp --web-ui
 paseo plugin install "$ARCHITECT_REPO/paseo-plugin"
