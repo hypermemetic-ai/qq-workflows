@@ -1,0 +1,23 @@
+[project]
+name = "mini-researcher"
+version = "0.1.0"
+description = "Short, cheap, bounded fact-finder for an architect. Not a report writer."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "smolagents[toolkit,litellm]==1.26.0",
+  "mini-swe-agent @ https://github.com/SWE-agent/mini-swe-agent/archive/25941c89cfbc91eb40b3f8756348c91d9977d57e.zip",
+]
+
+[project.scripts]
+mini-researcher = "mini_researcher.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.optional-dependencies]
+dev = ["pytest"]

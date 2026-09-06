@@ -1,5 +1,11 @@
 node_modules/
 .DS_Store
+mini-researcher/.venv/
+.zvec-grep/
+paseo-plugin/node_modules/
+__pycache__/
+*.pyc
+*.egg-info/
 
 # Private live benchmark artifacts
 experiments/grok-reviewer-benchmark/runs/
@@ -12,3 +18,6 @@ experiments/grok-reviewer-benchmark/**/*.py[cod]
 .grok-reviewer-*.stdout
 .misospace-offline-pilot/
 .grok-reviewer-benchmark-launch.json
+
+.pytest_cache/
+.architect/artifacts/
