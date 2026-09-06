@@ -94,7 +94,15 @@ try {
     assert.ok(JSON.stringify(request.input).includes('first question'));
     assert.ok(JSON.stringify(request.input).includes('second question'));
   }
-  await stop(); start(); await rpc('initialize'); notifications = [];
+  await stop();
+  const legacyDb = new DatabaseSync(join(root, 'home', 'architect', 'state.sqlite'));
+  try {
+    const saved = JSON.parse(legacyDb.prepare("SELECT value FROM records WHERE kind='session' AND id=?").get(sessionId).value);
+    saved.pairs = saved.pairs.filter(pair => pair.source === 'wake').slice(-2);
+    delete saved.historyVersion;
+    legacyDb.prepare("UPDATE records SET value=? WHERE kind='session' AND id=?").run(JSON.stringify(saved), sessionId);
+  } finally { legacyDb.close(); }
+  start(); await rpc('initialize'); notifications = [];
   await rpc('session/load', { sessionId });
   const restoredEvents = notifications.filter(item => item.method === 'session/update').map(item => item.params.update);
   assert.deepEqual(restoredEvents.filter(item => item.sessionUpdate === 'user_message_chunk').map(item => item.messageId), ['u1', 'u2']);

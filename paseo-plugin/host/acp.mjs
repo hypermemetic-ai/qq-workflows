@@ -13,9 +13,10 @@ import { bumpGeneration, createTurnState, enqueueTurn, wakeIsStale } from "./tur
 
 import { createStore } from "./store.mjs";
 import { supervisedArchitect } from "./providers/architect-provider.mjs";
+import { restoreOperatorHistory } from "./session-history.mjs";
 const store = createStore();
 const sessions = new Map();
-const persist = (id, session) => store.put("session", id, { cwd: session.cwd, pairs: session.pairs, thinking: session.thinking });
+const persist = (id, session) => store.put("session", id, { cwd: session.cwd, pairs: session.pairs, thinking: session.thinking, historyVersion: 2 });
 
 const rpc = startJsonRpcStdio({
   async handler(message, { write }) {
@@ -37,7 +38,7 @@ const rpc = startJsonRpcStdio({
       const cwd = saved?.cwd ?? params?.cwd ?? process.cwd();
       const session = {
         cwd,
-        pairs: keptPairs(saved?.pairs),
+        pairs: saved && saved.historyVersion !== 2 ? restoreOperatorHistory(store, sessionId, saved.pairs) : keptPairs(saved?.pairs),
         pending: null,
         alive: true,
         thinking: ARCHITECT_REASONING,
