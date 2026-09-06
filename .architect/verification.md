@@ -1,0 +1,23 @@
+# Architect workflow verification
+
+Verified on 2026-09-05/06 using a separate Paseo home at `/tmp/paseo-architect-verification/paseo` and daemon endpoint `127.0.0.1:16867`. The normal daemon was not restarted. Raw runtime evidence remains in the scratch SQLite journal and local `.architect/artifacts/`; credentials and conversation dumps are excluded from Git.
+
+| Contract | Evidence |
+| --- | --- |
+| Architect prompt, tools, Astra high, retained context | `LIVE_ARCHITECT=1 node tests/paseo-architect/live.mjs`: two actual supervised provider requests, real ticket mutation, previous exchange retained and older exchange absent. Saved ACP sessions retain at most two pairs. |
+| Actual upstream Mini runtime | `HostAgent.run` is the pinned upstream `DefaultAgent.run`; Python behavioral tests verify canonical observations and 25 model turns. Live job `c9fcfc74-a32a-44ad-9cee-27321ecdcdf8` made five saved Grok high requests with exactly `bash` and `done`. |
+| Native Teacher | Job `aa6bb6cc-d108-43ba-89e0-c59e28dd88b2`: eleven saved conversational requests carry the exact Teacher system prompt, Grok 4.6 high, and native `search_tool`/`use_tool`. Discovery exposes only the five approved repository tools. The operator answer completed the native conversation and generated a durable Teacher wake. The existing live Architect processed the saved synthetic Teacher return and acknowledged wake `verification:teacher-return:55218a85` after its turn completed. |
+| Research success | Job `29fcbdb1-29f5-43cf-b417-e595b103f90c` completed through the actual Python stdin/envelope path. The saved wake equals the answer and source path exactly. |
+| Malformed completion and lengthy research | Actual smolagents test runs 27 steps, rejects a malformed `done`, then accepts one repaired completion. Python tests also cover malformed arguments, permanent failures, exhausted retries and underlying exception chains. |
+| Oversized official ZG output | A quoted search with explicit `head -2000` returned 230,034 characters; the complete diagnostic artifact was retained and the provider-facing observation bounded. `head -2` returned 471 characters. |
+| Bounded local landing | Live Mini job `c9fcfc74-a32a-44ad-9cee-27321ecdcdf8` landed revision `4bcd028dc0a8e2537da3abd8c13fb42d5bbd32fb` by fast-forwarding disposable local `main`. |
+| Open review and landing | Live job `ac1ae1ec-52e6-4bef-9610-dae453578b5f` received a complete OCR review with no findings, then fast-forwarded local `main` to `6b975e371d78f62cda2647d1392646c95cf1ef45`. |
+| Correction routing and divergence | Runtime behavioral tests cover open review, one same-worktree correction, remaining findings with change orientation, and infrastructure failures without consuming correction. Real Git tests preserve divergent local branches when fast-forward fails. |
+| Recovery and publication uncertainty | Behavioral tests cover durable duplicate receipts, unique active attempts, stale-result rejection, restart after completion receipt, acknowledged wake redelivery, and ambiguous publication without replay. Actual SDK reconciliation identifies the existing child by its stable job label. |
+| Provider policy | Local HTTP boundary tests verify three total transient attempts, one permanent-error attempt, Retry-After, durable failed-request reuse, shared recovery credits, one restart/repair allowance, persisted circuit state and repetition detection. |
+| Reload with work pending | Research job `14a85a0a-4a9f-4dcf-af47-415948fb1be2` survived plugin reload on host PID `3433633`, retaining heartbeats and model journal entries. Explicit cancellation of that verified runner preserved a durable failure wake and created no replacement. |
+| UI | Chromium exercised the actual plugin at 1440×1000 and 390×844, ticket reload, a visible file-read error and recovery, workspace-scoped children and opening a child session. A compiled-bundle regression test checks host version identity against the standalone source. |
+
+Checks: complete repository `npm test`; focused `npm run test:architect`; Python tests (22 passing); plugin `tsc --noEmit`; actual Astra requests; real Mini, native Grok, Python researcher and OCR runs; official ZG MCP searches; Chromium interaction.
+
+Operational boundary: unknown command or publication outcomes require inspection. Heartbeat loss does not authorize a replacement worker. A host code upgrade waits for existing jobs to finish; plugin reload itself does not interrupt them. Encrypted provider reasoning is retained as provider data and is not interpreted by text repetition checks.
