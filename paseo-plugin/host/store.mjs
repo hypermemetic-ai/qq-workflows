@@ -1,11 +1,9 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 
-export const PASEO_HOME = process.env.PASEO_HOME || join(homedir(), '.paseo');
-export const STATE_DIR = join(PASEO_HOME, 'architect');
+import { STATE_DIR } from './config.mjs';
 const encode = value => JSON.stringify(value, (key, item) => key === 'donePromise' ? undefined : item);
 
 // Every externally observable acknowledgement is committed with FULL durability.

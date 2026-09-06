@@ -1,32 +1,72 @@
-# `@hypermemetic-ai/qq-workflows`
+# Paseo Architect
 
-Private ESM package for named DSH workflows, delegation capsules, QA, and GitHub PR landing. The package description explicitly states that core still boots when this plugin is absent. The package entry point and root export are [`src/plugin.mjs`](src/plugin.mjs); the complete supported subpath surface is declared in [`package.json`](package.json).
+A ticket-driven workflow for planning, teaching, research, implementation, review and landing in Paseo.
 
-## Run the established checks
+Architect uses Astra high and keeps the current and previous exchanges in context. Decisions live in `.architect/ticket.md`. Teacher, Researcher and Implementer use Grok 4.6 high.
 
-```sh
-npm test
+- **Teacher** uses Grok's native conversational harness with a restricted agent profile.
+- **Researcher** uses smolagents, repository search and web search, returning an answer and sources.
+- **Implementer** runs the pinned upstream Mini v2 loop in an indexed worktree.
+- **Bounded work** lands directly. **Open work** receives an immutable-revision OCR review, at most one correction in the same worktree, and a second review before landing.
+
+## Setup
+
+Requires Node with `node:sqlite`, Python 3.10+, Paseo 0.7.2, the Grok CLI, `zg`, Git, GitHub CLI and OCR 1.11.5. Authenticate the model providers and GitHub CLI before use.
+
+Run from the repository root:
+
+```bash
+npm ci --prefix paseo-plugin
+python3 -m venv mini-researcher/.venv
+mini-researcher/.venv/bin/pip install -e './mini-researcher[dev]'
+npm run typecheck
+paseo plugin install "$PWD/paseo-plugin"
+paseo plugin reload architect
 ```
 
-This is the only repository command declared in `package.json`. It runs the tracked Node test suite in sequence after clearing `GIT_DIR` and `GIT_WORK_TREE`. No install, build, start, or development command—and no runtime version—is established by the available package metadata.
+Plugins must be enabled in the selected Paseo daemon. Set `PASEO_HOME` and `PASEO_HOST` before installation to target a specific home and endpoint. The [scratch recipe](.architect/scratch.md) includes concrete setup and cleanup commands for an isolated daemon and disposable repositories.
 
-## Find the right boundary
+For web research, supply `BRAVE_API_KEY` and/or `EXA_API_KEY` to the daemon, or store them in a private `$PASEO_HOME/architect/credentials.yaml`:
 
-| Area | Start here | Focused checks |
-| --- | --- | --- |
-| Plugin and exported tool surface | [`src/plugin.mjs`](src/plugin.mjs), [`src/tools.mjs`](src/tools.mjs), [`package.json`](package.json) | [`tests/architecture-pin.mjs`](tests/architecture-pin.mjs), [`tests/snapshots.mjs`](tests/snapshots.mjs) |
-| Workflow architecture and repository context | [`src/architect.mjs`](src/architect.mjs), [`src/repository-index.mjs`](src/repository-index.mjs) | [`tests/architect-case-context.mjs`](tests/architect-case-context.mjs), [`tests/architect-repository-index.mjs`](tests/architect-repository-index.mjs) |
-| GitHub PR landing | [`src/land.mjs`](src/land.mjs), [`src/land-tools.mjs`](src/land-tools.mjs), [`src/git.mjs`](src/git.mjs) | [`tests/land.mjs`](tests/land.mjs), [`tests/land-publication.mjs`](tests/land-publication.mjs), [`tests/land-child-retirement.mjs`](tests/land-child-retirement.mjs) |
-| Mini and QA variants | [`src/official-mini.mjs`](src/official-mini.mjs), [`src/mini-qa.mjs`](src/mini-qa.mjs), [`src/mini-docs.mjs`](src/mini-docs.mjs) | [`tests/mini-swe-v2.mjs`](tests/mini-swe-v2.mjs), [`tests/mini-qa.mjs`](tests/mini-qa.mjs), [`tests/mini-docs.mjs`](tests/mini-docs.mjs) |
-| Research workflows and evidence | [`src/research.mjs`](src/research.mjs), [`src/research-evidence.mjs`](src/research-evidence.mjs), [`src/research-store.mjs`](src/research-store.mjs) | [`tests/research.mjs`](tests/research.mjs), [`tests/research-evidence.mjs`](tests/research-evidence.mjs), [`tests/mini-research.mjs`](tests/mini-research.mjs) |
-| Conversation compilation | [`src/conversation-compiler/index.mjs`](src/conversation-compiler/index.mjs) and its [`src/conversation-compiler/`](src/conversation-compiler/index.mjs) modules | [`tests/conversation-compiler.mjs`](tests/conversation-compiler.mjs), [`tests/conversation-compiler-upstream.mjs`](tests/conversation-compiler-upstream.mjs) |
-| Child session, compaction, and isolation | [`src/child-conversation-services.mjs`](src/child-conversation-services.mjs), [`src/child-compaction.mjs`](src/child-compaction.mjs), [`src/child-isolation.mjs`](src/child-isolation.mjs) | [`tests/child-conversation-services.mjs`](tests/child-conversation-services.mjs), [`tests/child-compaction.mjs`](tests/child-compaction.mjs), [`tests/child-isolation.mjs`](tests/child-isolation.mjs) |
+```yaml
+BRAVE_API_KEY: your-brave-key
+EXA_API_KEY: your-exa-key
+```
 
-Prefer the matching focused test while iterating, then run `npm test`. Changes to [`src/official-mini.mjs`](src/official-mini.mjs), [`src/child-settlement.mjs`](src/child-settlement.mjs), [`src/research-evidence.mjs`](src/research-evidence.mjs), or [`src/git.mjs`](src/git.mjs) merit broader verification: these are the highest-fan-in relative modules in the repository evidence. [`src/land.mjs`](src/land.mjs), [`src/architect.mjs`](src/architect.mjs), and [`src/plugin.mjs`](src/plugin.mjs) are also the most frequently changed source entry points in the recent history sample.
+Restrict that file to its owner (`chmod 600`). `ARCHITECT_CREDENTIALS` selects another credential file; `GROK_TOKEN_HELPER` can select an existing Grok token helper.
 
-## Further repository detail
+## Use
 
-- Conversation-compiler provenance: [`src/conversation-compiler/ATTRIBUTION.md`](src/conversation-compiler/ATTRIBUTION.md)
-- Grok reviewer benchmark workspace: [`experiments/grok-reviewer-benchmark/README.md`](experiments/grok-reviewer-benchmark/README.md), with adapter notes in [`experiments/grok-reviewer-benchmark/adapters/README.md`](experiments/grok-reviewer-benchmark/adapters/README.md)
+Open a repository workspace in Paseo and choose **Start architect** from the command center. Work with Architect in the conversation and follow the ticket in the **Ticket** panel. Open a Teacher session when Architect asks you to learn about a parked question. Child sessions and their status appear with the workspace ticket.
 
-Treat `src/` as the published package content: `package.json` lists only that directory in `files`; tests and experiments are repository support material rather than package files.
+Repositories can optionally provide `.architect/scratch.md` to describe their preferred test environment. Architect records any different setup the work needs in the ticket.
+
+## Recovery and landing
+
+An independent host stores jobs, attempt journals, completion receipts and acknowledged wake messages in SQLite beneath `$PASEO_HOME/architect`. Duplicate completion returns the same receipt. Plugin reload preserves work; a changed host drains existing jobs before upgrading.
+
+Recovery permits three provider attempts, one output repair, one known-safe process restart and six recovery actions across a delegation and its correction cycle. Circuit and repetition histories persist. Missing heartbeats trigger diagnosis; commands and publication with unknown outcomes require inspection before proceeding.
+
+Remote landing pushes the intended branch, identifies its PR and verifies the merged revision. Local landing requires a fast-forward onto `main` or `master`; divergent work remains intact.
+
+## Development
+
+```bash
+npm test
+npm run test:python
+npm run typecheck
+# Optional: makes real Astra requests using configured credentials.
+npm run test:live
+```
+
+The [code guide](docs/architecture.md) maps the entry points and supporting modules. The Node suite includes compilation with the installed Paseo compiler. Python tests exercise the actual Mini and smolagents loops. See the [verification record](docs/verification.md) for live role, recovery, publication and UI evidence.
+
+| Directory | Contents |
+| --- | --- |
+| `paseo-plugin/` | Paseo UI, role adapters and durable host |
+| `mini-researcher/` | Python Researcher and Mini Implementer runtimes, with Python tests |
+| `tests/` | Workflow and plugin integration tests |
+| `.architect/` | Repository ticket, template and optional scratch recipe |
+| `docs/` | Architecture and verification notes |
+
+Installed dependencies, search indexes and raw verification artifacts are ignored. Runtime state and credentials belong in the selected Paseo home.

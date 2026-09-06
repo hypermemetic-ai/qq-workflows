@@ -5,9 +5,9 @@ import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { startJsonRpcStdio } from './jsonrpc-stdio.mjs';
 import { PLUGIN_ROOT } from './config.mjs';
-import { callHost } from './runtime.mjs';
-import { loadGrokToken } from './secrets.mjs';
-import { ZVEC_GREP_AGENT_GUIDANCE } from './zg-guidance.mjs';
+import { callHost } from './host-client.mjs';
+import { loadGrokToken } from './providers/secrets.mjs';
+import { ZVEC_GREP_AGENT_GUIDANCE } from './search/zg-guidance.mjs';
 
 const sessions = new Map();
 startJsonRpcStdio({ async handler({ method, params }, { write }) {

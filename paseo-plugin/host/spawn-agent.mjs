@@ -1,15 +1,16 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createPaseoClient } from "@getpaseo/client";
 
-function isRealCwd(cwd) {
+export function isRealCwd(cwd) {
   return typeof cwd === "string" && cwd.trim().length > 0;
 }
 
-async function waitForHandleCwd(handle, { timeoutMs = 30_000, intervalMs = 50 } = {}) {
+export async function waitForHandleCwd(handle, { timeoutMs = 30_000, intervalMs = 50 } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (isRealCwd(handle?.cwd)) return handle.cwd;
@@ -111,6 +112,44 @@ export async function reconcileWithSdk(jobId, { clientFactory = createPaseoClien
     return agent ? { id: agent.id, cwd: agent.cwd, workspaceId: agent.workspaceId, status: agent.status } : null;
   } finally { if (!supplied) await client.close().catch(() => {}); }
 }
+
+export function parseCreatedAgentJson(text) {
+  const raw = String(text ?? "").trim();
+  let parsed;
+  for (const line of raw.split(/\r?\n/).reverse()) {
+    try { parsed = JSON.parse(line); break; } catch { /* progress is not a result */ }
+  }
+  if (!parsed) throw new Error("paseo spawn produced no json");
+  const id = parsed.id ?? parsed.agentId;
+  if (!id) throw new Error("paseo spawn json missing id");
+  return {
+    id,
+    workspaceId: parsed.workspaceId ?? parsed.workspace_id ?? null,
+    cwd: parsed.cwd ?? null,
+  };
+}
+
+export function defaultSpawnExec(command, args, { input } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
+    const out = [];
+    const err = [];
+    child.stdout.on("data", (chunk) => out.push(chunk));
+    child.stderr.on("data", (chunk) => err.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      const stdout = Buffer.concat(out).toString("utf8");
+      const stderr = Buffer.concat(err).toString("utf8");
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || stdout.trim() || `spawn-agent exited ${code}`));
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+    child.stdin.end(input ?? "");
+  });
+}
+
 
 async function readStdin() {
   const chunks = [];

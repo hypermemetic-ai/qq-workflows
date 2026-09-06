@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { STATE_DIR } from './store.mjs';
+import { STATE_DIR } from './config.mjs';
 export async function boundObservation(value, { limit = 16000, artifactDir = join(STATE_DIR, 'artifacts') } = {}) {
   const text = typeof value === 'string' ? value : JSON.stringify(value);
   if (text.length <= limit) return value;

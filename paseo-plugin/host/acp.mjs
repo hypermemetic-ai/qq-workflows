@@ -2,16 +2,16 @@
 import { randomUUID } from "node:crypto";
 import { startJsonRpcStdio } from "./jsonrpc-stdio.mjs";
 import { runArchitectTurn } from "./loop.mjs";
-import { ARCHITECT_SYSTEM_PROMPT } from "./prompts.mjs";
-import { architectTools } from "./tools.mjs";
-import { callHost } from "./runtime.mjs";
-import { indexWorkspace } from "./zg.mjs";
+import { ARCHITECT_SYSTEM_PROMPT } from "./workflow/prompts.mjs";
+import { architectTools } from "./workflow/tools.mjs";
+import { callHost } from "./host-client.mjs";
+import { indexWorkspace } from "./search/zg.mjs";
 import { ARCHITECT_MODEL_ID, astraThoughtConfig } from "./config.mjs";
-import { ARCHITECT_REASONING } from "./model.mjs";
+import { ARCHITECT_REASONING } from "./providers/model.mjs";
 import { bumpGeneration, createTurnState, enqueueTurn, wakeIsStale } from "./turns.mjs";
 
 import { createStore } from "./store.mjs";
-import { supervisedArchitect } from "./architect-provider.mjs";
+import { supervisedArchitect } from "./providers/architect-provider.mjs";
 const store = createStore();
 const sessions = new Map();
 const persist = (id, session) => store.put("session", id, { cwd: session.cwd, pairs: session.pairs, thinking: session.thinking });

@@ -34,10 +34,9 @@ git -C "$ARCHITECT_SCRATCH/repos/bounded" commit -m 'Test baseline'
 Use additional disposable repositories for open review, remaining findings, and divergent local-main tests. Use an explicitly identified test remote for publication checks. Record actual runtime requests/session artifacts, committed SHAs, and PR URLs in `.architect/artifacts/` without credentials.
 
 ```bash
-npm run test:architect
 npm test
-mini-researcher/.venv/bin/pytest -q mini-researcher/tests
-npm run typecheck --prefix paseo-plugin
+npm run test:python
+npm run typecheck
 paseo plugin reload architect
 ```
 

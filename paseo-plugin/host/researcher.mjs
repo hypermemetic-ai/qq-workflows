@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { execFile as execFileCb } from "node:child_process";
 import { PLUGIN_ROOT } from "./config.mjs";
 import { classifyFailure, parseResearcherResult } from "./recovery.mjs";
-import { loadGrokToken, withResearchSecrets } from "./secrets.mjs";
+import { loadGrokToken, withResearchSecrets } from "./providers/secrets.mjs";
 
 const RESEARCHER_ERROR_CLIP = 4000;
 

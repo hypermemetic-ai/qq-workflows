@@ -1,4 +1,4 @@
-import { callZgTool } from './zg.mjs';
+import { callZgTool } from './search/zg.mjs';
 let input = '';
 for await (const chunk of process.stdin) input += chunk;
 try {
