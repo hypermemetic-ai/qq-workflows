@@ -113,7 +113,7 @@ export function architectProvider(nodePath = process.execPath) {
   return {
     extends: "acp",
     label: "Architect",
-    description: "Ticket-driven architect with a two-pair model loop.",
+    description: "Ticket-driven architect with a 2,048-token conversation floor.",
     command: [nodePath, ACP_ENTRY],
     models: [ASTRA_MODEL],
   };
@@ -128,7 +128,7 @@ export function architectProfile() {
     model: ARCHITECT_MODEL_ID,
     thinkingOptionId: "high",
     notes:
-      "Ticket-driven architect. Pins `.architect/ticket.md`, keeps two operator/architect pairs, and delegates implementer or researcher. Codex gpt-6-astra with high thinking.",
+      "Ticket-driven architect. Pins `.architect/ticket.md`, keeps at least two operator/architect pairs with a 2,048-token conversation floor, and delegates implementer or researcher. Codex gpt-6-astra with high thinking.",
   };
 }
 

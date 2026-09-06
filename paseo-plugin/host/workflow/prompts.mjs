@@ -7,7 +7,7 @@ export const ARCHITECT_SYSTEM_PROMPT = [
   "",
   "## Context",
   "",
-  "Only this operator message and your reply, plus the previous operator message and your reply, stay in context. Older conversation is dropped.",
+  "This operator message and your reply, plus at least the previous operator message and your reply, stay in context. Retain additional whole exchanges to reach a 2,048-token conversation floor. Older conversation is dropped.",
   "",
   "## Teacher",
   "",

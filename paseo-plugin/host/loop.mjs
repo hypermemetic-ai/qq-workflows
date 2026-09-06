@@ -1,4 +1,4 @@
-import { assembleArchitectRequest, rememberPair } from "./fold.mjs";
+import { assembleArchitectRequest, rememberPair, requestPairs } from "./fold.mjs";
 import { ARCHITECT_SYSTEM_PROMPT } from "./workflow/prompts.mjs";
 import { architectTools } from "./workflow/tools.mjs";
 import { completeArchitect } from "./providers/model.mjs";
@@ -7,6 +7,8 @@ import { ticketRead } from "./workflow/ticket.mjs";
 export async function runArchitectTurn({
   cwd,
   operatorText,
+  messageId,
+  onContextWindow,
   pairs = [],
   executeTool,
   complete = completeArchitect,
@@ -35,6 +37,10 @@ export async function runArchitectTurn({
     await saveState(state);
   }
   if (state?.input) input = state.input;
+  const contextMessageIds = state?.contextMessageIds ?? [...requestPairs(pairs, operatorText).map(pair => pair.messageId), messageId].filter(Boolean);
+  const persistState = saveState;
+  saveState = value => persistState({ ...value, contextMessageIds });
+  await onContextWindow?.(contextMessageIds);
   const instructions = systemPrompt;
   const assistantParts = state?.assistantParts ?? [];
   let retained = state?.result;
@@ -80,7 +86,7 @@ export async function runArchitectTurn({
   const architectText = assistantParts.join("");
   return {
     architectText,
-    pairs: rememberPair(pairs, operatorText, architectText),
+    pairs: rememberPair(pairs, operatorText, architectText, messageId),
     ticket: (await ticketRead(cwd)).text,
   };
 }
