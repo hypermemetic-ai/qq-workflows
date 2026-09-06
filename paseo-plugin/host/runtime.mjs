@@ -1,9 +1,10 @@
 import { createServer } from "node:http";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createSupervisor } from "./supervisor.mjs";
 import { hostVersion } from "./version.mjs";
-import { reconcileWithSdk, isRealCwd, waitForHandleCwd, defaultSpawnExec, parseCreatedAgentJson } from "./spawn-agent.mjs";
+import { createPlacedAgent, reconcileWithSdk, isRealCwd, waitForHandleCwd, defaultSpawnExec, parseCreatedAgentJson } from "./spawn-agent.mjs";
 import { createStore, persistentMap } from "./store.mjs";
 import { ticketRead, ticketWrite, parseKind } from "./workflow/ticket.mjs";
 import { roleTools, validateDelegateArgs, validateTeacherArgs } from "./workflow/tools.mjs";
@@ -22,11 +23,11 @@ import {
   implementerCreateOptions,
   teacherCreateOptions,
 } from "./workflow/children.mjs";
-import { STATE_DIR, HOST_META_PATH, ARCHITECT_MODEL_ID, ARCHITECT_PROVIDER_ID, SPAWN_ENTRY } from "./config.mjs";
+import { STATE_DIR, HOST_META_PATH, ARCHITECT_MODEL_ID, ARCHITECT_PROVIDER_ID, SPAWN_ENTRY, daemonConfigPatch } from "./config.mjs";
 import { buildReviewPacket, commitIfDirty, createAndMergePr, fastForwardMain, hasRemote, isGitRepo } from "./workflow/git.mjs";
 import { braveSearch, exaSearch, visitWebpage } from "./search/web.mjs";
 import { runOcrReview } from "./workflow/ocr.mjs";
-import { runResearcher } from "./researcher.mjs";
+import { runResearcher, terminateProcess, terminateProcessGroup } from "./researcher.mjs";
 import { createImplementerWorktree, implementerBranchName } from "./workflow/worktree.mjs";
 
 export function createRuntime(options = {}) {
@@ -35,6 +36,7 @@ export function createRuntime(options = {}) {
   const save = job => store.put("job", job.id, job);
   const wakeWaiters = new Map();
   const pending = new Set();
+  const researcherControllers = new Map();
   const paseo = options.paseo ?? null;
   let server = null;
   let hostUrl = options.hostUrl ?? null;
@@ -42,6 +44,8 @@ export function createRuntime(options = {}) {
   let draining = false;
   const ocrReview = options.ocrReview ?? runOcrReview;
   const runResearch = options.runResearch ?? runResearcher;
+  const terminateProcessFn = options.terminateProcess ?? terminateProcess;
+  const terminateProcessGroupFn = options.terminateProcessGroup ?? terminateProcessGroup;
   const waitForCwd = options.waitForHandleCwd ?? waitForHandleCwd;
   const spawnExec = options.spawnExec ?? defaultSpawnExec;
   const indexWorkspaceFn = options.indexWorkspace ?? indexWorkspace;
@@ -120,7 +124,24 @@ export function createRuntime(options = {}) {
   async function startTeacher({ cwd, args, parent, paseoParent }) {
     if (draining) throw new Error("Host upgrade is waiting for existing work to finish; retry after it completes");
     const parsed = validateTeacherArgs(args);
-    const existing = [...jobs.values()].find(job => job.role === "teacher" && job.cwd === cwd && job.parked_question === parsed.parked_question && ["running", "uncertain"].includes(job.status));
+    let existing = [...jobs.values()].find(job => job.role === "teacher" && job.cwd === cwd && job.parked_question === parsed.parked_question && ["running", "uncertain"].includes(job.status));
+    if (existing && existing.status === "uncertain") {
+      let child;
+      try { child = await reconcileChild(existing.id); } catch {}
+      if (child && child.cwd === (existing.worktreeCwd ?? existing.cwd) && ["running", "idle", "initializing"].includes(child.status)) {
+        existing.agentId = child.id;
+        existing.workspaceId = child.workspaceId;
+        existing.phase = "working";
+        existing.status = "running";
+        existing.liveness = "reconciled";
+        save(existing);
+      } else if (child === null && existing.phase === "spawning" && !existing.agentId) {
+        existing.status = "failed";
+        existing.liveness = "not_found";
+        save(existing);
+        existing = null;
+      }
+    }
     if (existing) return { started: false, jobId: existing.id, agentId: existing.agentId, message: "The existing Teacher session is preserved." };
     const job = createJob({
       role: "teacher",
@@ -163,7 +184,24 @@ export function createRuntime(options = {}) {
     store.put("ticket_revision", ticketRevision, { ...ticket, cwd, createdAt: Date.now() });
     const kind = parseKind(ticket.text);
     const parsed = validateDelegateArgs(args, kind);
-    const existing = [...jobs.values()].find(job => job.cwd === cwd && job.role === parsed.to && ["running", "awaiting_correction", "uncertain"].includes(job.status) && (parsed.to === "researcher" ? job.question === parsed.question : job.ticketRevision === ticketRevision));
+    let existing = [...jobs.values()].find(job => job.cwd === cwd && job.role === parsed.to && ["running", "awaiting_correction", "uncertain"].includes(job.status) && (parsed.to === "researcher" ? job.question === parsed.question : job.ticketRevision === ticketRevision));
+    if (existing && existing.status === "uncertain") {
+      let child;
+      try { child = await reconcileChild(existing.id); } catch {}
+      if (child && child.cwd === (existing.worktreeCwd ?? existing.cwd) && ["running", "idle", "initializing"].includes(child.status)) {
+        existing.agentId = child.id;
+        existing.workspaceId = child.workspaceId;
+        existing.phase = "working";
+        existing.status = "running";
+        existing.liveness = "reconciled";
+        save(existing);
+      } else if (child === null && existing.phase === "spawning" && !existing.agentId) {
+        existing.status = "failed";
+        existing.liveness = "not_found";
+        save(existing);
+        existing = null;
+      }
+    }
     if (existing) return { started: false, jobId: existing.id, agentId: existing.agentId, to: parsed.to, status: existing.status };
     if (parsed.to === "researcher") {
       const opKey = operationKey(cwd, "research", parsed.question);
@@ -194,6 +232,7 @@ export function createRuntime(options = {}) {
     const job = createJob({
       role: "implementer",
       kind: parsed.kind,
+      completion: parsed.completion,
       cwd,
       parent,
       paseoParent,
@@ -218,13 +257,18 @@ export function createRuntime(options = {}) {
       workspaceId: prepared.workspaceId,
       task: ticket.text,
       kind: parsed.kind,
+      completion: parsed.completion,
       parent: paseoParent,
       branch: true,
     }));
     job.agentId = created.id;
     job.workspaceId = created.workspaceId ?? prepared.workspaceId;
-    if (!isRealCwd(job.worktreeCwd)) {
-      throw new Error("delegate: worktree cwd did not appear");
+    if (!isRealCwd(created.cwd) || created.cwd !== job.worktreeCwd) {
+      job.status = "uncertain";
+      job.error = `delegate: child checkout ${created.cwd} does not match prepared checkout ${job.worktreeCwd}; inspect child ${created.id} before retrying`;
+      save(job);
+      queueWake(parent, job.error, `spawn:${job.id}`);
+      throw new Error(job.error);
     }
     job.phase = "working";
     save(job);
@@ -232,8 +276,21 @@ export function createRuntime(options = {}) {
   }
 
   function runResearcherJob(job) {
+    const controller = new AbortController();
+    researcherControllers.set(job.id, controller);
     const running = Promise.resolve()
-      .then(() => runResearch(job.question, { cwd: job.cwd, hostUrl, jobId: job.id, restart: () => supervise({ jobId: job.id, event: "restart" }) }))
+      .then(() => runResearch(job.question, {
+        cwd: job.cwd,
+        hostUrl,
+        jobId: job.id,
+        restart: () => supervise({ jobId: job.id, event: "restart" }),
+        signal: controller.signal,
+        onSpawn: (child) => {
+          if (!child?.pid) return;
+          job.pid = child.pid;
+          save(job);
+        },
+      }))
       .then((answer) => {
         const text = String(answer ?? "").trim();
         store.receive(job, { answer: text });
@@ -247,6 +304,7 @@ export function createRuntime(options = {}) {
         return { ok: true, action: "wake_architect", answer: text };
       })
       .catch((error) => {
+        if (error.traceback) job.traceback = error.traceback;
         error.failureClass = error.failureClass ?? classifyFailure(error);
         const wake = formatRecoveryWake(error, { role: "research", details: job.id });
         job.status = error.failureClass === "cancelled" ? "cancelled" : "failed";
@@ -262,7 +320,7 @@ export function createRuntime(options = {}) {
         queueWake(job.parent, wake, `${job.id}:failure`);
         return { ok: false, action: "wake_architect", error: wake };
       });
-    track(running.finally(() => save(job)));
+    track(running.finally(() => { researcherControllers.delete(job.id); save(job); }));
     return running;
   }
 
@@ -272,7 +330,7 @@ export function createRuntime(options = {}) {
     const prior = store.get("receipt", job.id);
     if (prior) return prior;
     if (job.status !== "running") throw new Error("done: stale child");
-    if ((job.role === "teacher" || job.role === "researcher") && (typeof input.answer !== "string" || !input.answer.trim())) throw new Error("done requires a nonempty answer");
+    if ((job.role === "teacher" || job.role === "researcher" || job.completion === "report") && (typeof input.answer !== "string" || !input.answer.trim())) throw new Error("done requires a nonempty answer");
     if (job.role === "reviewer") normalizeFindings(input.findings);
     const receipt = store.receive(job, input);
     job.phase = "completion_received";
@@ -297,6 +355,7 @@ export function createRuntime(options = {}) {
     const decision = routeDone({
       role: job.role,
       kind: job.kind,
+      completion: job.completion,
       reviewRound: job.reviewerAttempt ?? 0,
       findings,
     });
@@ -356,6 +415,7 @@ export function createRuntime(options = {}) {
       save(job);
       const from = packet.baseSha;
       if (!from) throw new Error("review packet missing merge-base");
+      if (!packet.files.length) throw new Error("No changes found in the implementation checkout; review was not run. Verify the child workspace and its handback.");
       const review = () => ocrReview(cwd, { from, to: packet.headSha, supervision: { store, jobId: job.id, delegationId: job.delegationId ?? job.id, circuit, sleep, random } });
       // Production retries occur at OCR's HTTP boundary, never around the whole review.
       const findings = options.ocrReview ? await retryProviderOperation(review, { ledger: job.ledger ?? createLedger(), circuit, scope: "review", sleep, random }) : await review();
@@ -364,6 +424,7 @@ export function createRuntime(options = {}) {
       save(job);
       return applyReviewerDecision(job, findings, packet);
     } catch (error) {
+      if (error.reviewEvidence) job.reviewEvidence = error.reviewEvidence;
       error.failureClass = error.failureClass ?? classifyFailure(error);
       const wake = formatRecoveryWake(error, {
         role: "review",
@@ -565,12 +626,17 @@ export function createRuntime(options = {}) {
 
   async function createAgent(createOptions) {
     if (paseo) {
-      let handle;
-      if (createOptions.workspaceId && typeof paseo.workspaces?.ref === "function") {
-        handle = await paseo.workspaces.ref(createOptions.workspaceId).agents.create(createOptions);
-      } else {
-        handle = await paseo.agents.create(createOptions);
+      if (typeof paseo.config?.get === "function" && typeof paseo.config?.patch === "function") {
+        const requestedProvider = createOptions?.config?.provider?.split("/")?.[0];
+        if (requestedProvider && ["architect-mini", "architect-teacher", "architect"].includes(requestedProvider)) {
+          const current = await paseo.config.get();
+          const providers = current?.config?.providers ?? {};
+          if (!providers[requestedProvider]) {
+            await paseo.config.patch(daemonConfigPatch(current?.config));
+          }
+        }
       }
+      const handle = await createPlacedAgent(paseo, createOptions);
       if (createOptions.worktree) {
         const cwd = await waitForCwd(handle);
         return {
@@ -614,6 +680,8 @@ export function createRuntime(options = {}) {
         return settlementFailure(job, "Commit", error);
       }
       if (pr) {
+        const packet = job.packet ?? await git.buildReviewPacket(cwd);
+        if (!packet.files.length) throw new Error("No changes found in the implementation checkout; nothing was published. Use completion: report for an investigation.");
         const remote = await git.hasRemote(cwd);
         const label = remote ? "PR merge" : "local merge";
         try {
@@ -668,13 +736,13 @@ export function createRuntime(options = {}) {
 
   async function reconcile() {
     for (const job of jobs.values()) {
-      if (job.status !== "running") continue;
+      if (!["running", "uncertain"].includes(job.status)) continue;
       const active = store.active().filter(attempt => attempt.value.jobId === job.id);
       if (!store.get("receipt", job.id) && job.agentId) {
         let child;
         try { child = await reconcileChild(job.id); } catch {}
         if (child?.status === "running" && child.cwd === (job.worktreeCwd ?? job.cwd)) {
-          job.liveness = "reconciled"; save(job); continue;
+          job.liveness = "reconciled"; job.status = "running"; save(job); continue;
         }
       }
       if (active.some(attempt => attempt.value.kind === "command") || job.phase === "landing" || job.phase === "committing") {
@@ -693,7 +761,13 @@ export function createRuntime(options = {}) {
         try { child = await reconcileChild(job.id); } catch { /* Preserve uncertainty if the daemon is disconnected. */ }
         if (child && child.cwd === (job.worktreeCwd ?? job.cwd) && ["running", "idle", "initializing"].includes(child.status)) {
           job.agentId = child.id; job.workspaceId = child.workspaceId; job.phase = "working";
-          job.liveness = "reconciled"; save(job); continue;
+          job.liveness = "reconciled"; job.status = "running"; save(job); continue;
+        }
+        if (job.status === "uncertain" && job.phase === "spawning" && !job.agentId && child === null) {
+          job.status = "failed";
+          job.liveness = "not_found";
+          save(job);
+          continue;
         }
         // A saved PID/session is evidence to investigate, never proof that replacement is safe.
         job.liveness = "uncertain"; job.status = "uncertain"; save(job);
@@ -776,7 +850,33 @@ export function createRuntime(options = {}) {
     return hostUrl;
   }
 
-  async function close() {
+  async function cancelResearcherJobs({ terminal = false } = {}) {
+    if (!terminal) return [];
+    const failures = [];
+    for (const job of jobs.values()) {
+      if (job.role !== "researcher" || !["running", "uncertain"].includes(job.status)) continue;
+      try { researcherControllers.get(job.id)?.abort(); } catch {}
+      if (Number.isInteger(job.pid) && job.pid > 1 && job.pid !== process.pid) {
+        failures.push(...await terminateProcessFn(job.pid));
+      }
+      const ownedPath = join(STATE_DIR, "jobs", job.id, "owned-process-groups.json");
+      try {
+        const owned = JSON.parse(await readFile(ownedPath, "utf8"));
+        for (const group of owned?.groups ?? []) {
+          const pgid = Number(group?.pgid);
+          if (!Number.isInteger(pgid) || pgid <= 1 || pgid === process.pid) continue;
+          failures.push(...await terminateProcessGroupFn(pgid));
+        }
+      } catch (error) {
+        if (error?.code !== "ENOENT") failures.push(`owned process groups for ${job.id}: ${error.message}`);
+      }
+    }
+    return failures;
+  }
+
+  async function close({ terminal = false } = {}) {
+    const cleanupFailures = await cancelResearcherJobs({ terminal });
+    if (cleanupFailures.length) console.error("Researcher diagnostic cleanup failures", cleanupFailures);
     clearInterval(monitor);
     for (const waiters of wakeWaiters.values()) {
       for (const waiter of waiters) waiter();
@@ -797,6 +897,7 @@ export function createRuntime(options = {}) {
     reconcile,
     listen,
     close,
+    cancelResearcherJobs,
     handleTool,
     startArchitectSession,
     takeWakes,

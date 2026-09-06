@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { mapOcrJson, runOcrReview } from "../paseo-plugin/host/workflow/ocr.mjs";
 
 assert.deepEqual(mapOcrJson({ comments: [] }), []);
+const skipped = { status: 'skipped', comments: [], message: 'No items selected', manifest: { coverage: { selected: [], failed: [] } } };
+assert.throws(() => mapOcrJson(skipped), error => error.failureClass === 'process' && error.reviewEvidence.manifest === skipped.manifest);
 assert.deepEqual(
   mapOcrJson({
     comments: [{ path: "src/a.ts", start_line: 3, content: "off-by-one" }],

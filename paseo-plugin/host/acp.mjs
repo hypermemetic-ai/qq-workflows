@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { startJsonRpcStdio } from "./jsonrpc-stdio.mjs";
 import { runArchitectTurn } from "./loop.mjs";
-import { contextWindow, keptPairs } from "./fold.mjs";
+import { contextWindow, keptPairs, isWakePair } from "./fold.mjs";
 import { ARCHITECT_SYSTEM_PROMPT } from "./workflow/prompts.mjs";
 import { architectTools } from "./workflow/tools.mjs";
 import { callHost } from "./host-client.mjs";
@@ -155,16 +155,18 @@ async function runWakeTurn({ session, sessionId, text, write, wakeId }) {
     params: {
       sessionId,
       update: {
-        sessionUpdate: "user_message_chunk",
-        messageId,
-        content: { type: "text", text },
+        sessionUpdate: "tool_call",
+        toolCallId: messageId,
+        title: "Workflow update",
+        status: "completed",
+        content: [{ type: "content", content: { type: "text", text } }],
       },
     },
   });
   const result = await runSessionTurn({
     session,
     sessionId,
-    operatorText: text,
+    operatorText: `Workflow event (not an operator message):\n${text}`,
     messageId,
     write,
     wakeId,
@@ -182,6 +184,7 @@ async function runSessionTurn({ session, sessionId, operatorText, messageId, wri
   store.put("architect_turn", turnKey, measurement);
   try { const result = await runArchitectTurn({
     messageId,
+    source: wakeId ? "wake" : "operator",
     onContextWindow: ids => sendContextWindow(write, sessionId, ids),
     state: store.get("turn", turnKey),
     complete: request => supervisedArchitect(request, { store, turnKey }),
@@ -250,7 +253,10 @@ function replayExchanges(write, sessionId, pairs) {
   const update = value => write({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: value } });
   const text = (sessionUpdate, value, extra = {}) => update({ sessionUpdate, ...extra, content: { type: "text", text: value } });
   for (const pair of pairs) {
-    text("user_message_chunk", pair.operator, { messageId: pair.messageId });
+    if (isWakePair(pair)) {
+      update({ sessionUpdate: "tool_call", toolCallId: pair.messageId, title: "Workflow update", status: "completed",
+        content: [{ type: "content", content: { type: "text", text: pair.operator } }] });
+    } else text("user_message_chunk", pair.operator, { messageId: pair.messageId });
     if (!pair.items?.length) {
       text("agent_message_chunk", pair.architect);
       continue;

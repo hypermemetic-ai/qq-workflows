@@ -21,7 +21,7 @@ assert.equal(
     "",
     "## Context",
     "",
-    "This exchange and the previous completed exchange stay in context, including their reasoning and tool traffic. Older exchanges are dropped. There is no token floor while normal Architect usage is being measured.",
+    "This operator exchange and the previous completed operator exchange stay in context, including their reasoning and tool traffic. Workflow events are separate from operator messages and do not consume exchange slots. Older operator exchanges and their events are dropped. There is no token floor while normal Architect usage is being measured.",
     "",
     "## Teacher",
     "",
@@ -42,6 +42,8 @@ assert.equal(
     "The question is the user message.",
     "Call done when you have the answer.",
     "First sentence is the answer. Then the sources: file paths and URLs.",
+    "",
+    "Diagnostic tools are for investigation only: focused tests, reproductions, temporary scripts, and isolated scratch services. Do not repair project code or mutate the normal runtime, shared configuration, or workflow job state. Do not create workflow-agent children. Preserve HOME and credentials; do not print secrets. Command execution is role-governed, not a sandbox. Scratch directories and a separate PASEO_HOME reduce accidents; they do not isolate shared files or services. run_command is a foreground shell (`/bin/bash -c`) with a 120-second default timeout and a 600-second maximum. start_service, service_status, and stop_service manage job-local services with stable IDs; do not background processes in the shell. Services last at most their lifetime and are torn down when research ends. Launch success is not readiness: report both. Bounded evidence is retained separately from disposable scratch state.",
   ].join("\n"),
 );
 

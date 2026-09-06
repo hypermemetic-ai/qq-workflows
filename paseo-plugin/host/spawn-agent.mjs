@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createPaseoClient } from "@getpaseo/client";
+import { daemonConfigPatch } from "./config.mjs";
 
 export function isRealCwd(cwd) {
   return typeof cwd === "string" && cwd.trim().length > 0;
@@ -67,16 +68,33 @@ export function cliClientId({
   }
 }
 
+export async function ensureDaemonProviders(client, createOptions) {
+  if (typeof client?.config?.get !== "function" || typeof client?.config?.patch !== "function") return;
+  const requestedProvider = createOptions?.config?.provider?.split("/")?.[0];
+  if (!requestedProvider) return;
+  if (!["architect-mini", "architect-teacher", "architect"].includes(requestedProvider)) return;
+
+  const current = await client.config.get();
+  const providers = current?.config?.providers ?? {};
+  if (!providers[requestedProvider]) {
+    await client.config.patch(daemonConfigPatch(current?.config));
+  }
+}
+
 export async function spawnWithSdk(createOptions, {
   clientFactory = createPaseoClient,
   url = daemonWebSocketUrl(),
   clientId = cliClientId(),
   waitForCwd = waitForHandleCwd,
+  ensureProviders = ensureDaemonProviders,
 } = {}) {
   const client = clientFactory({ url, ...(clientId ? { clientId } : {}) });
   await client.connect();
   try {
-    const handle = await client.agents.create(createOptions);
+    if (typeof ensureProviders === "function") {
+      await ensureProviders(client, createOptions);
+    }
+    const handle = await createPlacedAgent(client, createOptions);
     if (createOptions.worktree) {
       const cwd = await waitForCwd(handle);
       return {
@@ -100,13 +118,51 @@ export async function spawnWithSdk(createOptions, {
   }
 }
 
+// With a parent, Paseo defaults to the parent's workspace even when cwd is
+// supplied. Register the already prepared checkout and explicitly place the
+// child there; ownership and placement are separate SDK concepts.
+export async function createPlacedAgent(client, options) {
+  let workspace;
+  if (options.workspaceId) {
+    workspace = client.workspaces.ref(options.workspaceId);
+    await workspace.refresh?.();
+  } else if (options.parent && options.labels?.role === "implementer" && !options.worktree) {
+    workspace = await client.workspaces.create({
+      title: options.title,
+      source: { kind: "directory", path: options.cwd },
+    });
+  }
+  if (workspace) {
+    if (workspace.directory !== options.cwd) {
+      throw new Error(`delegate: workspace directory ${workspace.directory} does not match prepared checkout ${options.cwd}`);
+    }
+    return workspace.agents.create(options);
+  }
+  return client.agents.create(options);
+}
+
 export async function reconcileWithSdk(jobId, { clientFactory = createPaseoClient, url = daemonWebSocketUrl(), clientId = cliClientId(), client: supplied } = {}) {
   if (!jobId) return null;
   const client = supplied ?? clientFactory({ url, ...(clientId ? { clientId } : {}) });
   if (!supplied) await client.connect();
   try {
-    const result = await client.agents.list({ scope: 'active', filter: { labels: { job: jobId }, includeArchived: true }, page: { limit: 200 } });
-    const matches = result.entries.map(entry => entry.agent).filter(agent => agent.labels?.job === jobId);
+    let cursor = undefined;
+    const matches = [];
+    while (true) {
+      const result = await client.agents.list({
+        scope: "active",
+        filter: { labels: { job: jobId }, includeArchived: true },
+        page: { limit: 200, ...(cursor ? { cursor } : {}) },
+      });
+      const entries = result?.entries ?? [];
+      for (const entry of entries) {
+        if (entry?.agent?.labels?.job === jobId) {
+          matches.push(entry.agent);
+        }
+      }
+      if (!result?.pageInfo?.hasMore || !result?.pageInfo?.nextCursor) break;
+      cursor = result.pageInfo.nextCursor;
+    }
     if (matches.length > 1) throw new Error(`Multiple children exist for job ${jobId}; reconciliation requires inspection`);
     const agent = matches[0];
     return agent ? { id: agent.id, cwd: agent.cwd, workspaceId: agent.workspaceId, status: agent.status } : null;

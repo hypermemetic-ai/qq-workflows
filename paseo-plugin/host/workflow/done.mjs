@@ -18,6 +18,7 @@ export function routeDone({
   kind = null,
   reviewRound = 0,
   findings,
+  completion,
 } = {}) {
   if (role === "teacher") {
     return { action: "wake_architect", wake: "teacher" };
@@ -26,6 +27,7 @@ export function routeDone({
     return { action: "wake_architect", wake: "researcher" };
   }
   if (role === "implementer") {
+    if (completion === "report") return { action: "wake_architect", wake: "researcher" };
     if (kind === "bounded") {
       return { action: "commit_pr_merge", reviewer: false };
     }

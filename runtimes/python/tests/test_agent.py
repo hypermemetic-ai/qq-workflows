@@ -33,14 +33,14 @@ class BuildToolsTests(unittest.TestCase):
         names = [tool.name for tool in build_tools(env={"BRAVE_API_KEY": "x"})]
         self.assertEqual(
             names,
-            ["brave_search", "visit_webpage", "zvec_grep_search", "zvec_grep_rg", "done"],
+            ["brave_search", "visit_webpage", "zvec_grep_search", "zvec_grep_rg", "run_command", "start_service", "service_status", "stop_service", "done"],
         )
 
     def test_exa_only(self):
         names = [tool.name for tool in build_tools(env={"EXA_API_KEY": "x"})]
         self.assertEqual(
             names,
-            ["exa_search", "visit_webpage", "zvec_grep_search", "zvec_grep_rg", "done"],
+            ["exa_search", "visit_webpage", "zvec_grep_search", "zvec_grep_rg", "run_command", "start_service", "service_status", "stop_service", "done"],
         )
 
     def test_both_search_tools_keep_distinct_names(self):
@@ -56,10 +56,14 @@ class BuildToolsTests(unittest.TestCase):
                 "visit_webpage",
                 "zvec_grep_search",
                 "zvec_grep_rg",
+                "run_command",
+                "start_service",
+                "service_status",
+                "stop_service",
                 "done",
             ],
         )
-        self.assertEqual(len(set(names)), 6)
+        self.assertEqual(len(set(names)), 10)
 
     def test_tool_classes(self):
         self.assertEqual(BraveSearchTool.name, "brave_search")
@@ -215,6 +219,70 @@ class CliTests(unittest.TestCase):
             rc = cli.main(["from argv"])
         self.assertEqual(rc, 0)
         run.assert_called_once_with("from argv")
+
+
+class SearchWrapperValidationTests(unittest.TestCase):
+    def test_both_wrappers_pass_smolagents_validation_and_to_dict(self):
+        import smolagents
+        from smolagents.tool_validation import validate_tool_attributes
+
+        self.assertEqual(smolagents.__version__, "1.26.0")
+        for cls in (ZvecGrepSearchTool, ZvecGrepRgTool):
+            validate_tool_attributes(cls)
+            payload = cls().to_dict()
+            self.assertEqual(payload["name"], cls.name)
+            self.assertIn("code", payload)
+            self.assertIn("from researcher import official_zg", payload["code"])
+
+    def test_supervisor_serializes_both_wrappers_without_validation_failure(self):
+        agent = build_agent(env={"BRAVE_API_KEY": "x"})
+        names = [tool.name for tool in agent.tools.values() if tool.name in {"zvec_grep_search", "zvec_grep_rg"}]
+        self.assertEqual(names, ["zvec_grep_search", "zvec_grep_rg"])
+        for name in names:
+            payload = agent.tools[name].to_dict()
+            self.assertEqual(payload["name"], name)
+
+    def test_official_zg_preserves_names_arguments_and_backend_errors(self):
+        from unittest.mock import patch
+        from researcher import official_zg
+
+        class Ok:
+            returncode = 0
+            stderr = ""
+            stdout = '{"hits":[]}'
+
+        class Failed:
+            returncode = 1
+            stderr = "zg backend exploded"
+            stdout = ""
+
+        with patch("researcher.subprocess.run", return_value=Ok()) as run:
+            out = ZvecGrepSearchTool().forward("/ws", "architecture")
+            self.assertEqual(out, '{"hits":[]}')
+            payload = json.loads(run.call_args.kwargs["input"])
+            self.assertEqual(payload["name"], "zvec_grep_search")
+            self.assertEqual(payload["arguments"], {"root": "/ws", "query": "architecture"})
+            node, bridge = run.call_args.args[0]
+            self.assertTrue(str(bridge).endswith("paseo-plugin/host/zg-call.mjs"))
+
+        with patch("researcher.subprocess.run", return_value=Ok()) as run:
+            out = ZvecGrepRgTool().forward("/ws", "rg official_zg")
+            self.assertEqual(out, '{"hits":[]}')
+            payload = json.loads(run.call_args.kwargs["input"])
+            self.assertEqual(payload["name"], "zvec_grep_rg")
+            self.assertEqual(payload["arguments"], {"root": "/ws", "command": "rg official_zg"})
+
+        with patch("researcher.subprocess.run", return_value=Failed()):
+            with self.assertRaises(RuntimeError) as raised:
+                official_zg("zvec_grep_search", {"root": "/ws", "query": "x"})
+            self.assertIn("zg backend exploded", str(raised.exception))
+            with self.assertRaises(RuntimeError) as through_tool:
+                ZvecGrepSearchTool().forward("/ws", "x")
+            self.assertIn("zg backend exploded", str(through_tool.exception))
+            with self.assertRaises(RuntimeError) as through_rg:
+                ZvecGrepRgTool().forward("/ws", "rg official_zg")
+            self.assertIn("zg backend exploded", str(through_rg.exception))
+
 
 
 if __name__ == "__main__":

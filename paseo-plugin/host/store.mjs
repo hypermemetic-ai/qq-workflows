@@ -54,7 +54,7 @@ export function createStore(path = join(STATE_DIR, 'state.sqlite')) {
     finish(id, value) {
       const prior = db.prepare("SELECT value FROM attempts WHERE id=? AND state='active'").get(id);
       if (!prior) throw new Error('stale attempt result');
-      const result = db.prepare("UPDATE attempts SET state='complete',value=? WHERE id=? AND state='active'").run(encode({ ...JSON.parse(prior.value), outcome: value }), id);
+      const result = db.prepare("UPDATE attempts SET state='complete',value=? WHERE id=? AND state='active'").run(encode({ ...JSON.parse(prior.value), finishedAt: Date.now(), outcome: value }), id);
       if (!result.changes) throw new Error('stale attempt result');
     },
     active: () => db.prepare("SELECT * FROM attempts WHERE state='active'").all().map(row => ({ ...row, value: JSON.parse(row.value) })),
