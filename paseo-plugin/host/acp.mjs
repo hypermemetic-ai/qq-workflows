@@ -44,6 +44,7 @@ const rpc = startJsonRpcStdio({
       };
       sessions.set(sessionId, session);
       persist(sessionId, session);
+      if (saved) sendContextWindow(write, sessionId, session.pairs.map(pair => pair.messageId).filter(Boolean));
       indexWorkspace(cwd, { wait: false }).catch((error) => {
         console.error("zg index", error);
       });
@@ -84,11 +85,13 @@ const rpc = startJsonRpcStdio({
           session,
           sessionId: params.sessionId,
           operatorText,
+          messageId: params.messageId ?? randomUUID(),
           write,
         });
       });
       session.pairs = result.pairs;
       persist(params.sessionId, session);
+      sendContextWindow(write, params.sessionId, session.pairs.map(pair => pair.messageId).filter(Boolean));
       if (id !== undefined) {
         write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
       }
@@ -141,6 +144,7 @@ async function pumpWakes(sessionId, session, write) {
 }
 
 async function runWakeTurn({ session, sessionId, text, write, wakeId }) {
+  const messageId = `wake:${wakeId}`;
   write({
     jsonrpc: "2.0",
     method: "session/update",
@@ -148,6 +152,7 @@ async function runWakeTurn({ session, sessionId, text, write, wakeId }) {
       sessionId,
       update: {
         sessionUpdate: "user_message_chunk",
+        messageId,
         content: { type: "text", text },
       },
     },
@@ -156,17 +161,21 @@ async function runWakeTurn({ session, sessionId, text, write, wakeId }) {
     session,
     sessionId,
     operatorText: text,
+    messageId,
     write,
     wakeId,
   });
   session.pairs = result.pairs;
   persist(sessionId, session);
+  sendContextWindow(write, sessionId, session.pairs.map(pair => pair.messageId).filter(Boolean));
   return result;
 }
 
-function runSessionTurn({ session, sessionId, operatorText, write, signal = session.pending?.signal, wakeId }) {
+async function runSessionTurn({ session, sessionId, operatorText, messageId, write, signal = session.pending?.signal, wakeId }) {
   const turnKey = `${sessionId}:${wakeId ?? randomUUID()}`;
-  return runArchitectTurn({
+  try { return await runArchitectTurn({
+    messageId,
+    onContextWindow: ids => sendContextWindow(write, sessionId, ids),
     state: store.get("turn", turnKey),
     complete: request => supervisedArchitect(request, { store, turnKey }),
     saveState: state => store.put("turn", turnKey, state),
@@ -219,7 +228,14 @@ function runSessionTurn({ session, sessionId, operatorText, write, signal = sess
     tools: architectTools(),
     systemPrompt: ARCHITECT_SYSTEM_PROMPT,
     reasoning: session.thinking ?? ARCHITECT_REASONING,
-  });
+  }); } catch (error) {
+    sendContextWindow(write, sessionId, session.pairs.map(pair => pair.messageId).filter(Boolean));
+    throw error;
+  }
+}
+
+function sendContextWindow(write, sessionId, userMessageIds) {
+  write({ jsonrpc: "2.0", method: "_paseo/context_window", params: { sessionId, userMessageIds } });
 }
 
 function promptText(params) {

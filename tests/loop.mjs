@@ -55,6 +55,24 @@ try {
   assert.deepEqual(result.pairs.map((pair) => pair.operator), ["prev", "hello"]);
   assert.equal(executed[0].name, "ticket_write");
   assert.equal(calls, 2);
+  const history = Array.from({ length: 4 }, (_, i) => ({ operator: `short ${i}`, architect: 'yes', messageId: `m${i}` }));
+  const windows = [];
+  const controller = new AbortController();
+  await assert.rejects(runArchitectTurn({
+    cwd: dir, pairs: history, operatorText: 'aborted', messageId: 'aborted-id', signal: controller.signal,
+    onContextWindow: ids => windows.push(ids),
+    complete: async ({ input }) => {
+      assert.ok(input.some(item => item.content === 'short 0'));
+      controller.abort(new Error('cancel generation'));
+      return { text: 'unfinished', toolCalls: [] };
+    },
+  }), /cancel generation/);
+  assert.equal(history.length, 4);
+  assert.deepEqual(windows, [['m0', 'm1', 'm2', 'm3', 'aborted-id']]);
+  const resumed = await runArchitectTurn({ cwd: dir, pairs: history, operatorText: 'next', messageId: 'next-id', complete: async () => ({ text: 'done', toolCalls: [] }) });
+  assert.equal(resumed.pairs.length, 5);
+  assert.ok(!resumed.pairs.some(pair => pair.operator === 'aborted'));
+  assert.equal(resumed.pairs.at(-1).messageId, 'next-id');
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

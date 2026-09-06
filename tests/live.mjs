@@ -18,12 +18,12 @@ try {
   const result = await runArchitectTurn({
     cwd: dir,
     operatorText: 'Call ticket_write and set the entire ticket text to LIVE_OK. This is a transport verification: then reply briefly and stop without delegating.',
-    pairs: [{ operator: 'Discard this older exchange OLD_CONTEXT', architect: 'Old.' }, { operator: 'Keep this previous exchange PREVIOUS_CONTEXT', architect: 'Previous.' }],
+    pairs: [{ operator: 'Discard this older exchange OLD_CONTEXT', architect: 'Old.' }, { operator: 'SUBSTANTIAL_CONTEXT', architect: Array.from({ length: 240 }, (_, i) => `Background entry ${i}: retain this exchange across short replies.`).join('\n') }, { operator: 'Keep this previous exchange PREVIOUS_CONTEXT', architect: 'Previous.' }],
     complete: request => supervisedArchitect(request, { store, turnKey: 'acceptance' }),
     checkpoint: (kind, value) => { if (kind === 'request') requests.push(value); },
     executeTool: (name, args) => runtime.handleTool(name, args, { cwd: dir, agentId: 'live-architect' }),
   });
-  assert.equal(result.ticket, 'LIVE_OK'); assert.equal(result.pairs.length, 2);
+  assert.equal(result.ticket, 'LIVE_OK'); assert.ok(result.pairs.length >= 2);
   assert.ok(requests.length);
   for (const request of requests) {
     assert.equal(request.instructions, ARCHITECT_SYSTEM_PROMPT);
@@ -31,6 +31,7 @@ try {
     assert.deepEqual(request.tools.map(tool => tool.name), architectTools().map(tool => tool.name));
     assert.ok(JSON.stringify(request.input).includes('PREVIOUS_CONTEXT'));
     assert.ok(!JSON.stringify(request.input).includes('OLD_CONTEXT'));
+    assert.ok(JSON.stringify(request.input).includes('SUBSTANTIAL_CONTEXT'));
   }
   console.log(`Live Architect: ${requests.length} actual Astra high requests; exact prompt, tool whitelist, ticket mutation and retained context verified`);
 } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
