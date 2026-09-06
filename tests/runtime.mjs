@@ -38,6 +38,23 @@ assert.equal(Object.hasOwn(children, "researcherCreateOptions"), false);
 assert.equal(Object.hasOwn(children, "reviewerCreateOptions"), false);
 assert.equal(typeof children.implementerCreateOptions, "function");
 assert.equal(typeof children.teacherCreateOptions, "function");
+let rejectedChild;
+await assert.rejects(execFileWithInput(process.execPath, ['-e', 'process.stdin.resume()'], {
+  onSpawn: child => { rejectedChild = child; throw new Error('fixture persistence failed'); },
+}), /fixture persistence failed/);
+assert.ok(rejectedChild.exitCode !== null || rejectedChild.signalCode !== null);
+for (const terminate of [terminateProcess, terminateProcessGroup]) {
+  let alive = true;
+  const signals = [];
+  const failures = await terminate(4242, { termMs: 0, killMs: 0, killFn: (pid, sig) => {
+    signals.push(sig);
+    if (sig === 'SIGTERM') throw Object.assign(new Error('fixture TERM failure'), { code: 'EPERM' });
+    if (sig === 'SIGKILL') alive = false;
+    if (sig === 0 && !alive) throw Object.assign(new Error('gone'), { code: 'ESRCH' });
+  } });
+  assert.ok(signals.includes('SIGKILL'));
+  assert.match(failures[0], /fixture TERM failure/);
+}
 const miniPrompt = children.implementerCreateOptions({
   jobId: "00000000-0000-0000-0000-000000000001",
   hostUrl: "http://127.0.0.1:9",
@@ -710,9 +727,7 @@ try {
   const reloadClose = await cancelRuntime.close();
   assert.equal(reloadClose, undefined);
   assert.equal(job.status, "running");
-  const terminalFailures = await cancelRuntime.cancelResearcherJobs({ terminal: true });
-  assert.equal(Array.isArray(terminalFailures), true);
-  await cancelRuntime.flush();
+  await cancelRuntime.close({ terminal: true });
   assert.equal(job.status, "cancelled");
   assert.equal(killed.includes(4242), true);
 } finally {

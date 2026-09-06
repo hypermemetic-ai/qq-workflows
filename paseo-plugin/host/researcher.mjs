@@ -10,7 +10,9 @@ const RESEARCHER_ERROR_CLIP = 4000;
 export function execFileWithInput(command, args, options = {}) {
   const { input, onSpawn, signal, ...rest } = options;
   return new Promise((resolve, reject) => {
+    let spawnFailure;
     const child = execFileCb(command, args ?? [], rest, (error, stdout, stderr) => {
+      if (spawnFailure) { reject(spawnFailure); return; }
       if (error) {
         error.stdout = stdout;
         error.stderr = stderr;
@@ -19,7 +21,12 @@ export function execFileWithInput(command, args, options = {}) {
       }
       resolve({ stdout, stderr });
     });
-    try { onSpawn?.(child); } catch (error) { reject(error); return; }
+    try { onSpawn?.(child); } catch (error) {
+      spawnFailure = error;
+      child.stdin?.destroy();
+      terminateProcess(child.pid).then(() => reject(error), () => reject(error));
+      return;
+    }
     if (signal) {
       const abort = () => {
         try { child.kill("SIGTERM"); } catch {}
@@ -38,8 +45,8 @@ export function terminateProcess(pid, { termMs = 2000, killMs = 1000, sleepFn = 
     try { killFn(pid, 0); return true; } catch (error) { return error?.code !== "ESRCH"; }
   };
   try { killFn(pid, "SIGTERM"); } catch (error) {
-    if (error?.code !== "ESRCH") failures.push(`SIGTERM process ${pid} failed: ${error.message}`);
-    return Promise.resolve(failures);
+    if (error?.code === "ESRCH") return Promise.resolve(failures);
+    failures.push(`SIGTERM process ${pid} failed: ${error.message}`);
   }
   return (async () => {
     const termDeadline = Date.now() + termMs;
@@ -63,8 +70,8 @@ export function terminateProcessGroup(pgid, { termMs = 2000, killMs = 1000, slee
     try { killFn(-pgid, 0); return true; } catch (error) { return error?.code !== "ESRCH"; }
   };
   try { killFn(-pgid, "SIGTERM"); } catch (error) {
-    if (error?.code !== "ESRCH") failures.push(`SIGTERM process group ${pgid} failed: ${error.message}`);
-    return Promise.resolve(failures);
+    if (error?.code === "ESRCH") return Promise.resolve(failures);
+    failures.push(`SIGTERM process group ${pgid} failed: ${error.message}`);
   }
   return (async () => {
     const termDeadline = Date.now() + termMs;

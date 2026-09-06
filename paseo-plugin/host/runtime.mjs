@@ -37,6 +37,7 @@ export function createRuntime(options = {}) {
   const wakeWaiters = new Map();
   const pending = new Set();
   const researcherControllers = new Map();
+  const researcherTasks = new Set();
   const paseo = options.paseo ?? null;
   let server = null;
   let hostUrl = options.hostUrl ?? null;
@@ -320,7 +321,10 @@ export function createRuntime(options = {}) {
         queueWake(job.parent, wake, `${job.id}:failure`);
         return { ok: false, action: "wake_architect", error: wake };
       });
-    track(running.finally(() => { researcherControllers.delete(job.id); save(job); }));
+    const settled = running.finally(() => { researcherControllers.delete(job.id); save(job); });
+    researcherTasks.add(settled);
+    settled.then(() => researcherTasks.delete(settled), () => researcherTasks.delete(settled));
+    track(settled);
     return running;
   }
 
@@ -518,7 +522,10 @@ export function createRuntime(options = {}) {
       implementer.status = "uncertain";
       implementer.error = `Child creation outcome is uncertain: ${error.message}`;
       save(implementer);
-      throw error;
+      // Keep the original delegation active so a retry cannot create another
+      // worker while this correction child may still be alive.
+      queueWake(job.parent, implementer.error, `correction:${implementer.id}`);
+      return { ok: false, action: "wake_architect", error: implementer.error };
     }
   }
 
@@ -880,6 +887,15 @@ export function createRuntime(options = {}) {
   async function close({ terminal = false } = {}) {
     const cleanupFailures = await cancelResearcherJobs({ terminal });
     if (cleanupFailures.length) console.error("Researcher diagnostic cleanup failures", cleanupFailures);
+    if (terminal && researcherTasks.size) {
+      let timer;
+      try {
+        await Promise.race([
+          Promise.allSettled([...researcherTasks]),
+          new Promise(resolve => { timer = setTimeout(() => { console.error("Researcher settlement timed out during shutdown"); resolve(); }, 5000); }),
+        ]);
+      } finally { clearTimeout(timer); }
+    }
     clearInterval(monitor);
     for (const waiters of wakeWaiters.values()) {
       for (const waiter of waiters) waiter();

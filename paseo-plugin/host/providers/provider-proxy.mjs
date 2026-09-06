@@ -16,7 +16,14 @@ export async function createProviderProxy({ endpoint, token, model, store, jobId
     try {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
-      const body = Buffer.concat(chunks).toString();
+      const payload = JSON.parse(Buffer.concat(chunks).toString());
+      // OCR's filter emits a null required list for tools without mandatory
+      // arguments. x.ai rejects it; an empty list preserves that intent.
+      for (const tool of payload.tools ?? []) {
+        const schema = tool.input_schema ?? tool.function?.parameters;
+        if (schema?.required === null) schema.required = [];
+      }
+      const body = JSON.stringify(payload);
       const requestId = `${jobId}:review:${createHash('sha256').update(body).digest('hex')}`;
       const cached = store.get('proxy_result', requestId);
       const perform = async () => {

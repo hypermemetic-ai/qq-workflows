@@ -69,6 +69,12 @@ def test_diagnostic_tools_pass_smolagents_validation():
         assert "from shared.diagnostics import" in payload["code"]
 
 
+def test_nonpositive_timeout_uses_minimum():
+    from shared.diagnostics import _clamp_int
+    assert _clamp_int(0, 120, 600) == (1, True)
+    assert _clamp_int(-1, 300, 1800) == (1, True)
+
+
 def test_build_tools_includes_diagnostic_names():
     names = [tool.name for tool in build_tools(env={"BRAVE_API_KEY": "x"})]
     assert names == [
@@ -187,6 +193,52 @@ def test_cancel_stops_managed_service(session):
     session.request_cancel("test-cancel")
     status = _payload(session.service_status("hold"))
     assert status["services"][0]["state"] in {"stopped", "expired"}
+
+
+@pytest.mark.parametrize("service", [False, True])
+def test_cancel_during_spawn_reaps_new_group(session, monkeypatch, service):
+    import shared.diagnostics as diagnostics
+    real_spawn = diagnostics.subprocess.Popen
+    children = []
+
+    def spawn(*args, **kwargs):
+        child = real_spawn(*args, **kwargs)
+        children.append(child)
+        session.request_cancel("cancel during spawn")
+        return child
+
+    monkeypatch.setattr(diagnostics.subprocess, "Popen", spawn)
+    if service:
+        session.start_service("sleep 30")
+    else:
+        session.run_command("sleep 30")
+    assert children[0].poll() is not None
+
+
+def test_unreaped_group_remains_owned_for_shutdown(session, monkeypatch):
+    import shared.diagnostics as diagnostics
+    monkeypatch.setattr(diagnostics, "_alive", lambda pgid: True)
+    attempts = []
+    monkeypatch.setattr(diagnostics, "terminate_group", lambda pgid, *args: attempts.append(pgid) or ["fixture cleanup failed"])
+    result = _payload(session.run_command("true"))
+    pgid = session.foreground[0]["pgid"]
+    assert pgid in [group["pgid"] for group in json.loads(session.owned_path.read_text())["groups"]]
+    before = len(attempts)
+    session.shutdown()
+    assert len(attempts) > before
+    assert "fixture cleanup failed" in result["cleanup_failures"]
+
+
+def test_ownership_persistence_failure_is_reported(session, monkeypatch):
+    real_replace = Path.replace
+    def replace(path, target):
+        if target == session.owned_path:
+            raise OSError("fixture disk failure")
+        return real_replace(path, target)
+    monkeypatch.setattr(Path, "replace", replace)
+    result = _payload(session.run_command("true"))
+    assert any("fixture disk failure" in failure for failure in result["cleanup_failures"])
+    assert any("fixture disk failure" in failure for failure in session.shutdown()["cleanup_failures"])
 
 
 def test_service_lifetime_includes_readiness_wait(session):

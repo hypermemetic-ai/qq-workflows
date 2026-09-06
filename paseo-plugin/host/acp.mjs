@@ -256,7 +256,7 @@ function replayExchanges(write, sessionId, pairs) {
   for (const pair of pairs) {
     if (isWakePair(pair)) {
       update({ sessionUpdate: "tool_call", toolCallId: pair.messageId, title: "Workflow update", status: "completed",
-        content: [{ type: "content", content: { type: "text", text: pair.operator } }] });
+        content: [{ type: "content", content: { type: "text", text: String(pair.operator ?? "").replace(/^Workflow event \(not an operator message\):\n/, "") } }] });
     } else text("user_message_chunk", pair.operator, { messageId: pair.messageId });
     if (!pair.items?.length) {
       text("agent_message_chunk", pair.architect);

@@ -119,7 +119,7 @@ def _clamp_int(value, default, maximum, minimum=1):
     except (TypeError, ValueError):
         return default, False
     if parsed < minimum:
-        return default, True
+        return minimum, True
     if parsed > maximum:
         return maximum, True
     return parsed, False
@@ -433,6 +433,7 @@ class DiagnosticSession:
         self._service_seq = 0
         self._command_seq = 0
         self._shutdown = False
+        self._persist_failures = []
         self.owned_path = None
         if self.parent_paseo_home:
             self.owned_path = (
@@ -510,7 +511,7 @@ class DiagnosticSession:
             if item.get("pgid") is not None:
                 groups.append({"kind": "command", "pgid": item["pgid"], "pid": getattr(item.get("proc"), "pid", None)})
         for service in self.services.values():
-            if service.pgid is not None and service.state not in {"stopped", "expired", "failed", "exited"}:
+            if service.pgid is not None and _alive(service.pgid):
                 groups.append({"kind": "service", "service_id": service.service_id, "pgid": service.pgid, "pid": service.pid})
         return groups
 
@@ -524,9 +525,13 @@ class DiagnosticSession:
                 "pid": os.getpid(),
                 "groups": self._owned_groups(),
             }
-            self.owned_path.write_text(_json(payload) + "\n", encoding="utf-8")
-        except Exception:
-            pass
+            temporary = self.owned_path.with_suffix(".tmp")
+            temporary.write_text(_json(payload) + "\n", encoding="utf-8")
+            temporary.replace(self.owned_path)
+        except Exception as error:
+            failure = f"persist owned process groups failed: {error}"
+            if failure not in self._persist_failures:
+                self._persist_failures.append(failure)
 
     def run_command(self, command, cwd=None, timeout_seconds=None):
         if self.cancelled:
@@ -588,6 +593,8 @@ class DiagnosticSession:
         cleanup_failures = []
         try:
             try:
+                if self.cancelled:
+                    cleanup_failures.extend(terminate_group(pgid, proc, self.term_grace, self.kill_grace))
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 timed_out = True
@@ -604,7 +611,8 @@ class DiagnosticSession:
             if t_out.is_alive() or t_err.is_alive():
                 cleanup_failures.append("output drain still active after process-group cleanup")
             with self._lock:
-                self.foreground = [item for item in self.foreground if item is not owned]
+                if not _alive(pgid):
+                    self.foreground = [item for item in self.foreground if item is not owned]
                 self._persist_owned()
         duration = round(time.monotonic() - started, 3)
         code = proc.poll()
@@ -615,6 +623,7 @@ class DiagnosticSession:
         )
         cleanup_failures.extend(stdout.cleanup_failures)
         cleanup_failures.extend(stderr.cleanup_failures)
+        cleanup_failures.extend(self._persist_failures)
         if timed_out and _alive(pgid):
             cleanup_failures.append(
                 f"foreground process group {pgid} may still be running after timeout cleanup"
@@ -704,6 +713,8 @@ class DiagnosticSession:
         with self._lock:
             self.services[sid] = service
             self._persist_owned()
+        if self.cancelled:
+            return _json(self._stop_one(sid, reason="session"))
         time.sleep(0.05)
         code = proc.poll()
         if code is not None:
@@ -750,6 +761,7 @@ class DiagnosticSession:
             service.ready = False
         with self._lock:
             self._persist_owned()
+        service.cleanup_failures.extend(failure for failure in self._persist_failures if failure not in service.cleanup_failures)
         snap = service.snapshot()
         snap["ok"] = service.launched and service.state in {"running", "ready"} and not service.stop_event.is_set()
         snap["ready_timeout_seconds"] = ready_timeout
@@ -853,7 +865,9 @@ class DiagnosticSession:
             if self._shutdown:
                 return {"cleanup_failures": list(getattr(self, "_shutdown_failures", [])), "scratch_removed": self.scratch_root is None}
             self._shutdown = True
+            self.cancelled = True
         failures.extend(self.stop_all_owned(include_services=True))
+        failures.extend(self._persist_failures)
         scratch = self.scratch_root
         if scratch is not None:
             try:

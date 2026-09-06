@@ -33,7 +33,11 @@ For original repair, 50 model turns and 49 commands span about 49m49s. Across th
 
 ## Recovery status
 
-Direct source repair is in progress. An initial full check passed 24 JavaScript files, 38 Python tests, typecheck and both plugin compilers. Additional retention/lifecycle regressions are being completed. No claim of final review, merge or deployment yet.
+Recovery PR: https://github.com/hypermemetic-ai/qq-workflows/pull/75 (draft). All 24 JavaScript test files, 46 Python tests, typecheck and both plugin compilers pass after review-driven fixes. Read-only verification of the actual affected session reconstructs two operator exchanges and four workflow events from durable records.
+
+The first configured Grok review produced useful findings but repeatedly failed its filtering tool schema validation (`required: null`) and had incomplete coverage. It was stopped after 18m11s; this is not a passed review. Substantiated findings are fixed and the provider proxy now normalizes null required lists at the tool-schema boundary. That correction has local regression coverage but still needs live review validation.
+
+Automatic approval review rejected sending the later migration diff to api.x.ai because it considered the earlier user approval limited to the preceding recovery diff. Additional disclosure approval is pending. Complete reviewed coverage of the final PR, automatic merge and deployment remain outstanding. See `.architect/recovery-review-2026-09-06.md` for disposition and next actions.
 
 ## Deferred
 

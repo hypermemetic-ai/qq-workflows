@@ -107,6 +107,8 @@ try {
   const restoredEvents = notifications.filter(item => item.method === 'session/update').map(item => item.params.update);
   assert.deepEqual(restoredEvents.filter(item => item.sessionUpdate === 'user_message_chunk').map(item => item.messageId), ['u1', 'u2']);
   assert.equal(restoredEvents.filter(item => item.title === 'Workflow update').length, 3);
+  assert.deepEqual(restoredEvents.filter(item => item.title === 'Workflow update').map(item => item.content),
+    eventUpdates.filter(item => item.title === 'Workflow update').map(item => item.content));
   await prompt('third question', 'u3');
   assert.ok(!JSON.stringify(requests.at(-1).input).includes('first question'));
   assert.ok(JSON.stringify(requests.at(-1).input).includes('second question'));

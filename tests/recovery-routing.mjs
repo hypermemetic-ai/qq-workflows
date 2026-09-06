@@ -75,4 +75,25 @@ try {
   const retry = await runtime.handleTool('delegate', { to: 'implementer', kind: 'open' }, { cwd: root, agentId: 'parent' });
   assert.equal(retry.started, false);
   await runtime.close();
+
+  let spawns = 0;
+  const correction = createRuntime({
+    reconcileSpawn: async () => null,
+    createWorktree: async () => ({ cwd: '/prepared', workspaceId: null }), indexWorkspace: async () => {},
+    spawnExec: async () => ({ stdout: JSON.stringify({ id: `worker-${++spawns}`, cwd: spawns === 1 ? '/prepared' : '/parent' }) }),
+    isGitRepo: async () => true,
+    commitIfDirty: async () => ({ committed: true, sha: 'head' }),
+    buildReviewPacket: async () => ({ baseSha: 'base', headSha: 'head', files: [{ path: 'fix.mjs' }] }),
+    ocrReview: async () => [{ path: 'fix.mjs', line: 1, body: 'Fix the regression' }],
+  });
+  const initial = await correction.handleTool('delegate', { to: 'implementer', kind: 'open' }, { cwd: root, agentId: 'parent' });
+  await correction.handleTool('done', {}, { agentId: initial.agentId });
+  await correction.flush();
+  const original = [...correction.jobs.values()].find(job => job.agentId === initial.agentId);
+  assert.equal(original.status, 'awaiting_correction');
+  assert.equal(correction.jobs.get(original.correctionJobId).status, 'uncertain');
+  const repeated = await correction.handleTool('delegate', { to: 'implementer', kind: 'open' }, { cwd: root, agentId: 'parent' });
+  assert.equal(repeated.started, false);
+  assert.equal(spawns, 2, 'a misplaced correction must block a third worker');
+  await correction.close();
 } finally { rmSync(root, { recursive: true, force: true }); }
