@@ -20,7 +20,7 @@ try {
         text: "",
         toolCalls: [{ id: "1", name: "ticket_write", arguments: { text: "# Ticket\n\n## Kind\n\nbounded\n" } }],
         raw: {
-          output: [{
+          output: [{ type: "reasoning", encrypted_content: "opaque-test-reasoning", summary: [] }, {
             type: "function_call",
             call_id: "1",
             name: "ticket_write",
@@ -29,6 +29,7 @@ try {
         },
       };
     }
+    assert.ok(input.some(item => item.type === "reasoning" && item.encrypted_content === "opaque-test-reasoning"));
     const callItem = input.find((item) => item.type === "function_call");
     const outputItem = input.find((item) => item.type === "function_call_output");
     assert.equal(callItem?.call_id, "1");
@@ -55,6 +56,12 @@ try {
   assert.deepEqual(result.pairs.map((pair) => pair.operator), ["prev", "hello"]);
   assert.equal(executed[0].name, "ticket_write");
   assert.equal(calls, 2);
+  await runArchitectTurn({ cwd: dir, pairs: JSON.parse(JSON.stringify(result.pairs)), operatorText: "followup", complete: async ({ input }) => {
+    assert.ok(input.some(item => item.type === 'reasoning'));
+    assert.ok(input.some(item => item.type === 'function_call_output' && item.output === 'ok'));
+    assert.ok(input.some(item => item.content === 'Ticket is bounded.'));
+    return { text: 'retained', toolCalls: [] };
+  } });
   const history = Array.from({ length: 4 }, (_, i) => ({ operator: `short ${i}`, architect: 'yes', messageId: `m${i}` }));
   const windows = [];
   const controller = new AbortController();
@@ -62,15 +69,16 @@ try {
     cwd: dir, pairs: history, operatorText: 'aborted', messageId: 'aborted-id', signal: controller.signal,
     onContextWindow: ids => windows.push(ids),
     complete: async ({ input }) => {
-      assert.ok(input.some(item => item.content === 'short 0'));
+      assert.ok(!input.some(item => item.content === 'short 0'));
+      assert.ok(input.some(item => item.content === 'short 3'));
       controller.abort(new Error('cancel generation'));
       return { text: 'unfinished', toolCalls: [] };
     },
   }), /cancel generation/);
   assert.equal(history.length, 4);
-  assert.deepEqual(windows, [{ userMessageIds: ['m0', 'm1', 'm2', 'm3', 'aborted-id'] }]);
+  assert.deepEqual(windows, [{ userMessageIds: ['m3', 'aborted-id'] }]);
   const resumed = await runArchitectTurn({ cwd: dir, pairs: history, operatorText: 'next', messageId: 'next-id', complete: async () => ({ text: 'done', toolCalls: [] }) });
-  assert.equal(resumed.pairs.length, 5);
+  assert.equal(resumed.pairs.length, 2);
   assert.ok(!resumed.pairs.some(pair => pair.operator === 'aborted'));
   assert.equal(resumed.pairs.at(-1).messageId, 'next-id');
 } finally {

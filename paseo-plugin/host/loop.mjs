@@ -36,12 +36,13 @@ export async function runArchitectTurn({
     state = { ...state, pendingTool: null, nextTool: state.nextTool + 1, outputs: [...(state.outputs ?? []), { type: 'function_call_output', call_id: state.pendingTool.id, output: stringifyTool(saved.value) }] };
     await saveState(state);
   }
+  const exchangeStart = state?.exchangeStart ?? input.length - (operatorText != null ? 1 : 0);
   if (state?.input) input = state.input;
   const selectedContext = state?.contextWindow ?? (state?.contextMessageIds
     ? { userMessageIds: state.contextMessageIds }
     : contextWindow(requestPairs(pairs, operatorText), messageId));
   const persistState = saveState;
-  saveState = value => persistState({ ...value, contextWindow: selectedContext });
+  saveState = value => persistState({ ...value, exchangeStart, contextWindow: selectedContext });
   await onContextWindow?.(selectedContext);
   const instructions = systemPrompt;
   const assistantParts = state?.assistantParts ?? [];
@@ -55,8 +56,11 @@ export async function runArchitectTurn({
     await checkpoint?.("response", result);
     if (!retained && result.text) assistantParts.push(result.text);
     await saveState({ input, assistantParts, result, nextTool, outputs: retainedOutputs });
-    if (!result.toolCalls?.length) break;
-    const callItems = functionCallItems(result);
+    if (!result.toolCalls?.length) {
+      input = [...input, ...responseItems(result)];
+      break;
+    }
+    const callItems = responseItems(result);
     const outputItems = retainedOutputs;
     for (const [index, call] of result.toolCalls.entries()) {
       if (index < nextTool) continue;
@@ -88,7 +92,7 @@ export async function runArchitectTurn({
   const architectText = assistantParts.join("");
   return {
     architectText,
-    pairs: rememberPair(pairs, operatorText, architectText, messageId),
+    pairs: rememberPair(pairs, operatorText, architectText, messageId, input.slice(exchangeStart)),
     ticket: (await ticketRead(cwd)).text,
   };
 }
@@ -111,4 +115,13 @@ export function functionCallItems(result) {
 function stringifyTool(output) {
   if (typeof output === "string") return output;
   return JSON.stringify(output, null, 2);
+}
+
+// Replay the complete response, including opaque reasoning and intermediate prose.
+export function responseItems(result) {
+  if (result?.raw?.output?.length) return result.raw.output;
+  return [
+    ...(result.text ? [{ role: "assistant", content: result.text }] : []),
+    ...functionCallItems(result),
+  ];
 }

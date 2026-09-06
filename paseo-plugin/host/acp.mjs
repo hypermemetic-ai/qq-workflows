@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { startJsonRpcStdio } from "./jsonrpc-stdio.mjs";
 import { runArchitectTurn } from "./loop.mjs";
-import { contextWindow } from "./fold.mjs";
+import { contextWindow, keptPairs } from "./fold.mjs";
 import { ARCHITECT_SYSTEM_PROMPT } from "./workflow/prompts.mjs";
 import { architectTools } from "./workflow/tools.mjs";
 import { callHost } from "./host-client.mjs";
@@ -37,7 +37,7 @@ const rpc = startJsonRpcStdio({
       const cwd = saved?.cwd ?? params?.cwd ?? process.cwd();
       const session = {
         cwd,
-        pairs: saved?.pairs ?? [],
+        pairs: keptPairs(saved?.pairs),
         pending: null,
         alive: true,
         thinking: ARCHITECT_REASONING,
@@ -174,7 +174,10 @@ async function runWakeTurn({ session, sessionId, text, write, wakeId }) {
 
 async function runSessionTurn({ session, sessionId, operatorText, messageId, write, signal = session.pending?.signal, wakeId }) {
   const turnKey = `${sessionId}:${wakeId ?? randomUUID()}`;
-  try { return await runArchitectTurn({
+  const measurement = { version: 1, policy: "two-turns-no-floor", sessionId, messageId, cwd: session.cwd,
+    source: wakeId ? "wake" : "operator", startedAt: Date.now(), status: "running" };
+  store.put("architect_turn", turnKey, measurement);
+  try { const result = await runArchitectTurn({
     messageId,
     onContextWindow: ids => sendContextWindow(write, sessionId, ids),
     state: store.get("turn", turnKey),
@@ -229,7 +232,11 @@ async function runSessionTurn({ session, sessionId, operatorText, messageId, wri
     tools: architectTools(),
     systemPrompt: ARCHITECT_SYSTEM_PROMPT,
     reasoning: session.thinking ?? ARCHITECT_REASONING,
-  }); } catch (error) {
+  });
+    store.put("architect_turn", turnKey, { ...measurement, status: "completed", endedAt: Date.now() });
+    return result;
+  } catch (error) {
+    store.put("architect_turn", turnKey, { ...measurement, status: signal?.aborted ? "aborted" : "failed", endedAt: Date.now() });
     sendContextWindow(write, sessionId, contextWindow(session.pairs));
     throw error;
   }
