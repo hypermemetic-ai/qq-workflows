@@ -1,4 +1,5 @@
 import {
+  type PluginContext,
   type PluginSurfaceProps,
   type PluginWorkspacePanelProps,
   useRpc,
@@ -133,4 +134,34 @@ export function TicketPanel({ theme, layout, workspaceId, navigation }: PluginWo
       ) : null}
     </ScrollView>
   );
+}
+
+export function registerClient(plugin: Pick<PluginContext, "addSurface" | "addSidebarItem" | "addWorkspacePanel" | "addCommandCenterItem">) {
+  plugin.addSurface("architect", ArchitectSurface);
+  plugin.addSidebarItem({
+    id: "architect",
+    title: "Architect",
+    icon: "Compass",
+    surface: "architect",
+  });
+  plugin.addWorkspacePanel({
+    id: "ticket",
+    title: "Ticket",
+    icon: "FileText",
+    context: "workspace",
+    Component: TicketPanel,
+  });
+  plugin.addCommandCenterItem({
+    id: "start-architect",
+    title: "Start architect",
+    icon: "Compass",
+    keywords: ["ticket", "delegate", "teacher"],
+    context: "workspace",
+    async onSelect({ paseo, rpc, workspace, openPanel }) {
+      await rpc(startArchitectRpc, { cwd: workspace.directory, title: "Architect" });
+      openPanel("ticket");
+    },
+  });
+
+  return () => {};
 }

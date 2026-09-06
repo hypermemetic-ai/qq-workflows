@@ -14,7 +14,7 @@ while (!root.endsWith('/@getpaseo/server') && dirname(root) !== root) root = dir
 const { compilePlugin } = await import(pathToFileURL(join(root, 'dist/server/server/plugins/compiler.js')));
 const { clientBundle } = await compilePlugin(resolve('paseo-plugin/index.ts'));
 const pluginRequire = createRequire(resolve('paseo-plugin/package.json'));
-const sdk = { useWorkspace() {}, useRpc() {} };
+const sdk = { useWorkspace() {}, useRpc() {}, defineRpc: x => x };
 const evaluate = Function(`return ${clientBundle}`)();
 const module = evaluate(name => {
   if (name === '@getpaseo/plugin') return sdk;
@@ -51,3 +51,27 @@ try {
   bundled.default({ handle: (_contract, handler) => { getVersion = handler; } });
   assert.equal(getVersion(), hostVersion(), 'bundled and standalone hosts must identify the same source revision');
 } finally { rmSync(fixture, { recursive: true, force: true }); }
+
+
+if (process.env.PASEO_V08_SERVER_ROOT) {
+  const adapterRoot = mkdtempSync(join(tmpdir(), 'architect-v08-test-'));
+  try {
+    const output = join(adapterRoot, 'plugin');
+    execFileSync(process.execPath, [resolve('scripts/build-plugin-v08.mjs'), output]);
+    const compiler = await import(pathToFileURL(join(process.env.PASEO_V08_SERVER_ROOT, 'dist/server/server/plugins/compiler.js')));
+    const { clientBundle, serverBundle } = await compiler.compilePlugin({ client: join(output, 'index.client.tsx'), server: join(output, 'index.server.ts') });
+    assert.ok(serverBundle.length);
+    const client = Function(`return ${clientBundle}`)()(name => {
+      if (name === '@getpaseo/plugin') return sdk;
+      if (name === 'react-native') return { Pressable: 'button', ScrollView: 'div', Text: 'span', View: 'div' };
+      return pluginRequire(name);
+    });
+    const registered = new Map();
+    client.default(new Proxy({}, { get: (_, method) => (...args) => registered.set(method + ':' + (args[0]?.id ?? args[0]), args) }));
+    const called = [];
+    await registered.get('addCommandCenterItem:start-architect')[0].onSelect({ workspace: { directory: '/fork/workspace' }, rpc: async (contract, input) => called.push({ name: contract.name, input }), openPanel: panel => called.push(panel) });
+    assert.deepEqual(called, [{ name: 'architect.start', input: { cwd: '/fork/workspace', title: 'Architect' } }, 'ticket']);
+    assert.ok(registered.has('addWorkspacePanel:ticket'));
+    console.log('v0.8 adapter compiles the same UI and preserves workspace-scoped Start');
+  } finally { rmSync(adapterRoot, { recursive: true, force: true }); }
+}
