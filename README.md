@@ -67,7 +67,7 @@ Include the keys you have and restrict access to the file with `chmod 600`. Keep
 
 The ticket is created automatically. Child sessions and their status appear alongside the workspace ticket, and you can open them to follow the work.
 
-Architect retains the current and previous conversation exchanges, filling any gap below 2,048 conversation tokens with the most recent older text. The oldest included exchange is trimmed to fit. The [Paseo fork](https://github.com/hypermemetic-ai/paseo/blob/main/docs/architect-fork.md) makes the native conversation view follow that same selection; the stock app still shows its full archive. Put lasting decisions in the ticket rather than relying on older chat messages. If your project needs a particular test environment, describe it in an optional `.architect/scratch.md`; Architect will use that when planning tests.
+Architect retains the current and previous conversation exchanges, filling any gap below 2,048 conversation tokens with the most recent older text. The oldest included exchange is trimmed to fit. The [Paseo fork and its setup guide](https://github.com/hypermemetic-ai/paseo/blob/main/docs/architect-fork.md) makes the native conversation view follow that same selection; the stock app still shows its full archive. Put lasting decisions in the ticket rather than relying on older chat messages. If your project needs a particular test environment, describe it in an optional `.architect/scratch.md`; Architect will use that when planning tests.
 
 ## Updates and troubleshooting
 
@@ -104,3 +104,12 @@ npm run typecheck
 - [Code guide](docs/architecture.md): entry points, agent runtimes and supporting modules.
 - [Isolated setup guide](.architect/scratch.md): a separate Paseo home and disposable repositories for live tests.
 - [Verification record](docs/verification.md): tested behavior and operational limitations.
+
+For a daemon using Paseo's upcoming v0.8 plugin API, generate its runtime entries in a separate directory before installing:
+
+```bash
+node scripts/build-plugin-v08.mjs "${PASEO_HOME:-$HOME/.paseo}/plugins/architect-v08"
+paseo plugin install "${PASEO_HOME:-$HOME/.paseo}/plugins/architect-v08" --id architect
+```
+
+The generated entries reuse this checkout's UI and host code. Keep the checkout available, and reload the plugin after updating it. Use a fresh output directory when regenerating the entries.
