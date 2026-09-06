@@ -1,4 +1,4 @@
-import { assembleArchitectRequest, rememberPair, requestPairs } from "./fold.mjs";
+import { assembleArchitectRequest, rememberPair, requestPairs, contextWindow } from "./fold.mjs";
 import { ARCHITECT_SYSTEM_PROMPT } from "./workflow/prompts.mjs";
 import { architectTools } from "./workflow/tools.mjs";
 import { completeArchitect } from "./providers/model.mjs";
@@ -37,10 +37,12 @@ export async function runArchitectTurn({
     await saveState(state);
   }
   if (state?.input) input = state.input;
-  const contextMessageIds = state?.contextMessageIds ?? [...requestPairs(pairs, operatorText).map(pair => pair.messageId), messageId].filter(Boolean);
+  const selectedContext = state?.contextWindow ?? (state?.contextMessageIds
+    ? { userMessageIds: state.contextMessageIds }
+    : contextWindow(requestPairs(pairs, operatorText), messageId));
   const persistState = saveState;
-  saveState = value => persistState({ ...value, contextMessageIds });
-  await onContextWindow?.(contextMessageIds);
+  saveState = value => persistState({ ...value, contextWindow: selectedContext });
+  await onContextWindow?.(selectedContext);
   const instructions = systemPrompt;
   const assistantParts = state?.assistantParts ?? [];
   let retained = state?.result;

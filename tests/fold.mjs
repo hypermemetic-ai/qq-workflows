@@ -1,29 +1,39 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { assembleArchitectRequest, keptPairs, rememberPair, requestPairs, conversationTokens, CONVERSATION_TOKEN_FLOOR } from '../paseo-plugin/host/fold.mjs';
-import { ARCHITECT_SYSTEM_PROMPT } from '../paseo-plugin/host/workflow/prompts.mjs';
-const short = n => ({ operator: `Question ${n}`, architect: `Answer ${n}`, messageId: String(n) });
-const large = { operator: 'substantial', architect: ' word'.repeat(2048), messageId: 'large' };
-const pairs = [short(0), large, short(1), short(2)];
-const snapshot = structuredClone(pairs);
+import { assembleArchitectRequest, keptPairs, rememberPair, requestPairs, conversationTokens, contextWindow, tokenSuffix, CONVERSATION_TOKEN_FLOOR } from '../paseo-plugin/host/fold.mjs';
+const pair = (id, tokens) => ({ messageId: id, operator: '', architect: ' word'.repeat(tokens) });
+const count = pairs => pairs.reduce((n, p) => n + conversationTokens(p.operator) + conversationTokens(p.architect), 0);
+const history = [pair('old', 5000), pair('previous', 1000)];
+const saved = structuredClone(history);
+const current = ' word'.repeat(900);
+const selected = requestPairs(history, current);
 assert.equal(CONVERSATION_TOKEN_FLOOR, 2048);
-assert.equal(conversationTokens(large.architect), 2048);
-assert.equal(conversationTokens('hello world'), 2);
-assert.ok(conversationTokens('你好 👋 <|endoftext|> const x = 1;') > 0);
-assert.deepEqual(keptPairs([short(1), short(2), short(3)]), [short(1), short(2), short(3)]);
-assert.deepEqual(keptPairs(pairs), pairs.slice(1));
-assert.deepEqual(requestPairs(pairs, 'yes'), pairs.slice(1));
-assert.deepEqual(requestPairs(pairs, large.architect), pairs.slice(-1), 'retain a previous exchange even with a large current message');
-assert.deepEqual(keptPairs([short(0), short(1), large]), [short(1), large], 'keep at least two completed exchanges');
+assert.equal(count(selected) + conversationTokens(current), 2048);
+assert.equal(conversationTokens(selected[0].architect), 148, '1900 recent tokens add only 148 older tokens');
+assert.equal(selected[0].trimmed, true);
+assert.deepEqual(selected[1], history[1], 'the previous exchange remains intact');
+assert.equal(contextWindow(selected, 'current').firstExchange.architect, selected[0].architect);
+const request = assembleArchitectRequest({ ticketText: ' huge'.repeat(5000), pairs: history, operatorText: current });
+assert.equal(request.input.slice(1).reduce((n, item) => n + conversationTokens(item.content), 0), 2048, 'ticket does not consume the floor');
+assert.deepEqual(requestPairs(history, ' word'.repeat(3000)), [history[1]], 'minimum exchanges can exceed the token floor');
+assert.deepEqual(keptPairs(history), history, 'at least two completed exchanges remain intact');
+assert.equal(count(keptPairs([...history, pair('latest', 900)])), 2048);
+const small = [pair('1', 2), pair('2', 2), pair('3', 2)];
+assert.deepEqual(keptPairs(small), small, 'early conversation is not padded');
+const crossMessage = requestPairs([{ messageId: 'old', operator: ' question'.repeat(200), architect: ' answer'.repeat(100) }, pair('prev', 1000)], current);
+assert.equal(conversationTokens(crossMessage[0].architect), 100);
+assert.equal(conversationTokens(crossMessage[0].operator), 48);
+for (const text of ['你好 👋 café '.repeat(100), '<|endoftext|> const x = 1; '.repeat(100)]) {
+  for (const budget of [1, 2, 3, 17, 148]) {
+    const suffix = tokenSuffix(text, budget);
+    assert.ok(text.endsWith(suffix));
+    assert.ok(conversationTokens(suffix) <= budget);
+    assert.ok(!suffix.includes('\uFFFD'));
+  }
+}
+const next = rememberPair(history, current, 'okay', 'next');
+assert.equal(next.at(-1).messageId, 'next');
+assert.deepEqual(requestPairs(JSON.parse(JSON.stringify(next)), 'continue'), requestPairs(next, 'continue'));
+assert.deepEqual(history, saved);
 assert.deepEqual(keptPairs(undefined), []);
-assert.deepEqual(requestPairs([], 'yes'), []);
-const request = assembleArchitectRequest({ ticketText: large.architect, pairs, operatorText: 'yes' });
-assert.equal(request.instructions, ARCHITECT_SYSTEM_PROMPT);
-assert.deepEqual(request.input.slice(1).map(item => item.content), [large.operator, large.architect, short(1).operator, short(1).architect, short(2).operator, short(2).architect, 'yes']);
-assert.deepEqual(assembleArchitectRequest({ systemPrompt: large.architect, pairs, operatorText: 'yes' }).input.slice(1), request.input.slice(1), 'fixed context does not consume the conversation floor');
-const completed = rememberPair(pairs, 'next', 'okay', 'next-id');
-assert.deepEqual(completed.at(-1), { operator: 'next', architect: 'okay', messageId: 'next-id' });
-assert.equal(completed.length, 4);
-assert.deepEqual(requestPairs(JSON.parse(JSON.stringify(completed)), 'continue'), completed, 'saved history preserves the next request window');
-assert.deepEqual(pairs, snapshot);
-console.log('2,048-token floor, whole exchanges, minimum turns, persistence and fixed-context exclusion passed');
+console.log('2048-token gap fill, partial oldest exchange, Unicode-safe trimming, minimum exchanges and persistence passed');

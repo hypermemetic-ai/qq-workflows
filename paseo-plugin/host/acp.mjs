@@ -2,6 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { startJsonRpcStdio } from "./jsonrpc-stdio.mjs";
 import { runArchitectTurn } from "./loop.mjs";
+import { contextWindow } from "./fold.mjs";
 import { ARCHITECT_SYSTEM_PROMPT } from "./workflow/prompts.mjs";
 import { architectTools } from "./workflow/tools.mjs";
 import { callHost } from "./host-client.mjs";
@@ -44,7 +45,7 @@ const rpc = startJsonRpcStdio({
       };
       sessions.set(sessionId, session);
       persist(sessionId, session);
-      if (saved) sendContextWindow(write, sessionId, session.pairs.map(pair => pair.messageId).filter(Boolean));
+      if (saved) sendContextWindow(write, sessionId, contextWindow(session.pairs));
       indexWorkspace(cwd, { wait: false }).catch((error) => {
         console.error("zg index", error);
       });
@@ -91,7 +92,7 @@ const rpc = startJsonRpcStdio({
       });
       session.pairs = result.pairs;
       persist(params.sessionId, session);
-      sendContextWindow(write, params.sessionId, session.pairs.map(pair => pair.messageId).filter(Boolean));
+      sendContextWindow(write, params.sessionId, contextWindow(session.pairs));
       if (id !== undefined) {
         write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
       }
@@ -167,7 +168,7 @@ async function runWakeTurn({ session, sessionId, text, write, wakeId }) {
   });
   session.pairs = result.pairs;
   persist(sessionId, session);
-  sendContextWindow(write, sessionId, session.pairs.map(pair => pair.messageId).filter(Boolean));
+  sendContextWindow(write, sessionId, contextWindow(session.pairs));
   return result;
 }
 
@@ -229,13 +230,13 @@ async function runSessionTurn({ session, sessionId, operatorText, messageId, wri
     systemPrompt: ARCHITECT_SYSTEM_PROMPT,
     reasoning: session.thinking ?? ARCHITECT_REASONING,
   }); } catch (error) {
-    sendContextWindow(write, sessionId, session.pairs.map(pair => pair.messageId).filter(Boolean));
+    sendContextWindow(write, sessionId, contextWindow(session.pairs));
     throw error;
   }
 }
 
-function sendContextWindow(write, sessionId, userMessageIds) {
-  write({ jsonrpc: "2.0", method: "_paseo/context_window", params: { sessionId, userMessageIds } });
+function sendContextWindow(write, sessionId, selection) {
+  write({ jsonrpc: "2.0", method: "_paseo/context_window", params: { sessionId, ...selection } });
 }
 
 function promptText(params) {

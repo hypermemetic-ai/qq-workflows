@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import { conversationTokens } from '../paseo-plugin/host/fold.mjs';
 import { runArchitectTurn } from '../paseo-plugin/host/loop.mjs';
 import { supervisedArchitect } from '../paseo-plugin/host/providers/architect-provider.mjs';
 import { createStore } from '../paseo-plugin/host/store.mjs';
@@ -25,13 +26,15 @@ try {
   });
   assert.equal(result.ticket, 'LIVE_OK'); assert.ok(result.pairs.length >= 2);
   assert.ok(requests.length);
+  assert.equal(requests[0].input.slice(1).filter(item => item.role).reduce((n, item) => n + conversationTokens(item.content), 0), 2048);
   for (const request of requests) {
     assert.equal(request.instructions, ARCHITECT_SYSTEM_PROMPT);
     assert.equal(request.model, 'gpt-6-astra'); assert.equal(request.reasoning.effort, 'high');
     assert.deepEqual(request.tools.map(tool => tool.name), architectTools().map(tool => tool.name));
     assert.ok(JSON.stringify(request.input).includes('PREVIOUS_CONTEXT'));
     assert.ok(!JSON.stringify(request.input).includes('OLD_CONTEXT'));
-    assert.ok(JSON.stringify(request.input).includes('SUBSTANTIAL_CONTEXT'));
+    assert.ok(!JSON.stringify(request.input).includes('SUBSTANTIAL_CONTEXT'), 'the oldest exchange is trimmed, including its early marker');
+    assert.ok(JSON.stringify(request.input).includes('Background entry 239'));
   }
   console.log(`Live Architect: ${requests.length} actual Astra high requests; exact prompt, tool whitelist, ticket mutation and retained context verified`);
 } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }

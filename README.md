@@ -67,7 +67,7 @@ Include the keys you have and restrict access to the file with `chmod 600`. Keep
 
 The ticket is created automatically. Child sessions and their status appear alongside the workspace ticket, and you can open them to follow the work.
 
-Architect retains the current and previous conversation exchanges, extending backward through whole exchanges to reach a 2,048-token conversation floor. The [Paseo fork](https://github.com/hypermemetic-ai/paseo/blob/main/docs/architect-fork.md) makes the native conversation view follow that same selection; the stock app still shows its full archive. Put lasting decisions in the ticket rather than relying on older chat messages. If your project needs a particular test environment, describe it in an optional `.architect/scratch.md`; Architect will use that when planning tests.
+Architect retains the current and previous conversation exchanges, filling any gap below 2,048 conversation tokens with the most recent older text. The oldest included exchange is trimmed to fit. The [Paseo fork](https://github.com/hypermemetic-ai/paseo/blob/main/docs/architect-fork.md) makes the native conversation view follow that same selection; the stock app still shows its full archive. Put lasting decisions in the ticket rather than relying on older chat messages. If your project needs a particular test environment, describe it in an optional `.architect/scratch.md`; Architect will use that when planning tests.
 
 ## Updates and troubleshooting
 
