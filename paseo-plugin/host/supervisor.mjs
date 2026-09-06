@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { createTextGuard } from './text-loop.mjs';
+import { createTextGuard } from './providers/text-loop.mjs';
 import { backoffMs, classifyFailure, createLedger, createLoopGuard, normalizeLoopValue, LOOP_WARNING } from './recovery.mjs';
 
 export function createSupervisor({ store, jobs, circuit, now = Date.now, random = Math.random, wake }) {

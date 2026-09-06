@@ -132,11 +132,9 @@ export function architectProfile() {
   };
 }
 
-export function applyDaemonPatch(config) {
+export function daemonConfigPatch(config) {
   const next = structuredClone(config ?? {});
-  next.agents = next.agents ?? {};
-  next.agents.providers = next.agents.providers ?? {};
-  const providers = next.agents.providers;
+  const providers = next.providers ?? {};
   providers["architect-teacher"] = {
     extends: "acp", label: "Architect Teacher",
     command: [process.execPath, join(PLUGIN_ROOT, "host", "teacher-acp.mjs")],
@@ -158,22 +156,14 @@ export function applyDaemonPatch(config) {
   else additional.push({ ...ASTRA_MODEL, isDefault: false });
   providers.codex = { ...codex, additionalModels: additional };
 
-  next.daemon = next.daemon ?? {};
-  const profiles = Array.isArray(next.daemon.agentProfiles) ? [...next.daemon.agentProfiles] : [];
+  const profiles = Array.isArray(next.agentProfiles) ? [...next.agentProfiles] : [];
   const profile = architectProfile();
   const index = profiles.findIndex((item) => item?.id === ARCHITECT_PROFILE_ID);
   if (index >= 0) profiles[index] = { ...profiles[index], ...profile };
   else profiles.unshift(profile);
-  next.daemon.agentProfiles = profiles;
-  return next;
+  return { providers, agentProfiles: profiles };
 }
 
-export function sdkConfigPatch() {
-  return {
-    providers: {
-      [ARCHITECT_PROVIDER_ID]: architectProvider(),
-      codex: { additionalModels: [{ ...ASTRA_MODEL, isDefault: false }] },
-    },
-    agentProfiles: undefined,
-  };
-}
+export const PASEO_HOME = process.env.PASEO_HOME || join(homedir(), ".paseo");
+export const STATE_DIR = join(PASEO_HOME, "architect");
+export const HOST_META_PATH = join(STATE_DIR, "host.json");

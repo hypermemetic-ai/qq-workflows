@@ -1,8 +1,8 @@
 import { assembleArchitectRequest, rememberPair } from "./fold.mjs";
-import { ARCHITECT_SYSTEM_PROMPT } from "./prompts.mjs";
-import { architectTools } from "./tools.mjs";
-import { completeArchitect } from "./model.mjs";
-import { ticketRead } from "./ticket.mjs";
+import { ARCHITECT_SYSTEM_PROMPT } from "./workflow/prompts.mjs";
+import { architectTools } from "./workflow/tools.mjs";
+import { completeArchitect } from "./providers/model.mjs";
+import { ticketRead } from "./workflow/ticket.mjs";
 
 export async function runArchitectTurn({
   cwd,

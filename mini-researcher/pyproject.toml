@@ -1,7 +1,7 @@
 [project]
 name = "mini-researcher"
 version = "0.1.0"
-description = "Short, cheap, bounded fact-finder for an architect. Not a report writer."
+description = "Researcher and Mini Implementer runtimes for Paseo Architect."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

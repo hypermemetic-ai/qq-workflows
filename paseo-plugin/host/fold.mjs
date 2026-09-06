@@ -1,4 +1,4 @@
-import { ARCHITECT_SYSTEM_PROMPT } from "./prompts.mjs";
+import { ARCHITECT_SYSTEM_PROMPT } from "./workflow/prompts.mjs";
 
 export const TICKET_BLOCK_HEADING = "Current ticket (`.architect/ticket.md`)";
 

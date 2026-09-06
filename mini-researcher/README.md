@@ -1,8 +1,6 @@
 # mini-researcher
 
-Short, cheap, bounded fact-finder for an architect. The question is the user message. It calls `done` with the fact, then file paths and URLs.
-
-This is the fast research child. A longer research package is out of scope here.
+Python runtimes for Paseo Architect: a smolagents Researcher and an Implementer wrapping the pinned upstream Mini v2 loop. Both use Grok 4.6 high and the host's durable recovery journal. See the [workflow README](../README.md) for installation and use in Paseo.
 
 ## Run
 
@@ -18,5 +16,5 @@ Brave is lexical search. Exa is semantic search. `visit_webpage` fetches a URL a
 ## Tests
 
 ```sh
-.venv/bin/python -m pytest tests/test_agent.py
+.venv/bin/python -m pytest tests
 ```

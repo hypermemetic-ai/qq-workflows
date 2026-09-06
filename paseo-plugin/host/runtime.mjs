@@ -1,20 +1,13 @@
 import { createServer } from "node:http";
-import { execFile as execFileCb, spawn } from "node:child_process";
-import { promisify } from "node:util";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { createSupervisor } from "./supervisor.mjs";
 import { hostVersion } from "./version.mjs";
-import { reconcileWithSdk } from "./spawn-agent.mjs";
-import { createStore, persistentMap, STATE_DIR } from "./store.mjs";
-import { architectTools } from "./tools.mjs";
-
-const execFile = promisify(execFileCb);
-import { ticketRead, ticketWrite, parseKind } from "./ticket.mjs";
-import { validateDelegateArgs, validateTeacherArgs } from "./tools.mjs";
-import { formatResearcherWake, formatReviewerWake, formatTeacherWake, normalizeFindings, routeDone } from "./done.mjs";
+import { reconcileWithSdk, isRealCwd, waitForHandleCwd, defaultSpawnExec, parseCreatedAgentJson } from "./spawn-agent.mjs";
+import { createStore, persistentMap } from "./store.mjs";
+import { ticketRead, ticketWrite, parseKind } from "./workflow/ticket.mjs";
+import { roleTools, validateDelegateArgs, validateTeacherArgs } from "./workflow/tools.mjs";
+import { formatResearcherWake, formatReviewerWake, formatTeacherWake, normalizeFindings, routeDone } from "./workflow/done.mjs";
 import {
   classifyFailure,
   createCircuit,
@@ -23,105 +16,18 @@ import {
   operationKey,
   retryProviderOperation,
 } from "./recovery.mjs";
-import { callZgTool, indexWorkspace } from "./zg.mjs";
-import { ZG_WHITELIST } from "./zg-tools.mjs";
+import { callZgTool, indexWorkspace } from "./search/zg.mjs";
+import { ZG_WHITELIST } from "./search/zg-tools.mjs";
 import {
   implementerCreateOptions,
   teacherCreateOptions,
-} from "./children.mjs";
-import { applyDaemonPatch, architectProfile, ARCHITECT_MODEL_ID, ARCHITECT_PROVIDER_ID, SPAWN_ENTRY } from "./config.mjs";
-import { buildReviewPacket, commitIfDirty, createAndMergePr, fastForwardMain, hasRemote, isGitRepo } from "./git.mjs";
-import { braveSearch, exaSearch, visitWebpage } from "./web.mjs";
-import { runOcrReview } from "./ocr.mjs";
+} from "./workflow/children.mjs";
+import { STATE_DIR, HOST_META_PATH, ARCHITECT_MODEL_ID, ARCHITECT_PROVIDER_ID, SPAWN_ENTRY } from "./config.mjs";
+import { buildReviewPacket, commitIfDirty, createAndMergePr, fastForwardMain, hasRemote, isGitRepo } from "./workflow/git.mjs";
+import { braveSearch, exaSearch, visitWebpage } from "./search/web.mjs";
+import { runOcrReview } from "./workflow/ocr.mjs";
 import { runMiniResearcher } from "./researcher.mjs";
-import { createImplementerWorktree, implementerBranchName } from "./worktree.mjs";
-
-export const HOST_STATE_DIR = STATE_DIR;
-export const HOST_META_PATH = join(HOST_STATE_DIR, "host.json");
-
-export function isRealCwd(cwd) {
-  return typeof cwd === "string" && cwd.trim().length > 0;
-}
-
-export function parseCreatedAgentJson(text) {
-  const raw = String(text ?? "").trim();
-  let parsed;
-  for (const line of raw.split(/\r?\n/).reverse()) {
-    try { parsed = JSON.parse(line); break; } catch { /* progress is not a result */ }
-  }
-  if (!parsed) throw new Error("paseo spawn produced no json");
-  const id = parsed.id ?? parsed.agentId;
-  if (!id) throw new Error("paseo spawn json missing id");
-  return {
-    id,
-    workspaceId: parsed.workspaceId ?? parsed.workspace_id ?? null,
-    cwd: parsed.cwd ?? null,
-  };
-}
-
-export function defaultSpawnExec(command, args, { input } = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
-    const out = [];
-    const err = [];
-    child.stdout.on("data", (chunk) => out.push(chunk));
-    child.stderr.on("data", (chunk) => err.push(chunk));
-    child.on("error", reject);
-    child.on("close", (code) => {
-      const stdout = Buffer.concat(out).toString("utf8");
-      const stderr = Buffer.concat(err).toString("utf8");
-      if (code !== 0) {
-        reject(new Error(stderr.trim() || stdout.trim() || `spawn-agent exited ${code}`));
-        return;
-      }
-      resolve({ stdout, stderr });
-    });
-    child.stdin.end(input ?? "");
-  });
-}
-
-export async function waitForHandleCwd(handle, { timeoutMs = 30_000, intervalMs = 50 } = {}) {
-  const current = () => (isRealCwd(handle?.cwd) ? handle.cwd : null);
-  if (current()) return current();
-  const deadline = Date.now() + timeoutMs;
-  let unsubscribe = () => {};
-  const fromSubscribe = new Promise((resolve) => {
-    if (typeof handle?.subscribe !== "function") return;
-    try {
-      unsubscribe = handle.subscribe(() => {
-        const cwd = current();
-        if (cwd) resolve(cwd);
-      }) ?? (() => {});
-    } catch {
-      /* snapshot may arrive via refresh */
-    }
-  });
-  const fromRefresh = (async () => {
-    while (Date.now() < deadline) {
-      try {
-        await handle.refresh?.();
-      } catch {
-        /* snapshot may already be present */
-      }
-      const cwd = current();
-      if (cwd) return cwd;
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    }
-    return null;
-  })();
-  const timeout = new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs));
-  try {
-    const cwd = await Promise.race([fromSubscribe, fromRefresh, timeout]);
-    if (!isRealCwd(cwd)) throw new Error("delegate: worktree cwd did not appear");
-    return cwd;
-  } finally {
-    try {
-      unsubscribe();
-    } catch {
-      /* ignore */
-    }
-  }
-}
+import { createImplementerWorktree, implementerBranchName } from "./workflow/worktree.mjs";
 
 export function createRuntime(options = {}) {
   const store = options.store ?? createStore(options.storePath ?? ":memory:");
@@ -129,7 +35,7 @@ export function createRuntime(options = {}) {
   const save = job => store.put("job", job.id, job);
   const wakeWaiters = new Map();
   const pending = new Set();
-  let paseo = options.paseo ?? null;
+  const paseo = options.paseo ?? null;
   let server = null;
   let hostUrl = options.hostUrl ?? null;
   const version = hostVersion();
@@ -154,17 +60,9 @@ export function createRuntime(options = {}) {
     fastForwardMain: options.fastForwardMain ?? fastForwardMain,
   };
 
-  function setPaseo(next) {
-    paseo = next;
-  }
-
-  function hasPaseo() {
-    return paseo != null;
-  }
-
   async function persistMeta() {
     if (!options.storePath || options.storePath === ":memory:") return;
-    await mkdir(HOST_STATE_DIR, { recursive: true });
+    await mkdir(STATE_DIR, { recursive: true });
     await writeFile(HOST_META_PATH, `${JSON.stringify({ url: hostUrl, pid: process.pid }, null, 2)}\n`);
   }
 
@@ -185,13 +83,7 @@ export function createRuntime(options = {}) {
     if (context.jobId && !child) throw new Error("unknown child");
     if (child && child.status !== "running" && name !== "done") throw new Error("stale child cannot execute tools");
     const role = child?.role ?? context.role ?? "architect";
-    const allowed = {
-      architect: architectTools().map(tool => tool.name),
-      teacher: ["ticket_read", "ticket_write", "done", "zvec_grep_search", "zvec_grep_rg"],
-      implementer: ["done"],
-      reviewer: ["done"],
-      researcher: ["done", "brave_search", "exa_search", "visit_webpage", "zvec_grep_search", "zvec_grep_rg"],
-    }[role] ?? [];
+    const allowed = roleTools(role).map(tool => tool.name);
     if (!allowed.includes(name)) throw new Error(`${role} cannot execute ${name}`);
     const cwd = child?.worktreeCwd ?? child?.cwd ?? context.cwd;
     if (!isRealCwd(cwd)) throw new Error("workspace is required");
@@ -672,9 +564,6 @@ export function createRuntime(options = {}) {
   }
 
   async function createAgent(createOptions) {
-    if (!paseo && typeof options.ensurePaseo === "function") {
-      await options.ensurePaseo();
-    }
     if (paseo) {
       let handle;
       if (createOptions.workspaceId && typeof paseo.workspaces?.ref === "function") {
@@ -775,22 +664,6 @@ export function createRuntime(options = {}) {
       labels: { role: "architect" },
     });
     return { agentId: handle.id, workspaceId: handle.workspaceId };
-  }
-
-  async function ensureDaemonConfig() {
-    if (!paseo?.config?.get || !paseo?.config?.patch) return { patched: false };
-    const current = await paseo.config.get();
-    const config = current.config ?? current;
-    const profiles = Array.isArray(config.agentProfiles) ? config.agentProfiles : [];
-    const profile = architectProfile();
-    const mergedProfiles = profiles.some((item) => item?.id === profile.id)
-      ? profiles.map((item) => (item?.id === profile.id ? { ...item, ...profile } : item))
-      : [profile, ...profiles];
-    await paseo.config.patch({
-      providers: applyDaemonPatch({ agents: { providers: config.providers ?? {} } }).agents.providers,
-      agentProfiles: mergedProfiles,
-    });
-    return { patched: true };
   }
 
   async function reconcile() {
@@ -921,14 +794,11 @@ export function createRuntime(options = {}) {
   }
 
   return {
-    setPaseo,
-    hasPaseo,
     reconcile,
     listen,
     close,
     handleTool,
     startArchitectSession,
-    ensureDaemonConfig,
     takeWakes,
     peekWakes,
     queueWake,
@@ -942,27 +812,6 @@ export function createRuntime(options = {}) {
   };
 }
 
-export async function readHostMeta() {
-  try {
-    return JSON.parse(await readFile(HOST_META_PATH, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-export async function callHost(path, payload, { signal, hostUrl } = {}) {
-  const meta = { url: hostUrl ?? process.env.ARCHITECT_HOST ?? (await readHostMeta())?.url };
-  if (!meta?.url) throw new Error("architect host is not listening");
-  const response = await fetch(`${meta.url}${path}`, {
-    method: "POST",
-    signal,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload ?? {}),
-  });
-  const json = await response.json();
-  if (!response.ok) throw Object.assign(new Error(json.error ?? JSON.stringify(json)), { failureClass: json.failureClass, attempts: json.attempts, exhausted: json.exhausted });
-  return json;
-}
 
 function json(res, status, payload) {
   res.writeHead(status, { "Content-Type": "application/json" });

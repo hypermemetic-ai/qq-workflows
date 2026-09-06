@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 
 export const PROVIDER_ATTEMPTS = 3;
 export const MALFORMED_REGENS = 1;
-export const PROCESS_RESTARTS = 1;
 export const AGGREGATE_RECOVERY = 6;
 export const LOOP_HISTORY = 20;
 export const LOOP_WARN_AT = 3;
@@ -291,16 +290,6 @@ export function formatDegenerationWake({
       ? `Work is preserved in ${worktree}; it has not been landed.`
       : "Work is preserved; it has not been landed.",
     "Automatic restart was not attempted.",
-    details ? `Details: ${details}.` : null,
-  ].filter(Boolean).join(" ");
-}
-
-export function formatLivenessWake({ role = "research", operation = "a provider request", details = "" } = {}) {
-  const who = role === "review" ? "Review" : "Research";
-  return [
-    `${who} liveness is uncertain while waiting on ${operation}.`,
-    "The process has not been confirmed stopped, and no replacement was started.",
-    "Operator inspection or cancellation is needed.",
     details ? `Details: ${details}.` : null,
   ].filter(Boolean).join(" ");
 }

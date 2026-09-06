@@ -1,18 +1,14 @@
 #!/usr/bin/env node
 import { startJsonRpcStdio } from "./jsonrpc-stdio.mjs";
-import { DONE, TICKET_READ, TICKET_WRITE } from "./tools.mjs";
-import { ZVEC_GREP_RG, ZVEC_GREP_SEARCH } from "./zg-tools.mjs";
-import { callHost } from "./runtime.mjs";
+import { roleTools } from "./workflow/tools.mjs";
+import { callHost } from "./host-client.mjs";
 
 const role = process.env.ARCHITECT_ROLE ?? "teacher";
 const jobId = process.env.ARCHITECT_JOB_ID;
 const workspace = process.env.ARCHITECT_WORKSPACE ?? process.cwd();
 const hostUrl = process.env.ARCHITECT_HOST;
 
-const ROLE_TOOLS = {
-  teacher: [TICKET_READ, TICKET_WRITE, DONE, ZVEC_GREP_SEARCH, ZVEC_GREP_RG],
-  implementer: [DONE],
-};
+const tools = roleTools(role);
 
 function asMcpTool(tool) {
   return {
@@ -36,12 +32,12 @@ startJsonRpcStdio({
       return undefined;
     }
     if (method === "tools/list") {
-      return { tools: (ROLE_TOOLS[role] ?? [DONE]).map(asMcpTool) };
+      return { tools: tools.map(asMcpTool) };
     }
     if (method === "tools/call") {
       const name = params?.name;
       const args = params?.arguments ?? {};
-      if (!(ROLE_TOOLS[role] ?? []).some(tool => tool.name === name)) throw new Error(`${role} cannot execute ${name}`);
+      if (!tools.some(tool => tool.name === name)) throw new Error(`${role} cannot execute ${name}`);
       const body = await callHost("/tool", {
         name,
         arguments: args,
