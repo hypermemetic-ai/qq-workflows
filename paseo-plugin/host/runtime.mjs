@@ -26,7 +26,7 @@ import { STATE_DIR, HOST_META_PATH, ARCHITECT_MODEL_ID, ARCHITECT_PROVIDER_ID, S
 import { buildReviewPacket, commitIfDirty, createAndMergePr, fastForwardMain, hasRemote, isGitRepo } from "./workflow/git.mjs";
 import { braveSearch, exaSearch, visitWebpage } from "./search/web.mjs";
 import { runOcrReview } from "./workflow/ocr.mjs";
-import { runMiniResearcher } from "./researcher.mjs";
+import { runResearcher } from "./researcher.mjs";
 import { createImplementerWorktree, implementerBranchName } from "./workflow/worktree.mjs";
 
 export function createRuntime(options = {}) {
@@ -41,7 +41,7 @@ export function createRuntime(options = {}) {
   const version = hostVersion();
   let draining = false;
   const ocrReview = options.ocrReview ?? runOcrReview;
-  const runResearch = options.runResearch ?? runMiniResearcher;
+  const runResearch = options.runResearch ?? runResearcher;
   const waitForCwd = options.waitForHandleCwd ?? waitForHandleCwd;
   const spawnExec = options.spawnExec ?? defaultSpawnExec;
   const indexWorkspaceFn = options.indexWorkspace ?? indexWorkspace;

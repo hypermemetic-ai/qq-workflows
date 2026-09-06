@@ -65,7 +65,7 @@ for (const prompt of [ARCHITECT_SYSTEM_PROMPT, TEACHER_SYSTEM_PROMPT, RESEARCHER
 
 assert.equal(MINI_SWE_SYSTEM_PROMPT, "You are a helpful assistant that can interact with a computer.");
 const researcher = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), "../runtimes/python/src/mini_researcher/agent.py"),
+  join(dirname(fileURLToPath(import.meta.url)), "../runtimes/python/src/researcher.py"),
   "utf8",
 );
 assert.match(researcher, /Call done when you have the answer/);

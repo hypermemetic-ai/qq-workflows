@@ -34,7 +34,7 @@ assert.doesNotMatch(
   formatRecoveryWake(new Error(maxPrompt), { role: "research", details: "job-x" }),
   /Automatic recovery is exhausted/,
 );
-assert.equal(classifyFailure(new Error("mini-researcher produced no output")), "invalid_output");
+assert.equal(classifyFailure(new Error("researcher produced no output")), "invalid_output");
 assert.equal(classifyFailure(new Error("repeated-action loop persisted despite a warning")), "degeneration");
 assert.equal(summarizeFailure({ stderr: "litellm XaiException: timeout after 600.0 seconds" }), "ReadTimeout at the provider's 600.0-second timeout");
 assert.equal(summarizeFailure(new Error("Internal error during token generation HTTP 500")), "HTTP 500");

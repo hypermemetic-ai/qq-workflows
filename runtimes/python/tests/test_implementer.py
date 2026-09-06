@@ -8,7 +8,7 @@ import litellm
 import minisweagent
 import yaml
 from minisweagent.agents.default import DefaultAgent
-from mini_researcher.implementer import HostAgent, HostEnvironment, HostModel
+from implementer import HostAgent, HostEnvironment, HostModel
 
 
 class Recorder:
@@ -54,7 +54,7 @@ def test_actual_mini_loop_and_effective_requests(tmp_path):
 
 
 def test_malformed_done_is_not_remapped():
-    from mini_researcher.agent import rewrite_done_tool_call
+    from researcher import rewrite_done_tool_call
     import pytest
     for args in ['{bad', {}, {'answer': ''}, {'answer': 42}]:
         call = SimpleNamespace(function=SimpleNamespace(name='done', arguments=args))
@@ -66,7 +66,7 @@ def test_malformed_done_is_not_remapped():
 def test_research_tools_pass_actual_framework_validation(monkeypatch):
     monkeypatch.setenv('BRAVE_API_KEY', 'fixture')
     monkeypatch.delenv('ARCHITECT_HOST', raising=False)
-    from mini_researcher.agent import build_agent
+    from researcher import build_agent
     agent = build_agent({'BRAVE_API_KEY': 'fixture'})
     assert 'done' in agent.tools
     assert 'zvec_grep_rg' in agent.tools
@@ -74,7 +74,7 @@ def test_research_tools_pass_actual_framework_validation(monkeypatch):
 
 def test_supervised_research_serializes_actual_framework_messages():
     from smolagents.models import ChatMessage, MessageRole
-    from mini_researcher.recovery import RetryingModel
+    from shared.recovery import RetryingModel
     message = ChatMessage(role=MessageRole.ASSISTANT, content='Answer', tool_calls=[])
     class Inner:
         model_id = 'xai/grok-4.6'
@@ -93,7 +93,7 @@ def test_actual_research_loop_repairs_done_and_allows_lengthy_work():
     import sys
     from smolagents import Tool, LogLevel
     from smolagents.models import Model, ChatMessage, ChatMessageToolCall, ChatMessageToolCallFunction
-    from mini_researcher.agent import ResearchAgent, DoneTool, INSTRUCTIONS
+    from researcher import ResearchAgent, DoneTool, INSTRUCTIONS
     class Observe(Tool):
         name = 'observe'
         description = 'Read the numbered observation.'

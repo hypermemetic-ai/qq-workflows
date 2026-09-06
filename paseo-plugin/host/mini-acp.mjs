@@ -25,7 +25,7 @@ startJsonRpcStdio({ async handler({ method, params }, { write }) {
   if (session.running) throw new Error('Mini already running');
   const pythonRoot = join(PLUGIN_ROOT, '..', 'runtimes', 'python');
   const token = process.env.XAI_API_KEY || await loadGrokToken();
-  const child = spawn(join(pythonRoot, '.venv', 'bin', 'python'), ['-m', 'mini_researcher.implementer'], {
+  const child = spawn(join(pythonRoot, '.venv', 'bin', 'python'), ['-m', 'implementer'], {
     cwd: session.cwd,
     env: { ...process.env, PYTHONPATH: join(pythonRoot, 'src'), XAI_API_KEY: token },
     stdio: ['pipe', 'pipe', 'pipe'],

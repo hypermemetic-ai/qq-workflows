@@ -1,5 +1,5 @@
 [project]
-name = "mini-researcher"
+name = "paseo-python-runtimes"
 version = "0.1.0"
 description = "Researcher and Mini Implementer runtimes for Paseo Architect."
 readme = "README.md"
@@ -10,11 +10,14 @@ dependencies = [
 ]
 
 [project.scripts]
-mini-researcher = "mini_researcher.cli:main"
+researcher = "researcher:main"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["researcher", "implementer"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
