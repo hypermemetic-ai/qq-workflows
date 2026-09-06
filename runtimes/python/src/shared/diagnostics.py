@@ -44,7 +44,7 @@ ISOLATE_ENV_KEYS = (
 )
 
 _SESSION = None
-_SESSION_LOCK = threading.Lock()
+_SESSION_LOCK = threading.RLock()
 
 
 class CancelledError(RuntimeError):
@@ -429,7 +429,7 @@ class DiagnosticSession:
         self.foreground = []
         self.cancelled = False
         self.cancel_reason = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._service_seq = 0
         self._command_seq = 0
         self._shutdown = False

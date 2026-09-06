@@ -7,7 +7,7 @@ const exec = promisify(execFile);
 
 export function mapOcrJson(payload) {
   const failed = payload?.manifest?.coverage?.failed ?? [];
-  if ((payload?.status && !["success", "complete"].includes(payload.status)) || payload?.summary?.budget_exceeded || failed.length || ["partial", "failed", "cancelled"].includes(payload?.manifest?.terminal_state)) {
+  if ((payload?.status && !["success", "complete"].includes(payload.status)) || payload?.summary?.budget_exceeded || failed.length || ["partial", "failed", "cancelled", "skipped"].includes(payload?.manifest?.terminal_state)) {
     throw Object.assign(new Error(`Review coverage incomplete: ${JSON.stringify({ status: payload.status, failed, message: payload.message })}`), {
       failureClass: "process", reviewEvidence: { status: payload.status, message: payload.message, manifest: payload.manifest },
     });

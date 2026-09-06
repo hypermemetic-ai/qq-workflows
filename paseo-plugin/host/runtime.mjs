@@ -370,6 +370,7 @@ export function createRuntime(options = {}) {
         const text = wakeText(job, decision, answer, findings);
         queueWake(job.parent, text, `${job.id}:completion`);
         job.status = "succeeded";
+        job.phase = "completed";
         return { ok: true, action: decision.action };
       }
       if (decision.action === "commit_pr_merge") {
@@ -507,8 +508,10 @@ export function createRuntime(options = {}) {
         findings,
       }));
       implementer.agentId = created.id;
+      implementer.workspaceId = created.workspaceId;
       implementer.worktreeCwd = cwd;
       save(implementer);
+      if (created.cwd !== cwd) throw new Error(`Correction child checkout ${created.cwd} does not match ${cwd}; inspect child ${created.id} before retrying`);
       return { ok: true, action: "spawn_implementer_same_worktree", implementerId: created.id };
     } catch (error) {
       // A failed response does not prove creation failed. Never create a second worker here.

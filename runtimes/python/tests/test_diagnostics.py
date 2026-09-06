@@ -207,6 +207,17 @@ def test_completed_shell_does_not_leave_background_child(session):
     assert not state.exists() or state.read_text().split()[2] == 'Z'
 
 
+def test_cli_reports_cleanup_failure_before_completion(monkeypatch, capsys):
+    import researcher
+    import shared.diagnostics
+    monkeypatch.setattr(researcher, 'run_research', lambda question: 'Findings')
+    monkeypatch.setattr(shared.diagnostics, 'shutdown_diagnostics', lambda: {'cleanup_failures': ['fixture process survived']})
+    assert researcher.main(['question']) == 0
+    envelope = json.loads(capsys.readouterr().out)
+    assert 'fixture process survived' in envelope['answer']
+    assert envelope['cleanup']['cleanup_failures'] == ['fixture process survived']
+
+
 def test_research_agent_loop_uses_run_command(session):
     import sys
     from smolagents import LogLevel

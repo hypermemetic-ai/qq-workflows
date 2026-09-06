@@ -396,18 +396,30 @@ def main(argv=None):
         with redirect_stdout(sys.stderr):
             answer = run_research(question)
         if not isinstance(answer, str) or not answer.strip(): raise ValueError("invalid completion: empty answer")
-        print(json.dumps({"version": 1, "kind": "research_completion", "ok": True, "answer": answer}, ensure_ascii=False), flush=True)
-        return 0
+        envelope = {"version": 1, "kind": "research_completion", "ok": True, "answer": answer}
+        code = 0
     except Exception as error:
         details = failure_details(error)
         details['traceback'] = ''.join(traceback.format_tb(error.__traceback__))[-16000:]
-        print(json.dumps({'version': 1, 'kind': 'research_completion', 'ok': False, 'error': details}), flush=True)
+        envelope = {'version': 1, 'kind': 'research_completion', 'ok': False, 'error': details}
         traceback.print_exc(file=sys.stderr)
-        return 1
+        code = 1
     finally:
         stop.set()
         from shared.diagnostics import shutdown_diagnostics
-        shutdown_diagnostics()
+        try:
+            cleanup = shutdown_diagnostics()
+        except Exception as error:
+            cleanup = {'cleanup_failures': [str(error)]}
+    if cleanup.get('cleanup_failures'):
+        warning = 'Diagnostic cleanup incomplete: ' + '; '.join(cleanup['cleanup_failures'])
+        envelope['cleanup'] = cleanup
+        if envelope['ok']:
+            envelope['answer'] += '\n\n' + warning
+        else:
+            envelope['error']['message'] += '\n' + warning
+    print(json.dumps(envelope, ensure_ascii=False), flush=True)
+    return code
 
 
 if __name__ == "__main__":
