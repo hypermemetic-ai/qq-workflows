@@ -107,7 +107,7 @@ class ZvecGrepRgTool(Tool):
 
 
 def official_zg(name, arguments):
-    bridge = Path(__file__).resolve().parents[3] / 'paseo-plugin' / 'host' / 'zg-call.mjs'
+    bridge = Path(__file__).resolve().parents[4] / 'paseo-plugin' / 'host' / 'zg-call.mjs'
     completed = subprocess.run([os.environ.get('NODE', 'node'), str(bridge)], input=json.dumps({'name': name, 'arguments': arguments}), text=True, capture_output=True)
     if completed.returncode: raise RuntimeError(completed.stderr)
     return completed.stdout
