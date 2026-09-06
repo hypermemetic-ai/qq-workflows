@@ -21,7 +21,7 @@ assert.equal(
     "",
     "## Context",
     "",
-    "This operator message and your reply, plus at least the previous operator message and your reply, stay in context. Retain additional whole exchanges to reach a 2,048-token conversation floor. Older conversation is dropped.",
+    "This operator message and your reply, plus at least the previous operator message and your reply, stay in context. Fill any gap below 2,048 conversation tokens with the most recent older text, trimming the oldest included exchange. Older conversation is dropped.",
     "",
     "## Teacher",
     "",

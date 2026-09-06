@@ -68,7 +68,7 @@ try {
     },
   }), /cancel generation/);
   assert.equal(history.length, 4);
-  assert.deepEqual(windows, [['m0', 'm1', 'm2', 'm3', 'aborted-id']]);
+  assert.deepEqual(windows, [{ userMessageIds: ['m0', 'm1', 'm2', 'm3', 'aborted-id'] }]);
   const resumed = await runArchitectTurn({ cwd: dir, pairs: history, operatorText: 'next', messageId: 'next-id', complete: async () => ({ text: 'done', toolCalls: [] }) });
   assert.equal(resumed.pairs.length, 5);
   assert.ok(!resumed.pairs.some(pair => pair.operator === 'aborted'));

@@ -15,9 +15,40 @@ function retain(pairs, minimum, tokens = 0) {
   let start = list.length;
   while (start > 0 && (list.length - start < minimum || tokens < CONVERSATION_TOKEN_FLOOR)) {
     const pair = list[--start];
-    tokens += conversationTokens(pair.operator) + conversationTokens(pair.architect);
+    const size = conversationTokens(pair.operator) + conversationTokens(pair.architect);
+    if (list.length - start > minimum && tokens + size > CONVERSATION_TOKEN_FLOOR) {
+      const budget = CONVERSATION_TOKEN_FLOOR - tokens;
+      const architect = tokenSuffix(pair.architect, budget);
+      const operator = conversationTokens(pair.architect) < budget
+        ? tokenSuffix(pair.operator, budget - conversationTokens(architect)) : "";
+      return [{ ...pair, operator, architect, trimmed: true }, ...list.slice(start + 1)];
+    }
+    tokens += size;
   }
   return list.slice(start);
+}
+
+// Keep a text suffix within the budget without cutting through a UTF-8 character.
+export function tokenSuffix(value, budget) {
+  const text = String(value ?? "");
+  if (budget <= 0) return "";
+  const encoded = tokenizer.encode(text, [], []);
+  if (encoded.length <= budget) return text;
+  for (let start = encoded.length - budget; start < encoded.length; start++) {
+    const suffix = tokenizer.decode(encoded.slice(start));
+    if (text.endsWith(suffix) && conversationTokens(suffix) <= budget) return suffix;
+  }
+  return "";
+}
+
+export function contextWindow(pairs, messageId) {
+  const first = pairs[0];
+  return {
+    userMessageIds: [...pairs.map(pair => pair.messageId), messageId].filter(Boolean),
+    ...(first?.trimmed && first.messageId ? { firstExchange: {
+      messageId: first.messageId, operator: first.operator, architect: first.architect,
+    } } : {}),
+  };
 }
 
 export function requestPairs(pairs, operatorText) {
@@ -45,8 +76,8 @@ export function assembleArchitectRequest({
     { role: "user", content: ticketBlock(ticketText) },
   ];
   for (const pair of previous) {
-    input.push({ role: "user", content: String(pair.operator ?? "") });
-    input.push({ role: "assistant", content: String(pair.architect ?? "") });
+    if (pair.operator) input.push({ role: "user", content: String(pair.operator) });
+    if (pair.architect) input.push({ role: "assistant", content: String(pair.architect) });
   }
   if (operatorText != null) input.push({ role: "user", content: String(operatorText) });
   return {

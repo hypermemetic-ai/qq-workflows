@@ -4,7 +4,7 @@ Verified on 2026-09-05/06 using a separate Paseo home at `/tmp/paseo-architect-v
 
 | Contract | Evidence |
 | --- | --- |
-| Architect prompt, tools, Astra high, retained context | `LIVE_ARCHITECT=1 node tests/live.mjs`: two actual supervised provider requests, real ticket mutation, short previous exchange plus substantial earlier context retained, and an exchange beyond the 2,048-token floor absent. Saved sessions retain whole exchanges and stable message IDs. |
+| Architect prompt, tools, Astra high, retained context | `LIVE_ARCHITECT=1 node tests/live.mjs`: two actual supervised provider requests, real ticket mutation, short previous exchange plus only the needed suffix of earlier context retained, and older text absent. Saved sessions retain stable message IDs and the exact trimmed text. |
 | Actual upstream Mini runtime | `HostAgent.run` is the pinned upstream `DefaultAgent.run`; Python behavioral tests verify canonical observations and 25 model turns. Live job `c9fcfc74-a32a-44ad-9cee-27321ecdcdf8` made five saved Grok high requests with exactly `bash` and `done`. |
 | Native Teacher | Job `aa6bb6cc-d108-43ba-89e0-c59e28dd88b2`: eleven saved conversational requests carry the exact Teacher system prompt, Grok 4.6 high, and native `search_tool`/`use_tool`. Discovery exposes only the five approved repository tools. The operator answer completed the native conversation and generated a durable Teacher wake. The existing live Architect processed the saved synthetic Teacher return and acknowledged wake `verification:teacher-return:55218a85` after its turn completed. |
 | Research success | Job `29fcbdb1-29f5-43cf-b417-e595b103f90c` completed through the actual Python stdin/envelope path. The saved wake equals the answer and source path exactly. |
