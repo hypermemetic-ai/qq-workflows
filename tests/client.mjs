@@ -72,6 +72,7 @@ if (process.env.PASEO_V08_SERVER_ROOT) {
     await registered.get('addCommandCenterItem:start-architect')[0].onSelect({ workspace: { directory: '/fork/workspace' }, rpc: async (contract, input) => called.push({ name: contract.name, input }), openPanel: panel => called.push(panel) });
     assert.deepEqual(called, [{ name: 'architect.start', input: { cwd: '/fork/workspace', title: 'Architect' } }, 'ticket']);
     assert.ok(registered.has('addWorkspacePanel:ticket'));
+    assert.deepEqual([...registered.keys()].sort(), [...registrations.keys()].sort(), 'entry registrations stay aligned across Paseo versions');
     console.log('v0.8 adapter compiles the same UI and preserves workspace-scoped Start');
   } finally { rmSync(adapterRoot, { recursive: true, force: true }); }
 }
