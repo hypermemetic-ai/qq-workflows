@@ -12,7 +12,22 @@ mkdirSync(join(target, 'server'));
 writeFileSync(join(target, 'paseo-plugin.json'), '{"id":"architect"}\n');
 writeFileSync(join(target, 'package.json'), '{"name":"architect-v08-adapter","private":true}\n');
 symlinkSync(source, join(target, 'node_modules', 'architect'), 'dir');
-writeFileSync(join(target, 'index.client.tsx'), 'export { registerClient as default } from "architect/architect.client";\n');
+writeFileSync(join(target, 'index.client.tsx'), `import { ArchitectSurface, TicketPanel } from "architect/architect.client";
+import { startArchitectRpc } from "architect/architect.shared";
+export default function contribute(client) {
+  client.addSurface("architect", ArchitectSurface);
+  client.addSidebarItem({ id: "architect", title: "Architect", icon: "Compass", surface: "architect" });
+  client.addWorkspacePanel({ id: "ticket", title: "Ticket", icon: "FileText", context: "workspace", Component: TicketPanel });
+  client.addCommandCenterItem({
+    id: "start-architect", title: "Start architect", icon: "Compass", keywords: ["ticket", "delegate", "teacher"], context: "workspace",
+    async onSelect({ rpc, workspace, openPanel }) {
+      await rpc(startArchitectRpc, { cwd: workspace.directory, title: "Architect" });
+      openPanel("ticket");
+    },
+  });
+  return () => {};
+}
+`);
 writeFileSync(join(target, 'server', 'root.ts'), `process.env.ARCHITECT_PLUGIN_ROOT = ${JSON.stringify(source)};\n`);
 writeFileSync(join(target, 'index.server.ts'), `import "./server/root";
 import { handleStart, handleTicket, handleChildren } from "architect/architect.server";
