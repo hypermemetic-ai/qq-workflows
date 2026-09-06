@@ -45,7 +45,10 @@ const rpc = startJsonRpcStdio({
       };
       sessions.set(sessionId, session);
       persist(sessionId, session);
-      if (saved) sendContextWindow(write, sessionId, contextWindow(session.pairs));
+      if (saved) {
+        replayExchanges(write, sessionId, session.pairs);
+        sendContextWindow(write, sessionId, contextWindow(session.pairs));
+      }
       indexWorkspace(cwd, { wait: false }).catch((error) => {
         console.error("zg index", error);
       });
@@ -239,6 +242,33 @@ async function runSessionTurn({ session, sessionId, operatorText, messageId, wri
     store.put("architect_turn", turnKey, { ...measurement, status: signal?.aborted ? "aborted" : "failed", endedAt: Date.now() });
     sendContextWindow(write, sessionId, contextWindow(session.pairs));
     throw error;
+  }
+}
+
+// ACP session/load must replay history: native refresh rebuilds its timeline from it.
+function replayExchanges(write, sessionId, pairs) {
+  const update = value => write({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: value } });
+  const text = (sessionUpdate, value, extra = {}) => update({ sessionUpdate, ...extra, content: { type: "text", text: value } });
+  for (const pair of pairs) {
+    text("user_message_chunk", pair.operator, { messageId: pair.messageId });
+    if (!pair.items?.length) {
+      text("agent_message_chunk", pair.architect);
+      continue;
+    }
+    for (const item of pair.items) {
+      if (item.type === "message" && item.role === "assistant") {
+        for (const part of item.content ?? []) if (part.type === "output_text") text("agent_message_chunk", part.text);
+      } else if (item.type === "reasoning") {
+        for (const part of item.summary ?? []) if (typeof part.text === "string") text("agent_thought_chunk", part.text);
+      } else if (item.type === "function_call") {
+        let args = item.arguments;
+        try { args = JSON.parse(args); } catch { /* Preserve unparsed diagnostic input. */ }
+        update({ sessionUpdate: "tool_call", toolCallId: item.call_id, title: item.name, status: "pending", rawInput: args });
+      } else if (item.type === "function_call_output") {
+        update({ sessionUpdate: "tool_call_update", toolCallId: item.call_id, status: "completed",
+          content: [{ type: "content", content: { type: "text", text: typeof item.output === "string" ? item.output : JSON.stringify(item.output) } }] });
+      }
+    }
   }
 }
 

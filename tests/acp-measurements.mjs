@@ -65,7 +65,15 @@ try {
   await prompt('second question', 'u2');
   assert.ok(requests[2].input.some(item => item.type === 'function_call_output'));
   assert.ok(requests[2].input.some(item => item.type === 'reasoning'));
-  await stop(); start(); await rpc('initialize'); await rpc('session/load', { sessionId });
+  await stop(); start(); await rpc('initialize'); notifications = [];
+  await rpc('session/load', { sessionId });
+  const replay = notifications.filter(item => item.method === 'session/update').map(item => item.params.update);
+  assert.deepEqual(replay.filter(item => item.sessionUpdate === 'user_message_chunk').map(item => [item.messageId, item.content.text]), [['u1', 'first question'], ['u2', 'second question']]);
+  assert.deepEqual(replay.filter(item => item.sessionUpdate === 'agent_message_chunk').map(item => item.content.text), ['answer 2', 'answer 3']);
+  assert.ok(replay.some(item => item.sessionUpdate === 'tool_call' && item.toolCallId === 'fixture-call'));
+  assert.ok(replay.some(item => item.sessionUpdate === 'tool_call_update' && item.content[0].content.text === 'fixture tool result'));
+  assert.ok(!JSON.stringify(replay).includes('opaque'));
+  assert.equal(requests.length, 3, 'history replay makes no model requests');
   await prompt('third question', 'u3');
   assert.ok(!JSON.stringify(requests[3].input).includes('first question'));
   assert.ok(JSON.stringify(requests[3].input).includes('second question'));
