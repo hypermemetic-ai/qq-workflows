@@ -201,9 +201,6 @@ export function agyProvider() {
       REAL_AGY_BIN: realAgyBin(),
       PATH: process.env.PATH || "/home/qqp/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin",
     },
-    params: {
-      supportsMcpServers: false,
-    },
     models: [
       GEMINI_FLASH_MODEL,
       { id: "Gemini 3.1 Pro", label: "Gemini 3.1 Pro" },
