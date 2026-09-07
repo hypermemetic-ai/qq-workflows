@@ -1,6 +1,6 @@
 # Architect workflow verification
 
-Verified on 2026-09-05/06 using a separate Paseo home at `/tmp/paseo-architect-verification/paseo` and daemon endpoint `127.0.0.1:16867`. The normal daemon was not restarted. Raw runtime evidence remains in the scratch SQLite journal and local `/tmp/architect-cleanup-verification-artifacts/`; credentials and conversation dumps are excluded from Git.
+Historical baseline verified on 2026-09-05/06 using a separate Paseo home at `/tmp/paseo-architect-verification/paseo` and daemon endpoint `127.0.0.1:16867`. The normal daemon was not restarted. Raw runtime evidence remains in the scratch SQLite journal and local `/tmp/architect-cleanup-verification-artifacts/`; credentials and conversation dumps are excluded from Git.
 
 | Contract | Evidence |
 | --- | --- |
@@ -17,10 +17,22 @@ Verified on 2026-09-05/06 using a separate Paseo home at `/tmp/paseo-architect-v
 | Recovery and publication uncertainty | Behavioral tests cover durable duplicate receipts, unique active attempts, stale-result rejection, restart after completion receipt, acknowledged wake redelivery, and ambiguous publication without replay. Actual SDK reconciliation identifies the existing child by its stable job label. |
 | Provider policy | Local HTTP boundary tests verify three total transient attempts, one permanent-error attempt, Retry-After, durable failed-request reuse, shared recovery credits, one restart/repair allowance, persisted circuit state and repetition detection. |
 | Reload with work pending | Research job `14a85a0a-4a9f-4dcf-af47-415948fb1be2` survived plugin reload on host PID `3433633`, retaining heartbeats and model journal entries. Explicit cancellation of that verified runner preserved a durable failure wake and created no replacement. |
-| UI | Chromium exercised the actual plugin at 1440×1000 and 390×844, ticket reload, a visible file-read error and recovery, workspace-scoped children and opening a child session. A compiled-bundle regression test checks host version identity against the standalone source. |
+| Desktop/browser UI only | Chromium exercised the actual plugin at 1440×1000 and 390×844, ticket reload, a visible file-read error and recovery, workspace-scoped children and opening a child session. Ticket was opened before resizing; this did not verify Android discovery or native navigation. A compiled-bundle regression test checks host version identity against the standalone source. |
 
 Checks: complete repository `npm test`; Python tests (22 passing); plugin `tsc --noEmit`; actual Astra requests; real Mini, native Grok, Python researcher and OCR runs; official ZG MCP searches; Chromium interaction.
 
 Operational boundary: unknown command or publication outcomes require inspection. Heartbeat loss does not authorize a replacement worker. A host code upgrade waits for existing jobs to finish; plugin reload itself does not interrupt them. Encrypted provider reasoning is retained as provider data and is not interpreted by text repetition checks.
 
 Repository cleanup removed legacy workflows and experiment artifacts, consolidated the Node tests into `tests/`, removed unused adapters, and grouped workflow, provider and search modules. Shared role tools now drive discovery and execution, and the HTTP client no longer imports the host runtime. After cleanup: all 21 Node test files, 22 Python tests, plugin typechecking, two actual Astra requests, and the isolated host upgrade passed. Installed dependencies remain local and ignored.
+
+## Recovery validation, September 6
+
+The recovered workflow passes 25 JavaScript test files, 46 Python tests, TypeScript checks, and both stock v0.7 and fork v0.8 plugin compilers. `tests/workflow-local.mjs` uses the actual Paseo SDK placement adapter and real Git repositories, worktrees, commits, review packets and landing for bounded, open, correction and report-only paths. Model and daemon responses are fixtures; this is not a fresh live Grok review. The operator ended further Grok review for recovery; future open tickets retain OCR.
+
+Native Android reproduction confirmed that the existing conversation's tab switcher only lists open tabs and its compact Explorer exposes no plugin panel. The Ticket composer button now opens the ticket for that exact workspace, including a recovery conversation sharing an Architect checkout. This caught a callback binding defect that both Node compiler tests missed.
+
+The redesigned panel was exercised in the native fork with **Pure black explicitly selected**: conversation → Ticket → formatted Plan → Work → original conversation. Native accessibility IDs verify the exact workspace and rendered plan; a screenshot pixel assertion verifies the black background. Screenshots were inspected for typography, spacing and the attention/history split. Markdown parsing runs on the plugin server because loading its parser in Hermes produced a native startup exception; the phone renders serialized tokens with native text and views.
+
+Local results: `/tmp/architect-phone/evidence/baseline/result.json` (original absence) and `/tmp/architect-phone/evidence/pure-black-redesign/result.json` (fixed navigation and theme). Screenshots and hierarchy dumps remain local because they contain conversation text. Emulator configuration, APK identity, limitations and repeatable commands are in [scratch.md](../.architect/scratch.md#native-android-testing). This verifies native navigation and layout, not physical-phone performance.
+
+Deployment verification: the running plugin host reports source hash `7df1cf8b9839b966627079d9ffba0a330515badef02baf790d42404df3cc2f2e`, equal to the reviewed source. The affected idle Architect was reloaded after backup, restoring history version 2 with two operator exchanges and six workflow events. Its replayed timeline contains two user messages; workflow reports no longer consume operator slots. No normal daemon restart or historical publication replay occurred.

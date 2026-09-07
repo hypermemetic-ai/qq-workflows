@@ -67,6 +67,23 @@ try {
   assert.deepEqual(forwarded.tools[1].function.parameters.required, []);
   assert.deepEqual(forwarded.tools[2], payload.tools[2]);
 } finally { await schemaProxy.close(); schemaStore.close(); }
+const cancelledStore = createStore(':memory:');
+let requestStarted;
+const startedRequest = new Promise(resolve => { requestStarted = resolve; });
+let providerAborted = false;
+const cancelledProxy = await createProviderProxy({ endpoint: 'https://provider.invalid', token: 'test', model: 'grok-4.6', jobId: 'cancel-review', store: cancelledStore,
+  fetchFn: async (url, { signal }) => new Promise((resolve, reject) => {
+    signal.addEventListener('abort', () => { providerAborted = true; reject(signal.reason); }, { once: true });
+    requestStarted();
+  }) });
+const pendingRequest = fetch(cancelledProxy.url + '/v1/messages', { method: 'POST', body: '{}' }).catch(() => null);
+await startedRequest;
+await cancelledProxy.close();
+await pendingRequest;
+assert.equal(providerAborted, true);
+assert.equal(cancelledStore.active().length, 0);
+assert.equal(cancelledProxy.failures[0].failureClass, 'cancelled');
+cancelledStore.close();
 const child = { id: 'existing', labels: { job: 'job' }, cwd: '/worktree', status: 'running' };
 assert.equal((await reconcileWithSdk('job', { client: { agents: { list: async () => ({ entries: [{ agent: child }] }) } } })).id, 'existing');
 await assert.rejects(reconcileWithSdk('job', { client: { agents: { list: async () => ({ entries: [{ agent: child }, { agent: child }] }) } } }), /Multiple children/);

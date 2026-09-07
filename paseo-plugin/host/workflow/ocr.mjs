@@ -5,11 +5,17 @@ import { loadGrokToken } from "../providers/secrets.mjs";
 
 const exec = promisify(execFile);
 
+function reviewEvidence(payload) {
+  return { status: payload.status, message: payload.message, summary: payload.summary, manifest: payload.manifest,
+    findings: (findingsList(payload) ?? []).map(item => ({ path: item.path ?? item.file_path ?? item.file,
+      line: item.line ?? item.start_line, body: item.body ?? item.content ?? item.message })) };
+}
+
 export function mapOcrJson(payload) {
   const failed = payload?.manifest?.coverage?.failed ?? [];
   if ((payload?.status && !["success", "complete"].includes(payload.status)) || payload?.summary?.budget_exceeded || failed.length || ["partial", "failed", "cancelled", "skipped"].includes(payload?.manifest?.terminal_state)) {
     throw Object.assign(new Error(`Review coverage incomplete: ${JSON.stringify({ status: payload.status, failed, message: payload.message })}`), {
-      failureClass: "process", reviewEvidence: { status: payload.status, message: payload.message, manifest: payload.manifest },
+      failureClass: "process", reviewEvidence: reviewEvidence(payload),
     });
   }
   const list = findingsList(payload);
@@ -72,9 +78,10 @@ export async function runOcrReview(repo, {
     env: { ...effectiveEnv, ...(proxy ? { OCR_LLM_URL: proxy.url } : {}) },
   }));
   } catch (error) {
+    try { error.reviewEvidence = reviewEvidence(JSON.parse(String(error.stdout ?? ""))); } catch { /* no structured report */ }
     if (proxy?.failures.length) {
       const underlying = proxy.failures.at(-1);
-      throw Object.assign(new Error(JSON.parse(underlying.text).error.message, { cause: error }), { failureClass: underlying.failureClass, attempts: underlying.attempts, exhausted: underlying.exhausted, supervised: true });
+      throw Object.assign(new Error(JSON.parse(underlying.text).error.message, { cause: error }), { failureClass: underlying.failureClass, attempts: underlying.attempts, exhausted: underlying.exhausted, supervised: true, reviewEvidence: error.reviewEvidence });
     }
     throw error;
   } finally { await proxy?.close(); }

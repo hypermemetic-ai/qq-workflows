@@ -1,5 +1,5 @@
 import type { PluginContext } from "@getpaseo/plugin";
-import { ArchitectSurface, TicketPanel } from "./architect.client";
+import { ArchitectSurface, TicketPanel, contributeTicketAccess } from "./architect.client";
 import { handleStart, handleTicket, handleChildren } from "./architect.server";
 import { startArchitectRpc, ticketSnapshotRpc, childrenRpc } from "./architect.shared";
 
@@ -9,6 +9,7 @@ export default function contribute(plugin: PluginContext) {
   plugin.handle(childrenRpc, handleChildren);
 
   plugin.addSurface("architect", ArchitectSurface);
+  plugin.addClientSide(contributeTicketAccess);
   plugin.addSidebarItem({
     id: "architect",
     title: "Architect",

@@ -795,7 +795,7 @@ export function createRuntime(options = {}) {
         const body = Buffer.concat(chunks).toString("utf8");
         const payload = body ? JSON.parse(body) : {};
         const url = new URL(req.url ?? "/", "http://127.0.0.1");
-        if (url.pathname === "/jobs") { json(res, 200, { children: [...jobs.values()].filter(job => job.cwd === payload.cwd && (!payload.parentId || job.parent === payload.parentId)).map(({ id, role, agentId, status, kind, error }) => ({ id, role, agentId, status, kind, error })) }); return; }
+        if (url.pathname === "/jobs") { json(res, 200, { children: [...jobs.values()].filter(job => job.cwd === payload.cwd && (!payload.parentId || job.parent === payload.parentId)).map(({ id, role, agentId, status, kind, error, phase, completion, createdAt }) => ({ id, role, agentId, status, kind, error, phase, completion, createdAt })) }); return; }
         if (url.pathname === "/start") { json(res, 200, await startArchitectSession(payload)); return; }
         if (url.pathname === "/runner") { json(res, 200, await supervise(payload)); return; }
         if (url.pathname === "/tool-result") {

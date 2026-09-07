@@ -7,7 +7,8 @@ The Paseo plugin provides the UI and starts an independent host. Role adapters c
 | File | Responsibility |
 | --- | --- |
 | `paseo-plugin/index.ts` | Registers the sidebar surface, workspace ticket panel, command and RPC handlers |
-| `paseo-plugin/architect.client.tsx` | Workspace-scoped ticket and child-session UI |
+| `paseo-plugin/architect.client.tsx` | Workspace-scoped ticket, plan/work views and child-session UI |
+| `paseo-plugin/ticket-access.mjs` | Native composer entry, checkout scope and registration lifecycle |
 | `paseo-plugin/architect.server.ts` | Applies provider configuration and forwards UI requests |
 | `paseo-plugin/host/host-process.mjs` | Acquires the host lease, opens SQLite and reconciles saved jobs |
 | `paseo-plugin/host/runtime.mjs` | Delegation, completion, review, landing and wake delivery |

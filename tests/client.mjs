@@ -13,6 +13,7 @@ let root = dirname(serverEntry);
 while (!root.endsWith('/@getpaseo/server') && dirname(root) !== root) root = dirname(root);
 const { compilePlugin } = await import(pathToFileURL(join(root, 'dist/server/server/plugins/compiler.js')));
 const { clientBundle } = await compilePlugin(resolve('paseo-plugin/index.ts'));
+assert.ok(!clientBundle.includes('markdown-it'), 'Markdown parser stays on the server; Hermes renders serialized tokens');
 const pluginRequire = createRequire(resolve('paseo-plugin/package.json'));
 const sdk = { useWorkspace() {}, useRpc() {}, defineRpc: x => x };
 const evaluate = Function(`return ${clientBundle}`)();
@@ -23,7 +24,11 @@ const module = evaluate(name => {
   return pluginRequire(name);
 });
 const registrations = new Map();
-const plugin = new Proxy({}, { get: (_, name) => (...args) => { registrations.set(name + ':' + (args[0]?.id ?? args[0]), args); } });
+let contributeClient;
+const plugin = new Proxy({}, { get: (_, name) => (...args) => {
+  if (name === 'addClientSide') contributeClient = args[0];
+  else registrations.set(name + ':' + (args[0]?.id ?? args[0]), args);
+} });
 const cleanup = module.default(plugin);
 assert.equal(typeof cleanup, 'function');
 assert.ok(registrations.has('addSurface:architect'));
@@ -33,6 +38,44 @@ const called = [];
 await command.onSelect({ workspace: { directory: '/selected/workspace' }, rpc: async (contract, input) => called.push({ name: contract.name, input }), openPanel: id => called.push(id) });
 assert.deepEqual(called, [{ name: 'architect.start', input: { cwd: '/selected/workspace', title: 'Architect' } }, 'ticket']);
 cleanup();
+function phoneClient() {
+  const pills = new Map();
+  const opened = [];
+  let update, resolveList;
+  const list = new Promise(resolve => { resolveList = resolve; });
+  const client = {
+    paseo: { agents: { subscribe(callback) { update = callback; return () => { update = null; }; }, list: () => list } },
+    addComposerPill(pill) { pills.set(pill.agentId, pill); return () => pills.delete(pill.agentId); },
+    openPanel(...args) { opened.push(args); },
+  };
+  return { client, pills, opened, update: value => update(value), load: agents => resolveList({ entries: agents.map(agent => ({ agent })) }) };
+}
+async function verifyPhoneClient(contribute) {
+  const fixture = phoneClient();
+  const dispose = contribute(fixture.client);
+  const architect = { id: 'architect', provider: 'architect', labels: {}, cwd: '/project', workspaceId: 'architect-workspace' };
+  const recovery = { id: 'recovery', provider: 'codex', cwd: '/project', workspaceId: 'recovery-workspace' };
+  const unrelated = { id: 'other', provider: 'codex', cwd: '/other', workspaceId: 'other-workspace' };
+  // An update received while the initial snapshot is loading must win.
+  fixture.update({ kind: 'upsert', agent: { ...recovery, workspaceId: 'current-workspace' } });
+  fixture.load([architect, recovery, unrelated]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual([...fixture.pills.keys()].sort(), ['architect', 'recovery']);
+  fixture.pills.get('recovery').onPress();
+  assert.deepEqual(fixture.opened, [['ticket', { workspaceId: 'current-workspace' }]]);
+  fixture.update({ kind: 'remove', agentId: 'architect' });
+  assert.equal(fixture.pills.size, 0, 'remove buttons when checkout no longer has an Architect');
+  fixture.update({ kind: 'upsert', agent: architect });
+  assert.equal(fixture.pills.size, 2);
+  dispose();
+  assert.equal(fixture.pills.size, 0, 'plugin reload disposes all buttons');
+  const pending = phoneClient();
+  contribute(pending.client)();
+  pending.load([architect]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(pending.pills.size, 0, 'late snapshots cannot recreate disposed buttons');
+}
+await verifyPhoneClient(contributeClient);
 console.log('actual compiled client registers its panel and invokes workspace-scoped Start');
 const fixture = mkdtempSync(join(tmpdir(), 'architect-server-bundle-'));
 try {
@@ -67,7 +110,7 @@ if (process.env.PASEO_V08_SERVER_ROOT) {
       return pluginRequire(name);
     });
     const registered = new Map();
-    client.default(new Proxy({}, { get: (_, method) => (...args) => registered.set(method + ':' + (args[0]?.id ?? args[0]), args) }));
+    await verifyPhoneClient(capabilities => client.default(new Proxy(capabilities, { get: (target, method) => method in target ? target[method] : (...args) => registered.set(method + ':' + (args[0]?.id ?? args[0]), args) })));
     const called = [];
     await registered.get('addCommandCenterItem:start-architect')[0].onSelect({ workspace: { directory: '/fork/workspace' }, rpc: async (contract, input) => called.push({ name: contract.name, input }), openPanel: panel => called.push(panel) });
     assert.deepEqual(called, [{ name: 'architect.start', input: { cwd: '/fork/workspace', title: 'Architect' } }, 'ticket']);

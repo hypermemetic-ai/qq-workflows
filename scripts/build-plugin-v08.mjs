@@ -12,7 +12,7 @@ mkdirSync(join(target, 'server'));
 writeFileSync(join(target, 'paseo-plugin.json'), '{"id":"architect"}\n');
 writeFileSync(join(target, 'package.json'), '{"name":"architect-v08-adapter","private":true}\n');
 symlinkSync(source, join(target, 'node_modules', 'architect'), 'dir');
-writeFileSync(join(target, 'index.client.tsx'), `import { ArchitectSurface, TicketPanel } from "architect/architect.client";
+writeFileSync(join(target, 'index.client.tsx'), `import { ArchitectSurface, TicketPanel, contributeTicketAccess } from "architect/architect.client";
 import { startArchitectRpc } from "architect/architect.shared";
 export default function contribute(client) {
   client.addSurface("architect", ArchitectSurface);
@@ -25,7 +25,7 @@ export default function contribute(client) {
       openPanel("ticket");
     },
   });
-  return () => {};
+  return contributeTicketAccess(client);
 }
 `);
 writeFileSync(join(target, 'server', 'root.ts'), `process.env.ARCHITECT_PLUGIN_ROOT = ${JSON.stringify(source)};\n`);

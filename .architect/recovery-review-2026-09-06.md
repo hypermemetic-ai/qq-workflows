@@ -29,11 +29,16 @@ The run emitted 19 provisional findings, then was cancelled after 18m11s because
 - Infer host process-group ownership from arbitrary recorded groups: managed diagnostic groups are created with `start_new_session=True`; they do not inherit the host group. No `process.getpgrp` fallback was added (Node does not expose that API).
 - Replace the runtime test packet helper: explicit test options already override the default fixture, and dedicated integration tests cover empty packets.
 
-## Remaining steps
+## Recovery review decision
 
-1. Obtain approval for sending the added migration and review-driven changes in PR #75 to the configured external reviewer. Automatic approval review interpreted the earlier approval narrowly and rejected the added payload.
-2. Review the final source range through the production provider proxy, retaining sanitized coverage/findings on both successful and unsuccessful process exits. Supply the reviewed workflow contract as background; the reviewer cannot read untracked node_modules through Git.
-3. Resolve any substantiated new findings and require complete review coverage before automatic merge.
-4. Reload the existing Architect plugin on `/home/qqp/.paseo-architect` and upgrade its idle background host. Reload affected idle agent `ae4a72cf-80cc-4a94-906b-d185fdbf1f77` to migrate its saved history. Verify the host version, plugin running status and restored session. Do not restart the Paseo daemon.
+The operator approved the additional disclosure, then explicitly ended further Grok review for this recovery. The second run was interrupted while still generating after about 16m43s; it did not pass. A later direct request failed without a final report. No external review approval is claimed. The operator asked for direct local inspection and progress they can validate. Keep OCR for future open tickets only, with bounded direct landing unchanged.
 
-Latest validation: 24 JavaScript test files, 46 Python tests, TypeScript checking, and stock v0.7/fork v0.8 plugin compilers pass. No merge or deployment has been claimed.
+The interrupted process exposed two additional defects: proxy shutdown left upstream requests running, and nonzero OCR exits discarded the structured failure manifest. Both are fixed with cancellation and sanitized-evidence regressions. A complete local workflow test now exercises the actual Paseo SDK adapter, real Git worktrees and landing for bounded, open, correction and report-only cases, with only model/daemon responses simulated.
+
+## Final local review and deployment
+
+All 25 JavaScript test files, 46 Python tests, TypeScript checks and both Paseo plugin compilers pass. Native Android reproduced the absent entry point and now passes Ticket → formatted Plan → Work → original conversation with Pure black selected. Screenshots were inspected. Parser initialization failed in Hermes during development; parsing now stays on the server and the native client renders serialized tokens. Emulator details live in `.architect/scratch.md`.
+
+Local inspection covered cancellation settlement, retained OCR evidence, prepared-checkout placement, correction ownership, report-only completion, subscription races, per-workspace callback binding and phone navigation. No further Grok review was launched. The approved final step is automatic PR integration.
+
+The existing plugin is running. Host PID 905520 reports source hash `7df1cf8b9839b966627079d9ffba0a330515badef02baf790d42404df3cc2f2e`, matching the reviewed source. After a SQLite backup and confirmation that the affected Architect was idle with no unacknowledged wakes, its process was reloaded. Saved history is version 2: two operator exchanges and six workflow events. The replayed timeline has two real user messages. The Paseo daemon was not restarted. The completed collector inspection remains recorded in the ticket; historical uncertainty and publication state were preserved.
