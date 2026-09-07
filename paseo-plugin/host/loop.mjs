@@ -8,6 +8,7 @@ export async function runArchitectTurn({
   cwd,
   operatorText,
   messageId,
+  source = "operator",
   onContextWindow,
   pairs = [],
   executeTool,
@@ -29,6 +30,7 @@ export async function runArchitectTurn({
     ticketText: ticket.text,
     pairs,
     operatorText,
+    source,
   }).input;
   if (state?.pendingTool) {
     const saved = await reconcileTool(state.pendingTool);
@@ -40,7 +42,7 @@ export async function runArchitectTurn({
   if (state?.input) input = state.input;
   const selectedContext = state?.contextWindow ?? (state?.contextMessageIds
     ? { userMessageIds: state.contextMessageIds }
-    : contextWindow(requestPairs(pairs, operatorText), messageId));
+    : contextWindow(requestPairs(pairs, operatorText, source), messageId));
   const persistState = saveState;
   saveState = value => persistState({ ...value, exchangeStart, contextWindow: selectedContext });
   await onContextWindow?.(selectedContext);
@@ -92,7 +94,7 @@ export async function runArchitectTurn({
   const architectText = assistantParts.join("");
   return {
     architectText,
-    pairs: rememberPair(pairs, operatorText, architectText, messageId, input.slice(exchangeStart)),
+    pairs: rememberPair(pairs, operatorText, architectText, messageId, input.slice(exchangeStart), source),
     ticket: (await ticketRead(cwd)).text,
   };
 }

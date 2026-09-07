@@ -50,6 +50,40 @@ try {
   const failed = await fetch(permanent.url + '/v1/chat/completions', { method: 'POST', body: '{}' });
   assert.equal(failed.status, 400); assert.equal(calls, 1); assert.equal(permanent.failures[0].failureClass, 'permanent');
 } finally { await permanent.close(); permanentStore.close(); }
+const schemaStore = createStore(':memory:');
+let forwarded;
+const schemaProxy = await createProviderProxy({ endpoint: 'https://provider.invalid', token: 'test', model: 'grok-4.6', jobId: 'schema-review', store: schemaStore,
+  fetchFn: async (url, options) => { forwarded = JSON.parse(options.body); return new Response('{}'); } });
+try {
+  const payload = { messages: [{ role: 'user', content: 'Preserve input' }], tools: [
+    { name: 'done', input_schema: { type: 'object', required: null } },
+    { type: 'function', function: { name: 'done', parameters: { type: 'object', required: null } } },
+    { name: 'read', input_schema: { type: 'object', required: ['path'] } },
+  ] };
+  const result = await fetch(schemaProxy.url + '/v1/messages', { method: 'POST', body: JSON.stringify(payload) });
+  assert.equal(result.status, 200);
+  assert.deepEqual(forwarded.messages, payload.messages);
+  assert.deepEqual(forwarded.tools[0].input_schema.required, []);
+  assert.deepEqual(forwarded.tools[1].function.parameters.required, []);
+  assert.deepEqual(forwarded.tools[2], payload.tools[2]);
+} finally { await schemaProxy.close(); schemaStore.close(); }
+const cancelledStore = createStore(':memory:');
+let requestStarted;
+const startedRequest = new Promise(resolve => { requestStarted = resolve; });
+let providerAborted = false;
+const cancelledProxy = await createProviderProxy({ endpoint: 'https://provider.invalid', token: 'test', model: 'grok-4.6', jobId: 'cancel-review', store: cancelledStore,
+  fetchFn: async (url, { signal }) => new Promise((resolve, reject) => {
+    signal.addEventListener('abort', () => { providerAborted = true; reject(signal.reason); }, { once: true });
+    requestStarted();
+  }) });
+const pendingRequest = fetch(cancelledProxy.url + '/v1/messages', { method: 'POST', body: '{}' }).catch(() => null);
+await startedRequest;
+await cancelledProxy.close();
+await pendingRequest;
+assert.equal(providerAborted, true);
+assert.equal(cancelledStore.active().length, 0);
+assert.equal(cancelledProxy.failures[0].failureClass, 'cancelled');
+cancelledStore.close();
 const child = { id: 'existing', labels: { job: 'job' }, cwd: '/worktree', status: 'running' };
 assert.equal((await reconcileWithSdk('job', { client: { agents: { list: async () => ({ entries: [{ agent: child }] }) } } })).id, 'existing');
 await assert.rejects(reconcileWithSdk('job', { client: { agents: { list: async () => ({ entries: [{ agent: child }, { agent: child }] }) } } }), /Multiple children/);

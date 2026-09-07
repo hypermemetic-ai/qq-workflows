@@ -65,9 +65,11 @@ Include the keys you have and restrict access to the file with `chmod 600`. Keep
 3. Describe the problem and what a successful result would look like. For example: “The CSV import accepts duplicate rows. Help me decide how duplicates should be handled, then implement and test it.”
 4. Follow the discussion in the Architect conversation and the plan in the **Ticket** panel. If Architect starts a Teacher session, open it to discuss the decision, then return to Architect.
 
-The ticket is created automatically. Child sessions and their status appear alongside the workspace ticket, and you can open them to follow the work.
+The ticket is created automatically. Tap **Ticket** beside the composer in an Architect conversation, or a recovery conversation in the same checkout. The panel has **Plan** and **Delegated work** views; use the conversation selector above it to return to your chat. Child conversations can be opened from their work cards. Researcher runs in the background and returns findings to Architect.
 
-Architect retains the current and previous completed exchange, including reasoning and tool traffic. There is currently no token floor: normal Architect usage is being measured before choosing one. The [Paseo fork and its setup guide](https://github.com/hypermemetic-ai/paseo/blob/main/docs/architect-fork.md) makes the native conversation view follow that same selection; the stock app still shows its full archive. Put lasting decisions in the ticket rather than relying on older chat messages. If your project needs a particular test environment, describe it in an optional `.architect/scratch.md`; Architect will use that when planning tests.
+On the Android fork, use the Ticket button: the mobile tab selector only lists tabs already open, and the compact Explorer exposes Changes, Files and PR rather than plugin panels. The button works in the existing fork APK after the daemon plugin is reloaded.
+
+Architect retains the current and previous operator exchange, including reasoning and tool traffic. Background workflow reports appear as workflow updates and do not consume those two operator slots. There is currently no token floor: normal Architect usage is being measured before choosing one. The [Paseo fork and its setup guide](https://github.com/hypermemetic-ai/paseo/blob/main/docs/architect-fork.md) makes the native conversation view follow that same selection; the stock app still shows its full archive. Put lasting decisions in the ticket rather than relying on older chat messages. If your project needs a particular test environment, describe it in an optional `.architect/scratch.md`; Architect will use that when planning tests.
 
 ## Updates and troubleshooting
 
@@ -104,6 +106,7 @@ npm run typecheck
 - [Code guide](docs/architecture.md): entry points, agent runtimes and supporting modules.
 - [Isolated setup guide](.architect/scratch.md): a separate Paseo home and disposable repositories for live tests.
 - [Verification record](docs/verification.md): tested behavior and operational limitations.
+- [Native Android testing](.architect/scratch.md#native-android-testing): emulator, APK identity and repeatable Ticket navigation checks.
 
 For a daemon using Paseo's upcoming v0.8 plugin API, generate its runtime entries in a separate directory before installing:
 

@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { startJsonRpcStdio } from "./jsonrpc-stdio.mjs";
 import { runArchitectTurn } from "./loop.mjs";
-import { contextWindow, keptPairs } from "./fold.mjs";
+import { contextWindow, keptPairs, isWakePair } from "./fold.mjs";
 import { ARCHITECT_SYSTEM_PROMPT } from "./workflow/prompts.mjs";
 import { architectTools } from "./workflow/tools.mjs";
 import { callHost } from "./host-client.mjs";
@@ -13,9 +13,10 @@ import { bumpGeneration, createTurnState, enqueueTurn, wakeIsStale } from "./tur
 
 import { createStore } from "./store.mjs";
 import { supervisedArchitect } from "./providers/architect-provider.mjs";
+import { restoreOperatorHistory } from "./session-history.mjs";
 const store = createStore();
 const sessions = new Map();
-const persist = (id, session) => store.put("session", id, { cwd: session.cwd, pairs: session.pairs, thinking: session.thinking });
+const persist = (id, session) => store.put("session", id, { cwd: session.cwd, pairs: session.pairs, thinking: session.thinking, historyVersion: 2 });
 
 const rpc = startJsonRpcStdio({
   async handler(message, { write }) {
@@ -37,7 +38,7 @@ const rpc = startJsonRpcStdio({
       const cwd = saved?.cwd ?? params?.cwd ?? process.cwd();
       const session = {
         cwd,
-        pairs: keptPairs(saved?.pairs),
+        pairs: saved && saved.historyVersion !== 2 ? restoreOperatorHistory(store, sessionId, saved.pairs) : keptPairs(saved?.pairs),
         pending: null,
         alive: true,
         thinking: ARCHITECT_REASONING,
@@ -155,16 +156,18 @@ async function runWakeTurn({ session, sessionId, text, write, wakeId }) {
     params: {
       sessionId,
       update: {
-        sessionUpdate: "user_message_chunk",
-        messageId,
-        content: { type: "text", text },
+        sessionUpdate: "tool_call",
+        toolCallId: messageId,
+        title: "Workflow update",
+        status: "completed",
+        content: [{ type: "content", content: { type: "text", text } }],
       },
     },
   });
   const result = await runSessionTurn({
     session,
     sessionId,
-    operatorText: text,
+    operatorText: `Workflow event (not an operator message):\n${text}`,
     messageId,
     write,
     wakeId,
@@ -182,6 +185,7 @@ async function runSessionTurn({ session, sessionId, operatorText, messageId, wri
   store.put("architect_turn", turnKey, measurement);
   try { const result = await runArchitectTurn({
     messageId,
+    source: wakeId ? "wake" : "operator",
     onContextWindow: ids => sendContextWindow(write, sessionId, ids),
     state: store.get("turn", turnKey),
     complete: request => supervisedArchitect(request, { store, turnKey }),
@@ -250,7 +254,10 @@ function replayExchanges(write, sessionId, pairs) {
   const update = value => write({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: value } });
   const text = (sessionUpdate, value, extra = {}) => update({ sessionUpdate, ...extra, content: { type: "text", text: value } });
   for (const pair of pairs) {
-    text("user_message_chunk", pair.operator, { messageId: pair.messageId });
+    if (isWakePair(pair)) {
+      update({ sessionUpdate: "tool_call", toolCallId: pair.messageId, title: "Workflow update", status: "completed",
+        content: [{ type: "content", content: { type: "text", text: String(pair.operator ?? "").replace(/^Workflow event \(not an operator message\):\n/, "") } }] });
+    } else text("user_message_chunk", pair.operator, { messageId: pair.messageId });
     if (!pair.items?.length) {
       text("agent_message_chunk", pair.architect);
       continue;

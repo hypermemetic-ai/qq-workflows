@@ -15,4 +15,4 @@ if (!acquired) process.exit(0);
 const previous = await readHostMeta();
 await runtime.listen(previous?.url ? Number(new URL(previous.url).port) : 0);
 await runtime.reconcile();
-process.on('SIGTERM', async () => { await runtime.close(); process.exit(0); });
+process.on('SIGTERM', async () => { await runtime.close({ terminal: true }); process.exit(0); });

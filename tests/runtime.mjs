@@ -8,12 +8,15 @@ import * as children from "../paseo-plugin/host/workflow/children.mjs";
 import { createRuntime as createHostRuntime } from "../paseo-plugin/host/runtime.mjs";
 import { parseCreatedAgentJson, waitForHandleCwd } from "../paseo-plugin/host/spawn-agent.mjs";
 import { SPAWN_ENTRY } from "../paseo-plugin/host/config.mjs";
-import { ticketWrite } from "../paseo-plugin/host/workflow/ticket.mjs";
-import { execFileWithInput, extractResearcherAnswer, formatResearcherFailure, researcherUserMessage, resolveResearcher, runResearcher } from "../paseo-plugin/host/researcher.mjs";
+import { ticketRead, ticketWrite } from "../paseo-plugin/host/workflow/ticket.mjs";
+import { execFileWithInput, extractResearcherAnswer, formatResearcherFailure, researcherUserMessage, resolveResearcher, runResearcher, terminateProcess, terminateProcessGroup } from "../paseo-plugin/host/researcher.mjs";
 
 // Routing assertions await host-owned work after checking the acknowledgement.
 function createRuntime(options = {}) {
-  const host = createHostRuntime(options);
+  const host = createHostRuntime({
+    ...(options.isGitRepo ? { buildReviewPacket: async () => ({ baseSha: "base", headSha: "head", files: [{ path: "changed.txt", hunks: [] }] }) } : {}),
+    ...options,
+  });
   const handleTool = host.handleTool;
   host.handleTool = async (name, args, context) => {
     const result = await handleTool(name, args, name === "done" ? { ...context, jobId: args.jobId ?? context?.jobId, agentId: args.agentId ?? context?.agentId } : context);
@@ -35,6 +38,23 @@ assert.equal(Object.hasOwn(children, "researcherCreateOptions"), false);
 assert.equal(Object.hasOwn(children, "reviewerCreateOptions"), false);
 assert.equal(typeof children.implementerCreateOptions, "function");
 assert.equal(typeof children.teacherCreateOptions, "function");
+let rejectedChild;
+await assert.rejects(execFileWithInput(process.execPath, ['-e', 'process.stdin.resume()'], {
+  onSpawn: child => { rejectedChild = child; throw new Error('fixture persistence failed'); },
+}), /fixture persistence failed/);
+assert.ok(rejectedChild.exitCode !== null || rejectedChild.signalCode !== null);
+for (const terminate of [terminateProcess, terminateProcessGroup]) {
+  let alive = true;
+  const signals = [];
+  const failures = await terminate(4242, { termMs: 0, killMs: 0, killFn: (pid, sig) => {
+    signals.push(sig);
+    if (sig === 'SIGTERM') throw Object.assign(new Error('fixture TERM failure'), { code: 'EPERM' });
+    if (sig === 'SIGKILL') alive = false;
+    if (sig === 0 && !alive) throw Object.assign(new Error('gone'), { code: 'ESRCH' });
+  } });
+  assert.ok(signals.includes('SIGKILL'));
+  assert.match(failures[0], /fixture TERM failure/);
+}
 const miniPrompt = children.implementerCreateOptions({
   jobId: "00000000-0000-0000-0000-000000000001",
   hostUrl: "http://127.0.0.1:9",
@@ -42,7 +62,8 @@ const miniPrompt = children.implementerCreateOptions({
   task: "do the thing",
   kind: "bounded",
 }).prompt;
-assert.equal(miniPrompt, "do the thing");
+assert.match(miniPrompt, /^do the thing\n/);
+assert.match(miniPrompt, /Implementation checkout: \/tmp/);
 assert.equal(
   children.implementerCreateOptions({
     jobId: "00000000-0000-0000-0000-000000000001",
@@ -101,6 +122,23 @@ assert.equal(captured[0].args.some((arg) => String(arg).includes("What is ACP"))
 assert.match(captured[0].opts.input, /What is ACP\?/);
 assert.match(captured[0].opts.input, /Workspace root: \/ws/);
 assert.equal(Object.hasOwn(captured[0].opts ?? {}, "timeout"), false);
+const sent = [];
+assert.throws(() => extractResearcherAnswer(JSON.stringify({ version: 1, kind: 'research_completion', ok: false, error: { message: 'parse failed', traceback: 'file.py line 5' } })), error => error.traceback === 'file.py line 5');
+const groupFailures = await terminateProcessGroup(99, {
+  termMs: 10,
+  killMs: 10,
+  sleepFn: async () => {},
+  killFn: (pid, sig) => { sent.push([pid, sig]); if (sig === 0 && sent.filter((item) => item[1] === "SIGKILL").length) { const err = new Error("gone"); err.code = "ESRCH"; throw err; } },
+});
+assert.deepEqual(sent[0], [-99, "SIGTERM"]);
+assert.equal(Array.isArray(groupFailures), true);
+const procFailures = await terminateProcess(7, {
+  termMs: 10,
+  killMs: 10,
+  sleepFn: async () => {},
+  killFn: (pid, sig) => { if (sig === 0) { const err = new Error("gone"); err.code = "ESRCH"; throw err; } },
+});
+assert.deepEqual(procFailures, []);
 const spawnFail = new Error("Command failed: /venv/bin/researcher One permitted retry of the narrow provider-selection investigation");
 spawnFail.stderr = "litellm.llms.xai.common_utils.XaiException: Internal error during token generation";
 assert.equal(
@@ -207,7 +245,7 @@ try {
     },
     createWorktree: async ({ branch }) => {
       assert.match(branch, /^architect\/(open|bounded)\//);
-      return { cwd: "/tmp/architect-wt", workspaceId: "ws-wt" };
+      return { cwd: "/tmp/architect-wt", workspaceId: null };
     },
     indexWorkspace: async (root, args) => {
       indexed.push({ root, ...args });
@@ -290,7 +328,7 @@ try {
         create: async (options) => fakeHandle({ id: "bounded-1", cwd: options.cwd }),
       },
     },
-    createWorktree: async () => ({ cwd: "/tmp/bounded-wt", workspaceId: "bws" }),
+    createWorktree: async () => ({ cwd: "/tmp/bounded-wt", workspaceId: null }),
     indexWorkspace: async () => {},
     isGitRepo: async () => true,
     commitIfDirty: async () => ({ committed: true }),
@@ -458,7 +496,7 @@ try {
         create: async (options) => fakeHandle({ id: "ocr-fail-1", cwd: options.cwd }),
       },
     },
-    createWorktree: async () => ({ cwd: "/tmp/review-fail-wt", workspaceId: "ows" }),
+    createWorktree: async () => ({ cwd: "/tmp/review-fail-wt", workspaceId: null }),
     indexWorkspace: async () => {},
     isGitRepo: async () => true,
     commitIfDirty: async () => ({ committed: true }),
@@ -470,7 +508,7 @@ try {
     buildReviewPacket: async () => ({
       baseSha: "base",
       headSha: "head",
-      files: [],
+      files: [{ path: "changed.txt", hunks: [] }],
     }),
   });
   await ticketWrite(dir, { text: "# Ticket\n\n## Kind\n\nopen\n" });
@@ -577,6 +615,121 @@ try {
   assert.ok(helperPayload.config.mcpServers.architect);
   assert.equal(Object.hasOwn(helperPayload.config, "toolPolicy"), false);
   assert.match(helperPayload.config.provider, /^architect-mini\//);
+
+  // Uncertain job reconciliation: confirm failed spawn transitions to failed
+  const unrecRuntime = createRuntime({
+    reconcileSpawn: async () => null,
+  });
+  const unrecJob = {
+    id: "job-unc-1",
+    role: "implementer",
+    kind: "open",
+    cwd: dir,
+    parent: "arch-unc",
+    worktreeCwd: "/tmp/wt-unc",
+    reviewerAttempt: 0,
+    status: "uncertain",
+    phase: "spawning",
+    ticketRevision: "rev-unc",
+  };
+  unrecRuntime.jobs.set(unrecJob.id, unrecJob);
+  await unrecRuntime.reconcile();
+  assert.equal(unrecJob.status, "failed");
+  assert.equal(unrecJob.liveness, "not_found");
+
+  // Uncertain job reconciliation: living child recovers to running
+  const recLiveRuntime = createRuntime({
+    reconcileSpawn: async () => ({ id: "child-live", cwd: "/tmp/wt-live", workspaceId: "ws-live", status: "running" }),
+  });
+  const recLiveJob = {
+    id: "job-unc-2",
+    role: "implementer",
+    kind: "open",
+    cwd: dir,
+    parent: "arch-unc2",
+    worktreeCwd: "/tmp/wt-live",
+    reviewerAttempt: 0,
+    status: "uncertain",
+    phase: "spawning",
+  };
+  recLiveRuntime.jobs.set(recLiveJob.id, recLiveJob);
+  await recLiveRuntime.reconcile();
+  assert.equal(recLiveJob.status, "running");
+  assert.equal(recLiveJob.phase, "working");
+  assert.equal(recLiveJob.agentId, "child-live");
+  assert.equal(recLiveJob.liveness, "reconciled");
+
+  // Safe retry in startDelegate: uncertain failed spawn is reconciled and retried cleanly
+  await ticketWrite(dir, { text: "# Ticket\n\n## Kind\n\nopen\n" });
+  const retryCalls = [];
+  const retryRuntime = createRuntime({
+    reconcileSpawn: async () => null,
+    spawnExec: async (command, args, opts) => {
+      retryCalls.push({ command, args, opts });
+      return { stdout: JSON.stringify({ id: "retried-agent-1", workspaceId: "ws", cwd: "/tmp/retry-wt" }) };
+    },
+    createWorktree: async () => ({ cwd: "/tmp/retry-wt", workspaceId: "ws" }),
+    indexWorkspace: async () => {},
+  });
+  const ticketSnap = await ticketRead(dir);
+  const { operationKey } = await import("../paseo-plugin/host/recovery.mjs");
+  const ticketOpKey = operationKey(dir, "ticket", ticketSnap.text);
+  const blockingJob = {
+    id: "job-unc-blocking",
+    role: "implementer",
+    kind: "open",
+    cwd: dir,
+    parent: "arch-retry",
+    worktreeCwd: "/tmp/old-wt",
+    reviewerAttempt: 0,
+    status: "uncertain",
+    phase: "spawning",
+    ticketRevision: ticketOpKey,
+  };
+  retryRuntime.jobs.set(blockingJob.id, blockingJob);
+
+  const retryDelegation = await retryRuntime.handleTool("delegate", { to: "implementer", kind: "open" }, {
+    cwd: dir,
+    agentId: "arch-retry",
+  });
+  assert.equal(retryDelegation.started, true);
+  assert.equal(retryDelegation.agentId, "retried-agent-1");
+  assert.equal(blockingJob.status, "failed");
+  assert.equal(blockingJob.liveness, "not_found");
+  const spawned = [];
+  let researchOpts;
+  const ownedDir = join(dir, "owned");
+  const killed = [];
+  const cancelRuntime = createRuntime({
+    terminateProcess: async (pid) => { killed.push(pid); return []; },
+    terminateProcessGroup: async (pgid) => { killed.push(["pg", pgid]); return []; },
+    runResearch: async (question, opts) => {
+      researchOpts = opts;
+      opts?.onSpawn?.({ pid: 4242 });
+      spawned.push(question);
+      await new Promise((resolve, reject) => {
+        opts?.signal?.addEventListener("abort", () => {
+          const error = new Error("researcher cancelled");
+          error.failureClass = "cancelled";
+          reject(error);
+        }, { once: true });
+      });
+    },
+  });
+  const started = await cancelRuntime.handleTool("delegate", { to: "researcher", question: "diag?" }, {
+    cwd: dir,
+    agentId: "arch-cancel",
+  });
+  assert.equal(started.started, true);
+  const job = [...cancelRuntime.jobs.values()].find((item) => item.role === "researcher");
+  for (let n = 0; n < 50 && job.pid !== 4242; n++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(job.pid, 4242);
+  const reloadClose = await cancelRuntime.close();
+  assert.equal(reloadClose, undefined);
+  assert.equal(job.status, "running");
+  await cancelRuntime.close({ terminal: true });
+  assert.equal(job.status, "cancelled");
+  assert.equal(killed.includes(4242), true);
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

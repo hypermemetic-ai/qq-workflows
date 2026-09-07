@@ -8,6 +8,7 @@ import {
   TICKET_WRITE,
   TEACHER,
   teacherTools,
+  researcherTools,
   roleTools,
   validateDelegateArgs,
 } from "../paseo-plugin/host/workflow/tools.mjs";
@@ -50,8 +51,27 @@ assert.deepEqual(validateDelegateArgs({ to: "implementer", kind: "bounded" }, "b
 });
 assert.throws(() => validateDelegateArgs({ to: "implementer", kind: "open" }, "bounded"));
 assert.throws(() => validateDelegateArgs({ to: "implementer" }));
+assert.deepEqual(validateDelegateArgs({ to: "implementer", kind: "bounded", completion: "report" }), { to: "implementer", kind: "bounded", completion: "report" });
+assert.throws(() => validateDelegateArgs({ to: "implementer", kind: "open", completion: "skip" }));
 assert.throws(() => validateDelegateArgs({ to: "researcher" }));
 assert.deepEqual(validateDelegateArgs({ to: "researcher", question: "What is ACP?" }), {
   to: "researcher",
   question: "What is ACP?",
 });
+
+assert.deepEqual(
+  researcherTools().map((tool) => tool.name),
+  [
+    "brave_search",
+    "exa_search",
+    "visit_webpage",
+    "zvec_grep_search",
+    "zvec_grep_rg",
+    "run_command",
+    "start_service",
+    "service_status",
+    "stop_service",
+    "done",
+  ],
+);
+assert.match(researcherTools().find((tool) => tool.name === "run_command").description, /bash -c/);

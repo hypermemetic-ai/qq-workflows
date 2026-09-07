@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { mapOcrJson, runOcrReview } from "../paseo-plugin/host/workflow/ocr.mjs";
 
 assert.deepEqual(mapOcrJson({ comments: [] }), []);
+const skipped = { status: 'skipped', comments: [], message: 'No items selected', manifest: { coverage: { selected: [], failed: [] } } };
+assert.throws(() => mapOcrJson(skipped), error => error.failureClass === 'process' && error.reviewEvidence.manifest === skipped.manifest);
+assert.throws(() => mapOcrJson({ comments: [], manifest: { terminal_state: 'skipped' } }), /coverage incomplete/);
 assert.deepEqual(
   mapOcrJson({
     comments: [{ path: "src/a.ts", start_line: 3, content: "off-by-one" }],
@@ -45,3 +48,16 @@ assert.deepEqual(ran[0].args, [
 ]);
 assert.equal(ran[0].opts.env.OCR_LLM_MODEL, "grok-4.6");
 assert.equal(ran[0].opts.env.OCR_LLM_URL, "https://api.x.ai");
+
+const failedReport = { status: 'failed', message: 'One file timed out', summary: { files_reviewed: 2 },
+  manifest: { coverage: { failed: [{ path: 'slow.mjs' }] } },
+  comments: [{ path: 'a.mjs', start_line: 3, content: 'Concrete finding', thinking: 'private reasoning' }] };
+await assert.rejects(runOcrReview('/repo', { from: 'base', env: { OCR_LLM_TOKEN: 'fixture' },
+  execFileFn: async () => { throw Object.assign(new Error('exit 1'), { code: 1, stdout: JSON.stringify(failedReport) }); },
+}), error => {
+  assert.equal(error.message, 'exit 1');
+  assert.deepEqual(error.reviewEvidence.manifest, failedReport.manifest);
+  assert.equal(error.reviewEvidence.findings[0].body, 'Concrete finding');
+  assert.ok(!JSON.stringify(error.reviewEvidence).includes('private reasoning'));
+  return true;
+});

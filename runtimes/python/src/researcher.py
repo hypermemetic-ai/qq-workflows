@@ -1,4 +1,5 @@
 import argparse
+import signal
 import threading
 import traceback
 from contextlib import redirect_stdout
@@ -27,6 +28,8 @@ INSTRUCTIONS = """You obtain knowledge for an architect.
 The question is the user message.
 Call done when you have the answer.
 First sentence is the answer. Then the sources: file paths and URLs.
+
+Diagnostic tools are for investigation only: focused tests, reproductions, temporary scripts, and isolated scratch services. Do not repair project code or mutate the normal runtime, shared configuration, or workflow job state. Do not create workflow-agent children. Preserve HOME and credentials; do not print secrets. Command execution is role-governed, not a sandbox. Scratch directories and a separate PASEO_HOME reduce accidents; they do not isolate shared files or services. run_command is a foreground shell (`/bin/bash -c`) with a 120-second default timeout and a 600-second maximum. start_service, service_status, and stop_service manage job-local services with stable IDs; do not background processes in the shell. Services last at most their lifetime and are torn down when research ends. Launch success is not readiness: report both. Bounded evidence is retained separately from disposable scratch state.
 """
 
 
@@ -64,6 +67,137 @@ class DoneTool(Tool):
         return answer
 
 
+class RunCommandTool(Tool):
+    name = "run_command"
+    description = (
+        "Run a foreground diagnostic shell command with `/bin/bash -c`. Default cwd is this research job's scratch work directory. Default timeout is 120 seconds, maximum 600. Returns exit status, timeout/truncation flags, bounded stdout/stderr, artifact paths for retained evidence, and cleanup failures. Isolated PASEO_HOME is applied to the subprocess; HOME and credentials remain available. Do not repair project code or mutate the normal runtime."
+    )
+    inputs = {
+        "command": {
+            "type": "string",
+            "description": "Shell command executed as `/bin/bash -c command`.",
+        },
+        "cwd": {
+            "type": "string",
+            "description": "Working directory. Defaults to the job scratch work directory.",
+            "nullable": True,
+        },
+        "timeout_seconds": {
+            "type": "integer",
+            "description": "Foreground timeout in seconds. Default 120, maximum 600.",
+            "nullable": True,
+        },
+    }
+    output_type = "string"
+
+    def forward(self, command: str, cwd: str | None = None, timeout_seconds: int | None = None) -> str:
+        from shared.diagnostics import run_diagnostic_command
+        return run_diagnostic_command(command, cwd=cwd, timeout_seconds=timeout_seconds)
+
+
+class StartServiceTool(Tool):
+    name = "start_service"
+    description = (
+        "Start a managed diagnostic service in this research job. Explicit start/status/stop; do not background in the shell. Launch and readiness are distinct. Default lifetime 300 seconds, maximum 1800. Isolated PASEO_HOME applies to the subprocess; HOME and credentials remain available. Tracked process groups are best-effort, not comprehensive descendant containment."
+    )
+    inputs = {
+        "command": {
+            "type": "string",
+            "description": "Shell command executed as `/bin/bash -c command` for the service process.",
+        },
+        "service_id": {
+            "type": "string",
+            "description": "Optional stable job-local ID. Generated when omitted.",
+            "nullable": True,
+        },
+        "cwd": {
+            "type": "string",
+            "description": "Working directory. Defaults to the job scratch work directory.",
+            "nullable": True,
+        },
+        "ready_url": {
+            "type": "string",
+            "description": "Optional HTTP URL polled until ready or ready_timeout_seconds elapses. Launch can succeed without readiness.",
+            "nullable": True,
+        },
+        "endpoint": {
+            "type": "string",
+            "description": "Optional observed endpoint to record (for example host:port).",
+            "nullable": True,
+        },
+        "ready_timeout_seconds": {
+            "type": "integer",
+            "description": "Seconds to wait for ready_url. Default 30, maximum 120.",
+            "nullable": True,
+        },
+        "lifetime_seconds": {
+            "type": "integer",
+            "description": "Finite service lifetime in seconds. Default 300, maximum 1800.",
+            "nullable": True,
+        },
+    }
+    output_type = "string"
+
+    def forward(
+        self,
+        command: str,
+        service_id: str | None = None,
+        cwd: str | None = None,
+        ready_url: str | None = None,
+        endpoint: str | None = None,
+        ready_timeout_seconds: int | None = None,
+        lifetime_seconds: int | None = None,
+    ) -> str:
+        from shared.diagnostics import start_diagnostic_service
+        return start_diagnostic_service(
+            command,
+            service_id=service_id,
+            cwd=cwd,
+            ready_url=ready_url,
+            endpoint=endpoint,
+            ready_timeout_seconds=ready_timeout_seconds,
+            lifetime_seconds=lifetime_seconds,
+        )
+
+
+class ServiceStatusTool(Tool):
+    name = "service_status"
+    description = (
+        "Report job-local managed diagnostic services. Omit service_id for all services. Distinguishes launched vs ready, remaining lifetime, endpoints, and cleanup failures."
+    )
+    inputs = {
+        "service_id": {
+            "type": "string",
+            "description": "Optional service ID. When omitted, list all job-local services.",
+            "nullable": True,
+        },
+    }
+    output_type = "string"
+
+    def forward(self, service_id: str | None = None) -> str:
+        from shared.diagnostics import diagnostic_service_status
+        return diagnostic_service_status(service_id=service_id)
+
+
+class StopServiceTool(Tool):
+    name = "stop_service"
+    description = (
+        "Stop a managed diagnostic service with SIGTERM then SIGKILL on its tracked process group. Omit service_id to stop all job-local services. Reports cleanup failures honestly. Does not target the normal runtime."
+    )
+    inputs = {
+        "service_id": {
+            "type": "string",
+            "description": "Optional service ID. When omitted, stop all job-local services.",
+            "nullable": True,
+        },
+    }
+    output_type = "string"
+
+    def forward(self, service_id: str | None = None) -> str:
+        from shared.diagnostics import stop_diagnostic_service
+        return stop_diagnostic_service(service_id=service_id)
+
+
 class ZvecGrepSearchTool(Tool):
     name = "zvec_grep_search"
     description = (
@@ -83,6 +217,7 @@ class ZvecGrepSearchTool(Tool):
     output_type = "string"
 
     def forward(self, root: str, query: str | None = None) -> str:
+        from researcher import official_zg
         return official_zg(self.name, {'root': root, 'query': query})
 
 
@@ -105,6 +240,7 @@ class ZvecGrepRgTool(Tool):
     output_type = "string"
 
     def forward(self, root: str, command: str) -> str:
+        from researcher import official_zg
         return official_zg(self.name, {'root': root, 'command': command})
 
 
@@ -195,6 +331,10 @@ def build_tools(env=None):
     tools.append(VisitWebpageTool(max_output_length=12_000))
     tools.append(ZvecGrepSearchTool())
     tools.append(ZvecGrepRgTool())
+    tools.append(RunCommandTool())
+    tools.append(StartServiceTool())
+    tools.append(ServiceStatusTool())
+    tools.append(StopServiceTool())
     tools.append(DoneTool())
     return tools
 
@@ -229,6 +369,18 @@ def _heartbeat(stop):
         print(HEARTBEAT_LINE, file=sys.stderr, flush=True)
 
 
+def _install_signal_handlers(stop):
+    def handle(signum, _frame):
+        stop.set()
+        from shared.diagnostics import get_session, shutdown_diagnostics
+        get_session().request_cancel(f"signal {signum}")
+        shutdown_diagnostics()
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+    signal.signal(signal.SIGTERM, handle)
+    signal.signal(signal.SIGINT, handle)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Short bounded fact-finder. Prints the answer and exits.",
@@ -237,21 +389,37 @@ def main(argv=None):
     args = parser.parse_args(argv)
     question = args.question or sys.stdin.read()
     stop = threading.Event()
+    _install_signal_handlers(stop)
     beat = threading.Thread(target=_heartbeat, args=(stop,), daemon=True)
     beat.start()
     try:
         with redirect_stdout(sys.stderr):
             answer = run_research(question)
         if not isinstance(answer, str) or not answer.strip(): raise ValueError("invalid completion: empty answer")
-        print(json.dumps({"version": 1, "kind": "research_completion", "ok": True, "answer": answer}, ensure_ascii=False), flush=True)
-        return 0
+        envelope = {"version": 1, "kind": "research_completion", "ok": True, "answer": answer}
+        code = 0
     except Exception as error:
         details = failure_details(error)
-        print(json.dumps({'version': 1, 'kind': 'research_completion', 'ok': False, 'error': details}), flush=True)
+        details['traceback'] = ''.join(traceback.format_tb(error.__traceback__))[-16000:]
+        envelope = {'version': 1, 'kind': 'research_completion', 'ok': False, 'error': details}
         traceback.print_exc(file=sys.stderr)
-        return 1
+        code = 1
     finally:
         stop.set()
+        from shared.diagnostics import shutdown_diagnostics
+        try:
+            cleanup = shutdown_diagnostics()
+        except Exception as error:
+            cleanup = {'cleanup_failures': [str(error)]}
+    if cleanup.get('cleanup_failures'):
+        warning = 'Diagnostic cleanup incomplete: ' + '; '.join(cleanup['cleanup_failures'])
+        envelope['cleanup'] = cleanup
+        if envelope['ok']:
+            envelope['answer'] += '\n\n' + warning
+        else:
+            envelope['error']['message'] += '\n' + warning
+    print(json.dumps(envelope, ensure_ascii=False), flush=True)
+    return code
 
 
 if __name__ == "__main__":

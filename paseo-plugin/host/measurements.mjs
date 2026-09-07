@@ -64,15 +64,21 @@ export function architectMeasurements(db, { cwd, source } = {}) {
     });
   }
   const windows = [];
-  const previous = new Map();
+  const sessions = new Map();
   for (const turn of turns) {
     if (turn.status !== 'completed') continue;
-    const prior = previous.get(turn.sessionId);
-    if (prior && prior.estimatedFullTokens != null && turn.estimatedFullTokens != null) {
-      windows.push({ sessionId: turn.sessionId, turns: [prior.id, turn.id],
-        estimatedFullTokens: prior.estimatedFullTokens + turn.estimatedFullTokens });
+    if (!sessions.has(turn.sessionId)) sessions.set(turn.sessionId, []);
+    const groups = sessions.get(turn.sessionId);
+    if (turn.source === 'wake') {
+      if (groups.length) groups.at(-1).push(turn);
+    } else groups.push([turn]);
+  }
+  for (const [sessionId, groups] of sessions) {
+    for (let i = 1; i < groups.length; i++) {
+      const members = [...groups[i - 1], ...groups[i]];
+      if (members.every(turn => turn.estimatedFullTokens != null)) windows.push({ sessionId,
+        turns: members.map(turn => turn.id), estimatedFullTokens: sum(members.map(turn => turn.estimatedFullTokens)) });
     }
-    previous.set(turn.sessionId, turn);
   }
   const selectedTurns = source ? turns.filter(turn => turn.source === source) : turns;
   const selectedIds = new Set(selectedTurns.map(turn => turn.id));

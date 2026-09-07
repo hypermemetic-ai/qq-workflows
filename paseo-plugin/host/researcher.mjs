@@ -8,9 +8,11 @@ import { loadGrokToken, withResearchSecrets } from "./providers/secrets.mjs";
 const RESEARCHER_ERROR_CLIP = 4000;
 
 export function execFileWithInput(command, args, options = {}) {
-  const { input, ...rest } = options;
+  const { input, onSpawn, signal, ...rest } = options;
   return new Promise((resolve, reject) => {
+    let spawnFailure;
     const child = execFileCb(command, args ?? [], rest, (error, stdout, stderr) => {
+      if (spawnFailure) { reject(spawnFailure); return; }
       if (error) {
         error.stdout = stdout;
         error.stderr = stderr;
@@ -19,8 +21,71 @@ export function execFileWithInput(command, args, options = {}) {
       }
       resolve({ stdout, stderr });
     });
+    try { onSpawn?.(child); } catch (error) {
+      spawnFailure = error;
+      child.stdin?.destroy();
+      terminateProcess(child.pid).then(() => reject(error), () => reject(error));
+      return;
+    }
+    if (signal) {
+      const abort = () => {
+        try { child.kill("SIGTERM"); } catch {}
+      };
+      if (signal.aborted) abort();
+      else signal.addEventListener("abort", abort, { once: true });
+    }
     child.stdin?.end(input ?? "");
   });
+}
+
+export function terminateProcess(pid, { termMs = 2000, killMs = 1000, sleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), killFn = (pid, sig) => process.kill(pid, sig) } = {}) {
+  const failures = [];
+  if (!Number.isInteger(pid) || pid <= 1) return Promise.resolve(failures);
+  const alive = () => {
+    try { killFn(pid, 0); return true; } catch (error) { return error?.code !== "ESRCH"; }
+  };
+  try { killFn(pid, "SIGTERM"); } catch (error) {
+    if (error?.code === "ESRCH") return Promise.resolve(failures);
+    failures.push(`SIGTERM process ${pid} failed: ${error.message}`);
+  }
+  return (async () => {
+    const termDeadline = Date.now() + termMs;
+    while (Date.now() < termDeadline && alive()) await sleepFn(50);
+    if (!alive()) return failures;
+    try { killFn(pid, "SIGKILL"); } catch (error) {
+      if (error?.code !== "ESRCH") failures.push(`SIGKILL process ${pid} failed: ${error.message}`);
+      return failures;
+    }
+    const killDeadline = Date.now() + killMs;
+    while (Date.now() < killDeadline && alive()) await sleepFn(50);
+    if (alive()) failures.push(`process ${pid} still alive after SIGKILL; residual processes may remain`);
+    return failures;
+  })();
+}
+
+export function terminateProcessGroup(pgid, { termMs = 2000, killMs = 1000, sleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), killFn = (pid, sig) => process.kill(pid, sig) } = {}) {
+  const failures = [];
+  if (!Number.isInteger(pgid) || pgid <= 1) return Promise.resolve(failures);
+  const alive = () => {
+    try { killFn(-pgid, 0); return true; } catch (error) { return error?.code !== "ESRCH"; }
+  };
+  try { killFn(-pgid, "SIGTERM"); } catch (error) {
+    if (error?.code === "ESRCH") return Promise.resolve(failures);
+    failures.push(`SIGTERM process group ${pgid} failed: ${error.message}`);
+  }
+  return (async () => {
+    const termDeadline = Date.now() + termMs;
+    while (Date.now() < termDeadline && alive()) await sleepFn(50);
+    if (!alive()) return failures;
+    try { killFn(-pgid, "SIGKILL"); } catch (error) {
+      if (error?.code !== "ESRCH") failures.push(`SIGKILL process group ${pgid} failed: ${error.message}`);
+      return failures;
+    }
+    const killDeadline = Date.now() + killMs;
+    while (Date.now() < killDeadline && alive()) await sleepFn(50);
+    if (alive()) failures.push(`process group ${pgid} still alive after SIGKILL; residual processes may remain`);
+    return failures;
+  })();
 }
 
 export function formatResearcherFailure(error) {
@@ -84,7 +149,7 @@ export function researcherUserMessage(question, cwd) {
   return `${q}\n\nWorkspace root: ${workspace}`;
 }
 
-export async function runResearcher(question, { root, cwd, hostUrl, jobId, restart: grantRestart, execFileFn = execFileWithInput } = {}) {
+export async function runResearcher(question, { root, cwd, hostUrl, jobId, restart: grantRestart, execFileFn = execFileWithInput, signal, onSpawn } = {}) {
   const q = String(question ?? "").trim();
   if (!q) throw new Error("researcher question is empty");
   const resolved = resolveResearcher(root);
@@ -101,6 +166,8 @@ export async function runResearcher(question, { root, cwd, hostUrl, jobId, resta
         env,
         maxBuffer: 20 * 1024 * 1024,
         input: prompt,
+        signal,
+        onSpawn,
       });
       const text = String(stdout ?? "").trim();
       if (!text) {
@@ -126,6 +193,7 @@ export async function runResearcher(question, { root, cwd, hostUrl, jobId, resta
   wrapped.exhausted = lastError?.exhausted;
   wrapped.circuitOpen = lastError?.circuitOpen;
   wrapped.stderr = lastError?.stderr;
+  wrapped.traceback = lastError?.traceback;
   throw wrapped;
 }
 
@@ -167,7 +235,7 @@ export function extractResearcherAnswer(text) {
   if (envelope.version !== 1 || envelope.kind !== "research_completion" || typeof envelope.ok !== "boolean") throw Object.assign(new Error("invalid researcher completion envelope"), { failureClass: "invalid_output" });
   if (!envelope.ok) {
     const details = envelope.error ?? {};
-    throw Object.assign(new Error(details.message || "research failed"), { failureClass: details.failureClass, attempts: details.attempts, exhausted: details.exhausted });
+    throw Object.assign(new Error(details.message || "research failed"), { failureClass: details.failureClass, attempts: details.attempts, exhausted: details.exhausted, traceback: typeof details.traceback === "string" ? details.traceback.slice(-16000) : undefined });
   }
   if (typeof envelope.answer !== "string" || !envelope.answer.trim()) throw Object.assign(new Error("invalid researcher done answer"), { failureClass: "invalid_output" });
   return envelope.answer;

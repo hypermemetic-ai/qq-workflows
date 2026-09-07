@@ -155,13 +155,16 @@ class RetryingModel:
                 return result
             # Save actual messages and tool schemas without credential-bearing model configuration.
             def serial(value):
+                # Journal the schema already loaded in memory. Tool.to_dict()
+                # exports executable code and reparses mutable source files.
+                if hasattr(value, 'inputs') and hasattr(value, 'name'):
+                    return {'name': value.name, 'description': value.description, 'inputs': serial(value.inputs), 'output_type': value.output_type}
                 if hasattr(value, 'model_dump'): return serial(value.model_dump(mode='json'))
                 if dataclasses.is_dataclass(value): return serial(dataclasses.asdict(value))
                 if isinstance(value, Enum): return value.value
                 if hasattr(value, 'to_dict'): return serial(value.to_dict())
                 if isinstance(value, dict): return {k: serial(v) for k, v in value.items()}
                 if isinstance(value, (list, tuple)): return [serial(v) for v in value]
-                if hasattr(value, 'inputs'): return {'name': value.name, 'description': value.description, 'inputs': value.inputs}
                 return value
             request = {'model': self._inner.model_id, 'messages': serial(args), 'options': serial(kwargs)}
             def repair(feedback):

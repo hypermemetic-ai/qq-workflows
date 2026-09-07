@@ -62,6 +62,7 @@ export function implementerCreateOptions({
   parent,
   branch,
   findings,
+  completion,
 }) {
   const packet = findings?.length
     ? `\n\nReviewer findings to fix:\n${findings.map((item) => `- ${item.path}:${item.line} ${item.body}`).join("\n")}`
@@ -78,7 +79,7 @@ export function implementerCreateOptions({
     workspaceId: workspaceId ?? undefined,
     parent,
     title: `implementer (${kind})`,
-    prompt: `${task}${packet}`,
+    prompt: `${task}${packet}${completion === "report" ? "\n\nThis is a report-only investigation. Do not modify project code. Call done with your findings in answer; the host will return them without committing, reviewing, or publishing." : ""}\n\nImplementation checkout: ${workspace}. Work in this checkout; paths in the ticket may refer to the source checkout.`,
     labels: { role: "implementer", kind, job: jobId },
     worktree: branch ? undefined : { mode: "branch-off", newBranch: `architect/${kind}/${jobId.slice(0, 8)}` },
     env: childProcessEnv({ ARCHITECT_JOB_ID: jobId, ARCHITECT_HOST: hostUrl, ARCHITECT_ROLE: "implementer" }),

@@ -1,3 +1,4 @@
+import MarkdownIt from 'markdown-it/browser';
 import type { PluginHandlerContext } from "@getpaseo/plugin";
 import { ensureHost, hostRequest } from "./host/host-client.mjs";
 import { daemonConfigPatch } from "./host/config.mjs";
@@ -9,5 +10,9 @@ export async function handleStart(input: { cwd: string; title?: string }, { pase
   await paseo.config.patch(daemonConfigPatch(current.config));
   return hostRequest("/start", input);
 }
-export async function handleTicket(input: { cwd: string }) { return ticketRead(input.cwd); }
+const markdown = new MarkdownIt({ html: false, linkify: false, typographer: false });
+export async function handleTicket(input: { cwd: string }) {
+  const ticket = await ticketRead(input.cwd);
+  return { ...ticket, tokens: markdown.parse(ticket.text.replace(/^#\s+.+\n/, ''), {}) };
+}
 export async function handleChildren(input: { cwd: string; parentId?: string }) { return hostRequest("/jobs", input); }

@@ -9,21 +9,30 @@ export function conversationTokens(text) {
   return tokenizer.encode(String(text ?? ""), [], []).length;
 }
 function retain(pairs, count) {
-  return (Array.isArray(pairs) ? pairs : []).filter(pair => pair && typeof pair === "object").slice(-count);
+  const valid = (Array.isArray(pairs) ? pairs : []).filter(pair => pair && typeof pair === "object");
+  let operators = 0;
+  for (let i = valid.length - 1; i >= 0; i--) {
+    if (!isWakePair(valid[i]) && ++operators === count) return valid.slice(i);
+  }
+  return valid;
+}
+
+export function isWakePair(pair) {
+  return pair?.source === "wake" || String(pair?.messageId ?? "").startsWith("wake:");
 }
 
 export function contextWindow(pairs, messageId) {
   const first = pairs[0];
   return {
-    userMessageIds: [...pairs.map(pair => pair.messageId), messageId].filter(Boolean),
+    userMessageIds: [...pairs.filter(pair => !isWakePair(pair)).map(pair => pair.messageId), messageId].filter(id => id && !id.startsWith("wake:")),
     ...(first?.trimmed && first.messageId ? { firstExchange: {
       messageId: first.messageId, operator: first.operator, architect: first.architect,
     } } : {}),
   };
 }
 
-export function requestPairs(pairs, operatorText) {
-  return retain(pairs, 1);
+export function requestPairs(pairs, operatorText, source = "operator") {
+  return retain(pairs, source === "wake" ? 2 : 1);
 }
 
 export const TICKET_BLOCK_HEADING = "Current ticket (`.architect/ticket.md`)";
@@ -41,8 +50,9 @@ export function assembleArchitectRequest({
   ticketText = "",
   pairs = [],
   operatorText,
+  source = "operator",
 } = {}) {
-  const previous = requestPairs(pairs, operatorText);
+  const previous = requestPairs(pairs, operatorText, source);
   const input = [
     { role: "user", content: ticketBlock(ticketText) },
   ];
@@ -58,9 +68,9 @@ export function assembleArchitectRequest({
   };
 }
 
-export function rememberPair(pairs, operatorText, architectText, messageId, items) {
+export function rememberPair(pairs, operatorText, architectText, messageId, items, source = "operator") {
   return keptPairs([
     ...(Array.isArray(pairs) ? pairs : []),
-    { operator: String(operatorText ?? ""), architect: String(architectText ?? ""), ...(messageId ? { messageId } : {}), ...(items ? { items } : {}) },
+    { source, operator: String(operatorText ?? ""), architect: String(architectText ?? ""), ...(messageId ? { messageId } : {}), ...(items ? { items } : {}) },
   ]);
 }

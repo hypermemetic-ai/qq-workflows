@@ -13,6 +13,13 @@ export const startArchitectRpc = defineRpc({
   }),
 });
 
+const ticketToken = z.object({
+  type: z.string(), tag: z.string(), nesting: z.number(), content: z.string(),
+  attrs: z.array(z.tuple([z.string(), z.union([z.string(), z.number()])])).nullable(),
+});
+export const ticketTokens = z.array(ticketToken.extend({ children: z.array(ticketToken).nullable() }));
+export type TicketTokens = z.infer<typeof ticketTokens>;
+
 export const ticketSnapshotRpc = defineRpc({
   name: "architect.ticket",
   input: z.object({
@@ -21,6 +28,7 @@ export const ticketSnapshotRpc = defineRpc({
   output: z.object({
     path: z.string(),
     text: z.string(),
+    tokens: ticketTokens,
   }),
 });
 
@@ -38,6 +46,9 @@ export const childrenRpc = defineRpc({
         agentId: z.string().optional(),
         status: z.string(),
         error: z.string().optional(),
+        phase: z.string().optional(),
+        completion: z.string().optional(),
+        createdAt: z.number().optional(),
         kind: z.string().nullable().optional(),
       }),
     ),

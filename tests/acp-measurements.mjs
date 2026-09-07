@@ -14,10 +14,15 @@ writeFileSync(join(root, 'bin', 'zg'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
 let requestCount = 0, held;
 const waiting = new Promise(resolve => { held = resolve; });
 const requests = [];
+let wakePoll, queuedWakes = [];
 const server = createServer(async (req, res) => {
-  if (req.url === '/wakes') return; // Real cancellation closes this long poll.
   let body = ''; for await (const part of req) body += part;
   const input = JSON.parse(body || '{}');
+  if (req.url === '/wakes') {
+    if (input.ack) { queuedWakes = []; res.end('{}'); return; }
+    if (queuedWakes.length || !input.wait) { res.end(JSON.stringify({ wakes: queuedWakes })); return; }
+    wakePoll = res; return;
+  }
   if (req.url === '/tool') { res.end(JSON.stringify({ result: 'fixture tool result' })); return; }
   requests.push(input); requestCount++;
   if (input.input.at(-1)?.content === 'hold') { held(); return; }
@@ -74,9 +79,40 @@ try {
   assert.ok(replay.some(item => item.sessionUpdate === 'tool_call_update' && item.content[0].content.text === 'fixture tool result'));
   assert.ok(!JSON.stringify(replay).includes('opaque'));
   assert.equal(requests.length, 3, 'history replay makes no model requests');
+  for (let i = 0; i < 3; i++) {
+    queuedWakes = [{ id: `event-${i}`, text: `PR event ${i}` }];
+    wakePoll?.end(JSON.stringify({ wakes: queuedWakes }));
+    const deadline = Date.now() + 10000;
+    while (queuedWakes.length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(queuedWakes.length, 0, 'workflow event completed and acknowledged');
+  }
+  const eventUpdates = notifications.filter(item => item.method === 'session/update').map(item => item.params.update);
+  assert.ok(!eventUpdates.some(item => item.sessionUpdate === 'user_message_chunk' && item.messageId?.startsWith('wake:')));
+  assert.equal(eventUpdates.filter(item => item.title === 'Workflow update').length, 3);
+  const wakeRequests = requests.slice(3);
+  for (const request of wakeRequests) {
+    assert.ok(JSON.stringify(request.input).includes('first question'));
+    assert.ok(JSON.stringify(request.input).includes('second question'));
+  }
+  await stop();
+  const legacyDb = new DatabaseSync(join(root, 'home', 'architect', 'state.sqlite'));
+  try {
+    const saved = JSON.parse(legacyDb.prepare("SELECT value FROM records WHERE kind='session' AND id=?").get(sessionId).value);
+    saved.pairs = saved.pairs.filter(pair => pair.source === 'wake').slice(-2);
+    delete saved.historyVersion;
+    legacyDb.prepare("UPDATE records SET value=? WHERE kind='session' AND id=?").run(JSON.stringify(saved), sessionId);
+  } finally { legacyDb.close(); }
+  start(); await rpc('initialize'); notifications = [];
+  await rpc('session/load', { sessionId });
+  const restoredEvents = notifications.filter(item => item.method === 'session/update').map(item => item.params.update);
+  assert.deepEqual(restoredEvents.filter(item => item.sessionUpdate === 'user_message_chunk').map(item => item.messageId), ['u1', 'u2']);
+  assert.equal(restoredEvents.filter(item => item.title === 'Workflow update').length, 3);
+  assert.deepEqual(restoredEvents.filter(item => item.title === 'Workflow update').map(item => item.content),
+    eventUpdates.filter(item => item.title === 'Workflow update').map(item => item.content));
   await prompt('third question', 'u3');
-  assert.ok(!JSON.stringify(requests[3].input).includes('first question'));
-  assert.ok(JSON.stringify(requests[3].input).includes('second question'));
+  assert.ok(!JSON.stringify(requests.at(-1).input).includes('first question'));
+  assert.ok(JSON.stringify(requests.at(-1).input).includes('second question'));
+  assert.ok(JSON.stringify(requests.at(-1).input).includes('PR event 2'));
   const failed = assert.rejects(prompt('hold', 'u4'), /abort/i);
   await waiting; worker.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId } }) + '\n'); await failed;
   const windows = notifications.filter(item => item.method === '_paseo/context_window');
@@ -85,7 +121,7 @@ try {
   const db = new DatabaseSync(join(root, 'home', 'architect', 'state.sqlite'), { readOnly: true });
   try {
     const report = architectMeasurements(db);
-    assert.deepEqual(report.statusCounts, { completed: 3, aborted: 1 });
+    assert.deepEqual(report.statusCounts, { completed: 6, aborted: 1 });
     assert.equal(report.twoTurnTokens.samples, 2);
     assert.equal(report.turns[0].reasoningTokens, 34);
     assert.equal(report.turns[0].toolCalls, 1);

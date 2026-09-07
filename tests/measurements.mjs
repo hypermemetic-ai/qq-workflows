@@ -37,7 +37,8 @@ try {
     const report = architectMeasurements(db);
     assert.deepEqual(report.statusCounts, { completed: 7, aborted: 1 });
     assert.equal(report.sessions, 2);
-    assert.equal(report.twoTurnTokens.samples, 3, 'never bridge sessions or missing accounting');
+    assert.equal(report.twoTurnTokens.samples, 2, 'wakes accompany operator exchanges without consuming slots');
+    assert.deepEqual(report.windows.at(-1).turns, ['after-unknown', 'between', 'last']);
     const first = report.turns[0];
     assert.equal(first.modelResponses, 1);
     assert.equal(first.providerAttempts, 3);

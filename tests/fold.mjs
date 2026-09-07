@@ -19,3 +19,14 @@ assert.deepEqual(history, original);
 assert.deepEqual(keptPairs(undefined), []);
 assert.ok(conversationTokens('你好 <|endoftext|>') > 0);
 console.log('Strict two-turn selection, complete reasoning/tool replay, persistence and no floor passed');
+
+let withEvents = history.slice(-2);
+for (let i = 0; i < 3; i++) withEvents = rememberPair(withEvents, `job ${i}`, 'ack', `wake:${i}`, undefined, 'wake');
+assert.deepEqual(withEvents.filter(pair => pair.source !== 'wake').map(pair => pair.messageId), ['m2', 'm3']);
+assert.deepEqual(contextWindow(withEvents).userMessageIds, ['m2', 'm3']);
+assert.equal(requestPairs(withEvents, 'event', 'wake').length, 5);
+assert.deepEqual(requestPairs(withEvents, 'next').map(pair => pair.messageId), ['m3', 'wake:0', 'wake:1', 'wake:2']);
+const advanced = rememberPair(withEvents, 'next', 'answer', 'm4');
+assert.deepEqual(contextWindow(advanced).userMessageIds, ['m3', 'm4']);
+assert.deepEqual(requestPairs(advanced, 'again').map(pair => pair.messageId), ['m4']);
+assert.deepEqual(contextWindow(keptPairs([{ messageId: 'm1' }, { messageId: 'wake:legacy' }, { messageId: 'm2' }])).userMessageIds, ['m1', 'm2']);

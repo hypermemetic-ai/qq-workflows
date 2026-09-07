@@ -45,7 +45,7 @@ export const DONE = Object.freeze({
   parameters: Object.freeze({
     type: "object",
     properties: Object.freeze({
-      answer: { type: "string", description: "Teacher or researcher answer." },
+      answer: { type: "string", description: "Answer or implementation handback. Required for a report-only investigation." },
       findings: {
         type: "array",
         description: "Reviewer verdict. Empty array passes. Each item: path, line, body.",
@@ -65,13 +65,14 @@ export const DONE = Object.freeze({
 
 export const DELEGATE = Object.freeze({
   name: "delegate",
-  description: "Start implementer or researcher. If implementer, required kind: bounded or open.",
+  description: "Start implementer or researcher. If implementer, required kind: bounded or open. For a read-only investigation using Implementer, set completion: report; done returns the answer without committing, reviewing, or publishing.",
   parameters: Object.freeze({
     type: "object",
     properties: Object.freeze({
       to: { type: "string", enum: Object.freeze(["implementer", "researcher"]) },
       kind: { type: "string", enum: Object.freeze(["bounded", "open"]) },
       question: { type: "string", description: "Researcher question." },
+      completion: { type: "string", enum: Object.freeze(["implement", "report"]), description: "Implementer completion behavior. Default implement follows normal review/landing. Report returns findings only." },
     }),
     required: Object.freeze(["to"]),
   }),
@@ -99,6 +100,30 @@ export function teacherTools() {
   return [TICKET_READ, TICKET_WRITE, DONE, ZVEC_GREP_SEARCH, ZVEC_GREP_RG];
 }
 
+export const RUN_COMMAND = Object.freeze({
+  name: "run_command",
+  description:
+    "Run a foreground diagnostic shell command with `/bin/bash -c`. Default cwd is this research job's scratch work directory. Default timeout is 120 seconds, maximum 600. Returns exit status, timeout/truncation flags, bounded stdout/stderr, artifact paths for retained evidence, and cleanup failures. Isolated PASEO_HOME is applied to the subprocess; HOME and credentials remain available. Do not repair project code or mutate the normal runtime.",
+});
+
+export const START_SERVICE = Object.freeze({
+  name: "start_service",
+  description:
+    "Start a managed diagnostic service in this research job. Explicit start/status/stop; do not background in the shell. Launch and readiness are distinct. Default lifetime 300 seconds, maximum 1800. Isolated PASEO_HOME applies to the subprocess; HOME and credentials remain available. Tracked process groups are best-effort, not comprehensive descendant containment.",
+});
+
+export const SERVICE_STATUS = Object.freeze({
+  name: "service_status",
+  description:
+    "Report job-local managed diagnostic services. Omit service_id for all services. Distinguishes launched vs ready, remaining lifetime, endpoints, and cleanup failures.",
+});
+
+export const STOP_SERVICE = Object.freeze({
+  name: "stop_service",
+  description:
+    "Stop a managed diagnostic service with SIGTERM then SIGKILL on its tracked process group. Omit service_id to stop all job-local services. Reports cleanup failures honestly. Does not target the normal runtime.",
+});
+
 export function researcherTools() {
   return [
     {
@@ -115,6 +140,10 @@ export function researcherTools() {
     },
     ZVEC_GREP_SEARCH,
     ZVEC_GREP_RG,
+    RUN_COMMAND,
+    START_SERVICE,
+    SERVICE_STATUS,
+    STOP_SERVICE,
     DONE,
   ];
 }
@@ -162,7 +191,8 @@ export function validateDelegateArgs(input, ticketKind) {
     if (ticketKind && kind !== ticketKind) {
       throw new Error(`delegate kind ${kind} does not match ticket kind ${ticketKind}`);
     }
-    return { to, kind };
+    if (input.completion !== undefined && !["implement", "report"].includes(input.completion)) throw new Error("delegate completion must be implement or report");
+    return { to, kind, ...(input.completion ? { completion: input.completion } : {}) };
   }
   const question = String(input?.question ?? "").trim();
   if (!question) throw new Error("delegate researcher requires question");
