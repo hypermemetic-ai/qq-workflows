@@ -174,6 +174,23 @@ export function astraThoughtConfig(currentValue = "high") {
   };
 }
 
+export function geminiFlashThoughtConfig(currentValue = "High") {
+  const match = GEMINI_FLASH_THINKING.find((item) => item.id.toLowerCase() === String(currentValue).toLowerCase());
+  const current = match ? match.id : "High";
+  return {
+    id: "thought_level",
+    name: "Thinking",
+    category: "thought_level",
+    type: "select",
+    currentValue: current,
+    options: GEMINI_FLASH_THINKING.map((item) => ({
+      value: item.id,
+      name: item.label,
+      description: item.description,
+    })),
+  };
+}
+
 export function architectProvider(nodePath = process.execPath) {
   return {
     extends: "acp",

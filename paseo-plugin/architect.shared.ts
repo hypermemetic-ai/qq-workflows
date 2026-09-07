@@ -24,6 +24,7 @@ export const ticketSnapshotRpc = defineRpc({
   name: "architect.ticket",
   input: z.object({
     cwd: z.string().min(1),
+    sessionId: z.string().optional(),
   }),
   output: z.object({
     path: z.string(),

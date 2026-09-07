@@ -38,11 +38,16 @@ startJsonRpcStdio({
       const name = params?.name;
       const args = params?.arguments ?? {};
       if (!role) throw new Error("ARCHITECT_ROLE is not set");
-      if (!tools.some(tool => tool.name === name)) throw new Error(`${role} cannot execute ${name}`);
       const body = await callHost("/tool", {
         name,
         arguments: args,
-        context: { cwd: workspace, jobId, role },
+        context: {
+          cwd: workspace,
+          jobId,
+          role,
+          agentId: process.env.ARCHITECT_AGENT_ID || process.env.PASEO_AGENT_ID,
+          paseoAgentId: process.env.PASEO_AGENT_ID || process.env.ARCHITECT_AGENT_ID,
+        },
       }, { hostUrl });
       const text = typeof body.result === "string" ? body.result : JSON.stringify(body.result, null, 2);
       return { content: [{ type: "text", text }] };

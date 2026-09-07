@@ -12,7 +12,7 @@ try {
   let calls = 0;
   const complete = async ({ instructions, input }) => {
     calls += 1;
-    assert.equal(instructions, ARCHITECT_SYSTEM_PROMPT);
+    assert.equal(instructions, ARCHITECT_SYSTEM_PROMPT());
     assert.match(input[0].content, new RegExp(TICKET_BLOCK_HEADING.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     if (calls === 1) {
       assert.equal(input.at(-1).content, "hello");

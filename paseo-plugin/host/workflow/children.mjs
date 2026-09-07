@@ -19,7 +19,7 @@ export function childProcessEnv(extra = {}, env = process.env) {
   };
 }
 
-export function childMcpServers({ role, jobId, hostUrl, workspace }) {
+export function childMcpServers({ role, jobId, hostUrl, workspace, parent }) {
   return {
     architect: {
       type: "stdio",
@@ -30,9 +30,9 @@ export function childMcpServers({ role, jobId, hostUrl, workspace }) {
         ARCHITECT_JOB_ID: jobId,
         ARCHITECT_HOST: hostUrl,
         ARCHITECT_WORKSPACE: workspace,
+        ...(parent ? { ARCHITECT_AGENT_ID: parent, PASEO_AGENT_ID: parent } : {}),
       },
     },
-
   };
 }
 
@@ -43,14 +43,14 @@ export function teacherCreateOptions({ jobId, hostUrl, workspace, args, parent }
       thinkingOptionId: AGY_THINKING,
       featureValues: { auto_accept: true },
       systemPrompt: TEACHER_SYSTEM_PROMPT,
-      mcpServers: childMcpServers({ role: "teacher", jobId, hostUrl, workspace }),
+      mcpServers: childMcpServers({ role: "teacher", jobId, hostUrl, workspace, parent }),
     },
     cwd: workspace,
     parent,
     title: "teacher",
     prompt: teacherFirstUserMessage(args),
-    labels: { role: "teacher", job: jobId },
-    env: childProcessEnv({ ARCHITECT_JOB_ID: jobId, ARCHITECT_HOST: hostUrl, ARCHITECT_ROLE: "teacher" }),
+    labels: { role: "teacher", job: jobId, ...(parent ? { "paseo.parent-agent-id": parent } : {}) },
+    env: childProcessEnv({ ARCHITECT_JOB_ID: jobId, ARCHITECT_HOST: hostUrl, ARCHITECT_ROLE: "teacher", ...(parent ? { ARCHITECT_AGENT_ID: parent, PASEO_AGENT_ID: parent } : {}) }),
   };
 }
 
@@ -75,16 +75,16 @@ export function implementerCreateOptions({
       thinkingOptionId: AGY_THINKING,
       featureValues: { auto_accept: true },
       systemPrompt: MINI_SWE_SYSTEM_PROMPT,
-      mcpServers: childMcpServers({ role: "implementer", jobId, hostUrl, workspace }),
+      mcpServers: childMcpServers({ role: "implementer", jobId, hostUrl, workspace, parent }),
     },
     cwd: workspace,
     workspaceId: workspaceId ?? undefined,
     parent,
     title: `implementer (${kind})`,
     prompt: `${task}${packet}${completion === "report" ? "\n\nThis is a report-only investigation. Do not modify project code. Call done with your findings in answer; the host will return them without committing, reviewing, or publishing." : ""}\n\nImplementation checkout: ${workspace}. Work in this checkout; paths in the ticket may refer to the source checkout.`,
-    labels: { role: "implementer", kind, job: jobId },
+    labels: { role: "implementer", kind, job: jobId, ...(parent ? { "paseo.parent-agent-id": parent } : {}) },
     worktree: branch ? undefined : { mode: "branch-off", newBranch: `architect/${kind}/${jobId.slice(0, 8)}` },
-    env: childProcessEnv({ ARCHITECT_JOB_ID: jobId, ARCHITECT_HOST: hostUrl, ARCHITECT_ROLE: "implementer" }),
+    env: childProcessEnv({ ARCHITECT_JOB_ID: jobId, ARCHITECT_HOST: hostUrl, ARCHITECT_ROLE: "implementer", ...(parent ? { ARCHITECT_AGENT_ID: parent, PASEO_AGENT_ID: parent } : {}) }),
   };
 }
 
@@ -101,14 +101,14 @@ export function researcherCreateOptions({
       thinkingOptionId: AGY_THINKING,
       featureValues: { auto_accept: true },
       systemPrompt: RESEARCHER_SYSTEM_PROMPT,
-      mcpServers: childMcpServers({ role: "researcher", jobId, hostUrl, workspace }),
+      mcpServers: childMcpServers({ role: "researcher", jobId, hostUrl, workspace, parent }),
     },
     cwd: workspace,
     parent,
     title: "researcher",
     prompt: question,
-    labels: { role: "researcher", job: jobId },
-    env: childProcessEnv({ ARCHITECT_JOB_ID: jobId, ARCHITECT_HOST: hostUrl, ARCHITECT_ROLE: "researcher" }),
+    labels: { role: "researcher", job: jobId, ...(parent ? { "paseo.parent-agent-id": parent } : {}) },
+    env: childProcessEnv({ ARCHITECT_JOB_ID: jobId, ARCHITECT_HOST: hostUrl, ARCHITECT_ROLE: "researcher", ...(parent ? { ARCHITECT_AGENT_ID: parent, PASEO_AGENT_ID: parent } : {}) }),
   };
 }
 
@@ -124,7 +124,7 @@ export function reviewerCreateOptions({
       provider: AGY_PROVIDER_MODEL,
       thinkingOptionId: AGY_THINKING,
       featureValues: { auto_accept: true },
-      mcpServers: childMcpServers({ role: "reviewer", jobId, hostUrl, workspace }),
+      mcpServers: childMcpServers({ role: "reviewer", jobId, hostUrl, workspace, parent }),
     },
     cwd: workspace,
     workspaceId: workspaceId ?? undefined,
@@ -135,7 +135,7 @@ export function reviewerCreateOptions({
       "Follow its testing plan. Do not change project code.",
       "Call done with findings. Empty findings means it passed.",
     ].join("\n"),
-    labels: { role: "reviewer", job: jobId },
-    env: childProcessEnv({ ARCHITECT_JOB_ID: jobId, ARCHITECT_HOST: hostUrl, ARCHITECT_ROLE: "reviewer" }),
+    labels: { role: "reviewer", job: jobId, ...(parent ? { "paseo.parent-agent-id": parent } : {}) },
+    env: childProcessEnv({ ARCHITECT_JOB_ID: jobId, ARCHITECT_HOST: hostUrl, ARCHITECT_ROLE: "reviewer", ...(parent ? { ARCHITECT_AGENT_ID: parent, PASEO_AGENT_ID: parent } : {}) }),
   };
 }

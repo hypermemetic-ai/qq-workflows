@@ -46,12 +46,14 @@ export function keptPairs(pairs) {
 }
 
 export function assembleArchitectRequest({
-  systemPrompt = ARCHITECT_SYSTEM_PROMPT,
+  systemPrompt,
+  sessionId,
   ticketText = "",
   pairs = [],
   operatorText,
   source = "operator",
 } = {}) {
+  const resolvedSystemPrompt = systemPrompt ?? (typeof ARCHITECT_SYSTEM_PROMPT === "function" ? ARCHITECT_SYSTEM_PROMPT(sessionId) : ARCHITECT_SYSTEM_PROMPT);
   const previous = requestPairs(pairs, operatorText, source);
   const input = [
     { role: "user", content: ticketBlock(ticketText) },
@@ -63,7 +65,7 @@ export function assembleArchitectRequest({
   }
   if (operatorText != null) input.push({ role: "user", content: String(operatorText) });
   return {
-    instructions: systemPrompt,
+    instructions: resolvedSystemPrompt,
     input,
   };
 }

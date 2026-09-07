@@ -52,6 +52,29 @@ try {
   const whole = await ticketWrite(dir, { text: bounded });
   assert.equal(parseKind(whole.text), "bounded");
   assert.equal(openSectionIsEmpty(whole.text), true);
+
+  // Session-scoped tickets
+  const sessACreated = await ensureTicket(dir, { sessionId: "session-a" });
+  assert.equal(sessACreated.created, true);
+  assert.equal(readFileSync(join(dir, ".architect/tickets/session-a.md"), "utf8"), template);
+
+  await ticketWrite(dir, { text: "# Ticket A\n\n## Kind\n\nbounded\n" }, { sessionId: "session-a" });
+  const sessARead = await ticketRead(dir, { sessionId: "session-a" });
+  assert.match(sessARead.text, /# Ticket A/);
+
+  // Fallback to .architect/ticket.md when sessionId is not provided
+  const fallbackRead = await ticketRead(dir);
+  assert.equal(fallbackRead.text, bounded);
+
+  // Distinct session ticket creation does not mutate session A
+  const sessBCreated = await ensureTicket(dir, { sessionId: "session-b" });
+  assert.equal(sessBCreated.created, true);
+  await ticketWrite(dir, { text: "# Ticket B\n\n## Kind\n\nopen\n" }, { sessionId: "session-b" });
+
+  const sessAFresh = await ticketRead(dir, { sessionId: "session-a" });
+  const sessBFresh = await ticketRead(dir, { sessionId: "session-b" });
+  assert.match(sessAFresh.text, /# Ticket A/);
+  assert.match(sessBFresh.text, /# Ticket B/);
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

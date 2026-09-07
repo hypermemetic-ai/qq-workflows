@@ -27,17 +27,16 @@ try {
     writeFileSync(join(repo, 'result.txt'), 'baseline\n');
     git(repo, 'add', '.'); git(repo, 'commit', '-m', 'Baseline');
     const baseline = git(repo, 'rev-parse', 'HEAD');
-    const placements = new Map();
+    let workspaceCreated = false;
     const workers = [];
     const sdk = createPaseoApi({
       createWorkspace: async input => {
-        const id = `workspace-${placements.size}`;
-        placements.set(id, input.source.path);
-        return { workspace: { id, workspaceDirectory: input.source.path } };
+        workspaceCreated = true;
+        return { workspace: { id: 'workspace-unexpected', workspaceDirectory: input.source.path } };
       },
       createAgent: async input => {
         assert.equal(input.callerAgentId, 'architect-parent');
-        const cwd = placements.get(input.workspaceId);
+        const cwd = input.config?.cwd;
         assert.ok(cwd && cwd !== repo);
         const id = `worker-${workers.length}`;
         workers.push({ id, cwd });
@@ -64,6 +63,7 @@ try {
     });
     try {
       const created = await runtime.handleTool('delegate', { to: 'implementer', kind, completion: scenario === 'report' ? 'report' : 'implement' }, { cwd: repo, agentId: 'architect-session', paseoAgentId: 'architect-parent' });
+      assert.equal(workspaceCreated, false, 'must not create workspace for delegate');
       assert.equal(git(repo, 'rev-parse', 'HEAD'), baseline);
       assert.equal(readFileSync(join(repo, 'result.txt'), 'utf8'), 'baseline\n');
       await runtime.handleTool('done', { answer: 'Fixture findings' }, { agentId: created.agentId });

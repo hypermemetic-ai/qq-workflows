@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -6,7 +7,7 @@ import { createSupervisor } from "./supervisor.mjs";
 import { hostVersion } from "./version.mjs";
 import { createPlacedAgent, reconcileWithSdk, isRealCwd, waitForHandleCwd, defaultSpawnExec, parseCreatedAgentJson, sendAgentWake } from "./spawn-agent.mjs";
 import { createStore, persistentMap } from "./store.mjs";
-import { ticketRead, ticketWrite, parseKind } from "./workflow/ticket.mjs";
+import { ticketRead, ticketWrite, parseKind, ticketPath } from "./workflow/ticket.mjs";
 import { roleTools, validateDelegateArgs, validateTeacherArgs } from "./workflow/tools.mjs";
 import { formatResearcherWake, formatReviewerWake, formatTeacherWake, normalizeFindings, routeDone } from "./workflow/done.mjs";
 import {
@@ -47,20 +48,24 @@ export function createRuntime(options = {}) {
   let draining = false;
   const ocrReview = options.ocrReview ?? null;
   const runResearch = options.runResearch ?? runResearcher;
-  const sendWakeFn = options.sendWake ?? (paseo && typeof paseo.agents?.ref === "function"
-    ? ((agentId, text) => {
-        try {
-          const ref = paseo.agents.ref(agentId);
-          if (typeof ref?.send === "function") {
-            ref.send(text).catch((err) => {
-              console.error("Failed to push wake to agent", agentId, err);
-            });
-          }
-        } catch (err) {
-          console.error("Failed to ref agent for wake", agentId, err);
+  const sendWakeFn = options.sendWake ?? ((agentId, text) => {
+    if (paseo && typeof paseo.agents?.ref === "function") {
+      try {
+        const ref = paseo.agents.ref(agentId);
+        if (typeof ref?.send === "function") {
+          ref.send(text).catch((err) => {
+            console.error("Failed to push wake to agent", agentId, err);
+          });
+          return;
         }
-      })
-    : null);
+      } catch (err) {
+        console.error("Failed to ref agent for wake", agentId, err);
+      }
+    }
+    sendAgentWake(agentId, text).catch((err) => {
+      console.error("sendAgentWake failed", err);
+    });
+  });
   const terminateProcessFn = options.terminateProcess ?? terminateProcess;
   const terminateProcessGroupFn = options.terminateProcessGroup ?? terminateProcessGroup;
   const waitForCwd = options.waitForHandleCwd ?? waitForHandleCwd;
@@ -99,6 +104,13 @@ export function createRuntime(options = {}) {
     return value;
   }
 
+  function resolveParentId(context = {}) {
+    if (context.agentId) return context.agentId;
+    if (context.paseoAgentId) return context.paseoAgentId;
+    const match = [...jobs.values()].reverse().find(j => j.role === "architect" && j.cwd === context.cwd && ["running", "idle"].includes(j.status));
+    return match?.agentId ?? match?.parent ?? undefined;
+  }
+
   async function executeHostTool(name, args, context = {}) {
     const child = jobByIdOrAgent(context.jobId, context.agentId);
     if (context.jobId && !child) throw new Error("unknown child");
@@ -109,19 +121,26 @@ export function createRuntime(options = {}) {
     const cwd = child?.worktreeCwd ?? child?.cwd ?? context.cwd;
     if (!isRealCwd(cwd)) throw new Error("workspace is required");
     if (args?.root && args.root !== cwd) throw new Error("tool root must match the workspace");
+    const sessionId = child?.parent ?? context.sessionId ?? context.agentId ?? context.jobId ?? undefined;
     switch (name) {
       case "ticket_read":
-        return ticketRead(cwd);
+        return ticketRead(cwd, undefined, sessionId);
       case "ticket_write": {
-        const result = await ticketWrite(cwd, args);
-        const snapshot = await ticketRead(cwd);
+        const result = await ticketWrite(cwd, args, undefined, sessionId);
+        const snapshot = await ticketRead(cwd, undefined, sessionId);
         store.put("ticket_revision", operationKey(cwd, "ticket", snapshot.text), { ...snapshot, cwd, createdAt: Date.now() });
         return result;
       }
-      case "teacher":
-        return startTeacher({ cwd, args, parent: context.agentId, paseoParent: context.paseoAgentId });
-      case "delegate":
-        return startDelegate({ cwd, args, parent: context.agentId, paseoParent: context.paseoAgentId });
+      case "teacher": {
+        const parent = resolveParentId(context);
+        const paseoParent = context.paseoAgentId ?? parent;
+        return startTeacher({ cwd, args, parent, paseoParent, workspaceId: context.workspaceId });
+      }
+      case "delegate": {
+        const parent = resolveParentId(context);
+        const paseoParent = context.paseoAgentId ?? parent;
+        return startDelegate({ cwd, args, parent, paseoParent, workspaceId: context.workspaceId });
+      }
       case "done":
         return finishChild({ ...args, ...context });
       case "brave_search":
@@ -185,14 +204,41 @@ export function createRuntime(options = {}) {
     };
   }
 
+  async function writeChildCheckoutTicket(job, targetCwd) {
+    if (!targetCwd) return;
+    try {
+      let ticketContent = job?.task;
+      const sessionId = job?.parent;
+      if (sessionId && job?.cwd) {
+        const sessionPath = ticketPath(job.cwd, sessionId);
+        try {
+          ticketContent = await readFile(sessionPath, "utf8");
+        } catch {}
+      }
+      if (!ticketContent && job?.cwd) {
+        try {
+          ticketContent = (await ticketRead(job.cwd, undefined, sessionId)).text;
+        } catch {}
+      }
+      if (ticketContent) {
+        const destDir = join(targetCwd, ".architect");
+        await mkdir(destDir, { recursive: true });
+        await writeFile(join(destDir, "ticket.md"), ticketContent, "utf8");
+      }
+    } catch {
+      /* ignore in synthetic test environments */
+    }
+  }
+
   async function prepareImplementerWorkspace({ cwd, branch, job, reuse }) {
     const created = job.worktreeCwd ? { cwd: job.worktreeCwd, workspaceId: job.workspaceId } : typeof options.createWorktree === "function"
       ? await options.createWorktree({ cwd, branch, reuse })
       : await createImplementerWorktree({ cwd, branch, paseo, reuse });
     if (!isRealCwd(created?.cwd)) throw new Error("delegate: worktree cwd did not appear");
     job.worktreeCwd = created.cwd;
-    job.workspaceId = created.workspaceId;
+    if (created.workspaceId) job.workspaceId = created.workspaceId;
     save(job);
+    await writeChildCheckoutTicket(job, created.cwd);
     if (job.completion === "report") {
       job.indexWarning = "Semantic indexing was not requested for this report-only investigation. Use ordinary file tools or exact search.";
     } else {
@@ -208,9 +254,12 @@ export function createRuntime(options = {}) {
     return created;
   }
 
-  async function startDelegate({ cwd, args, parent, paseoParent }) {
+  async function startDelegate({ cwd, args, parent, paseoParent, workspaceId: contextWorkspaceId }) {
     if (draining) throw new Error("Host upgrade is waiting for existing work to finish; retry after it completes");
-    const ticket = await ticketRead(cwd);
+    const sessionTicketPath = parent ? ticketPath(cwd, parent) : null;
+    const ticket = (sessionTicketPath && existsSync(sessionTicketPath))
+      ? await ticketRead(cwd, undefined, parent)
+      : (existsSync(ticketPath(cwd)) ? await ticketRead(cwd) : (parent ? await ticketRead(cwd, undefined, parent) : await ticketRead(cwd)));
     const ticketRevision = operationKey(cwd, "ticket", ticket.text);
     store.put("ticket_revision", ticketRevision, { ...ticket, cwd, createdAt: Date.now() });
     const kind = parseKind(ticket.text);
@@ -290,6 +339,7 @@ export function createRuntime(options = {}) {
     const retry = [...jobs.values()].reverse().find(job => job.cwd === cwd && job.parent === parent &&
       job.role === "implementer" && job.kind === parsed.kind && job.status === "failed" &&
       job.phase === "preparing" && !job.agentId);
+    const parentWorkspaceId = contextWorkspaceId ?? (parent ? [...jobs.values()].reverse().find(j => (j.agentId === parent || j.parent === parent) && j.workspaceId)?.workspaceId : undefined) ?? [...jobs.values()].reverse().find(j => j.cwd === cwd && j.workspaceId)?.workspaceId;
     const job = retry ?? createJob({
       role: "implementer",
       kind: parsed.kind,
@@ -297,6 +347,7 @@ export function createRuntime(options = {}) {
       cwd,
       parent,
       paseoParent,
+      workspaceId: parentWorkspaceId,
       reviewerAttempt: 0,
       task: ticket.text,
       ticketRevision,
@@ -312,14 +363,14 @@ export function createRuntime(options = {}) {
     try { prepared = await prepareImplementerWorkspace({ cwd, branch: branchName, job, reuse: Boolean(retry) }); }
     catch (error) { job.status = "failed"; job.error = `Workspace preparation failed: ${error.message}`; save(job); throw error; }
     job.worktreeCwd = prepared.cwd;
-    job.workspaceId = prepared.workspaceId;
+    job.workspaceId = prepared.workspaceId ?? job.workspaceId ?? parentWorkspaceId;
     job.phase = "spawning";
     save(job);
     const created = await spawnAgent(implementerCreateOptions({
       jobId: job.id,
       hostUrl,
       workspace: prepared.cwd,
-      workspaceId: prepared.workspaceId,
+      workspaceId: job.workspaceId,
       task: ticket.text + (job.indexWarning ? `\n\nWorkspace preparation: ${job.indexWarning}` : ""),
       kind: parsed.kind,
       completion: parsed.completion,
@@ -395,6 +446,9 @@ export function createRuntime(options = {}) {
   async function finishChild(input) {
     const job = jobByIdOrAgent(input.jobId, input.agentId);
     if (!job) throw new Error("done: unknown child");
+    if (!job.parent) {
+      job.parent = resolveParentId(input) ?? job.parent;
+    }
     const prior = store.get("receipt", job.id);
     if (prior) return prior;
     if (job.status !== "running") throw new Error("done: stale child");
@@ -479,6 +533,7 @@ export function createRuntime(options = {}) {
     job.phase = "reviewing";
     save(job);
     try {
+      await writeChildCheckoutTicket(job, cwd);
       const packet = await git.buildReviewPacket(cwd);
       job.packet = packet;
       save(job);
@@ -502,6 +557,7 @@ export function createRuntime(options = {}) {
         paseoParent: job.paseoParent,
         reviewerAttempt: (job.reviewerAttempt ?? 0) + 1,
         worktreeCwd: cwd,
+        workspaceId: job.workspaceId,
         packet,
         task: job.task,
         ledger: job.ledger ?? createLedger(),
@@ -519,7 +575,7 @@ export function createRuntime(options = {}) {
         parent: job.paseoParent,
       }));
       reviewerJob.agentId = created.id;
-      reviewerJob.workspaceId = created.workspaceId;
+      reviewerJob.workspaceId = created.workspaceId ?? job.workspaceId;
       reviewerJob.phase = "working";
       save(reviewerJob);
       return { ok: true, action: "spawn_reviewer", reviewerId: created.id, reviewerJobId: reviewerJob.id };
@@ -572,6 +628,7 @@ export function createRuntime(options = {}) {
   async function spawnFixImplementer(job, findings, packet = job.packet, reviewRound = job.reviewerAttempt ?? 1) {
     const cwd = job.worktreeCwd ?? job.cwd;
     if (!isRealCwd(cwd)) throw new Error("delegate: worktree cwd did not appear");
+    await writeChildCheckoutTicket(job, cwd);
     try { await indexWorkspaceFn(cwd, { wait: true, waitForLock: false }); }
     catch (error) {
       if (!String(error.stderr ?? error.message ?? error).includes("ZVEC_GREP.ENGINE.LOCK.BUSY")) throw error;
@@ -591,6 +648,7 @@ export function createRuntime(options = {}) {
       paseoParent: job.paseoParent,
       reviewerAttempt: reviewRound,
       worktreeCwd: cwd,
+      workspaceId: job.workspaceId,
       packet,
       ledger: job.ledger ?? createLedger(),
       task: job.task,
@@ -605,6 +663,7 @@ export function createRuntime(options = {}) {
         jobId: implementer.id,
         hostUrl,
         workspace: cwd,
+        workspaceId: job.workspaceId,
         task: implementer.task + (job.indexWarning ? `\n\nWorkspace preparation: ${job.indexWarning}` : ""),
         kind: implementer.kind,
         parent: job.paseoParent,
@@ -612,7 +671,7 @@ export function createRuntime(options = {}) {
         findings,
       }));
       implementer.agentId = created.id;
-      implementer.workspaceId = created.workspaceId;
+      implementer.workspaceId = created.workspaceId ?? job.workspaceId;
       implementer.worktreeCwd = cwd;
       save(implementer);
       if (created.cwd !== cwd) throw new Error(`Correction child checkout ${created.cwd} does not match ${cwd}; inspect child ${created.id} before retrying`);
@@ -848,6 +907,9 @@ export function createRuntime(options = {}) {
       prompt: "Fill `.architect/ticket.md` with the operator, then delegate.",
       labels: { role: "architect" },
     });
+    if (handle?.id) {
+      await ticketRead(cwd, undefined, handle.id);
+    }
     return { agentId: handle.id, workspaceId: handle.workspaceId };
   }
 
@@ -934,7 +996,8 @@ export function createRuntime(options = {}) {
         }
         if (url.pathname === "/ticket") {
           const cwd = payload.cwd ?? url.searchParams.get("cwd");
-          json(res, 200, await ticketRead(cwd));
+          const sessionId = payload.sessionId ?? url.searchParams.get("sessionId") ?? undefined;
+          json(res, 200, await ticketRead(cwd, undefined, sessionId));
           return;
         }
         if (url.pathname === "/tool") {

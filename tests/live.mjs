@@ -27,7 +27,7 @@ try {
   assert.ok(requests.length);
   assert.equal(requests[0].input.length, 4);
   for (const request of requests) {
-    assert.equal(request.instructions, ARCHITECT_SYSTEM_PROMPT);
+    assert.equal(request.instructions, ARCHITECT_SYSTEM_PROMPT());
     assert.equal(request.model, 'gpt-6-astra'); assert.equal(request.reasoning.effort, 'high');
     assert.deepEqual(request.tools.map(tool => tool.name), architectTools().map(tool => tool.name));
     assert.ok(JSON.stringify(request.input).includes('PREVIOUS_CONTEXT'));

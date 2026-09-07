@@ -29,35 +29,58 @@ function workStatus(child: ChildWork) {
   return statuses[child.status] ?? (child.status === 'running' ? phases[child.phase ?? ''] ?? 'In progress' : 'Status unavailable');
 }
 
-const roleName = (child: ChildWork) => child.completion === 'report' ? 'Investigation' : ({ researcher: 'Research', implementer: 'Implementation', teacher: 'Teaching', reviewer: 'Review' }[child.role] ?? child.role);
+const roleDisplayName = (child: ChildWork) => {
+  if (child.role === 'implementer') return 'Implementer';
+  if (child.role === 'reviewer') return 'Reviewer';
+  if (child.role === 'teacher') return 'Teacher';
+  if (child.role === 'researcher') return 'Researcher';
+  return child.role.charAt(0).toUpperCase() + child.role.slice(1);
+};
 const needsAttention = (child: ChildWork) => ['uncertain', 'findings'].includes(child.status);
 const isRunning = (child: ChildWork) => ['running', 'awaiting_correction'].includes(child.status);
-function WorkRow({ child, theme, openAgent }: { child: ChildWork; theme: PluginTheme; openAgent?: (input: { agentId: string }) => void }) {
-  const [expanded, setExpanded] = useState(false);
+
+function DelegateRow({ child, theme, openAgent }: { child: ChildWork; theme: PluginTheme; openAgent?: (input: { agentId: string }) => void }) {
   const c = theme.colors;
   const statusColor = needsAttention(child) ? c.statusWarning : child.status === 'failed' ? c.statusDanger : c.foregroundMuted;
-  const description = child.status === 'uncertain' ? 'An interrupted operation needs inspection.'
-    : child.status === 'findings' ? 'Review findings need your decision.'
-    : child.status === 'failed' ? 'Stopped before completion.'
-    : child.role === 'researcher' ? child.status === 'succeeded' ? 'Findings returned to Architect.' : 'Findings will return to your conversation.'
-    : child.completion === 'report' ? 'Investigation only; no changes to merge.'
-    : child.kind === 'open' ? 'Review before merging.' : child.kind === 'bounded' ? 'Bounded implementation.' : 'A conversation with Architect’s specialist.';
-  const icon = child.role === 'researcher' ? 'Search' : child.role === 'teacher' ? 'GraduationCap' : 'Code';
-  return <View style={{ borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border }}>
-    <Pressable accessibilityRole="button" accessibilityLabel={`${roleName(child)}: ${workStatus(child)}. ${expanded ? 'Hide' : 'Show'} details`} accessibilityState={{ expanded }} onPress={() => setExpanded(value => !value)} style={{ paddingVertical: 17, flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
-      <View style={{ paddingTop: 3 }}><Icon name={icon} size={17} color={c.foregroundMuted} /></View>
-      <View style={{ flex: 1, gap: 5 }}>
-        <View style={{ flexDirection: 'row', gap: 10, justifyContent: 'space-between', alignItems: 'baseline' }}><Text style={{ color: c.foreground, fontSize: 16 }}>{roleName(child)}</Text><Text style={{ color: statusColor, fontSize: 12 }}>{workStatus(child)}</Text></View>
-        <Text style={{ color: c.foregroundMuted, fontSize: 14, lineHeight: 21 }}>{description}</Text>
+  const icon = child.role === 'researcher' ? 'Search' : child.role === 'teacher' ? 'GraduationCap' : child.role === 'reviewer' ? 'CheckSquare' : 'Code';
+  const role = roleDisplayName(child);
+  const status = workStatus(child);
+  const canOpen = Boolean(child.agentId && openAgent);
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${role}: ${status}.${canOpen ? ' Open conversation.' : ''}`}
+      disabled={!canOpen}
+      onPress={() => {
+        if (child.agentId && openAgent) {
+          openAgent({ agentId: child.agentId });
+        }
+      }}
+      style={{
+        paddingVertical: 14,
+        flexDirection: 'row',
+        gap: 12,
+        alignItems: 'center',
+        borderBottomWidth: StyleSheet.hairlineWidth,
+        borderBottomColor: c.border,
+      }}
+    >
+      <View style={{ paddingTop: 1 }}>
+        <Icon name={icon} size={18} color={c.foregroundMuted} />
       </View>
-      <View style={{ paddingTop: 3 }}><Icon name={expanded ? 'ChevronUp' : 'ChevronDown'} size={14} color={c.foregroundMuted} /></View>
+      <View style={{ flex: 1, gap: 3 }}>
+        <View style={{ flexDirection: 'row', gap: 10, justifyContent: 'space-between', alignItems: 'baseline' }}>
+          <Text style={{ color: c.foreground, fontSize: 15, fontWeight: '500' }}>{role}</Text>
+          <Text style={{ color: statusColor, fontSize: 12 }}>{status}</Text>
+        </View>
+        {child.error ? (
+          <Text numberOfLines={2} style={{ color: c.statusDanger, fontSize: 12 }}>{child.error}</Text>
+        ) : null}
+      </View>
+      <Icon name="ArrowUpRight" size={15} color={canOpen ? c.foregroundMuted : 'transparent'} />
     </Pressable>
-    {expanded ? <View style={{ paddingLeft: 29, paddingBottom: 18, gap: 12 }}>
-      {child.error ? <View style={{ backgroundColor: c.surface1, padding: 12, borderRadius: 8 }}><Text selectable style={{ color: c.foregroundMuted, fontSize: 13, lineHeight: 20 }}>{child.error}</Text></View> : null}
-      {child.createdAt ? <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>{new Date(child.createdAt).toLocaleString()}</Text> : null}
-      {child.agentId && openAgent ? <Pressable accessibilityRole="button" accessibilityLabel={`Open ${child.role} conversation`} onPress={() => openAgent({ agentId: child.agentId! })} style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8 }}><Text style={{ color: c.foreground, fontSize: 14 }}>Open conversation</Text><Icon name="ArrowUpRight" size={15} color={c.foregroundMuted} /></Pressable> : null}
-    </View> : null}
-  </View>;
+  );
 }
 
 export function ArchitectSurface({ theme, layout }: PluginSurfaceProps) {
@@ -96,8 +119,6 @@ export function TicketPanel({ theme, layout, workspaceId, navigation }: PluginWo
   const [text, setText] = useState("");
   const [tokens, setTokens] = useState<TicketTokens>([]);
   const [children, setChildren] = useState<ChildWork[]>([]);
-  const [showHistory, setShowHistory] = useState(false);
-  const [section, setSection] = useState<'plan' | 'work'>('plan');
   const [loading, setLoading] = useState(false);
   const [starting, setStarting] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
@@ -114,13 +135,9 @@ export function TicketPanel({ theme, layout, workspaceId, navigation }: PluginWo
     iconButton: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
     muted: { color: c.foregroundMuted, fontSize: 13, lineHeight: 20 },
     title: { color: c.foreground, fontSize: 22, lineHeight: 29, fontWeight: '500', marginTop: 13 },
-    project: { color: c.foregroundMuted, fontSize: 13, marginTop: 7, marginBottom: 21 },
-    tabs: { flexDirection: 'row', gap: 26, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border },
-    tab: { minHeight: 46, flexDirection: 'row', alignItems: 'center', gap: 7, borderBottomWidth: 2 },
-    tabText: { fontSize: 14, fontWeight: '500' },
-    count: { minWidth: 20, paddingHorizontal: 5, paddingVertical: 1, borderRadius: 5, backgroundColor: c.surface2, alignItems: 'center' },
+    project: { color: c.foregroundMuted, fontSize: 13, marginTop: 7, marginBottom: 14 },
     content: { paddingHorizontal: layout.compact ? 20 : 28, paddingTop: 14, paddingBottom: 36 },
-    groupTitle: { color: c.foregroundMuted, fontSize: 12, fontWeight: '500', marginTop: 18, marginBottom: 1 },
+    groupTitle: { color: c.foregroundMuted, fontSize: 12, fontWeight: '500', marginTop: 18, marginBottom: 4 },
     empty: { paddingVertical: 24, gap: 8 },
     emptyTitle: { color: c.foreground, fontSize: 16 },
     note: { color: c.foregroundMuted, fontSize: 14, lineHeight: 22 },
@@ -133,7 +150,10 @@ export function TicketPanel({ theme, layout, workspaceId, navigation }: PluginWo
     inFlight.current = { cwd: directory, id: request };
     if (!quiet) setLoading(true);
     try {
-      const [ticket, result] = await Promise.allSettled([loadTicket({ cwd: directory }), loadChildren({ cwd: directory })]);
+      const [ticket, result] = await Promise.allSettled([
+        loadTicket({ cwd: directory, sessionId: origin ?? undefined }),
+        loadChildren({ cwd: directory }),
+      ]);
       if (request !== generation.current) return;
       if (ticket.status === 'fulfilled') { setText(ticket.value.text); setTokens(ticket.value.tokens); }
       if (result.status === 'fulfilled') setChildren(result.value.children);
@@ -144,10 +164,10 @@ export function TicketPanel({ theme, layout, workspaceId, navigation }: PluginWo
       if (inFlight.current?.id === request) inFlight.current = null;
       if (request === generation.current) setLoading(false);
     }
-  }, [directory, loadTicket, loadChildren]);
+  }, [directory, origin, loadTicket, loadChildren]);
 
   useEffect(() => {
-    setText(""); setTokens([]); setChildren([]); setShowHistory(false); setSection('plan'); setError(null);
+    setText(""); setTokens([]); setChildren([]); setError(null);
     void reload();
     const timer = setInterval(() => { void reload({ quiet: true }); }, 5000);
     return () => { generation.current++; inFlight.current = null; clearInterval(timer); };
@@ -155,8 +175,6 @@ export function TicketPanel({ theme, layout, workspaceId, navigation }: PluginWo
   const ordered = [...children].sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
   const running = ordered.filter(isRunning);
   const attention = ordered.filter(needsAttention);
-  const history = ordered.filter(child => !isRunning(child) && !needsAttention(child));
-  const rows = (items: ChildWork[]) => items.map(child => <WorkRow key={child.id} child={child} theme={theme} openAgent={navigation?.openAgent} />);
 
   return <View testID={`architect-ticket-${workspaceId}`} style={styles.screen}>
     <View style={[styles.width, styles.header]}>
@@ -166,21 +184,30 @@ export function TicketPanel({ theme, layout, workspaceId, navigation }: PluginWo
       </View>
       <Text accessibilityRole="header" style={styles.title}>{ticketTitle(text)}</Text>
       <Text style={styles.project}>{project || directory?.split('/').pop() || 'Workspace'}{running.length ? `  ·  ${running.length} in progress` : ''}{attention.length ? `  ·  ${attention.length} needs attention` : ''}</Text>
-      <View style={styles.tabs}>
-        {(['plan', 'work'] as const).map(value => <Pressable key={value} accessibilityRole="tab" accessibilityLabel={value === 'plan' ? 'Show ticket plan' : 'Show delegated work'} accessibilityState={{ selected: section === value }} onPress={() => setSection(value)} style={[styles.tab, { borderBottomColor: section === value ? c.foreground : 'transparent' }]}><Text style={[styles.tabText, { color: section === value ? c.foreground : c.foregroundMuted }]}>{value === 'plan' ? 'Plan' : 'Work'}</Text>{value === 'work' && children.length ? <View style={styles.count}><Text style={{ color: c.foregroundMuted, fontSize: 11 }}>{children.length}</Text></View> : null}</Pressable>)}
-      </View>
     </View>
-    <ScrollView key={section} style={{ flex: 1 }} contentContainerStyle={[styles.width, styles.content]}>
+    <ScrollView style={{ flex: 1 }} contentContainerStyle={[styles.width, styles.content]}>
       {error ? <Pressable accessibilityRole="button" accessibilityLabel="Show connection details" onPress={() => setShowDetails(value => !value)} style={{ paddingVertical: 12 }}><Text style={styles.note}>Couldn’t refresh. Showing the last available information.</Text>{showDetails ? <Text selectable style={styles.muted}>{error}</Text> : null}</Pressable> : null}
-      {section === 'plan' ? text ? <TicketPlan tokens={tokens} theme={theme} /> : <View style={styles.empty}><Text style={styles.emptyTitle}>{loading ? 'Loading your plan…' : 'A plan starts with a conversation'}</Text><Text style={styles.note}>Tell Architect what you want to change. The scope and decisions will appear here.</Text></View> : <View testID="architect-work-list">
-        {running.length ? <><Text accessibilityRole="header" style={styles.groupTitle}>IN PROGRESS</Text>{rows(running)}</> : null}
-        {attention.length ? <><Text accessibilityRole="header" style={styles.groupTitle}>NEEDS ATTENTION</Text>{rows(attention)}</> : null}
-        {!running.length && !attention.length ? <View style={styles.empty}><Text style={styles.emptyTitle}>No work in progress</Text><Text style={styles.note}>New tasks will appear here as Architect delegates them.</Text></View> : null}
-        {history.length ? <View style={{ marginTop: 18 }}><Pressable accessibilityRole="button" accessibilityLabel={showHistory ? 'Hide work history' : 'Show work history'} accessibilityState={{ expanded: showHistory }} onPress={() => setShowHistory(value => !value)} style={[styles.action, { justifyContent: 'space-between' }]}><Text style={styles.note}>Earlier work · {history.length}</Text><Icon name={showHistory ? 'ChevronUp' : 'ChevronDown'} size={15} color={c.foregroundMuted} /></Pressable>{showHistory ? rows(history) : null}</View> : null}
-      </View>}
+      {text ? <TicketPlan tokens={tokens} theme={theme} /> : <View style={styles.empty}><Text style={styles.emptyTitle}>{loading ? 'Loading your plan…' : 'A plan starts with a conversation'}</Text><Text style={styles.note}>Tell Architect what you want to change. The scope and decisions will appear here.</Text></View>}
+      <View testID="architect-delegates" style={{ marginTop: 28 }}>
+        <Text accessibilityRole="header" style={styles.groupTitle}>DELEGATES</Text>
+        {ordered.length ? (
+          ordered.map((child) => (
+            <DelegateRow
+              key={child.id}
+              child={child}
+              theme={theme}
+              openAgent={navigation?.openAgent}
+            />
+          ))
+        ) : (
+          <View style={styles.empty}>
+            <Text style={styles.note}>New tasks will appear here as Architect delegates them.</Text>
+          </View>
+        )}
+      </View>
       <View style={{ marginTop: 28, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: c.border, paddingTop: 8 }}>
         <Pressable accessibilityRole="button" accessibilityLabel="Ticket details" accessibilityState={{ expanded: showDetails }} onPress={() => setShowDetails(value => !value)} style={[styles.action, { justifyContent: 'space-between' }]}><Text style={styles.muted}>Ticket details</Text><Icon name={showDetails ? 'ChevronUp' : 'ChevronDown'} size={14} color={c.foregroundMuted} /></Pressable>
-        {showDetails ? <View style={{ gap: 8 }}><Text selectable style={styles.muted}>{directory}</Text><Text style={styles.muted}>Saved in .architect/ticket.md</Text><Pressable accessibilityRole="button" accessibilityLabel="Start architect" disabled={starting || !directory} style={styles.action} onPress={async () => {
+        {showDetails ? <View style={{ gap: 8 }}><Text selectable style={styles.muted}>{directory}</Text><Text style={styles.muted}>Saved in {origin ? `.architect/tickets/${origin}.md` : '.architect/ticket.md'}</Text><Pressable accessibilityRole="button" accessibilityLabel="Start architect" disabled={starting || !directory} style={styles.action} onPress={async () => {
           if (!directory || starting) return;
           setStarting(true);
           try { const created = await start({ cwd: directory, title: 'Architect' }); navigation?.openAgent?.({ agentId: created.agentId }); }

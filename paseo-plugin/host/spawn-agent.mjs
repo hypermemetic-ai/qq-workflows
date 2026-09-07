@@ -117,7 +117,7 @@ export async function spawnWithSdk(createOptions, {
       const cwd = await waitForCwd(handle);
       return {
         id: handle.id,
-        workspaceId: handle.workspaceId,
+        workspaceId: handle.workspaceId ?? createOptions.workspaceId ?? null,
         cwd,
       };
     }
@@ -128,7 +128,7 @@ export async function spawnWithSdk(createOptions, {
     }
     return {
       id: handle.id,
-      workspaceId: handle.workspaceId,
+      workspaceId: handle.workspaceId ?? createOptions.workspaceId ?? null,
       cwd: isRealCwd(handle.cwd) ? handle.cwd : createOptions.cwd,
     };
   } finally {
@@ -141,20 +141,22 @@ export async function spawnWithSdk(createOptions, {
 // child there; ownership and placement are separate SDK concepts.
 export async function createPlacedAgent(client, options) {
   let workspace;
-  if (options.workspaceId) {
+  if (options.workspaceId && typeof client?.workspaces?.ref === "function") {
     workspace = client.workspaces.ref(options.workspaceId);
-    await workspace.refresh?.();
-  } else if (options.parent && options.labels?.role === "implementer" && !options.worktree) {
-    workspace = await client.workspaces.create({
-      title: options.title,
-      source: { kind: "directory", path: options.cwd },
-    });
+    try {
+      await workspace.refresh?.();
+    } catch {
+      /* snapshot may already be present */
+    }
   }
   if (workspace) {
-    if (workspace.directory !== options.cwd) {
-      throw new Error(`delegate: workspace directory ${workspace.directory} does not match prepared checkout ${options.cwd}`);
+    if (workspace.directory === options.cwd && typeof workspace.agents?.create === "function") {
+      return workspace.agents.create(options);
     }
-    return workspace.agents.create(options);
+    const placement = { workspaceId: options.workspaceId, cwd: options.cwd };
+    if (typeof client.agents?.create === "function") {
+      return client.agents.create({ ...options, cwd: options.cwd }, placement);
+    }
   }
   return client.agents.create(options);
 }

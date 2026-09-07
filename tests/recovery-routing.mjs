@@ -7,30 +7,42 @@ import { createPlacedAgent } from '../paseo-plugin/host/spawn-agent.mjs';
 import { createRuntime } from '../paseo-plugin/host/runtime.mjs';
 import { ticketWrite } from '../paseo-plugin/host/workflow/ticket.mjs';
 
-// Use the actual SDK adapter: parent ownership must not override placement.
+// Spawning delegates must not create top-level workspaces; subagents belong to parent workspace.
 const requests = [];
+let workspaceCreated = false;
 const sdk = createPaseoApi({
   createWorkspace: async input => {
+    workspaceCreated = true;
     requests.push(input);
     return { workspace: { id: 'worktree', workspaceDirectory: input.source.path } };
   },
+  getWorkspace: async ({ id }) => ({ workspace: { id, workspaceDirectory: '/parent-ws-dir' } }),
   createAgent: async input => {
     requests.push(input);
-    const cwd = input.workspaceId === 'worktree' ? '/prepared' : '/parent';
-    return { id: 'child', cwd, workspaceId: input.workspaceId };
+    return { id: 'child', cwd: input.config?.cwd, workspaceId: input.workspaceId };
   },
 });
 const handle = await createPlacedAgent(sdk, {
+  workspaceId: 'parent-ws',
   config: { provider: 'architect-mini/grok-4.6' }, parent: 'parent',
   cwd: '/prepared', labels: { role: 'implementer' },
 });
+assert.equal(workspaceCreated, false, 'spawning delegates must not call createWorkspace');
 assert.equal(handle.cwd, '/prepared');
-assert.deepEqual(requests[0].source, { kind: 'directory', path: '/prepared' });
-assert.equal(requests[1].workspaceId, 'worktree');
-assert.equal(requests[1].callerAgentId, 'parent');
-let created = false;
-await assert.rejects(createPlacedAgent({ workspaces: { ref: () => ({ directory: '/wrong', agents: { create() { created = true; } } }) } }, { cwd: '/prepared', workspaceId: 'wrong' }), /does not match/);
-assert.equal(created, false);
+assert.equal(requests.length, 1);
+assert.equal(requests[0].workspaceId, 'parent-ws');
+assert.equal(requests[0].callerAgentId, 'parent');
+assert.equal(requests[0].config.cwd, '/prepared');
+
+// Mismatched cwd is accepted without throwing; placement preserves child checkout.
+let workspaceAgentsCreated = false;
+const mismatched = await createPlacedAgent({
+  workspaces: { ref: () => ({ directory: '/parent-dir', agents: { create() { workspaceAgentsCreated = true; } } }) },
+  agents: { create: async (opts, placement) => ({ id: 'child', cwd: opts.cwd, workspaceId: placement.workspaceId }) },
+}, { cwd: '/prepared', workspaceId: 'parent-ws' });
+assert.equal(workspaceAgentsCreated, false);
+assert.equal(mismatched.cwd, '/prepared');
+assert.equal(mismatched.workspaceId, 'parent-ws');
 
 const root = mkdtempSync(join(tmpdir(), 'architect-recovery-routing-'));
 try {
