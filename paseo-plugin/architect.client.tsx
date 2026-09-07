@@ -93,6 +93,10 @@ export function TicketPanel({ theme, layout, workspaceId, navigation }: PluginWo
   const loadTicket = useRpc(ticketSnapshotRpc);
   const loadChildren = useRpc(childrenRpc);
   const start = useRpc(startArchitectRpc);
+  const loadTicketRef = useRef(loadTicket);
+  loadTicketRef.current = loadTicket;
+  const loadChildrenRef = useRef(loadChildren);
+  loadChildrenRef.current = loadChildren;
   const [text, setText] = useState("");
   const [tokens, setTokens] = useState<TicketTokens>([]);
   const [children, setChildren] = useState<ChildWork[]>([]);
@@ -133,7 +137,10 @@ export function TicketPanel({ theme, layout, workspaceId, navigation }: PluginWo
     inFlight.current = { cwd: directory, sessionId: origin ?? undefined, id: request };
     if (!quiet) setLoading(true);
     try {
-      const [ticket, result] = await Promise.allSettled([loadTicket({ cwd: directory, sessionId: origin ?? undefined }), loadChildren({ cwd: directory })]);
+      const [ticket, result] = await Promise.allSettled([
+        loadTicketRef.current({ cwd: directory, sessionId: origin ?? undefined }),
+        loadChildrenRef.current({ cwd: directory }),
+      ]);
       if (request !== generation.current) return;
       if (ticket.status === 'fulfilled') { setText(ticket.value.text); setTokens(ticket.value.tokens); }
       if (result.status === 'fulfilled') setChildren(result.value.children);
@@ -144,14 +151,14 @@ export function TicketPanel({ theme, layout, workspaceId, navigation }: PluginWo
       if (inFlight.current?.id === request) inFlight.current = null;
       if (request === generation.current) setLoading(false);
     }
-  }, [directory, origin, loadTicket, loadChildren]);
+  }, [directory, origin]);
 
   useEffect(() => {
     setText(""); setTokens([]); setChildren([]); setShowHistory(false); setSection('plan'); setError(null);
     void reload();
     const timer = setInterval(() => { void reload({ quiet: true }); }, 5000);
     return () => { generation.current++; inFlight.current = null; clearInterval(timer); };
-  }, [reload]);
+  }, [directory, origin, reload]);
   const ordered = [...children].sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
   const running = ordered.filter(isRunning);
   const attention = ordered.filter(needsAttention);

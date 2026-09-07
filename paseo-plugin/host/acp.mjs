@@ -135,16 +135,31 @@ async function pumpWakes(sessionId, session, write) {
           }
           const wake = texts[i];
           if (!store.get("wake_turn", wake.id)?.complete) {
+            const attemptKey = `wake_attempts:${wake.id}`;
+            const prior = store.get("attempt_count", attemptKey)?.count ?? 0;
+            if (prior >= 3) {
+              console.error(`Wake ${wake.id} failed ${prior} times; abandoning to avoid infinite loop.`);
+              store.put("wake_turn", wake.id, { complete: true, failed: true });
+              await callHost("/wakes", { agentId: sessionId, ack: [wake.id] });
+              continue;
+            }
             session.pending = new AbortController();
-            await runWakeTurn({ session, sessionId, text: wake.text, write, wakeId: wake.id });
-            store.put("wake_turn", wake.id, { complete: true });
+            try {
+              await runWakeTurn({ session, sessionId, text: wake.text, write, wakeId: wake.id });
+              store.put("wake_turn", wake.id, { complete: true });
+              await callHost("/wakes", { agentId: sessionId, ack: [wake.id] });
+            } catch (turnErr) {
+              store.put("attempt_count", attemptKey, { count: prior + 1, lastError: turnErr?.message });
+              throw turnErr;
+            }
+          } else {
+            await callHost("/wakes", { agentId: sessionId, ack: [wake.id] });
           }
-          await callHost("/wakes", { agentId: sessionId, ack: [wake.id] });
         }
       });
     } catch (error) {
       console.error("architect wakes", error);
-      await sleep(1000);
+      await sleep(5000);
     }
   }
 }
