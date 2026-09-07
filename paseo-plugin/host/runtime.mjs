@@ -169,12 +169,26 @@ export function createRuntime(options = {}) {
     };
   }
 
-  async function prepareImplementerWorkspace({ cwd, branch }) {
-    const created = typeof options.createWorktree === "function"
-      ? await options.createWorktree({ cwd, branch })
-      : await createImplementerWorktree({ cwd, branch, paseo });
+  async function prepareImplementerWorkspace({ cwd, branch, job, reuse }) {
+    const created = job.worktreeCwd ? { cwd: job.worktreeCwd, workspaceId: job.workspaceId } : typeof options.createWorktree === "function"
+      ? await options.createWorktree({ cwd, branch, reuse })
+      : await createImplementerWorktree({ cwd, branch, paseo, reuse });
     if (!isRealCwd(created?.cwd)) throw new Error("delegate: worktree cwd did not appear");
-    await indexWorkspaceFn(created.cwd, { wait: true });
+    job.worktreeCwd = created.cwd;
+    job.workspaceId = created.workspaceId;
+    save(job);
+    if (job.completion === "report") {
+      job.indexWarning = "Semantic indexing was not requested for this report-only investigation. Use ordinary file tools or exact search.";
+    } else {
+      try {
+        await indexWorkspaceFn(created.cwd, { wait: true, waitForLock: false });
+        delete job.indexWarning;
+      } catch (error) {
+        if (!String(error.stderr ?? error.message ?? error).includes("ZVEC_GREP.ENGINE.LOCK.BUSY")) throw error;
+        job.indexWarning = "Semantic indexing is busy. Use ordinary file tools or exact search; do not retry indexing or interrupt its lock owner.";
+      }
+    }
+    save(job);
     return created;
   }
 
@@ -230,7 +244,12 @@ export function createRuntime(options = {}) {
       runResearcherJob(job);
       return { started: true, jobId: job.id, to: "researcher" };
     }
-    const job = createJob({
+    // Preparation precedes all child creation. Reuse only a definitively failed
+    // preparation for this parent; uncertain/spawning jobs stay on reconciliation.
+    const retry = [...jobs.values()].reverse().find(job => job.cwd === cwd && job.parent === parent &&
+      job.role === "implementer" && job.kind === parsed.kind && job.status === "failed" &&
+      job.phase === "preparing" && !job.agentId);
+    const job = retry ?? createJob({
       role: "implementer",
       kind: parsed.kind,
       completion: parsed.completion,
@@ -243,9 +262,13 @@ export function createRuntime(options = {}) {
       ledger: createLedger(),
     });
     const branchName = implementerBranchName(parsed.kind, job.id);
+    if (retry) {
+      job.preparationFailures = [...(job.preparationFailures ?? []), { error: job.error, ticketRevision: job.ticketRevision }];
+      Object.assign(job, { status: "running", error: undefined, heartbeatAt: Date.now(), liveness: undefined, diagnosis: undefined, task: ticket.text, ticketRevision, completion: parsed.completion });
+    }
     job.phase = "preparing"; save(job);
     let prepared;
-    try { prepared = await prepareImplementerWorkspace({ cwd, branch: branchName }); }
+    try { prepared = await prepareImplementerWorkspace({ cwd, branch: branchName, job, reuse: Boolean(retry) }); }
     catch (error) { job.status = "failed"; job.error = `Workspace preparation failed: ${error.message}`; save(job); throw error; }
     job.worktreeCwd = prepared.cwd;
     job.workspaceId = prepared.workspaceId;
@@ -256,7 +279,7 @@ export function createRuntime(options = {}) {
       hostUrl,
       workspace: prepared.cwd,
       workspaceId: prepared.workspaceId,
-      task: ticket.text,
+      task: ticket.text + (job.indexWarning ? `\n\nWorkspace preparation: ${job.indexWarning}` : ""),
       kind: parsed.kind,
       completion: parsed.completion,
       parent: paseoParent,
@@ -477,7 +500,12 @@ export function createRuntime(options = {}) {
   async function spawnFixImplementer(job, findings, packet = job.packet, reviewRound = job.reviewerAttempt ?? 1) {
     const cwd = job.worktreeCwd ?? job.cwd;
     if (!isRealCwd(cwd)) throw new Error("delegate: worktree cwd did not appear");
-    await indexWorkspaceFn(cwd, { wait: true });
+    try { await indexWorkspaceFn(cwd, { wait: true, waitForLock: false }); }
+    catch (error) {
+      if (!String(error.stderr ?? error.message ?? error).includes("ZVEC_GREP.ENGINE.LOCK.BUSY")) throw error;
+      job.indexWarning = "Semantic indexing is busy. Use ordinary file tools or exact search; do not interrupt its lock owner.";
+      save(job);
+    }
     if (job.correctionJobId) {
       const existing = jobs.get(job.correctionJobId);
       if (!existing?.agentId) throw new Error("Correction creation outcome is uncertain; inspect the existing job");
@@ -505,7 +533,7 @@ export function createRuntime(options = {}) {
         jobId: implementer.id,
         hostUrl,
         workspace: cwd,
-        task: implementer.task,
+        task: implementer.task + (job.indexWarning ? `\n\nWorkspace preparation: ${job.indexWarning}` : ""),
         kind: implementer.kind,
         parent: job.paseoParent,
         branch: true,

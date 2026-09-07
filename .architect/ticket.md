@@ -61,7 +61,7 @@ The first configured Grok review produced useful findings but repeatedly failed 
 
 The operator subsequently approved disclosure, then stopped further Grok review for this recovery after another lengthy run was interrupted while generating. Do not launch another Grok review for this recovery. Inspect locally, communicate progress, validate with the operator, and merge automatically after checks. Future open tickets retain OCR review; bounded tickets retain direct landing and report-only investigations do not enter review/publication.
 
-Native Android reproduced the missing entry point. The approved Ticket composer button now opens the correct workspace from a conversation. The redesigned Plan/Work panel passes native navigation and formatted-plan checks with Pure black selected, including returning to the original conversation. Emulator instructions are in `.architect/scratch.md`. The existing plugin is reloaded, the live host matches reviewed source, and history migration is verified. Final PR integration remains outstanding.
+Native Android reproduced the missing entry point. The approved Ticket composer button now opens the correct workspace from a conversation. The redesigned Plan/Work panel passes native navigation and formatted-plan checks with Pure black selected, including returning to the original conversation. Emulator instructions are in `.architect/scratch.md`. The existing plugin is reloaded, the live host matches reviewed source, and history migration is verified. PR #75 merged as `4e8735a82cb43798a10868926c00ad84b934a914`.
 
 ## Operational constraints
 
@@ -70,3 +70,13 @@ Do not restart the normal Paseo daemon merely to load plugin changes. Preserve h
 ## Historical decisions
 
 The preceding detailed ticket and approvals are preserved in `.architect/recovery-history-2026-09-06.md`; use it as evidence, not as competing instructions or the next delegation task.
+
+## Workspace preparation follow-up
+
+A media-box discovery handoff failed before spawning a child because ZG's `info` preflight checks ancestor workspace locks, including an active home-directory index. The lock owner is a live ZG server; do not delete its lock or stop it. An initial sandbox-scoped process check incorrectly suggested the PID had exited; the host-level check corrected that finding.
+
+Semantic indexing is not a prerequisite for report-only investigation. Skip it for reports, and expose a file-tool fallback when implementation/correction preparation encounters an explicit lock-busy error. Preserve non-lock failures, prepared checkout identity, prior failure evidence and the same job on retry. Restrict embedding fallback to actual schema error codes; the failed command's `--embedding` argument is not diagnostic evidence. Indexing uses Architect's runtime home consistently, but this alone does not bypass ancestor workspace locks.
+
+The operator explicitly approved resuming the existing media-box investigation as report-only work. Retain its read-only scope, reuse its prepared checkout, and avoid duplicate workers or publication. Regression coverage exercises contention, finite waits, non-lock failures, stored-schema fallback, report-only skip, prepared-worktree reuse and same-job retry.
+
+Job `bee6ae12-8462-4cb0-8987-3980eb7aff1a` completed as report-only in the prepared checkout, with one worker and no commit, review, or publication. The completion wake was left for the media-box Architect. YouTube Share v1 remains that Architect's responsibility; this recovery does not implement it.
