@@ -155,6 +155,7 @@ export const GEMINI_FLASH_MODEL = Object.freeze({
   description: "Gemini 3.8 Flash",
   isDefault: true,
   defaultThinkingOptionId: "High",
+  contextWindowMaxTokens: 400_000,
   thinkingOptions: GEMINI_FLASH_THINKING,
 });
 

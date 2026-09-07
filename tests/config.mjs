@@ -61,6 +61,8 @@ assert.equal(ASTRA_MODEL.thinkingOptions.find((item) => item.isDefault)?.id, "hi
 assert.equal(ASTRA_MODEL.defaultThinkingOptionId, "high");
 assert.equal(patched.providers.architect.models[0].id, ARCHITECT_MODEL_ID);
 assert.equal(patched.providers.architect.models[0].defaultThinkingOptionId, "High");
+assert.equal(patched.providers.architect.models[0].contextWindowMaxTokens, 400_000);
+assert.equal(GEMINI_FLASH_MODEL.contextWindowMaxTokens, 400_000);
 assert.equal(patched.providers.codex.additionalModels[0].defaultThinkingOptionId, "high");
 assert.equal(patched.agentProfiles[0].id, "architect");
 assert.equal(patched.agentProfiles[1].id, "antigravity");
