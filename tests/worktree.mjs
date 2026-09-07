@@ -18,6 +18,7 @@ try {
   assert.equal(result.cwd, join(process.env.PASEO_HOME, 'worktrees/architect/architect-bounded-abcdef12'));
   assert.equal(execFileSync('git', ['-C', result.cwd, 'branch', '--show-current'], { encoding: 'utf8' }).trim(), branch);
   await assert.rejects(createImplementerWorktree({ cwd: repo, branch }), /already exists/);
+  assert.deepEqual(await createImplementerWorktree({ cwd: repo, branch, reuse: true }), result);
   assert.equal(execFileSync('git', ['-C', repo, 'branch', '--show-current'], { encoding: 'utf8' }).trim(), 'main');
 } finally {
   if (previous === undefined) delete process.env.PASEO_HOME;

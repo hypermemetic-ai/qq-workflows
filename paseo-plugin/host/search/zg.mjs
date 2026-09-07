@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { STATE_DIR } from "../config.mjs";
 import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { boundObservation } from "../observations.mjs";
 import { ZG_WHITELIST } from "./zg-tools.mjs";
@@ -15,28 +16,43 @@ export const DEFAULT_INDEX_EMBEDDING = "local/potion-code-16m-v2";
 export async function indexWorkspace(root, {
   embedding,
   execFileFn = execFile,
+  home = join(STATE_DIR, "zg"),
+  waitForLock = true,
+  timeout = 120_000,
+  now = Date.now,
+  sleep = delay,
 } = {}) {
   if (!root) throw new Error("index workspace requires root");
   const model = embedding ?? process.env.ZVEC_GREP_EMBEDDING ?? DEFAULT_INDEX_EMBEDDING;
-  const timeout = 120_000;
   const fresh = !existsSync(join(root, ".zvec-grep", "manifest.json"));
   const freshArgs = fresh ? ["--rebuild"] : [];
-  try {
-    return await execFileFn("zg", ["index", root, "--embedding", model, "--mode", "direct", ...freshArgs], {
-      encoding: "utf8",
-      timeout,
-      maxBuffer: 2 * 1024 * 1024,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (/embedding|schema|already|stored|incompatible/i.test(message)) {
-      return await execFileFn("zg", ["index", root, "--mode", "direct", ...freshArgs], {
-        encoding: "utf8",
-        timeout,
-        maxBuffer: 2 * 1024 * 1024,
+  const deadline = now() + timeout;
+  let useEmbedding = true;
+  for (;;) {
+    try {
+      return await execFileFn("zg", ["index", root, ...(useEmbedding ? ["--embedding", model] : []), "--mode", "direct", ...freshArgs], {
+        encoding: "utf8", timeout: Math.max(1, deadline - now()), maxBuffer: 2 * 1024 * 1024,
+        // Match the MCP search server, without contending with unrelated global indexes.
+        env: { ...process.env, ZVEC_GREP_HOME: home },
       });
+    } catch (error) {
+      // execFile's message includes the command's --embedding argument. Diagnose
+      // stderr and explicit engine codes, never a word in the failed command.
+      const diagnostic = String(error.stderr ?? error.message ?? error);
+      if (diagnostic.includes("ZVEC_GREP.ENGINE.LOCK.BUSY")) {
+        if (!waitForLock) throw error;
+        const remaining = deadline - now();
+        if (remaining <= 0) throw error;
+        await sleep(Math.min(1000, remaining));
+        if (now() >= deadline) throw error;
+        continue;
+      }
+      if (useEmbedding && /ZVEC_GREP\.ENGINE\.(?:SERVICE\.EMBEDDING_SCHEMA_CHANGE_REQUIRES_REBUILD|WORKSPACE_INDEX\.EMBEDDING_(?:PROVIDER|MODEL|DIMENSION|METRIC)_MISMATCH)/.test(diagnostic) && now() < deadline) {
+        useEmbedding = false;
+        continue;
+      }
+      throw error;
     }
-    throw error;
   }
 }
 

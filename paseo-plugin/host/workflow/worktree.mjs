@@ -18,11 +18,24 @@ export async function createImplementerWorktree({
   cwd,
   branch,
   paseo = null,
+  reuse = false,
   execFileFn = execFile,
   home = homedir(),
 } = {}) {
   if (!isRealCwd(cwd)) throw new Error("delegate: source cwd missing");
   if (!branch) throw new Error("delegate: worktree branch missing");
+  if (reuse) {
+    const { stdout } = await execFileFn("git", ["worktree", "list", "--porcelain", "-z"], { cwd, encoding: "utf8" });
+    const entry = stdout.split("\0\0").map(record => record.split("\0"))
+      .find(fields => fields.includes(`branch refs/heads/${branch}`));
+    if (entry) {
+      if (entry.some(field => /^(?:prunable|locked)(?: |$)/.test(field))) throw new Error("Prepared worktree is locked or unavailable; inspect before retrying");
+      const path = entry.find(field => field.startsWith("worktree ")).slice(9);
+      const actual = await execFileFn("git", ["-C", path, "branch", "--show-current"], { encoding: "utf8" });
+      if (actual.stdout.trim() !== branch) throw new Error("Prepared worktree branch changed; inspect before retrying");
+      return { cwd: path, workspaceId: null };
+    }
+  }
   if (paseo?.workspaces?.create) {
     const handle = await paseo.workspaces.create({
       title: `implementer ${branch}`,
