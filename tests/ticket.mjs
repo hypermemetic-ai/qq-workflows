@@ -52,6 +52,37 @@ try {
   const whole = await ticketWrite(dir, { text: bounded });
   assert.equal(parseKind(whole.text), "bounded");
   assert.equal(openSectionIsEmpty(whole.text), true);
+
+  // Session-scoped ticket tests
+  const session1 = "session-test-1";
+  const session2 = "session-test-2";
+  const s1Created = await ensureTicket(dir, { sessionId: session1 });
+  assert.equal(s1Created.created, true);
+  assert.equal(s1Created.path, join(dir, ".architect", "tickets", `${session1}.md`));
+  assert.equal(s1Created.text, template);
+  assert.equal(readFileSync(join(dir, ".architect", "tickets", `${session1}.md`), "utf8"), template);
+
+  // ticketRead with sessionId
+  const s1Read = await ticketRead(dir, undefined, session1);
+  assert.equal(s1Read.text, template);
+  const s1ReadDirect = await ticketRead(dir, session1);
+  assert.equal(s1ReadDirect.text, template);
+
+  // ticketWrite with sessionId
+  const s1Modified = await ticketWrite(dir, { text: bounded }, undefined, session1);
+  assert.equal(parseKind(s1Modified.text), "bounded");
+  assert.equal(readFileSync(join(dir, ".architect", "tickets", `${session1}.md`), "utf8"), bounded);
+
+  // session-2 starts clean with template, isolated from session-1
+  const s2Read = await ticketRead(dir, session2);
+  assert.equal(s2Read.text, template);
+  assert.equal(parseKind(s2Read.text), null);
+  assert.equal(readFileSync(join(dir, ".architect", "tickets", `${session2}.md`), "utf8"), template);
+
+  // Backward compatibility: ticketRead/ticketWrite without sessionId still uses .architect/ticket.md
+  const fallbackRead = await ticketRead(dir);
+  assert.equal(fallbackRead.path, join(dir, ".architect", "ticket.md"));
+  assert.equal(fallbackRead.text, bounded);
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

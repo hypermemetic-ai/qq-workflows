@@ -40,6 +40,7 @@ assert.doesNotMatch(architectContent, /run_command/);
 assert.doesNotMatch(architectContent, /invoke_subagent/);
 assert.match(architectContent, /view_file/);
 assert.match(architectContent, /grep_search/);
+assert.doesNotMatch(architectContent, /Take notes and reasoning on the ticket/);
 
 const teacherContent = readFileSync(join(PLUGIN_ROOT, "agents", "teacher", "agent.md"), "utf8");
 assert.doesNotMatch(teacherContent, /write_to_file/);

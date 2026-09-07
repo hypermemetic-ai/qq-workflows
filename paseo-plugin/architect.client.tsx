@@ -103,7 +103,7 @@ export function TicketPanel({ theme, layout, workspaceId, navigation }: PluginWo
   const [showDetails, setShowDetails] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const generation = useRef(0);
-  const inFlight = useRef<{ cwd: string; id: number } | null>(null);
+  const inFlight = useRef<{ cwd: string; sessionId?: string; id: number } | null>(null);
   const c = theme.colors;
   const styles = useMemo(() => StyleSheet.create({
     screen: { flex: 1, backgroundColor: c.surface0 },
@@ -128,12 +128,12 @@ export function TicketPanel({ theme, layout, workspaceId, navigation }: PluginWo
 
   const reload = useCallback(async ({ quiet = false } = {}) => {
     if (!directory) return;
-    if (inFlight.current?.cwd === directory) return;
+    if (inFlight.current?.cwd === directory && inFlight.current?.sessionId === (origin ?? undefined)) return;
     const request = ++generation.current;
-    inFlight.current = { cwd: directory, id: request };
+    inFlight.current = { cwd: directory, sessionId: origin ?? undefined, id: request };
     if (!quiet) setLoading(true);
     try {
-      const [ticket, result] = await Promise.allSettled([loadTicket({ cwd: directory }), loadChildren({ cwd: directory })]);
+      const [ticket, result] = await Promise.allSettled([loadTicket({ cwd: directory, sessionId: origin ?? undefined }), loadChildren({ cwd: directory })]);
       if (request !== generation.current) return;
       if (ticket.status === 'fulfilled') { setText(ticket.value.text); setTokens(ticket.value.tokens); }
       if (result.status === 'fulfilled') setChildren(result.value.children);
@@ -144,7 +144,7 @@ export function TicketPanel({ theme, layout, workspaceId, navigation }: PluginWo
       if (inFlight.current?.id === request) inFlight.current = null;
       if (request === generation.current) setLoading(false);
     }
-  }, [directory, loadTicket, loadChildren]);
+  }, [directory, origin, loadTicket, loadChildren]);
 
   useEffect(() => {
     setText(""); setTokens([]); setChildren([]); setShowHistory(false); setSection('plan'); setError(null);
@@ -180,7 +180,7 @@ export function TicketPanel({ theme, layout, workspaceId, navigation }: PluginWo
       </View>}
       <View style={{ marginTop: 28, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: c.border, paddingTop: 8 }}>
         <Pressable accessibilityRole="button" accessibilityLabel="Ticket details" accessibilityState={{ expanded: showDetails }} onPress={() => setShowDetails(value => !value)} style={[styles.action, { justifyContent: 'space-between' }]}><Text style={styles.muted}>Ticket details</Text><Icon name={showDetails ? 'ChevronUp' : 'ChevronDown'} size={14} color={c.foregroundMuted} /></Pressable>
-        {showDetails ? <View style={{ gap: 8 }}><Text selectable style={styles.muted}>{directory}</Text><Text style={styles.muted}>Saved in .architect/ticket.md</Text><Pressable accessibilityRole="button" accessibilityLabel="Start architect" disabled={starting || !directory} style={styles.action} onPress={async () => {
+        {showDetails ? <View style={{ gap: 8 }}><Text selectable style={styles.muted}>{directory}</Text><Text style={styles.muted}>Saved in {origin ? `.architect/tickets/${origin}.md` : '.architect/ticket.md'}</Text><Pressable accessibilityRole="button" accessibilityLabel="Start architect" disabled={starting || !directory} style={styles.action} onPress={async () => {
           if (!directory || starting) return;
           setStarting(true);
           try { const created = await start({ cwd: directory, title: 'Architect' }); navigation?.openAgent?.({ agentId: created.agentId }); }
