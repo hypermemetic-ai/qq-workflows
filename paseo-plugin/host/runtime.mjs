@@ -745,7 +745,7 @@ export function createRuntime(options = {}) {
     if (paseo) {
       if (typeof paseo.config?.get === "function" && typeof paseo.config?.patch === "function") {
         const requestedProvider = createOptions?.config?.provider?.split("/")?.[0];
-        if (requestedProvider && ["architect-mini", "architect-teacher", "architect"].includes(requestedProvider)) {
+        if (requestedProvider && ["architect-mini", "architect-teacher", "architect", "agy"].includes(requestedProvider)) {
           const current = await paseo.config.get();
           const providers = current?.config?.providers ?? {};
           if (!providers[requestedProvider]) {
