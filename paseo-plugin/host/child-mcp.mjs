@@ -3,12 +3,12 @@ import { startJsonRpcStdio } from "./jsonrpc-stdio.mjs";
 import { roleTools } from "./workflow/tools.mjs";
 import { callHost } from "./host-client.mjs";
 
-const role = process.env.ARCHITECT_ROLE ?? "teacher";
+const role = process.env.ARCHITECT_ROLE;
 const jobId = process.env.ARCHITECT_JOB_ID;
 const workspace = process.env.ARCHITECT_WORKSPACE ?? process.cwd();
 const hostUrl = process.env.ARCHITECT_HOST;
 
-const tools = roleTools(role);
+const tools = role ? roleTools(role) : [];
 
 function asMcpTool(tool) {
   return {
@@ -37,6 +37,7 @@ startJsonRpcStdio({
     if (method === "tools/call") {
       const name = params?.name;
       const args = params?.arguments ?? {};
+      if (!role) throw new Error("ARCHITECT_ROLE is not set");
       if (!tools.some(tool => tool.name === name)) throw new Error(`${role} cannot execute ${name}`);
       const body = await callHost("/tool", {
         name,

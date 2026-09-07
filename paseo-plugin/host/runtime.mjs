@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createSupervisor } from "./supervisor.mjs";
 import { hostVersion } from "./version.mjs";
-import { createPlacedAgent, reconcileWithSdk, isRealCwd, waitForHandleCwd, defaultSpawnExec, parseCreatedAgentJson } from "./spawn-agent.mjs";
+import { createPlacedAgent, reconcileWithSdk, isRealCwd, waitForHandleCwd, defaultSpawnExec, parseCreatedAgentJson, sendAgentWake } from "./spawn-agent.mjs";
 import { createStore, persistentMap } from "./store.mjs";
 import { ticketRead, ticketWrite, parseKind } from "./workflow/ticket.mjs";
 import { roleTools, validateDelegateArgs, validateTeacherArgs } from "./workflow/tools.mjs";
@@ -22,6 +22,8 @@ import { ZG_WHITELIST } from "./search/zg-tools.mjs";
 import {
   implementerCreateOptions,
   teacherCreateOptions,
+  researcherCreateOptions,
+  reviewerCreateOptions,
 } from "./workflow/children.mjs";
 import { STATE_DIR, HOST_META_PATH, ARCHITECT_MODEL_ID, ARCHITECT_PROVIDER_ID, SPAWN_ENTRY, daemonConfigPatch } from "./config.mjs";
 import { buildReviewPacket, commitIfDirty, createAndMergePr, fastForwardMain, hasRemote, isGitRepo } from "./workflow/git.mjs";
@@ -43,8 +45,22 @@ export function createRuntime(options = {}) {
   let hostUrl = options.hostUrl ?? null;
   const version = hostVersion();
   let draining = false;
-  const ocrReview = options.ocrReview ?? runOcrReview;
+  const ocrReview = options.ocrReview ?? null;
   const runResearch = options.runResearch ?? runResearcher;
+  const sendWakeFn = options.sendWake ?? (paseo && typeof paseo.agents?.ref === "function"
+    ? ((agentId, text) => {
+        try {
+          const ref = paseo.agents.ref(agentId);
+          if (typeof ref?.send === "function") {
+            ref.send(text).catch((err) => {
+              console.error("Failed to push wake to agent", agentId, err);
+            });
+          }
+        } catch (err) {
+          console.error("Failed to ref agent for wake", agentId, err);
+        }
+      })
+    : null);
   const terminateProcessFn = options.terminateProcess ?? terminateProcess;
   const terminateProcessGroupFn = options.terminateProcessGroup ?? terminateProcessGroup;
   const waitForCwd = options.waitForHandleCwd ?? waitForHandleCwd;
@@ -237,12 +253,37 @@ export function createRuntime(options = {}) {
         role: "researcher",
         cwd,
         parent,
+        paseoParent,
         question: parsed.question,
         operationKey: opKey,
         ledger: createLedger(),
       });
-      runResearcherJob(job);
-      return { started: true, jobId: job.id, to: "researcher" };
+      if (options.runResearch) {
+        runResearcherJob(job);
+        return { started: true, jobId: job.id, to: "researcher" };
+      }
+      job.phase = "spawning";
+      save(job);
+      try {
+        const created = await spawnAgent(researcherCreateOptions({
+          jobId: job.id,
+          hostUrl,
+          workspace: job.cwd,
+          question: job.question,
+          parent: paseoParent,
+        }));
+        job.agentId = created.id;
+        job.workspaceId = created.workspaceId;
+        job.phase = "working";
+        save(job);
+        return { started: true, agentId: created.id, jobId: job.id, to: "researcher" };
+      } catch (error) {
+        job.status = "failed";
+        job.error = error.message;
+        save(job);
+        queueWake(parent, `Researcher creation failed: ${error.message}`, `spawn:${job.id}`);
+        throw error;
+      }
     }
     // Preparation precedes all child creation. Reuse only a definitively failed
     // preparation for this parent; uncertain/spawning jobs stay on reconciliation.
@@ -444,13 +485,44 @@ export function createRuntime(options = {}) {
       const from = packet.baseSha;
       if (!from) throw new Error("review packet missing merge-base");
       if (!packet.files.length) throw new Error("No changes found in the implementation checkout; review was not run. Verify the child workspace and its handback.");
-      const review = () => ocrReview(cwd, { from, to: packet.headSha, supervision: { store, jobId: job.id, delegationId: job.delegationId ?? job.id, circuit, sleep, random } });
-      // Production retries occur at OCR's HTTP boundary, never around the whole review.
-      const findings = options.ocrReview ? await retryProviderOperation(review, { ledger: job.ledger ?? createLedger(), circuit, scope: "review", sleep, random }) : await review();
-      job.reviewFindings = normalizeFindings(findings);
-      job.phase = "reviewed";
+      if (ocrReview) {
+        const review = () => ocrReview(cwd, { from, to: packet.headSha, supervision: { store, jobId: job.id, delegationId: job.delegationId ?? job.id, circuit, sleep, random } });
+        // Production retries occur at OCR's HTTP boundary, never around the whole review.
+        const findings = options.ocrReview ? await retryProviderOperation(review, { ledger: job.ledger ?? createLedger(), circuit, scope: "review", sleep, random }) : await review();
+        job.reviewFindings = normalizeFindings(findings);
+        job.phase = "reviewed";
+        save(job);
+        return applyReviewerDecision(job, findings, packet);
+      }
+      const reviewerJob = createJob({
+        role: "reviewer",
+        kind: job.kind ?? "open",
+        cwd: job.cwd,
+        parent: job.parent,
+        paseoParent: job.paseoParent,
+        reviewerAttempt: (job.reviewerAttempt ?? 0) + 1,
+        worktreeCwd: cwd,
+        packet,
+        task: job.task,
+        ledger: job.ledger ?? createLedger(),
+        delegationId: job.delegationId ?? job.id,
+        implementerJobId: job.id,
+      });
+      job.reviewerJobId = reviewerJob.id;
+      job.reviewerAttempt = reviewerJob.reviewerAttempt;
       save(job);
-      return applyReviewerDecision(job, findings, packet);
+      const created = await spawnAgent(reviewerCreateOptions({
+        jobId: reviewerJob.id,
+        hostUrl,
+        workspace: cwd,
+        workspaceId: job.workspaceId,
+        parent: job.paseoParent,
+      }));
+      reviewerJob.agentId = created.id;
+      reviewerJob.workspaceId = created.workspaceId;
+      reviewerJob.phase = "working";
+      save(reviewerJob);
+      return { ok: true, action: "spawn_reviewer", reviewerId: created.id, reviewerJobId: reviewerJob.id };
     } catch (error) {
       if (error.reviewEvidence) job.reviewEvidence = error.reviewEvidence;
       error.failureClass = error.failureClass ?? classifyFailure(error);
@@ -580,6 +652,13 @@ export function createRuntime(options = {}) {
     if (!agentId) return;
     const wakeId = store.wake(agentId, text, id);
     notifyWaiters(agentId);
+    if (typeof sendWakeFn === "function") {
+      try {
+        sendWakeFn(agentId, text, id);
+      } catch (err) {
+        console.error("sendWake failed", err);
+      }
+    }
     return wakeId;
   }
 

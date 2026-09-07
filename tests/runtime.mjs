@@ -34,8 +34,8 @@ function createRuntime(options = {}) {
   return host;
 }
 
-assert.equal(Object.hasOwn(children, "researcherCreateOptions"), false);
-assert.equal(Object.hasOwn(children, "reviewerCreateOptions"), false);
+assert.equal(typeof children.researcherCreateOptions, "function");
+assert.equal(typeof children.reviewerCreateOptions, "function");
 assert.equal(typeof children.implementerCreateOptions, "function");
 assert.equal(typeof children.teacherCreateOptions, "function");
 let rejectedChild;
@@ -610,11 +610,11 @@ try {
   assert.equal(helperCalls[0].args.at(-1), SPAWN_ENTRY);
   const helperPayload = JSON.parse(helperCalls[0].opts.input);
   assert.equal(helperPayload.config.featureValues.auto_accept, true);
-  assert.equal(helperPayload.config.thinkingOptionId, "high");
+  assert.equal(helperPayload.config.thinkingOptionId, "High");
   assert.equal(helperPayload.config.mcpServers.zvec_grep, undefined);
   assert.ok(helperPayload.config.mcpServers.architect);
   assert.equal(Object.hasOwn(helperPayload.config, "toolPolicy"), false);
-  assert.match(helperPayload.config.provider, /^architect-mini\//);
+  assert.match(helperPayload.config.provider, /^agy\//);
 
   // Uncertain job reconciliation: confirm failed spawn transitions to failed
   const unrecRuntime = createRuntime({

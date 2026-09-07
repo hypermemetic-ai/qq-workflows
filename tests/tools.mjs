@@ -34,6 +34,7 @@ assert.deepEqual(roleTools('teacher'), teacherTools());
 assert.deepEqual(roleTools('architect'), architectTools());
 assert.deepEqual(roleTools('unknown'), []);
 assert.deepEqual(roleTools('implementer').map(tool => tool.name), ['done']);
+assert.deepEqual(roleTools('reviewer').map(tool => tool.name), ['done']);
 assert.deepEqual(ZG_WHITELIST, ['zvec_grep_search', 'zvec_grep_rg']);
 
 const first = teacherFirstUserMessage({
