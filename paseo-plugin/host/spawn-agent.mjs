@@ -72,12 +72,30 @@ export async function ensureDaemonProviders(client, createOptions) {
   if (typeof client?.config?.get !== "function" || typeof client?.config?.patch !== "function") return;
   const requestedProvider = createOptions?.config?.provider?.split("/")?.[0];
   if (!requestedProvider) return;
-  if (!["architect-mini", "architect-teacher", "architect"].includes(requestedProvider)) return;
+  if (!["architect-mini", "architect-teacher", "architect", "agy"].includes(requestedProvider)) return;
 
   const current = await client.config.get();
   const providers = current?.config?.providers ?? {};
   if (!providers[requestedProvider]) {
     await client.config.patch(daemonConfigPatch(current?.config));
+  }
+}
+
+export async function sendAgentWake(agentId, text, {
+  clientFactory = createPaseoClient,
+  url = daemonWebSocketUrl(),
+  clientId = cliClientId(),
+} = {}) {
+  if (!agentId || !text) return;
+  const client = clientFactory({ url, ...(clientId ? { clientId } : {}) });
+  await client.connect();
+  try {
+    const agent = client.agents?.ref?.(agentId);
+    if (typeof agent?.send === "function") {
+      await agent.send(text);
+    }
+  } finally {
+    await client.close().catch(() => {});
   }
 }
 

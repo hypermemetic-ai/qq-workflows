@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -72,10 +72,62 @@ export const PLUGIN_ROOT = findPluginRoot();
 export const ACP_ENTRY = join(PLUGIN_ROOT, "host", "acp.mjs");
 export const CHILD_MCP_ENTRY = join(PLUGIN_ROOT, "host", "child-mcp.mjs");
 export const SPAWN_ENTRY = join(PLUGIN_ROOT, "host", "spawn-agent.mjs");
+export const AGY_ROLE_ENTRY = join(PLUGIN_ROOT, "host", "agy-role.mjs");
 
 export const ARCHITECT_PROVIDER_ID = "architect";
-export const ARCHITECT_MODEL_ID = "gpt-6-astra";
+export const ARCHITECT_MODEL_ID = "Gemini 3.8 Flash";
 export const ARCHITECT_PROFILE_ID = "architect";
+export const ARCHITECT_ROLES = Object.freeze(["architect", "teacher", "implementer", "researcher", "reviewer"]);
+
+export function realAgyBin(env = process.env) {
+  return env.REAL_AGY_BIN || "/home/qqp/.local/bin/agy";
+}
+
+export function ensureAgentsAndMcpInstalled({ home = homedir(), pluginRoot = PLUGIN_ROOT } = {}) {
+  const agentsDir = join(home, ".gemini", "config", "agents");
+  mkdirSync(agentsDir, { recursive: true });
+  for (const role of ARCHITECT_ROLES) {
+    const sourceFile = join(pluginRoot, "agents", role, "agent.md");
+    if (!existsSync(sourceFile)) continue;
+    const targetRoleDir = join(agentsDir, role);
+    mkdirSync(targetRoleDir, { recursive: true });
+    const targetFile = join(targetRoleDir, "agent.md");
+    try {
+      const stat = lstatSync(targetFile, { throwIfNoEntry: false });
+      if (stat) {
+        rmSync(targetFile, { force: true });
+      }
+      symlinkSync(sourceFile, targetFile);
+    } catch {
+      try {
+        writeFileSync(targetFile, readFileSync(sourceFile, "utf8"), "utf8");
+      } catch (copyErr) {
+        console.error(`Failed to install agent.md for ${role}`, copyErr);
+      }
+    }
+  }
+
+  const mcpConfigPath = join(home, ".gemini", "config", "mcp_config.json");
+  let mcpConfig = { mcpServers: {} };
+  try {
+    if (existsSync(mcpConfigPath)) {
+      mcpConfig = JSON.parse(readFileSync(mcpConfigPath, "utf8"));
+    }
+  } catch {
+    mcpConfig = { mcpServers: {} };
+  }
+  mcpConfig.mcpServers = mcpConfig.mcpServers || {};
+  mcpConfig.mcpServers.architect = {
+    command: process.execPath,
+    args: [CHILD_MCP_ENTRY],
+  };
+  try {
+    mkdirSync(dirname(mcpConfigPath), { recursive: true });
+    writeFileSync(mcpConfigPath, `${JSON.stringify(mcpConfig, null, 2)}\n`, "utf8");
+  } catch (error) {
+    console.error("Failed to write mcp_config.json", error);
+  }
+}
 
 export const ASTRA_THINKING = Object.freeze([
   { id: "low", label: "low", description: "Fast responses with lighter reasoning" },
@@ -85,12 +137,25 @@ export const ASTRA_THINKING = Object.freeze([
 ]);
 
 export const ASTRA_MODEL = Object.freeze({
-  id: ARCHITECT_MODEL_ID,
+  id: "gpt-6-astra",
   label: "GPT-6 Astra",
   description: "GPT-6 Astra",
   isDefault: true,
   defaultThinkingOptionId: "high",
   thinkingOptions: ASTRA_THINKING,
+});
+
+export const GEMINI_FLASH_THINKING = Object.freeze([
+  { id: "High", label: "High", description: "High reasoning effort", isDefault: true },
+]);
+
+export const GEMINI_FLASH_MODEL = Object.freeze({
+  id: ARCHITECT_MODEL_ID,
+  label: "Gemini 3.8 Flash",
+  description: "Gemini 3.8 Flash",
+  isDefault: true,
+  defaultThinkingOptionId: "High",
+  thinkingOptions: GEMINI_FLASH_THINKING,
 });
 
 export function astraThoughtConfig(currentValue = "high") {
@@ -113,9 +178,15 @@ export function architectProvider(nodePath = process.execPath) {
   return {
     extends: "acp",
     label: "Architect",
-    description: "Ticket-driven architect with a 2,048-token conversation floor.",
-    command: [nodePath, ACP_ENTRY],
-    models: [ASTRA_MODEL],
+    description: "Ticket-driven architect with Google Antigravity Gemini 3.8 Flash.",
+    command: ["npx", "-y", "agy-acp@0.5.2"],
+    env: {
+      AGY_BIN: AGY_ROLE_ENTRY,
+      REAL_AGY_BIN: realAgyBin(),
+      ARCHITECT_ROLE: "architect",
+      PATH: process.env.PATH || "/home/qqp/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin",
+    },
+    models: [GEMINI_FLASH_MODEL],
   };
 }
 
@@ -126,13 +197,18 @@ export function architectProfile() {
     icon: "compass",
     provider: ARCHITECT_PROVIDER_ID,
     model: ARCHITECT_MODEL_ID,
-    thinkingOptionId: "high",
+    thinkingOptionId: "High",
     notes:
-      "Ticket-driven architect. Pins `.architect/ticket.md`, keeps at least two operator/architect pairs with a 2,048-token conversation floor, and delegates implementer or researcher. Codex gpt-6-astra with high thinking.",
+      "Ticket-driven architect using Antigravity Gemini 3.8 Flash. Pins `.architect/ticket.md`, and delegates implementer, teacher, or researcher.",
   };
 }
 
 export function daemonConfigPatch(config) {
+  try {
+    ensureAgentsAndMcpInstalled();
+  } catch (err) {
+    console.error("ensureAgentsAndMcpInstalled failed:", err);
+  }
   const next = structuredClone(config ?? {});
   const providers = next.providers ?? {};
   providers["architect-teacher"] = {
@@ -149,9 +225,19 @@ export function daemonConfigPatch(config) {
     ...(providers[ARCHITECT_PROVIDER_ID] ?? {}),
     ...architectProvider(),
   };
+  if (providers.agy) {
+    providers.agy = {
+      ...providers.agy,
+      env: {
+        ...(providers.agy.env ?? {}),
+        AGY_BIN: AGY_ROLE_ENTRY,
+        REAL_AGY_BIN: providers.agy.env?.REAL_AGY_BIN || realAgyBin(),
+      },
+    };
+  }
   const codex = providers.codex && typeof providers.codex === "object" ? providers.codex : {};
   const additional = Array.isArray(codex.additionalModels) ? [...codex.additionalModels] : [];
-  const existing = additional.findIndex((model) => model?.id === ARCHITECT_MODEL_ID);
+  const existing = additional.findIndex((model) => model?.id === ASTRA_MODEL.id);
   if (existing >= 0) additional[existing] = { ...additional[existing], ...ASTRA_MODEL, isDefault: additional[existing].isDefault };
   else additional.push({ ...ASTRA_MODEL, isDefault: false });
   providers.codex = { ...codex, additionalModels: additional };
