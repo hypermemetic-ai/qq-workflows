@@ -11,8 +11,8 @@ export async function handleStart(input: { cwd: string; title?: string }, { pase
   return hostRequest("/start", input);
 }
 const markdown = new MarkdownIt({ html: false, linkify: false, typographer: false });
-export async function handleTicket(input: { cwd: string }) {
-  const ticket = await ticketRead(input.cwd);
+export async function handleTicket(input: { cwd: string; sessionId?: string }) {
+  const ticket = await ticketRead(input.cwd, undefined, input.sessionId);
   return { ...ticket, tokens: markdown.parse(ticket.text.replace(/^#\s+.+\n/, ''), {}) };
 }
 export async function handleChildren(input: { cwd: string; parentId?: string }) { return hostRequest("/jobs", input); }

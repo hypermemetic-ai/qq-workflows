@@ -7,7 +7,7 @@ import { ARCHITECT_SYSTEM_PROMPT } from "./workflow/prompts.mjs";
 import { architectTools } from "./workflow/tools.mjs";
 import { callHost } from "./host-client.mjs";
 import { indexWorkspace } from "./search/zg.mjs";
-import { ARCHITECT_MODEL_ID, astraThoughtConfig } from "./config.mjs";
+import { ARCHITECT_MODEL_ID, GEMINI_FLASH_THINKING, geminiFlashThoughtConfig } from "./config.mjs";
 import { ARCHITECT_REASONING } from "./providers/model.mjs";
 import { bumpGeneration, createTurnState, enqueueTurn, wakeIsStale } from "./turns.mjs";
 
@@ -58,19 +58,20 @@ const rpc = startJsonRpcStdio({
         sessionId,
         models: {
           currentModelId: ARCHITECT_MODEL_ID,
-          availableModels: [{ modelId: ARCHITECT_MODEL_ID, name: "GPT-6 Astra" }],
+          availableModels: [{ modelId: ARCHITECT_MODEL_ID, name: "Gemini 3.8 Flash" }],
         },
-        configOptions: [astraThoughtConfig(session.thinking)],
+        configOptions: [geminiFlashThoughtConfig(session.thinking)],
       };
     }
     if (method === "session/set_config_option") {
       const session = sessions.get(params.sessionId);
       if (!session) throw new Error("unknown session");
       if (params.configId === "thought_level" && typeof params.value === "string") {
-        if (params.value !== "high") throw new Error("Architect uses Astra high");
-        session.thinking = "high";
+        const match = GEMINI_FLASH_THINKING.find((item) => item.id.toLowerCase() === params.value.toLowerCase());
+        if (!match) throw new Error("Architect uses Gemini 3.8 Flash High");
+        session.thinking = match.id;
       }
-      return { configOptions: [astraThoughtConfig(session.thinking)] };
+      return { configOptions: [geminiFlashThoughtConfig(session.thinking)] };
     }
     if (method === "session/prompt") {
       const session = sessions.get(params.sessionId);
@@ -192,6 +193,7 @@ async function runSessionTurn({ session, sessionId, operatorText, messageId, wri
     saveState: state => store.put("turn", turnKey, state),
     reconcileTool: call => callHost('/tool-result', { requestId: `${turnKey}:${call.id}` }, { signal }),
     cwd: session.cwd,
+    sessionId,
     signal,
     checkpoint: (kind, value) => store.put("checkpoint", `${sessionId}:${kind}`, { value, wakeId }),
     operatorText,
@@ -203,6 +205,7 @@ async function runSessionTurn({ session, sessionId, operatorText, messageId, wri
         requestId: `${turnKey}:${callId}`,
         cwd: session.cwd,
         agentId: sessionId,
+        sessionId,
         paseoAgentId: process.env.PASEO_AGENT_ID,
       },
     }, { signal }).then((body) => body.result),
@@ -237,7 +240,7 @@ async function runSessionTurn({ session, sessionId, operatorText, messageId, wri
       });
     },
     tools: architectTools(),
-    systemPrompt: ARCHITECT_SYSTEM_PROMPT,
+    systemPrompt: ARCHITECT_SYSTEM_PROMPT(sessionId),
     reasoning: session.thinking ?? ARCHITECT_REASONING,
   });
     store.put("architect_turn", turnKey, { ...measurement, status: "completed", endedAt: Date.now() });

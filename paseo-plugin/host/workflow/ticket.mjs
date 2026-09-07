@@ -4,7 +4,10 @@ import { dirname, join } from "node:path";
 export const TICKET_RELATIVE = ".architect/ticket.md";
 export const TEMPLATE_RELATIVE = ".architect/template.md";
 
-export function ticketPath(cwd) {
+export function ticketPath(cwd, sessionId) {
+  if (sessionId) {
+    return join(cwd, ".architect", "tickets", `${sessionId}.md`);
+  }
   return join(cwd, TICKET_RELATIVE);
 }
 
@@ -16,8 +19,8 @@ export async function loadPackagedTemplate() {
   return PACKAGED_TEMPLATE_TEXT;
 }
 
-export async function ensureTicket(cwd, { readFileFn = readFile, writeFileFn = writeFile, mkdirFn = mkdir } = {}) {
-  const path = ticketPath(cwd);
+export async function ensureTicket(cwd, { readFileFn = readFile, writeFileFn = writeFile, mkdirFn = mkdir, sessionId } = {}) {
+  const path = ticketPath(cwd, sessionId);
   try {
     return { path, text: await readFileFn(path, "utf8"), created: false };
   } catch (error) {
@@ -66,15 +69,35 @@ export function applyTicketEdit(current, input) {
   return current.slice(0, index) + input.new_string + current.slice(index + input.old_string.length);
 }
 
-export async function ticketRead(cwd, io) {
-  const { path, text } = await ensureTicket(cwd, io);
+export async function ticketRead(cwd, io, sessionId) {
+  let resolvedIo = io;
+  let resolvedSessionId = sessionId;
+  if (typeof io === "string") {
+    resolvedSessionId = io;
+    resolvedIo = {};
+  } else if (io && typeof io === "object") {
+    if (!resolvedSessionId && io.sessionId) {
+      resolvedSessionId = io.sessionId;
+    }
+  }
+  const { path, text } = await ensureTicket(cwd, { ...resolvedIo, sessionId: resolvedSessionId });
   return { path, text };
 }
 
-export async function ticketWrite(cwd, input, io = {}) {
-  const { path, text } = await ensureTicket(cwd, io);
+export async function ticketWrite(cwd, input, io = {}, sessionId) {
+  let resolvedIo = io;
+  let resolvedSessionId = sessionId;
+  if (typeof io === "string") {
+    resolvedSessionId = io;
+    resolvedIo = {};
+  } else if (io && typeof io === "object") {
+    if (!resolvedSessionId && io.sessionId) {
+      resolvedSessionId = io.sessionId;
+    }
+  }
+  const { path, text } = await ensureTicket(cwd, { ...resolvedIo, sessionId: resolvedSessionId });
   const next = applyTicketEdit(text, input);
-  const writeFileFn = io.writeFileFn ?? writeFile;
+  const writeFileFn = resolvedIo?.writeFileFn ?? writeFile;
   await writeFileFn(path, next);
   return { path, text: next };
 }

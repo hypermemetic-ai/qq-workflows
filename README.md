@@ -22,11 +22,11 @@ Install the plugin on the machine running your Paseo daemon. You will need:
 | [Paseo](https://paseo.sh/) with plugins enabled | Conversations, workspace UI and agent sessions; tested with 0.7.2 |
 | Node.js with the built-in `node:sqlite` module, and Python 3.10+ | Running the plugin and its agents |
 | Git and [GitHub CLI](https://cli.github.com/) (`gh`) | Worktrees and pull-request creation/merging |
-| [Grok CLI](https://github.com/xai-org/grok-build), signed in | Teacher conversations |
+| [Google Antigravity CLI](https://cloud.google.com/) (`agy`), signed in | Architect and child agent execution |
 | [zvec-grep](https://github.com/zvec-ai/zvec-grep) (`zg`) | Repository search; tested with 0.2.1 |
 | [Open Code Review](https://github.com/alibaba/open-code-review) (`ocr`) | Automated code review; tested with 1.11.5 |
 
-The agents are currently configured for **GPT-6 Astra** and **Grok 4.6**, both with high reasoning. Your provider accounts must have access to those models. Architect reads an existing Codex login or `OPENAI_API_KEY`. Researcher, Implementer and code review use `XAI_API_KEY`; an existing Grok token helper can also supply their token. Teacher uses the Grok CLI login. If Grok is installed outside `~/.grok/bin/grok`, set `GROK_BIN` to its executable. Sign in to the GitHub CLI on the same machine with `gh auth login`.
+The agents are configured for **Antigravity Gemini 3.8 Flash** with High reasoning via Google Antigravity CLI (`agy`). Ensure `agy` is installed, authenticated, and available in `PATH` (or configured via `REAL_AGY_BIN`). Sign in to the GitHub CLI on the same machine with `gh auth login`.
 
 Make credentials available to the Paseo daemon before starting the plugin. Setting variables in a new terminal does not update an already-running daemon's environment. For a separate test instance, follow the [isolated setup guide](.architect/scratch.md).
 
@@ -56,7 +56,7 @@ BRAVE_API_KEY: your-brave-key
 EXA_API_KEY: your-exa-key
 ```
 
-Include the keys you have and restrict access to the file with `chmod 600`. Keep credentials outside your project repository. `ARCHITECT_CREDENTIALS` can select another file; `GROK_TOKEN_HELPER` can select an existing token-helper executable.
+Include the keys you have and restrict access to the file with `chmod 600`. Keep credentials outside your project repository. `ARCHITECT_CREDENTIALS` can select another file.
 
 ## Start your first change
 
@@ -101,7 +101,7 @@ npm run test:python
 npm run typecheck
 ```
 
-`npm run test:live` additionally makes real Astra requests using your configured credentials.
+`npm run test:live` additionally makes real model requests using your configured credentials.
 
 - [Code guide](docs/architecture.md): entry points, agent runtimes and supporting modules.
 - [Isolated setup guide](.architect/scratch.md): a separate Paseo home and disposable repositories for live tests.

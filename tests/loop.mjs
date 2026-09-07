@@ -12,7 +12,7 @@ try {
   let calls = 0;
   const complete = async ({ instructions, input }) => {
     calls += 1;
-    assert.equal(instructions, ARCHITECT_SYSTEM_PROMPT);
+    assert.equal(instructions, ARCHITECT_SYSTEM_PROMPT());
     assert.match(input[0].content, new RegExp(TICKET_BLOCK_HEADING.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     if (calls === 1) {
       assert.equal(input.at(-1).content, "hello");
@@ -81,6 +81,17 @@ try {
   assert.equal(resumed.pairs.length, 2);
   assert.ok(!resumed.pairs.some(pair => pair.operator === 'aborted'));
   assert.equal(resumed.pairs.at(-1).messageId, 'next-id');
+  const sessionTurn = await runArchitectTurn({
+    cwd: dir,
+    sessionId: "sess-loop-42",
+    operatorText: "test session prompt",
+    complete: async ({ instructions }) => {
+      assert.equal(instructions, ARCHITECT_SYSTEM_PROMPT("sess-loop-42"));
+      return { text: "session ok", toolCalls: [] };
+    },
+    executeTool: async () => "ok",
+  });
+  assert.equal(sessionTurn.architectText, "session ok");
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

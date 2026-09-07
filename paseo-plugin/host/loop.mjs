@@ -6,6 +6,7 @@ import { ticketRead } from "./workflow/ticket.mjs";
 
 export async function runArchitectTurn({
   cwd,
+  sessionId,
   operatorText,
   messageId,
   source = "operator",
@@ -16,7 +17,7 @@ export async function runArchitectTurn({
   onDelta,
   onTool,
   tools = architectTools(),
-  systemPrompt = ARCHITECT_SYSTEM_PROMPT,
+  systemPrompt,
   reasoning,
   signal,
   checkpoint,
@@ -24,9 +25,11 @@ export async function runArchitectTurn({
   saveState = async () => {},
   reconcileTool = async () => null,
 } = {}) {
-  const ticket = await ticketRead(cwd);
+  const resolvedSystemPrompt = systemPrompt ?? (typeof ARCHITECT_SYSTEM_PROMPT === "function" ? ARCHITECT_SYSTEM_PROMPT(sessionId) : ARCHITECT_SYSTEM_PROMPT);
+  const ticket = await ticketRead(cwd, undefined, sessionId);
   let input = assembleArchitectRequest({
-    systemPrompt,
+    systemPrompt: resolvedSystemPrompt,
+    sessionId,
     ticketText: ticket.text,
     pairs,
     operatorText,
@@ -46,7 +49,7 @@ export async function runArchitectTurn({
   const persistState = saveState;
   saveState = value => persistState({ ...value, exchangeStart, contextWindow: selectedContext });
   await onContextWindow?.(selectedContext);
-  const instructions = systemPrompt;
+  const instructions = resolvedSystemPrompt;
   const assistantParts = state?.assistantParts ?? [];
   let retained = state?.result;
   let nextTool = state?.nextTool ?? 0;
@@ -95,7 +98,7 @@ export async function runArchitectTurn({
   return {
     architectText,
     pairs: rememberPair(pairs, operatorText, architectText, messageId, input.slice(exchangeStart), source),
-    ticket: (await ticketRead(cwd)).text,
+    ticket: (await ticketRead(cwd, undefined, sessionId)).text,
   };
 }
 

@@ -11,13 +11,13 @@ import {
 import { MINI_SWE_SYSTEM_PROMPT } from "../paseo-plugin/host/workflow/prompts.mjs";
 
 assert.equal(
-  ARCHITECT_SYSTEM_PROMPT,
+  ARCHITECT_SYSTEM_PROMPT(),
   [
     "You are the architect. The ticket is `.architect/ticket.md`.",
     "",
     "## Recommended Workflow",
     "",
-    "Investigate their intent and ask exploratory questions. Contribute architectural judgment; they own intent and private knowledge. Take notes and reasoning on the ticket so the operator can see them. Mark what is not settled. Fill it in as it becomes clear. Delegate when it is ready.",
+    "Investigate their intent and ask exploratory questions. Contribute architectural judgment; they own intent and private knowledge. Mark what is not settled. Fill it in as it becomes clear. Delegate when it is ready.",
     "",
     "## Context",
     "",
@@ -28,6 +28,27 @@ assert.equal(
     "If the operator cannot give an informed opinion on a live question, ask whether the ticket can stay underspecified; they decide. If they want to learn, or the ticket is too consequential to leave open, call teacher. Tell the operator to open that session. When it returns, put the decision in the ticket.",
   ].join("\n"),
 );
+
+assert.equal(
+  ARCHITECT_SYSTEM_PROMPT("sess-123"),
+  [
+    "You are the architect. The ticket is `.architect/tickets/sess-123.md`.",
+    "",
+    "## Recommended Workflow",
+    "",
+    "Investigate their intent and ask exploratory questions. Contribute architectural judgment; they own intent and private knowledge. Mark what is not settled. Fill it in as it becomes clear. Delegate when it is ready.",
+    "",
+    "## Context",
+    "",
+    "This operator exchange and the previous completed operator exchange stay in context, including their reasoning and tool traffic. Workflow events are separate from operator messages and do not consume exchange slots. Older operator exchanges and their events are dropped. There is no token floor while normal Architect usage is being measured.",
+    "",
+    "## Teacher",
+    "",
+    "If the operator cannot give an informed opinion on a live question, ask whether the ticket can stay underspecified; they decide. If they want to learn, or the ticket is too consequential to leave open, call teacher. Tell the operator to open that session. When it returns, put the decision in the ticket.",
+  ].join("\n"),
+);
+assert.doesNotMatch(ARCHITECT_SYSTEM_PROMPT(), /Take notes and reasoning on the ticket/);
+assert.doesNotMatch(ARCHITECT_SYSTEM_PROMPT("sess-123"), /Take notes and reasoning on the ticket/);
 
 assert.equal(
   TEACHER_SYSTEM_PROMPT,
@@ -59,7 +80,7 @@ const banned = [
   "OCR",
   "Learning",
 ];
-for (const prompt of [ARCHITECT_SYSTEM_PROMPT, TEACHER_SYSTEM_PROMPT, RESEARCHER_SYSTEM_PROMPT]) {
+for (const prompt of [ARCHITECT_SYSTEM_PROMPT(), TEACHER_SYSTEM_PROMPT, RESEARCHER_SYSTEM_PROMPT]) {
   for (const needle of banned) {
     assert.doesNotMatch(prompt, new RegExp(needle));
   }

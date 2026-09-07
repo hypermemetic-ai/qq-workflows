@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -6,7 +7,7 @@ import { createSupervisor } from "./supervisor.mjs";
 import { hostVersion } from "./version.mjs";
 import { createPlacedAgent, reconcileWithSdk, isRealCwd, waitForHandleCwd, defaultSpawnExec, parseCreatedAgentJson, sendAgentWake } from "./spawn-agent.mjs";
 import { createStore, persistentMap } from "./store.mjs";
-import { ticketRead, ticketWrite, parseKind } from "./workflow/ticket.mjs";
+import { ticketRead, ticketWrite, parseKind, ticketPath } from "./workflow/ticket.mjs";
 import { roleTools, validateDelegateArgs, validateTeacherArgs } from "./workflow/tools.mjs";
 import { formatResearcherWake, formatReviewerWake, formatTeacherWake, normalizeFindings, routeDone } from "./workflow/done.mjs";
 import {
@@ -109,12 +110,13 @@ export function createRuntime(options = {}) {
     const cwd = child?.worktreeCwd ?? child?.cwd ?? context.cwd;
     if (!isRealCwd(cwd)) throw new Error("workspace is required");
     if (args?.root && args.root !== cwd) throw new Error("tool root must match the workspace");
+    const sessionId = child?.parent ?? context.sessionId ?? context.agentId ?? context.jobId ?? undefined;
     switch (name) {
       case "ticket_read":
-        return ticketRead(cwd);
+        return ticketRead(cwd, undefined, sessionId);
       case "ticket_write": {
-        const result = await ticketWrite(cwd, args);
-        const snapshot = await ticketRead(cwd);
+        const result = await ticketWrite(cwd, args, undefined, sessionId);
+        const snapshot = await ticketRead(cwd, undefined, sessionId);
         store.put("ticket_revision", operationKey(cwd, "ticket", snapshot.text), { ...snapshot, cwd, createdAt: Date.now() });
         return result;
       }
@@ -185,6 +187,27 @@ export function createRuntime(options = {}) {
     };
   }
 
+  async function writeChildCheckoutTicket(job, targetCwd) {
+    if (!targetCwd) return;
+    try {
+      let ticketContent = job?.task;
+      if (!ticketContent && job?.cwd) {
+        const sessionTicketPath = job?.parent ? ticketPath(job.cwd, job.parent) : null;
+        const t = (sessionTicketPath && existsSync(sessionTicketPath))
+          ? await ticketRead(job.cwd, undefined, job.parent)
+          : await ticketRead(job.cwd);
+        ticketContent = t.text;
+      }
+      if (ticketContent) {
+        const destDir = join(targetCwd, ".architect");
+        await mkdir(destDir, { recursive: true });
+        await writeFile(join(destDir, "ticket.md"), ticketContent, "utf8");
+      }
+    } catch {
+      /* ignore in synthetic test environments */
+    }
+  }
+
   async function prepareImplementerWorkspace({ cwd, branch, job, reuse }) {
     const created = job.worktreeCwd ? { cwd: job.worktreeCwd, workspaceId: job.workspaceId } : typeof options.createWorktree === "function"
       ? await options.createWorktree({ cwd, branch, reuse })
@@ -193,6 +216,7 @@ export function createRuntime(options = {}) {
     job.worktreeCwd = created.cwd;
     job.workspaceId = created.workspaceId;
     save(job);
+    await writeChildCheckoutTicket(job, created.cwd);
     if (job.completion === "report") {
       job.indexWarning = "Semantic indexing was not requested for this report-only investigation. Use ordinary file tools or exact search.";
     } else {
@@ -210,7 +234,10 @@ export function createRuntime(options = {}) {
 
   async function startDelegate({ cwd, args, parent, paseoParent }) {
     if (draining) throw new Error("Host upgrade is waiting for existing work to finish; retry after it completes");
-    const ticket = await ticketRead(cwd);
+    const sessionTicketPath = parent ? ticketPath(cwd, parent) : null;
+    const ticket = (sessionTicketPath && existsSync(sessionTicketPath))
+      ? await ticketRead(cwd, undefined, parent)
+      : (existsSync(ticketPath(cwd)) ? await ticketRead(cwd) : (parent ? await ticketRead(cwd, undefined, parent) : await ticketRead(cwd)));
     const ticketRevision = operationKey(cwd, "ticket", ticket.text);
     store.put("ticket_revision", ticketRevision, { ...ticket, cwd, createdAt: Date.now() });
     const kind = parseKind(ticket.text);
@@ -479,6 +506,7 @@ export function createRuntime(options = {}) {
     job.phase = "reviewing";
     save(job);
     try {
+      await writeChildCheckoutTicket(job, cwd);
       const packet = await git.buildReviewPacket(cwd);
       job.packet = packet;
       save(job);
@@ -745,7 +773,7 @@ export function createRuntime(options = {}) {
     if (paseo) {
       if (typeof paseo.config?.get === "function" && typeof paseo.config?.patch === "function") {
         const requestedProvider = createOptions?.config?.provider?.split("/")?.[0];
-        if (requestedProvider && ["architect-mini", "architect-teacher", "architect"].includes(requestedProvider)) {
+        if (requestedProvider && ["architect-mini", "architect-teacher", "architect", "agy"].includes(requestedProvider)) {
           const current = await paseo.config.get();
           const providers = current?.config?.providers ?? {};
           if (!providers[requestedProvider]) {
@@ -848,6 +876,9 @@ export function createRuntime(options = {}) {
       prompt: "Fill `.architect/ticket.md` with the operator, then delegate.",
       labels: { role: "architect" },
     });
+    if (handle?.id) {
+      await ticketRead(cwd, undefined, handle.id);
+    }
     return { agentId: handle.id, workspaceId: handle.workspaceId };
   }
 
@@ -934,7 +965,8 @@ export function createRuntime(options = {}) {
         }
         if (url.pathname === "/ticket") {
           const cwd = payload.cwd ?? url.searchParams.get("cwd");
-          json(res, 200, await ticketRead(cwd));
+          const sessionId = payload.sessionId ?? url.searchParams.get("sessionId") ?? undefined;
+          json(res, 200, await ticketRead(cwd, undefined, sessionId));
           return;
         }
         if (url.pathname === "/tool") {

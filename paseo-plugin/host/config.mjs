@@ -174,6 +174,23 @@ export function astraThoughtConfig(currentValue = "high") {
   };
 }
 
+export function geminiFlashThoughtConfig(currentValue = "High") {
+  const match = GEMINI_FLASH_THINKING.find((item) => item.id.toLowerCase() === String(currentValue).toLowerCase());
+  const current = match ? match.id : "High";
+  return {
+    id: "thought_level",
+    name: "Thinking",
+    category: "thought_level",
+    type: "select",
+    currentValue: current,
+    options: GEMINI_FLASH_THINKING.map((item) => ({
+      value: item.id,
+      name: item.label,
+      description: item.description,
+    })),
+  };
+}
+
 export function architectProvider(nodePath = process.execPath) {
   return {
     extends: "acp",
@@ -187,6 +204,30 @@ export function architectProvider(nodePath = process.execPath) {
       PATH: process.env.PATH || "/home/qqp/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin",
     },
     models: [GEMINI_FLASH_MODEL],
+  };
+}
+
+export function agyProvider() {
+  return {
+    extends: "acp",
+    label: "Antigravity",
+    description: "Google Antigravity CLI (agy) via agy-acp",
+    command: ["npx", "-y", "agy-acp@0.5.2"],
+    env: {
+      AGY_BIN: AGY_ROLE_ENTRY,
+      REAL_AGY_BIN: realAgyBin(),
+      PATH: process.env.PATH || "/home/qqp/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin",
+    },
+    models: [
+      GEMINI_FLASH_MODEL,
+      { id: "Gemini 3.1 Pro", label: "Gemini 3.1 Pro" },
+      { id: "Claude Opus 4.6 (Thinking)", label: "Claude Opus 4.6 (Thinking)" },
+      { id: "Claude Sonnet 4.6 (Thinking)", label: "Claude Sonnet 4.6 (Thinking)" },
+      { id: "Gemini 3.7 Flash", label: "Gemini 3.7 Flash" },
+      { id: "Gemini 3.6 Flash", label: "Gemini 3.6 Flash" },
+      { id: "GPT-OSS 120B", label: "GPT-OSS 120B" },
+    ],
+    order: 0,
   };
 }
 
@@ -225,16 +266,16 @@ export function daemonConfigPatch(config) {
     ...(providers[ARCHITECT_PROVIDER_ID] ?? {}),
     ...architectProvider(),
   };
-  if (providers.agy) {
-    providers.agy = {
-      ...providers.agy,
-      env: {
-        ...(providers.agy.env ?? {}),
-        AGY_BIN: AGY_ROLE_ENTRY,
-        REAL_AGY_BIN: providers.agy.env?.REAL_AGY_BIN || realAgyBin(),
-      },
-    };
-  }
+  providers.agy = {
+    ...agyProvider(),
+    ...(providers.agy ?? {}),
+    env: {
+      ...(providers.agy?.env ?? {}),
+      AGY_BIN: AGY_ROLE_ENTRY,
+      REAL_AGY_BIN: providers.agy?.env?.REAL_AGY_BIN || realAgyBin(),
+      PATH: providers.agy?.env?.PATH || process.env.PATH || "/home/qqp/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin",
+    },
+  };
   const codex = providers.codex && typeof providers.codex === "object" ? providers.codex : {};
   const additional = Array.isArray(codex.additionalModels) ? [...codex.additionalModels] : [];
   const existing = additional.findIndex((model) => model?.id === ASTRA_MODEL.id);
