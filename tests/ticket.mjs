@@ -11,7 +11,7 @@ import {
   parseKind,
   ticketRead,
   ticketWrite,
-} from "../paseo-plugin/host/workflow/ticket.mjs";
+} from "../workflow/ticket.mjs";
 
 const template = await loadPackagedTemplate();
 assert.match(template, /^# Ticket/m);

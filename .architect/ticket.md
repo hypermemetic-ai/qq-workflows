@@ -1,102 +1,74 @@
-# Ticket: session-scoped tickets, delegate subagent placement, unified ticket & delegate UI, wake notification, and 400k context window compaction threshold
+# Ticket
 
 ## Kind
 
-open — needs implementer judgment across plugin UI, runtime delegation, and host messaging.
+open — needs implementer judgment across repository cleanup, MCP tool implementation, and installation scripting.
 
 ## Problem
 
-1. **Ticket-Session Coupling & Stale Disc Tickets:** Tickets currently default to a single shared path (`.architect/ticket.md`). Starting a new session opens whatever ticket was last left on disk, bleeding old work into new sessions. Tickets must be stored per session at `.architect/tickets/<sessionId>.md`.
-2. **Worktree Ticket Desynchronization:** When child worktrees (Implementer, Reviewer) are prepared from git branches, uncommitted session tickets do not exist in the worktree, causing children to read stale recovery tickets from git HEAD. The host must copy or write the active session ticket to `.architect/ticket.md` in the child worktree checkout.
-3. **Workspace Dropdown Clutter (Delegates creating workspaces):** Currently, `createPlacedAgent` in `spawn-agent.mjs` explicitly calls `client.workspaces.create` whenever an implementer is spawned. This pollutes the operator's workspace dropdown with temporary worktrees. Delegates are subagents connected to the existing workspace and session, not independent workspaces.
-4. **Missing Delegate Wake Notification ("Didn't get the memo"):** When delegates finish, the Architect never receives the completion message. In `child-mcp.mjs`, `context.agentId` and `context.paseoAgentId` are omitted from tool call context, leaving `job.parent` undefined so `queueWake` has no recipient. The host must track and propagate parent agent ID and deliver wakes via `sendAgentWake` (or `agent.send`) to wake the parent session.
-5. **Split Views in Ticket Panel:** The current `TicketPanel` splits Plan and Work into two separate tabs (`Plan` vs `Work`), and hides delegate conversations behind expandable accordion rows. The operator wants the ticket to simply be the ticket: render the ticket plan directly without tab switching, and display delegates at the bottom, with each delegate (implementer, reviewer, teacher, researcher) directly visible and individually clickable to jump straight into that conversation via Paseo primitives.
-6. **Compaction Threshold / Context Window Size (400k tokens):** Currently, `GEMINI_FLASH_MODEL` in `paseo-plugin/host/config.mjs` and `~/.paseo-architect/config.json` does not declare `contextWindowMaxTokens`. `agy-acp` defaults all Gemini models to 1,048,576 tokens (1M), causing auto-compaction triggers in Antigravity CLI (~75-80%) to defer until ~800k tokens. Per operator requirement, `contextWindowMaxTokens` must be explicitly set to **400,000 (400k)** across `config.mjs` and the daemon configuration.
-7. **Architect Prompt Invariants:** The sentence *"Take notes and reasoning on the ticket so the operator can see them."* must be removed per Option 1 (pure deletion), and the concrete `sessionId` must be prefilled in the prompt path.
-8. **Model Transition Inconsistencies:** `README.md` and `paseo-plugin/host/acp.mjs` still reference Astra/Grok credentials instead of Antigravity Gemini 3.8 Flash.
+`qq-workflows` is transitioning from a legacy Paseo plugin to a native Google Antigravity workflow. The repository currently carries historical baggage: deleted Paseo plugin files, dead tests, and no definitive delegation tools (`prepare_worktree` and `land`). As a result, the Architect is forced into error-prone manual bash scripting for git worktrees, branch creation, ticket copying, and PR landing.
+
+Furthermore, giving the Architect general-purpose file modification tools (`write_to_file` and `replace_file_content`) creates an architectural flaw where the Architect can directly modify project files rather than delegating implementation to an isolated worktree. The Architect needs shell access (`run_command`) for inspection and diagnostics, but file edits must be strictly limited to the session ticket.
 
 ## Testing plan
 
-1. **Compaction Threshold & Context Window:**
-   - `GEMINI_FLASH_MODEL` exports `contextWindowMaxTokens: 400_000`.
-   - `daemonConfigPatch` ensures both `providers.architect` and `providers.agy` models include `contextWindowMaxTokens: 400_000`.
-   - Unit tests in `tests/config.mjs` and `tests/agy-roles.mjs` assert `contextWindowMaxTokens === 400_000`.
-2. **Workspace & Subagent Placement:**
-   - Spawning an implementer or reviewer does NOT call `client.workspaces.create`.
-   - The child agent is placed in the parent's `workspaceId` with `parent: parentAgentId` and `labels["paseo.parent-agent-id"] = parentAgentId`.
-   - The child agent's `cwd` correctly points to the prepared git worktree checkout.
-   - Verify that the operator's workspace list is unchanged (no new workspace added).
-3. **Wake Notification Delivery:**
-   - `child-mcp.mjs` passes `agentId` and `paseoAgentId` from `ARCHITECT_AGENT_ID` / `PASEO_AGENT_ID` in tool execution context.
-   - `runtime.mjs` associates `job.parent` with the calling Architect agent ID (with a fallback lookup for the active architect in that workspace).
-   - Upon child completion (or review decision), `queueWake` calls `sendAgentWake(job.parent, message)`.
-4. **Child Worktree Ticket Synchronization:**
-   - Preparing a child checkout copies the current session's ticket from `.architect/tickets/<sessionId>.md` into `.architect/ticket.md` in the child worktree before the child starts.
-5. **Unified Ticket & Delegate UI:**
-   - `TicketPanel` in `architect.client.tsx` removes the `Plan` / `Work` tabs.
-   - The ticket plan renders at the top of the panel.
-   - The delegates section renders at the bottom of the panel.
-   - Each delegate row displays the role (Implementer, Reviewer, Teacher, Researcher), status/phase, and is directly clickable to call `navigation.openAgent({ agentId })`.
-   - If multiple delegates are present (e.g. reviewer and implementer), both are displayed separately and clickable.
-6. **Session-scoped tickets:**
-   - Ticket read/write resolves to `.architect/tickets/<sessionId>.md` when `sessionId` is present, falling back to `.architect/ticket.md`.
-   - `TicketPanel` passes the active session ID from composer pill origin.
-7. **Prompt updates & Regressions:**
-   - `agent.md` and `prompts.mjs` remove *"Take notes and reasoning on the ticket so the operator can see them."*
-   - All tests pass: `npm test`, `npm run typecheck`, and `npm run test:python`.
+1. **Definitive Prompts & Agents:**
+   - `agents/architect/agent.md` and `workflow/prompts.mjs` are updated with the finalized text:
+     - Introductory collaboration paragraph and `## Guidelines`.
+     - `## Teaching` (renamed from `## Teacher`).
+     - `## Delegation` instructing `prepare_worktree` and `land` using the prompt returned by `prepare_worktree`.
+   - Tool capabilities for `architect`:
+     - Must include: `view_file`, `run_command`, `grep_search`, `find_by_name`, `list_dir`, `read_url_content`, `search_web`, `invoke_subagent`, `send_message`, `ticket_read`, `ticket_write`, `prepare_worktree`, `land`.
+     - Must NOT include: `write_to_file`, `replace_file_content`.
+   - `npm run install:agents` successfully links agents into `~/.gemini/config/agents/` and registers the MCP server in `~/.gemini/config/mcp_config.json`.
+2. **Lean MCP Server Tools (`bin/mcp-server.mjs`):**
+   - Zero-bloat stdio JSON-RPC MCP server (`tools/list` and `tools/call`) using Node built-ins without external dependencies, exposing 4 tools:
+     - `prepare_worktree`:
+       - Invoking `prepare_worktree({ kind: "bounded" })` deterministically creates branch `architect/bounded/<id>`, creates the worktree at `.qq-worktrees/...`, copies `.architect/tickets/<id>.md` into the checkout as `.architect/ticket.md`, returns `reviewRequired: false`, `implementerPrompt`, and instructions.
+       - Invoking `prepare_worktree({ kind: "open" })` returns `reviewRequired: true`, `implementerPrompt`, `reviewerPrompt`, and instructions.
+       - Invoking without `kind` fails immediately with an explicit validation error (`kind is required: bounded | open`).
+     - `land`:
+       - Automatically commits changes in the worktree if dirty.
+       - If remote repo, creates and merges PR via `gh` with `--delete-branch`. If local repo, fast-forwards main.
+       - Retires the worktree (`git worktree remove --force`) and deletes the local branch.
+     - `ticket_read`:
+       - Reads `.architect/tickets/<sessionId>.md` (or `.architect/ticket.md`). Returns `{ ok: true, path, text }`.
+     - `ticket_write`:
+       - Writes/edits `.architect/tickets/<sessionId>.md` using `ticketWrite` from `workflow/ticket.mjs` (`text` for full replacement or `old_string`/`new_string`/`replace_all` for surgical edits). Returns `{ ok: true, path, text }`.
+3. **Clean Repository & Test Suite:**
+   - All dead `paseo-plugin/` files and obsolete tests are permanently purged (`git rm`).
+   - Unit tests in `tests/mcp.mjs` verify all 4 MCP tools (`prepare_worktree`, `land`, `ticket_read`, `ticket_write`).
+   - `tests/agy-roles.mjs` verifies tool definitions for `architect` (has `run_command`, `ticket_read`, `ticket_write`; does NOT have `write_to_file`, `replace_file_content`).
+   - `npm test` passes cleanly across all active test suites.
+   - `git status` is clean.
 
 ## [open]
 
 ### Budget
 
-Full stack refinement across:
-- `paseo-plugin/host/config.mjs`
-- `paseo-plugin/host/spawn-agent.mjs`
-- `paseo-plugin/host/child-mcp.mjs`
-- `paseo-plugin/host/runtime.mjs`
-- `paseo-plugin/architect.client.tsx`
-- `paseo-plugin/host/workflow/ticket.mjs`
-- `paseo-plugin/host/workflow/prompts.mjs`
-- `paseo-plugin/agents/architect/agent.md`
-- `paseo-plugin/host/acp.mjs`
-- `README.md`
-- Unit and integration tests in `tests/`
-
-Note: The implementer may incorporate the already-committed work from branch `architect/open/f8f21d22` (`6f07b7aeb5b8a935d1d2604f9bc26ef67a0d251e`) which has the initial implementations of the UI redesign, subagent placement, and wake propagation.
+Fits within 1 implementer cycle.
 
 ### Solution
 
-1. **400k Context Window / Compaction Threshold (`config.mjs`):**
-   - Add `contextWindowMaxTokens: 400_000` to `GEMINI_FLASH_MODEL`.
-   - In `daemonConfigPatch`: ensure `architectProvider()` and `agyProvider()` set `contextWindowMaxTokens: 400_000` on the Gemini 3.8 Flash model entries.
-   - Update tests in `tests/config.mjs` and `tests/agy-roles.mjs` to assert `contextWindowMaxTokens: 400_000`.
-2. **Subagent & Workspace Placement (`spawn-agent.mjs`):**
-   - In `createPlacedAgent(client, options)`: remove `client.workspaces.create` entirely.
-   - When `options.workspaceId` is present, use `client.workspaces.ref(options.workspaceId)`.
-   - If `workspace` is resolved, do not reject if `options.cwd` differs from `workspace.directory`; use `client.agents.create({ ...options, cwd: options.cwd })` or pass placement `{ workspaceId: options.workspaceId, cwd: options.cwd }` so the agent belongs to the workspace but runs in the worktree.
-3. **Context & Wake Propagation (`child-mcp.mjs`, `runtime.mjs`):**
-   - In `child-mcp.mjs`: include `agentId: process.env.ARCHITECT_AGENT_ID || process.env.PASEO_AGENT_ID`, `paseoAgentId: process.env.PASEO_AGENT_ID || process.env.ARCHITECT_AGENT_ID` in `context`.
-   - In `runtime.mjs`: in `executeTool`, resolve parent agent ID from `context.agentId ?? context.paseoAgentId`. If missing, query `jobs` or active agents for that `cwd` as fallback.
-   - When preparing child worktrees in `runtime.mjs` (`implementerCreateOptions`, `reviewerCreateOptions`), copy the session ticket `.architect/tickets/<sessionId>.md` into the child's `.architect/ticket.md`.
-4. **Unified Ticket & Delegate UI (`architect.client.tsx`):**
-   - Eliminate `section` state (`'plan' | 'work'`) and `<View style={styles.tabs}>`.
-   - Top section: render `<TicketPlan tokens={tokens} theme={theme} />`.
-   - Bottom section: render `<View testID="architect-delegates">` listing active and recent delegates.
-   - Delegate item: directly clickable `<Pressable onPress={() => navigation?.openAgent({ agentId: child.agentId })}>`. Shows role icon, role name, status, and arrow indicator. Both reviewer and implementer are shown separately when present.
-5. **Session-Scoped Tickets (`ticket.mjs`, `architect.server.ts`, `architect.client.tsx`):**
-   - Implement `ticketPath(cwd, sessionId)`: `.architect/tickets/<sessionId>.md` with fallback to `.architect/ticket.md`.
-   - Forward `sessionId` through `handleTicket` and `TicketPanel`.
-6. **Prompt Updates & Cleanup:**
-   - Remove short-term memory sentence from `agent.md` and `prompts.mjs`. Prefill `<sessionId>` in ticket path prompt.
-   - Update `README.md` and `acp.mjs` for Gemini 3.8 Flash.
+1. **MCP Server Updates (`bin/mcp-server.mjs`):**
+   - Import `ticketRead` and `ticketWrite` from `workflow/ticket.mjs`.
+   - Add schemas for `ticket_read` and `ticket_write` to `TOOLS`.
+   - Implement tool handlers for `ticket_read` and `ticket_write` resolving `root` and `sessionId`.
+2. **Agent Capabilities (`agents/architect/agent.md`):**
+   - Remove `write_to_file` and `replace_file_content`.
+   - Retain `run_command`.
+   - Add `ticket_read` and `ticket_write`.
+3. **Prompt & Test Synchronizations:**
+   - Update `tests/mcp.mjs` to test `ticket_read` and `ticket_write`.
+   - Update `tests/agy-roles.mjs` to test the new tool assertions.
+   - Run `npm test` and `npm run install:agents`.
 
 ### Rabbit holes
 
-- Overwriting uncommitted work in the child worktree: worktree preparation creates a clean branch, copying the session ticket file into `.architect/ticket.md` before starting the agent.
-- Handling older Paseo daemon clients without subagent listing: Paseo's `daemonClient.createAgent` natively accepts `workspaceId` and `callerAgentId`.
+1. **Heavy MCP Frameworks:** Do not pull in large third-party MCP SDK dependencies. Keep it zero-dependency stdio JSON-RPC.
+2. **Over-abstracting worktree paths:** Keep worktrees strictly rooted in `.qq-worktrees/<repo-name>/...` as defined in `workflow/git.mjs`.
 
 ### No-gos
 
-- Do not create top-level Paseo workspaces for child delegates.
-- Do not keep the two-tab Plan/Work split.
-- Do not freehand or rewrite other instructions in `agent.md` or `prompts.mjs`.
+1. **No generic write tools for Architect:** Architect must not have `write_to_file` or `replace_file_content`.
+2. **No Backwards Compatibility Layers:** Do not keep Paseo shims, unused adapter code, or dead documentation. Git history is the archive.

@@ -1,13 +1,14 @@
 {
-  "name": "@hypermemetic-ai/paseo-architect",
-  "version": "0.1.0",
+  "name": "@hypermemetic-ai/qq-workflows",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Ticket-driven planning, teaching, research, implementation and landing for Paseo.",
+  "description": "Ticket-driven planning, in-session teaching, and subagent delegation for Google Antigravity.",
+  "bin": {
+    "architect": "bin/architect.mjs"
+  },
   "scripts": {
-    "test": "node tests/run.mjs",
-    "test:python": "runtimes/python/.venv/bin/python -m pytest -q runtimes/python/tests",
-    "test:live": "LIVE_ARCHITECT=1 node tests/live.mjs",
-    "typecheck": "npm run typecheck --prefix paseo-plugin"
+    "install:agents": "node scripts/install-agents.mjs",
+    "test": "node tests/run.mjs"
   }
 }
