@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 export const TICKET_RELATIVE = ".architect/ticket.md";
@@ -9,6 +10,11 @@ export function ticketPath(cwd, sessionId) {
     return join(cwd, ".architect", "tickets", `${sessionId}.md`);
   }
   return join(cwd, TICKET_RELATIVE);
+}
+
+export function brainTicketPath(sessionId, home = homedir()) {
+  if (!sessionId) return null;
+  return join(home, ".gemini", "antigravity-cli", "brain", sessionId, "ticket.md");
 }
 
 export function templatePath(cwd) {
@@ -98,8 +104,22 @@ export async function ticketWrite(cwd, input, io = {}, sessionId) {
   const { path, text } = await ensureTicket(cwd, { ...resolvedIo, sessionId: resolvedSessionId });
   const next = applyTicketEdit(text, input);
   const writeFileFn = resolvedIo?.writeFileFn ?? writeFile;
+  const mkdirFn = resolvedIo?.mkdirFn ?? mkdir;
   await writeFileFn(path, next);
-  return { path, text: next };
+
+  let artifactPath = null;
+  if (resolvedSessionId) {
+    const home = resolvedIo?.home ?? homedir();
+    artifactPath = brainTicketPath(resolvedSessionId, home);
+    try {
+      await mkdirFn(dirname(artifactPath), { recursive: true });
+      await writeFileFn(artifactPath, next);
+    } catch {
+      // Safe creation: ignore mirror write errors so workflow continues
+    }
+  }
+
+  return { path, text: next, ...(artifactPath ? { artifactPath } : {}) };
 }
 
 export function extractSection(markdown, heading) {

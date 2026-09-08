@@ -12,7 +12,7 @@ import {
   mainRepoRoot,
   parseWorktreePorcelain,
 } from "../workflow/git.mjs";
-import { ticketRead, ticketWrite } from "../workflow/ticket.mjs";
+import { brainTicketPath, ticketRead, ticketWrite } from "../workflow/ticket.mjs";
 
 export const TOOLS = [
   {
@@ -245,6 +245,7 @@ export async function ticketWriteTool(args = {}) {
     ok: true,
     path: result.path,
     text: result.text,
+    ...(result.artifactPath ? { artifactPath: result.artifactPath } : {}),
   };
 }
 

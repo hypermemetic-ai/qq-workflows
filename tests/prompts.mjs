@@ -12,6 +12,12 @@ assert.match(ARCHITECT_SYSTEM_PROMPT(), /## Guidelines/);
 assert.match(ARCHITECT_SYSTEM_PROMPT(), /## Teaching/);
 assert.match(ARCHITECT_SYSTEM_PROMPT(), /call `prepare_worktree`/);
 assert.match(ARCHITECT_SYSTEM_PROMPT(), /call `land`/);
+assert.match(ARCHITECT_SYSTEM_PROMPT(), /Update the ticket collaboratively using `ticket_write`/);
+assert.match(
+  ARCHITECT_SYSTEM_PROMPT(),
+  /Do not call `prepare_worktree` until the operator approves the ticket \(via the Proceed button or explicit confirmation\)/,
+);
+assert.match(ARCHITECT_SYSTEM_PROMPT(), /When the operator approves the ticket, call `prepare_worktree`/);
 
 assert.equal(
   IMPLEMENTER_SYSTEM_PROMPT,

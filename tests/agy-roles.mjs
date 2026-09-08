@@ -47,6 +47,12 @@ assert.match(architectContent, /## Teaching/);
 assert.match(architectContent, /teach until the user is informed enough to decide/);
 assert.match(architectContent, /call `prepare_worktree`/);
 assert.match(architectContent, /call `land`/);
+assert.match(architectContent, /Update the ticket collaboratively using `ticket_write`/);
+assert.match(
+  architectContent,
+  /Do not call `prepare_worktree` until the operator approves the ticket \(via the Proceed button or explicit confirmation\)/,
+);
+assert.match(architectContent, /When the operator approves the ticket, call `prepare_worktree`/);
 
 // 4. Implementer checks
 const implementerContent = readFileSync(join(repoRoot, "agents", "implementer", "agent.md"), "utf8");

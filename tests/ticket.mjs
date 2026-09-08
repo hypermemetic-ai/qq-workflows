@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   applyTicketEdit,
+  brainTicketPath,
   ensureTicket,
   loadPackagedTemplate,
   openSectionIsEmpty,
@@ -72,6 +73,25 @@ try {
   const s1Modified = await ticketWrite(dir, { text: bounded }, undefined, session1);
   assert.equal(parseKind(s1Modified.text), "bounded");
   assert.equal(readFileSync(join(dir, ".architect", "tickets", `${session1}.md`), "utf8"), bounded);
+  assert.equal(readFileSync(brainTicketPath(session1), "utf8"), bounded);
+  assert.equal(s1Modified.artifactPath, brainTicketPath(session1));
+
+  // Custom io.home test
+  const session3 = "session-test-3";
+  const customHome = mkdtempSync(join(tmpdir(), "brain-test-home-"));
+  try {
+    const s3Custom = await ticketWrite(dir, { text: bounded }, { home: customHome }, session3);
+    assert.equal(
+      readFileSync(join(customHome, ".gemini", "antigravity-cli", "brain", session3, "ticket.md"), "utf8"),
+      bounded,
+    );
+    assert.equal(
+      s3Custom.artifactPath,
+      join(customHome, ".gemini", "antigravity-cli", "brain", session3, "ticket.md"),
+    );
+  } finally {
+    rmSync(customHome, { recursive: true, force: true });
+  }
 
   // session-2 starts clean with template, isolated from session-1
   const s2Read = await ticketRead(dir, session2);
@@ -85,6 +105,10 @@ try {
   assert.equal(fallbackRead.text, bounded);
 } finally {
   rmSync(dir, { recursive: true, force: true });
+  try {
+    rmSync(join(homedir(), ".gemini", "antigravity-cli", "brain", session1), { recursive: true, force: true });
+    rmSync(join(homedir(), ".gemini", "antigravity-cli", "brain", session2), { recursive: true, force: true });
+  } catch {}
 }
 
 const edited = applyTicketEdit("alpha beta alpha", { old_string: "alpha", new_string: "gamma", replace_all: true });

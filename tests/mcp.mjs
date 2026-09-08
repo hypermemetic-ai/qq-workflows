@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { promisify } from "node:util";
@@ -18,6 +18,7 @@ import {
   ticketWriteTool,
 } from "../bin/mcp-server.mjs";
 import { git } from "../workflow/git.mjs";
+import { brainTicketPath } from "../workflow/ticket.mjs";
 
 const exec = promisify(execFile);
 
@@ -161,6 +162,8 @@ try {
   assert.equal(writeSurgical.ok, true);
   assert.match(writeSurgical.text, /## Kind\nopen/);
   assert.equal(readFileSync(join(ticketsDir, `${sessionId}.md`), "utf8"), writeSurgical.text);
+  assert.equal(readFileSync(brainTicketPath(sessionId), "utf8"), writeSurgical.text);
+  assert.equal(writeSurgical.artifactPath, brainTicketPath(sessionId));
 
   // Full replacement via ticketWriteTool
   const newTicketContent = "# Replaced Session Ticket\n\n## Kind\nbounded\n\n## Problem\nFixed bug\n";
@@ -172,6 +175,8 @@ try {
   assert.equal(writeFull.ok, true);
   assert.equal(writeFull.text, newTicketContent);
   assert.equal(readFileSync(join(ticketsDir, `${sessionId}.md`), "utf8"), newTicketContent);
+  assert.equal(readFileSync(brainTicketPath(sessionId), "utf8"), newTicketContent);
+  assert.equal(writeFull.artifactPath, brainTicketPath(sessionId));
 
   // Validation failures on ticket_write
   await assert.rejects(
@@ -226,6 +231,8 @@ try {
   const parsedWrite = JSON.parse(rpcWrite.content[0].text);
   assert.equal(parsedWrite.ok, true);
   assert.match(parsedWrite.text, /Fixed critical bug/);
+  assert.match(readFileSync(brainTicketPath(sessionId), "utf8"), /Fixed critical bug/);
+  assert.equal(parsedWrite.artifactPath, brainTicketPath(sessionId));
 
   const rpcWriteErr = await handleRpc("tools/call", {
     name: "ticket_write",
@@ -251,6 +258,9 @@ try {
     rmSync(join(dirname(repoDir), ".qq-worktrees", basename(repoDir)), { recursive: true, force: true });
   } catch {}
   rmSync(repoDir, { recursive: true, force: true });
+  try {
+    rmSync(join(homedir(), ".gemini", "antigravity-cli", "brain", sessionId), { recursive: true, force: true });
+  } catch {}
 }
 
 // 9. RPC & JSON-RPC stdio protocol tests
