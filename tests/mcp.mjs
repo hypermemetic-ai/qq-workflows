@@ -14,8 +14,6 @@ import {
   prepareWorktree,
   resolveSessionId,
   startMcpServer,
-  ticketReadTool,
-  ticketWriteTool,
 } from "../bin/mcp-server.mjs";
 import { git } from "../workflow/git.mjs";
 import { brainTicketPath } from "../workflow/ticket.mjs";
@@ -23,9 +21,9 @@ import { brainTicketPath } from "../workflow/ticket.mjs";
 const exec = promisify(execFile);
 
 // 1. Tool schema checks
-assert.equal(TOOLS.length, 4);
+assert.equal(TOOLS.length, 2);
 const toolNames = TOOLS.map((t) => t.name).sort();
-assert.deepEqual(toolNames, ["land", "prepare_worktree", "ticket_read", "ticket_write"]);
+assert.deepEqual(toolNames, ["land", "prepare_worktree"]);
 
 const prepareTool = TOOLS.find((t) => t.name === "prepare_worktree");
 assert.ok(prepareTool);
@@ -34,18 +32,6 @@ assert.deepEqual(prepareTool.inputSchema.properties.kind.enum, ["bounded", "open
 
 const landTool = TOOLS.find((t) => t.name === "land");
 assert.ok(landTool);
-
-const ticketReadToolDef = TOOLS.find((t) => t.name === "ticket_read");
-assert.ok(ticketReadToolDef);
-assert.ok(ticketReadToolDef.inputSchema.properties.sessionId);
-assert.ok(ticketReadToolDef.inputSchema.properties.cwd);
-
-const ticketWriteToolDef = TOOLS.find((t) => t.name === "ticket_write");
-assert.ok(ticketWriteToolDef);
-assert.ok(ticketWriteToolDef.inputSchema.properties.text);
-assert.ok(ticketWriteToolDef.inputSchema.properties.old_string);
-assert.ok(ticketWriteToolDef.inputSchema.properties.new_string);
-assert.ok(ticketWriteToolDef.inputSchema.properties.replace_all);
 
 // 2. Validation failures
 await assert.rejects(
@@ -94,7 +80,7 @@ try {
   assert.ok(boundedResult.worktree.includes(".qq-worktrees"));
   assert.ok(boundedResult.instructions.includes("implementer subagent"));
   assert.ok(boundedResult.instructions.includes("call 'land'"));
-  assert.equal(boundedResult.implementerPrompt, "Follow .architect/ticket.md in the checkout. When finished, report your answer.");
+  assert.equal(boundedResult.implementerPrompt, "Implement .architect/ticket.md in the checkout. When finished, report your answer.");
   assert.equal(boundedResult.reviewerPrompt, undefined);
 
   // Verify ticket was copied into the worktree as .architect/ticket.md
@@ -116,7 +102,7 @@ try {
   assert.equal(openResult.branch, "architect/open/87654321");
   assert.equal(openResult.reviewRequired, true);
   assert.ok(openResult.instructions.includes("reviewer subagent"));
-  assert.equal(openResult.implementerPrompt, "Follow .architect/ticket.md in the checkout. When finished, report your answer.");
+  assert.equal(openResult.implementerPrompt, "Implement .architect/ticket.md in the checkout. When finished, report your answer.");
   assert.equal(
     openResult.reviewerPrompt,
     "Follow .architect/ticket.md in the checkout. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.",
@@ -140,111 +126,79 @@ try {
   // Verify file landed in main
   assert.equal(readFileSync(join(repoDir, "code.txt"), "utf8"), "console.log('hello');\n");
 
-  // 7. Test ticket_read and ticket_write
-  // Read active ticket
-  const readRes = await ticketReadTool({ cwd: repoDir, sessionId });
-  assert.equal(readRes.ok, true);
-  assert.equal(readRes.path, join(ticketsDir, `${sessionId}.md`));
-  assert.match(readRes.text, /# Test Session Ticket/);
+  // 7. Test ticket resolution in prepare_worktree
+  // A. Brain artifact resolution
+  const brainSessionId = "brain-session-0001";
+  const brainPath = brainTicketPath(brainSessionId);
+  mkdirSync(dirname(brainPath), { recursive: true });
+  writeFileSync(brainPath, "# Brain Ticket\n\n## Kind\nbounded\n");
 
-  // Read without explicit sessionId (resolves active ticket, which is openSessionId)
-  const readAuto = await ticketReadTool({ cwd: repoDir });
-  assert.equal(readAuto.ok, true);
-  assert.equal(readAuto.path, join(ticketsDir, `${openSessionId}.md`));
-
-  // Surgical edit via ticketWriteTool
-  const writeSurgical = await ticketWriteTool({
+  const brainResult = await prepareWorktree({
+    kind: "bounded",
+    sessionId: brainSessionId,
     cwd: repoDir,
-    sessionId,
-    old_string: "bounded",
-    new_string: "open",
   });
-  assert.equal(writeSurgical.ok, true);
-  assert.match(writeSurgical.text, /## Kind\nopen/);
-  assert.equal(readFileSync(join(ticketsDir, `${sessionId}.md`), "utf8"), writeSurgical.text);
-  assert.equal(readFileSync(brainTicketPath(sessionId), "utf8"), writeSurgical.text);
-  assert.equal(writeSurgical.artifactPath, brainTicketPath(sessionId));
-
-  // Full replacement via ticketWriteTool
-  const newTicketContent = "# Replaced Session Ticket\n\n## Kind\nbounded\n\n## Problem\nFixed bug\n";
-  const writeFull = await ticketWriteTool({
-    cwd: repoDir,
-    sessionId,
-    text: newTicketContent,
-  });
-  assert.equal(writeFull.ok, true);
-  assert.equal(writeFull.text, newTicketContent);
-  assert.equal(readFileSync(join(ticketsDir, `${sessionId}.md`), "utf8"), newTicketContent);
-  assert.equal(readFileSync(brainTicketPath(sessionId), "utf8"), newTicketContent);
-  assert.equal(writeFull.artifactPath, brainTicketPath(sessionId));
-
-  // Validation failures on ticket_write
-  await assert.rejects(
-    () => ticketWriteTool({ cwd: repoDir, sessionId }),
-    /ticket_write requires text or old_string\/new_string/,
-  );
-  await assert.rejects(
-    () => ticketWriteTool({ cwd: repoDir, sessionId, old_string: "missing_content", new_string: "replacement" }),
-    /ticket_write old_string not found/,
+  assert.equal(brainResult.ok, true);
+  assert.equal(
+    readFileSync(join(brainResult.worktree, ".architect", "ticket.md"), "utf8"),
+    "# Brain Ticket\n\n## Kind\nbounded\n",
   );
 
-  // Fallback to .architect/ticket.md when no tickets in .architect/tickets
-  const fallbackRepo = mkdtempSync(join(tmpdir(), "architect-fallback-repo-"));
+  // Clean up brain worktree
   try {
-    await git(fallbackRepo, ["init", "-b", "main"]);
-    const fbRead = await ticketReadTool({ cwd: fallbackRepo });
-    assert.equal(fbRead.ok, true);
-    assert.equal(fbRead.path, join(fallbackRepo, ".architect", "ticket.md"));
-    assert.match(fbRead.text, /^# Ticket/);
+    await git(repoDir, ["worktree", "remove", "--force", brainResult.worktree]);
+  } catch {}
+  try {
+    await git(repoDir, ["branch", "-D", brainResult.branch]);
+  } catch {}
 
-    const fbWrite = await ticketWriteTool({
-      cwd: fallbackRepo,
-      old_string: "bounded — straightforward work.",
-      new_string: "bounded — simple task.",
-    });
-    assert.equal(fbWrite.ok, true);
-    assert.match(fbWrite.text, /bounded — simple task\./);
-  } finally {
-    rmSync(fallbackRepo, { recursive: true, force: true });
-  }
+  // B. Fallback to .architect/ticket.md when neither session ticket nor brain ticket exists
+  const fallbackSessionId = "fallback-session-0002";
+  const rootArchitectDir = join(repoDir, ".architect");
+  writeFileSync(join(rootArchitectDir, "ticket.md"), "# Root Fallback Ticket\n\n## Kind\nbounded\n");
 
-  // 8. Test RPC tools/call with ticket_read and ticket_write
+  const fbResult = await prepareWorktree({
+    kind: "bounded",
+    sessionId: fallbackSessionId,
+    cwd: repoDir,
+  });
+  assert.equal(fbResult.ok, true);
+  assert.equal(
+    readFileSync(join(fbResult.worktree, ".architect", "ticket.md"), "utf8"),
+    "# Root Fallback Ticket\n\n## Kind\nbounded\n",
+  );
+
+  // Clean up fallback worktree
+  try {
+    await git(repoDir, ["worktree", "remove", "--force", fbResult.worktree]);
+  } catch {}
+  try {
+    await git(repoDir, ["branch", "-D", fbResult.branch]);
+  } catch {}
+
+  // 8. Test RPC tools/call rejects removed ticket tools
   const rpcRead = await handleRpc("tools/call", {
     name: "ticket_read",
     arguments: { cwd: repoDir, sessionId },
   });
-  assert.equal(rpcRead.isError, undefined);
-  const parsedRead = JSON.parse(rpcRead.content[0].text);
-  assert.equal(parsedRead.ok, true);
-  assert.equal(parsedRead.text, newTicketContent);
+  assert.equal(rpcRead.isError, true);
+  assert.match(rpcRead.content[0].text, /Unknown tool: ticket_read/);
 
   const rpcWrite = await handleRpc("tools/call", {
     name: "ticket_write",
-    arguments: {
-      cwd: repoDir,
-      sessionId,
-      old_string: "Fixed bug",
-      new_string: "Fixed critical bug",
-    },
+    arguments: { cwd: repoDir, sessionId },
   });
-  assert.equal(rpcWrite.isError, undefined);
-  const parsedWrite = JSON.parse(rpcWrite.content[0].text);
-  assert.equal(parsedWrite.ok, true);
-  assert.match(parsedWrite.text, /Fixed critical bug/);
-  assert.match(readFileSync(brainTicketPath(sessionId), "utf8"), /Fixed critical bug/);
-  assert.equal(parsedWrite.artifactPath, brainTicketPath(sessionId));
+  assert.equal(rpcWrite.isError, true);
+  assert.match(rpcWrite.content[0].text, /Unknown tool: ticket_write/);
 
-  const rpcWriteErr = await handleRpc("tools/call", {
-    name: "ticket_write",
-    arguments: {
-      cwd: repoDir,
-      sessionId,
-      old_string: "nonexistent",
-      new_string: "foo",
-    },
-  });
-  assert.equal(rpcWriteErr.isError, true);
-  assert.match(rpcWriteErr.content[0].text, /ticket_write old_string not found/);
+  await assert.rejects(
+    () => callTool("ticket_read"),
+    /Unknown tool: ticket_read/,
+  );
+  await assert.rejects(
+    () => callTool("ticket_write"),
+    /Unknown tool: ticket_write/,
+  );
 
   // Clean up open worktree
   try {
@@ -260,6 +214,7 @@ try {
   rmSync(repoDir, { recursive: true, force: true });
   try {
     rmSync(join(homedir(), ".gemini", "antigravity-cli", "brain", sessionId), { recursive: true, force: true });
+    rmSync(join(homedir(), ".gemini", "antigravity-cli", "brain", "brain-session-0001"), { recursive: true, force: true });
   } catch {}
 }
 
@@ -272,7 +227,7 @@ const pingResp = await handleRpc("ping", {});
 assert.deepEqual(pingResp, {});
 
 const listResp = await handleRpc("tools/list", {});
-assert.equal(listResp.tools.length, 4);
+assert.equal(listResp.tools.length, 2);
 
 // tools/call with missing kind should return isError: true
 const errCallResp = await handleRpc("tools/call", {
@@ -312,7 +267,7 @@ assert.equal(responses[0].id, 1);
 assert.equal(responses[0].result.serverInfo.name, "qq-workflows");
 
 assert.equal(responses[1].id, 2);
-assert.equal(responses[1].result.tools.length, 4);
+assert.equal(responses[1].result.tools.length, 2);
 
 assert.equal(responses[2].id, 3);
 assert.deepEqual(responses[2].result, {});

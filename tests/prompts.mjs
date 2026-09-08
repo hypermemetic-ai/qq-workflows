@@ -12,10 +12,14 @@ assert.match(ARCHITECT_SYSTEM_PROMPT(), /## Guidelines/);
 assert.match(ARCHITECT_SYSTEM_PROMPT(), /## Teaching/);
 assert.match(ARCHITECT_SYSTEM_PROMPT(), /call `prepare_worktree`/);
 assert.match(ARCHITECT_SYSTEM_PROMPT(), /call `land`/);
-assert.match(ARCHITECT_SYSTEM_PROMPT(), /Update the ticket collaboratively using `ticket_write`/);
+assert.doesNotMatch(ARCHITECT_SYSTEM_PROMPT(), /ticket_write/);
+assert.doesNotMatch(ARCHITECT_SYSTEM_PROMPT(), /ticket_read/);
+assert.match(ARCHITECT_SYSTEM_PROMPT(), /Ask questions one at a time with recommendations\./);
+assert.match(ARCHITECT_SYSTEM_PROMPT(), /Populate ticket and testing plan collaboratively with the operator/);
+assert.match(ARCHITECT_SYSTEM_PROMPT(), /RequestFeedback: false/);
 assert.match(
   ARCHITECT_SYSTEM_PROMPT(),
-  /Do not call `prepare_worktree` until the operator approves the ticket \(via the Proceed button or explicit confirmation\)/,
+  /Do not call `prepare_worktree` until the operator approves \(via Proceed button or explicit confirmation\)/,
 );
 assert.match(ARCHITECT_SYSTEM_PROMPT(), /When the operator approves the ticket, call `prepare_worktree`/);
 
@@ -23,7 +27,7 @@ assert.equal(
   IMPLEMENTER_SYSTEM_PROMPT,
   [
     "You are the implementer. Work in the checkout.",
-    "Follow the ticket and instructions.",
+    "Implement .architect/ticket.md.",
     "When finished, report your answer.",
   ].join("\n"),
 );

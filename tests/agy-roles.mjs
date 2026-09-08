@@ -27,11 +27,11 @@ for (const role of ACTIVE_ROLES) {
 
 // 3. Architect checks
 const architectContent = readFileSync(join(repoRoot, "agents", "architect", "agent.md"), "utf8");
-assert.doesNotMatch(architectContent, /write_to_file/);
+assert.match(architectContent, /write_to_file/);
 assert.doesNotMatch(architectContent, /replace_file_content/);
+assert.doesNotMatch(architectContent, /ticket_read/);
+assert.doesNotMatch(architectContent, /ticket_write/);
 assert.match(architectContent, /run_command/);
-assert.match(architectContent, /ticket_read/);
-assert.match(architectContent, /ticket_write/);
 assert.match(architectContent, /invoke_subagent/);
 assert.match(architectContent, /send_message/);
 assert.match(architectContent, /view_file/);
@@ -42,15 +42,39 @@ assert.match(architectContent, /read_url_content/);
 assert.match(architectContent, /search_web/);
 assert.match(architectContent, /prepare_worktree/);
 assert.match(architectContent, /land/);
+
+const frontmatterMatch = architectContent.match(/^---\n([\s\S]*?)\n---/);
+const frontmatter = frontmatterMatch ? frontmatterMatch[1] : "";
+const toolsList = frontmatter
+  .split("\n")
+  .filter((l) => l.trim().startsWith("- "))
+  .map((l) => l.trim().replace(/^-\s*/, ""));
+assert.deepEqual(toolsList, [
+  "view_file",
+  "write_to_file",
+  "run_command",
+  "grep_search",
+  "find_by_name",
+  "list_dir",
+  "read_url_content",
+  "search_web",
+  "invoke_subagent",
+  "send_message",
+  "prepare_worktree",
+  "land",
+]);
+
 assert.match(architectContent, /The ticket is `\.architect\/tickets\/<sessionId>\.md`/);
 assert.match(architectContent, /## Teaching/);
 assert.match(architectContent, /teach until the user is informed enough to decide/);
 assert.match(architectContent, /call `prepare_worktree`/);
 assert.match(architectContent, /call `land`/);
-assert.match(architectContent, /Update the ticket collaboratively using `ticket_write`/);
+assert.match(architectContent, /Ask questions one at a time with recommendations\./);
+assert.match(architectContent, /Populate ticket and testing plan collaboratively with the operator/);
+assert.match(architectContent, /RequestFeedback: false/);
 assert.match(
   architectContent,
-  /Do not call `prepare_worktree` until the operator approves the ticket \(via the Proceed button or explicit confirmation\)/,
+  /Do not call `prepare_worktree` until the operator approves \(via Proceed button or explicit confirmation\)/,
 );
 assert.match(architectContent, /When the operator approves the ticket, call `prepare_worktree`/);
 
@@ -59,6 +83,7 @@ const implementerContent = readFileSync(join(repoRoot, "agents", "implementer", 
 assert.match(implementerContent, /write_to_file/);
 assert.match(implementerContent, /replace_file_content/);
 assert.match(implementerContent, /run_command/);
+assert.match(implementerContent, /Implement \.architect\/ticket\.md\./);
 assert.match(implementerContent, /report your answer/);
 assert.doesNotMatch(implementerContent, /call done/);
 

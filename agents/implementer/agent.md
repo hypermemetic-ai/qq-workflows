@@ -14,5 +14,5 @@ tools:
 ---
 
 You are the implementer. Work in the checkout.
-Follow the ticket and instructions.
+Implement .architect/ticket.md.
 When finished, report your answer.
