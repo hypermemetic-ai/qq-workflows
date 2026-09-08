@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -19,6 +19,7 @@ import {
   retireWorktree,
   worktreePathFor,
 } from "../workflow/git.mjs";
+import { brainTicketPath } from "../workflow/ticket.mjs";
 
 const exec = promisify(execFile);
 
@@ -174,6 +175,58 @@ try {
     rmSync(join(dirname(lifecycleRepo), ".qq-worktrees", basename(lifecycleRepo)), { recursive: true, force: true });
   } catch {}
   rmSync(lifecycleRepo, { recursive: true, force: true });
+}
+
+// 4. Test createWorktree ticket resolution priority
+const ticketRepo = mkdtempSync(join(tmpdir(), "architect-ticket-resolution-"));
+const brainSession = "sess-brain-1234";
+const brainFile = brainTicketPath(brainSession);
+try {
+  await git(ticketRepo, ["init", "-b", "main"]);
+  await git(ticketRepo, ["config", "user.name", "Architect Test"]);
+  await git(ticketRepo, ["config", "user.email", "architect@example.invalid"]);
+  writeFileSync(join(ticketRepo, "init.txt"), "init\n");
+  await git(ticketRepo, ["add", "init.txt"]);
+  await git(ticketRepo, ["commit", "-m", "init"]);
+
+  // 1. Session ticket in .architect/tickets/<sessionId>.md
+  const s1 = "sess-ticket-1111";
+  mkdirSync(join(ticketRepo, ".architect", "tickets"), { recursive: true });
+  writeFileSync(join(ticketRepo, ".architect", "tickets", `${s1}.md`), "# Session 1 Ticket\n");
+  const wt1 = await createWorktree(ticketRepo, { kind: "bounded", sessionId: s1 });
+  assert.equal(
+    readFileSync(join(wt1.cwd, ".architect", "ticket.md"), "utf8"),
+    "# Session 1 Ticket\n",
+  );
+  await retireWorktree(ticketRepo, { worktree: wt1.cwd, branch: wt1.branch });
+
+  // 2. Brain ticket artifact ~/.gemini/antigravity-cli/brain/<sessionId>/ticket.md
+  mkdirSync(dirname(brainFile), { recursive: true });
+  writeFileSync(brainFile, "# Brain Session Ticket\n");
+  const wt2 = await createWorktree(ticketRepo, { kind: "bounded", sessionId: brainSession });
+  assert.equal(
+    readFileSync(join(wt2.cwd, ".architect", "ticket.md"), "utf8"),
+    "# Brain Session Ticket\n",
+  );
+  await retireWorktree(ticketRepo, { worktree: wt2.cwd, branch: wt2.branch });
+
+  // 3. Fallback to .architect/ticket.md
+  const s3 = "sess-fallback-3333";
+  writeFileSync(join(ticketRepo, ".architect", "ticket.md"), "# Repo Fallback Ticket\n");
+  const wt3 = await createWorktree(ticketRepo, { kind: "bounded", sessionId: s3 });
+  assert.equal(
+    readFileSync(join(wt3.cwd, ".architect", "ticket.md"), "utf8"),
+    "# Repo Fallback Ticket\n",
+  );
+  await retireWorktree(ticketRepo, { worktree: wt3.cwd, branch: wt3.branch });
+} finally {
+  try {
+    rmSync(join(dirname(ticketRepo), ".qq-worktrees", basename(ticketRepo)), { recursive: true, force: true });
+  } catch {}
+  rmSync(ticketRepo, { recursive: true, force: true });
+  try {
+    rmSync(join(homedir(), ".gemini", "antigravity-cli", "brain", brainSession), { recursive: true, force: true });
+  } catch {}
 }
 
 console.log("Git tests passed cleanly.");
