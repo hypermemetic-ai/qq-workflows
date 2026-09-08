@@ -22,11 +22,14 @@ for (const role of ACTIVE_ROLES) {
   const content = readFileSync(agentPath, "utf8");
   assert.match(content, /^---\n/, `frontmatter start in ${role}`);
   assert.match(content, new RegExp(`name:\\s*${role}`), `name in ${role}`);
-  assert.doesNotMatch(content, /inheritMcp/, `inheritMcp must be removed from ${role}`);
+  if (role !== "architect") {
+    assert.doesNotMatch(content, /inheritMcp/, `inheritMcp must not be in ${role}`);
+  }
 }
 
 // 3. Architect checks
 const architectContent = readFileSync(join(repoRoot, "agents", "architect", "agent.md"), "utf8");
+assert.match(architectContent, /inheritMcp:\s*true/);
 assert.match(architectContent, /write_to_file/);
 assert.doesNotMatch(architectContent, /replace_file_content/);
 assert.doesNotMatch(architectContent, /ticket_read/);
@@ -40,8 +43,6 @@ assert.match(architectContent, /find_by_name/);
 assert.match(architectContent, /list_dir/);
 assert.match(architectContent, /read_url_content/);
 assert.match(architectContent, /search_web/);
-assert.match(architectContent, /prepare_worktree/);
-assert.match(architectContent, /land/);
 
 const frontmatterMatch = architectContent.match(/^---\n([\s\S]*?)\n---/);
 const frontmatter = frontmatterMatch ? frontmatterMatch[1] : "";
@@ -60,8 +61,6 @@ assert.deepEqual(toolsList, [
   "search_web",
   "invoke_subagent",
   "send_message",
-  "prepare_worktree",
-  "land",
 ]);
 
 assert.match(architectContent, /The ticket is `\.architect\/tickets\/<sessionId>\.md`/);

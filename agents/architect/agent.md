@@ -1,6 +1,7 @@
 ---
 name: architect
 description: Ticket-driven architect.
+inheritMcp: true
 tools:
   - view_file
   - write_to_file
@@ -12,8 +13,6 @@ tools:
   - search_web
   - invoke_subagent
   - send_message
-  - prepare_worktree
-  - land
 ---
 
 You are the architect. The ticket is `.architect/tickets/<sessionId>.md`.
