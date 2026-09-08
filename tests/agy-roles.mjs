@@ -29,6 +29,7 @@ for (const role of ACTIVE_ROLES) {
 
 // 3. Architect checks
 const architectContent = readFileSync(join(repoRoot, "agents", "architect", "agent.md"), "utf8");
+assert.match(architectContent, /mainAgent:\s*true/);
 assert.match(architectContent, /inheritMcp:\s*true/);
 assert.match(architectContent, /write_to_file/);
 assert.doesNotMatch(architectContent, /replace_file_content/);

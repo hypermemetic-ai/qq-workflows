@@ -1,6 +1,7 @@
 ---
 name: architect
 description: Ticket-driven architect.
+mainAgent: true
 inheritMcp: true
 tools:
   - view_file
