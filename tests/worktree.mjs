@@ -1,27 +1,55 @@
-import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { createImplementerWorktree, implementerBranchName } from '../paseo-plugin/host/workflow/worktree.mjs';
+#!/usr/bin/env node
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { seedWorktreeIndex, implementerBranchName } from "../workflow/worktree.mjs";
 
-const scratch = await mkdtemp(join(tmpdir(), 'architect-worktree-'));
-const previous = process.env.PASEO_HOME;
-process.env.PASEO_HOME = join(scratch, 'paseo');
+const dir = mkdtempSync(join(tmpdir(), "architect-worktree-test-"));
+
 try {
-  const repo = join(scratch, 'repo');
-  execFileSync('git', ['init', '-b', 'main', repo], { stdio: 'pipe' });
-  execFileSync('git', ['-C', repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-m', 'Baseline'], { stdio: 'pipe' });
-  const branch = implementerBranchName('bounded', 'abcdef12-xxxx');
-  const result = await createImplementerWorktree({ cwd: repo, branch });
-  assert.equal(branch, 'architect/bounded/abcdef12');
-  assert.equal(result.cwd, join(process.env.PASEO_HOME, 'worktrees/architect/architect-bounded-abcdef12'));
-  assert.equal(execFileSync('git', ['-C', result.cwd, 'branch', '--show-current'], { encoding: 'utf8' }).trim(), branch);
-  await assert.rejects(createImplementerWorktree({ cwd: repo, branch }), /already exists/);
-  assert.deepEqual(await createImplementerWorktree({ cwd: repo, branch, reuse: true }), result);
-  assert.equal(execFileSync('git', ['-C', repo, 'branch', '--show-current'], { encoding: 'utf8' }).trim(), 'main');
+  // Test implementerBranchName
+  assert.equal(implementerBranchName("feat", "1234567890"), "architect/feat/12345678");
+
+  // Setup mock source workspace with .zvec-grep
+  const sourceCwd = join(dir, "source-repo");
+  const targetCwd = join(dir, "target-worktree");
+  mkdirSync(join(sourceCwd, ".zvec-grep", "locks"), { recursive: true });
+  mkdirSync(targetCwd, { recursive: true });
+
+  const initialManifest = {
+    manifestVersion: 1,
+    id: "test-id-123",
+    name: "test-source",
+    path: join(sourceCwd, ".zvec-grep"),
+    rootPaths: [{ absolutePath: sourceCwd, recursive: true }],
+    embedding: { model: "local/qwen3-embedding-0.6b" },
+  };
+  writeFileSync(join(sourceCwd, ".zvec-grep", "manifest.json"), JSON.stringify(initialManifest, null, 2));
+  writeFileSync(join(sourceCwd, ".zvec-grep", "locks", "daemon.json"), "mock-lock");
+
+  // Run seedWorktreeIndex
+  const seeded = await seedWorktreeIndex({ sourceCwd, targetCwd });
+  assert.equal(seeded, true, "seedWorktreeIndex should report success");
+
+  // Verify target structure
+  const targetManifestPath = join(targetCwd, ".zvec-grep", "manifest.json");
+  assert.ok(existsSync(targetManifestPath), "Target manifest must exist");
+
+  const targetManifest = JSON.parse(readFileSync(targetManifestPath, "utf8"));
+  assert.equal(targetManifest.path, join(targetCwd, ".zvec-grep"));
+  assert.equal(targetManifest.rootPaths[0].absolutePath, targetCwd);
+
+  // Verify stale locks were cleaned up
+  const staleLockPath = join(targetCwd, ".zvec-grep", "locks", "daemon.json");
+  assert.equal(existsSync(staleLockPath), false, "Stale locks should be purged");
+  assert.ok(existsSync(join(targetCwd, ".zvec-grep", "locks")), "Locks directory should exist and be clean");
+
+  // Second invocation should safely no-op
+  const secondRun = await seedWorktreeIndex({ sourceCwd, targetCwd });
+  assert.equal(secondRun, false, "Second run should no-op because target .zvec-grep already exists");
+
+  console.log("Worktree tests passed successfully.");
 } finally {
-  if (previous === undefined) delete process.env.PASEO_HOME;
-  else process.env.PASEO_HOME = previous;
-  await rm(scratch, { recursive: true, force: true });
+  rmSync(dir, { recursive: true, force: true });
 }

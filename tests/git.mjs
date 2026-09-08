@@ -3,17 +3,22 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
   buildReviewPacket,
+  createWorktree,
   defaultBaseRef,
   defaultLocalBranch,
   fastForwardMain,
   hasRemote,
+  implementerBranchName,
+  landWorktree,
   mergeBase,
-} from "../paseo-plugin/host/workflow/git.mjs";
+  retireWorktree,
+  worktreePathFor,
+} from "../workflow/git.mjs";
 
 const exec = promisify(execFile);
 
@@ -23,7 +28,7 @@ async function git(cwd, args) {
 }
 
 const gitSrc = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), "../paseo-plugin/host/workflow/git.mjs"),
+  join(dirname(fileURLToPath(import.meta.url)), "../workflow/git.mjs"),
   "utf8",
 );
 assert.doesNotMatch(gitSrc, /base = "HEAD~1"/);
@@ -112,3 +117,63 @@ try {
   rmSync(wt, { recursive: true, force: true });
   rmSync(local, { recursive: true, force: true });
 }
+
+// Tests for worktree lifecycle and landing semantics
+assert.equal(implementerBranchName("bounded", "9cb8531b-1234"), "architect/bounded/9cb8531b");
+assert.equal(implementerBranchName("open", "9cb8531b-1234"), "architect/open/9cb8531b");
+assert.match(worktreePathFor("/tmp/repo", "architect/bounded/9cb8531b"), /\.qq-worktrees\/repo\/architect-bounded-9cb8531b/);
+
+const lifecycleRepo = mkdtempSync(join(tmpdir(), "architect-lifecycle-"));
+try {
+  await git(lifecycleRepo, ["init", "-b", "main"]);
+  await git(lifecycleRepo, ["config", "user.name", "Architect Test"]);
+  await git(lifecycleRepo, ["config", "user.email", "architect@example.invalid"]);
+  writeFileSync(join(lifecycleRepo, "init.txt"), "initial commit\n");
+  await git(lifecycleRepo, ["add", "init.txt"]);
+  await git(lifecycleRepo, ["commit", "-m", "initial"]);
+
+  // 1. Prepare worktree branch
+  const sessionId = "abcdef12-3456-7890-abcd-ef1234567890";
+  const wt = await createWorktree(lifecycleRepo, { kind: "bounded", sessionId });
+  assert.equal(wt.branch, "architect/bounded/abcdef12");
+  assert.equal(wt.reused, false);
+  assert.ok(wt.cwd.includes("architect-bounded-abcdef12"));
+  assert.equal(await git(wt.cwd, ["branch", "--show-current"]), wt.branch);
+
+  // Calling createWorktree again reuses existing worktree
+  const reused = await createWorktree(lifecycleRepo, { kind: "bounded", sessionId });
+  assert.equal(reused.reused, true);
+  assert.equal(reused.cwd, wt.cwd);
+
+  // 2. Work in the checkout (dirty changes)
+  writeFileSync(join(wt.cwd, "feature.txt"), "built by implementer\n");
+
+  // 3. Land worktree (fast-forward local main, retire worktree, delete local branch)
+  const landResult = await landWorktree(lifecycleRepo, {
+    worktree: wt.cwd,
+    branch: wt.branch,
+    message: "feat: implementer work",
+  });
+  assert.equal(landResult.landed, true);
+  assert.equal(landResult.method, "ff");
+  assert.equal(landResult.branch, "architect/bounded/abcdef12");
+
+  // Verify main has the changes
+  assert.equal(readFileSync(join(lifecycleRepo, "feature.txt"), "utf8"), "built by implementer\n");
+  assert.equal(await git(lifecycleRepo, ["log", "-1", "--pretty=%B"]), "feat: implementer work");
+
+  // Verify worktree is retired (directory removed)
+  assert.equal(readFileSync(join(lifecycleRepo, "init.txt"), "utf8"), "initial commit\n");
+  const wtList = await git(lifecycleRepo, ["worktree", "list"]);
+  assert.ok(!wtList.includes(wt.branch), "worktree must not be listed");
+
+  // Verify branch is deleted
+  await assert.rejects(() => git(lifecycleRepo, ["rev-parse", "--verify", `refs/heads/${wt.branch}`]), /fatal:/);
+} finally {
+  try {
+    rmSync(join(dirname(lifecycleRepo), ".qq-worktrees", basename(lifecycleRepo)), { recursive: true, force: true });
+  } catch {}
+  rmSync(lifecycleRepo, { recursive: true, force: true });
+}
+
+console.log("Git tests passed cleanly.");

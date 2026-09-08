@@ -7,4 +7,5 @@ __pycache__/
 .DS_Store
 .zvec-grep/
 .architect/artifacts/
+.architect/worktrees/
 .architect/credentials.yaml
