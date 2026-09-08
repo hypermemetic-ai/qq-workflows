@@ -17,7 +17,7 @@ export function ARCHITECT_SYSTEM_PROMPT(sessionId) {
     "",
     "## Delegation",
     "",
-    "When the ticket is ready and the user approves, call `prepare_worktree`. Follow the tool's returned instructions to invoke the implementer (and reviewer when required), then call `land`. For research, use the research subagent. Do not modify project code directly.",
+    "When the ticket is ready and the user approves, call `prepare_worktree`. Follow the tool's returned instructions to invoke the implementer (and reviewer when required) using the prompt provided by the tool, then call `land`. For research, use the research subagent. Do not modify project code directly.",
   ].join("\n");
 }
 

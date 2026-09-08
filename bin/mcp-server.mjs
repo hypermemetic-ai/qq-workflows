@@ -95,9 +95,12 @@ export async function prepareWorktree(args = {}) {
   const wt = await createWorktree(root, { kind, sessionId });
   const reviewRequired = kind === "open";
 
+  const implementerPrompt = `Follow .architect/ticket.md in the checkout. When finished, report your answer.`;
+  const reviewerPrompt = `Follow .architect/ticket.md in the checkout. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.`;
+
   const instructions = reviewRequired
-    ? `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: true\n\nNext steps:\n1. Delegate implementation to implementer subagent in checkout ${wt.cwd}.\n2. When implementation finishes, delegate review to reviewer subagent in ${wt.cwd}.\n3. When review passes, call 'land'.`
-    : `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. Delegate implementation to implementer subagent in checkout ${wt.cwd}.\n2. When finished, call 'land'.`;
+    ? `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: true\n\nNext steps:\n1. Invoke implementer subagent with Prompt: "${implementerPrompt}"\n2. When implementation finishes, invoke reviewer subagent with Prompt: "${reviewerPrompt}"\n3. When review passes, call 'land'.`
+    : `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. Invoke implementer subagent with Prompt: "${implementerPrompt}"\n2. When finished, call 'land'.`;
 
   return {
     ok: true,
@@ -105,6 +108,8 @@ export async function prepareWorktree(args = {}) {
     branch: wt.branch,
     worktree: wt.cwd,
     reviewRequired,
+    implementerPrompt,
+    ...(reviewRequired ? { reviewerPrompt } : {}),
     instructions,
   };
 }

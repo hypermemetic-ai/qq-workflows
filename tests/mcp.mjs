@@ -79,6 +79,8 @@ try {
   assert.ok(boundedResult.worktree.includes(".qq-worktrees"));
   assert.ok(boundedResult.instructions.includes("implementer subagent"));
   assert.ok(boundedResult.instructions.includes("call 'land'"));
+  assert.equal(boundedResult.implementerPrompt, "Follow .architect/ticket.md in the checkout. When finished, report your answer.");
+  assert.equal(boundedResult.reviewerPrompt, undefined);
 
   // Verify ticket was copied into the worktree as .architect/ticket.md
   const wtTicket = join(boundedResult.worktree, ".architect", "ticket.md");
@@ -99,6 +101,11 @@ try {
   assert.equal(openResult.branch, "architect/open/87654321");
   assert.equal(openResult.reviewRequired, true);
   assert.ok(openResult.instructions.includes("reviewer subagent"));
+  assert.equal(openResult.implementerPrompt, "Follow .architect/ticket.md in the checkout. When finished, report your answer.");
+  assert.equal(
+    openResult.reviewerPrompt,
+    "Follow .architect/ticket.md in the checkout. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.",
+  );
 
   // 6. Test landing worktree
   // Make changes in bounded worktree
