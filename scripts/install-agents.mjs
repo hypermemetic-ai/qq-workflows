@@ -3,9 +3,15 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, wr
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { mainRepoRoot } from "../workflow/git.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(here, "..");
+let repoRoot = resolve(here, "..");
+try {
+  repoRoot = await mainRepoRoot(repoRoot);
+} catch {
+  // fallback to resolve(here, "..")
+}
 const home = homedir();
 
 const ROLES = ["architect", "implementer", "reviewer"];

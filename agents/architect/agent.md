@@ -3,8 +3,6 @@ name: architect
 description: Ticket-driven architect.
 tools:
   - view_file
-  - write_to_file
-  - replace_file_content
   - run_command
   - grep_search
   - find_by_name
@@ -13,6 +11,8 @@ tools:
   - search_web
   - invoke_subagent
   - send_message
+  - ticket_read
+  - ticket_write
   - prepare_worktree
   - land
 ---

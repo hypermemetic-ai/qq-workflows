@@ -27,13 +27,19 @@ for (const role of ACTIVE_ROLES) {
 
 // 3. Architect checks
 const architectContent = readFileSync(join(repoRoot, "agents", "architect", "agent.md"), "utf8");
-assert.match(architectContent, /write_to_file/);
-assert.match(architectContent, /replace_file_content/);
+assert.doesNotMatch(architectContent, /write_to_file/);
+assert.doesNotMatch(architectContent, /replace_file_content/);
 assert.match(architectContent, /run_command/);
+assert.match(architectContent, /ticket_read/);
+assert.match(architectContent, /ticket_write/);
 assert.match(architectContent, /invoke_subagent/);
 assert.match(architectContent, /send_message/);
 assert.match(architectContent, /view_file/);
 assert.match(architectContent, /grep_search/);
+assert.match(architectContent, /find_by_name/);
+assert.match(architectContent, /list_dir/);
+assert.match(architectContent, /read_url_content/);
+assert.match(architectContent, /search_web/);
 assert.match(architectContent, /prepare_worktree/);
 assert.match(architectContent, /land/);
 assert.match(architectContent, /The ticket is `\.architect\/tickets\/<sessionId>\.md`/);

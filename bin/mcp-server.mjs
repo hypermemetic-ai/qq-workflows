@@ -12,6 +12,7 @@ import {
   mainRepoRoot,
   parseWorktreePorcelain,
 } from "../workflow/git.mjs";
+import { ticketRead, ticketWrite } from "../workflow/ticket.mjs";
 
 export const TOOLS = [
   {
@@ -58,9 +59,59 @@ export const TOOLS = [
       },
     },
   },
+  {
+    name: "ticket_read",
+    description: "Read the active architect session ticket (.architect/tickets/<sessionId>.md or .architect/ticket.md).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: {
+          type: "string",
+          description: "Optional session ID. If omitted, resolved from active ticket in .architect/tickets/ or fallback to .architect/ticket.md",
+        },
+        cwd: {
+          type: "string",
+          description: "Optional repository working directory (defaults to process.cwd())",
+        },
+      },
+    },
+  },
+  {
+    name: "ticket_write",
+    description: "Write or edit the architect session ticket (.architect/tickets/<sessionId>.md or .architect/ticket.md). Provide 'text' for full replacement, or 'old_string' and 'new_string' for surgical edits.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: {
+          type: "string",
+          description: "Full replacement markdown text for the ticket",
+        },
+        old_string: {
+          type: "string",
+          description: "The existing text string to be replaced",
+        },
+        new_string: {
+          type: "string",
+          description: "The new replacement text string",
+        },
+        replace_all: {
+          type: "boolean",
+          description: "If true, replace all occurrences of old_string (default false)",
+        },
+        sessionId: {
+          type: "string",
+          description: "Optional session ID. If omitted, resolved from active ticket in .architect/tickets/ or fallback to .architect/ticket.md",
+        },
+        cwd: {
+          type: "string",
+          description: "Optional repository working directory (defaults to process.cwd())",
+        },
+      },
+    },
+  },
 ];
 
-export async function resolveSessionId(root, explicitId) {
+export async function resolveActiveSessionId(root, explicitId) {
   if (explicitId) return explicitId;
   const ticketsDir = join(root, ".architect", "tickets");
   if (existsSync(ticketsDir)) {
@@ -77,10 +128,14 @@ export async function resolveSessionId(root, explicitId) {
         return basename(entries[0].name, ".md");
       }
     } catch {
-      /* fallback to randomUUID */
+      /* ignore */
     }
   }
-  return randomUUID();
+  return undefined;
+}
+
+export async function resolveSessionId(root, explicitId) {
+  return (await resolveActiveSessionId(root, explicitId)) || randomUUID();
 }
 
 export async function prepareWorktree(args = {}) {
@@ -152,6 +207,47 @@ export async function land(args = {}) {
   };
 }
 
+export async function ticketReadTool(args = {}) {
+  const cwd = args.cwd || process.cwd();
+  const root = await mainRepoRoot(cwd);
+  const sessionId = await resolveActiveSessionId(root, args.sessionId || args.id);
+
+  const result = await ticketRead(root, undefined, sessionId);
+  return {
+    ok: true,
+    path: result.path,
+    text: result.text,
+  };
+}
+
+export async function ticketWriteTool(args = {}) {
+  const cwd = args.cwd || process.cwd();
+  const root = await mainRepoRoot(cwd);
+  const sessionId = await resolveActiveSessionId(root, args.sessionId || args.id);
+
+  const source = args.input && typeof args.input === "object" ? args.input : args;
+  const editInput = {};
+  if (source.text !== undefined && source.text !== null) {
+    editInput.text = source.text;
+  }
+  if (source.old_string !== undefined && source.old_string !== null) {
+    editInput.old_string = source.old_string;
+  }
+  if (source.new_string !== undefined && source.new_string !== null) {
+    editInput.new_string = source.new_string;
+  }
+  if (source.replace_all !== undefined) {
+    editInput.replace_all = Boolean(source.replace_all);
+  }
+
+  const result = await ticketWrite(root, editInput, undefined, sessionId);
+  return {
+    ok: true,
+    path: result.path,
+    text: result.text,
+  };
+}
+
 export async function callTool(name, args = {}) {
   if (name === "prepare_worktree") {
     return prepareWorktree(args);
@@ -159,8 +255,16 @@ export async function callTool(name, args = {}) {
   if (name === "land") {
     return land(args);
   }
+  if (name === "ticket_read") {
+    return ticketReadTool(args);
+  }
+  if (name === "ticket_write") {
+    return ticketWriteTool(args);
+  }
   throw new Error(`Unknown tool: ${name}`);
 }
+
+export { ticketReadTool as ticket_read, ticketWriteTool as ticket_write };
 
 export async function handleRpc(method, params = {}) {
   if (method === "initialize") {
