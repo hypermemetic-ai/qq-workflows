@@ -85,6 +85,14 @@ assert.match(
   architectContent,
   /For research tickets \(`research`\), invoke the research subagent using the prompt provided by the tool\./,
 );
+assert.match(
+  architectContent,
+  /Subagent delegations must never use `--new-project`/,
+);
+assert.match(
+  architectContent,
+  /--conversation <newUUID>/,
+);
 
 // 4. Implementer checks
 const implementerContent = readFileSync(join(repoRoot, "agents", "implementer", "agent.md"), "utf8");

@@ -78,7 +78,9 @@ try {
   assert.equal(boundedResult.branch, "architect/bounded/12345678");
   assert.equal(boundedResult.reviewRequired, false);
   assert.ok(boundedResult.worktree.includes(".qq-worktrees"));
-  assert.ok(boundedResult.instructions.includes("implementer subagent"));
+  assert.match(boundedResult.instructions, /--conversation [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
+  assert.ok(boundedResult.instructions.includes("Do NOT pass '--new-project'"));
+  assert.ok(boundedResult.instructions.includes("agy --agent implementer"));
   assert.ok(boundedResult.instructions.includes("call 'land'"));
   assert.equal(boundedResult.implementerPrompt, "Implement .architect/ticket.md in the checkout. When finished, report your answer.");
   assert.equal(boundedResult.reviewerPrompt, undefined);
@@ -101,7 +103,9 @@ try {
   assert.equal(openResult.kind, "open");
   assert.equal(openResult.branch, "architect/open/87654321");
   assert.equal(openResult.reviewRequired, true);
-  assert.ok(openResult.instructions.includes("reviewer subagent"));
+  assert.match(openResult.instructions, /--conversation [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
+  assert.ok(openResult.instructions.includes("Do NOT pass '--new-project'"));
+  assert.ok(openResult.instructions.includes("agy --agent reviewer"));
   assert.equal(openResult.implementerPrompt, "Implement .architect/ticket.md in the checkout. When finished, report your answer.");
   assert.equal(
     openResult.reviewerPrompt,
