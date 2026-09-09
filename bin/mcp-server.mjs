@@ -15,14 +15,14 @@ import {
 export const TOOLS = [
   {
     name: "prepare_worktree",
-    description: "Prepare a git worktree and branch for delegation to an implementer (bounded or open).",
+    description: "Prepare a git worktree and branch for delegation (bounded, open, or research).",
     inputSchema: {
       type: "object",
       properties: {
         kind: {
           type: "string",
-          enum: ["bounded", "open"],
-          description: "Work kind: 'bounded' or 'open'",
+          enum: ["bounded", "open", "research"],
+          description: "Work kind: 'bounded', 'open', or 'research'",
         },
         sessionId: {
           type: "string",
@@ -38,7 +38,7 @@ export const TOOLS = [
   },
   {
     name: "land",
-    description: "Land changes from an implementer worktree: commit changes, merge PR (or fast-forward main), and retire worktree and branch.",
+    description: "Land changes from an implementer or research worktree: commit changes, merge PR (or fast-forward main), and retire worktree and branch.",
     inputSchema: {
       type: "object",
       properties: {
@@ -88,8 +88,8 @@ export async function resolveSessionId(root, explicitId) {
 
 export async function prepareWorktree(args = {}) {
   const { kind, cwd = process.cwd() } = args;
-  if (!kind || (kind !== "bounded" && kind !== "open")) {
-    throw new Error("kind is required: 'bounded' | 'open'");
+  if (!kind || (kind !== "bounded" && kind !== "open" && kind !== "research")) {
+    throw new Error("kind is required: 'bounded' | 'open' | 'research'");
   }
 
   const root = await mainRepoRoot(cwd);
@@ -97,6 +97,21 @@ export async function prepareWorktree(args = {}) {
 
   const wt = await createWorktree(root, { kind, sessionId });
   const reviewRequired = kind === "open";
+
+  if (kind === "research") {
+    const researcherPrompt = "Investigate .architect/ticket.md in the checkout. Report findings.";
+    const instructions = `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. Invoke research subagent with Prompt: "${researcherPrompt}"\n2. When finished, call 'land'.`;
+
+    return {
+      ok: true,
+      kind,
+      branch: wt.branch,
+      worktree: wt.cwd,
+      reviewRequired: false,
+      researcherPrompt,
+      instructions,
+    };
+  }
 
   const implementerPrompt = `Implement .architect/ticket.md in the checkout. When finished, report your answer.`;
   const reviewerPrompt = `Follow .architect/ticket.md in the checkout. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.`;

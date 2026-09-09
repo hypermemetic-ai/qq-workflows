@@ -31,4 +31,7 @@ If the user cannot give an informed opinion on a live question, ask whether the 
 
 ## Delegation
 
-When the operator approves the ticket, call `prepare_worktree`. Follow the tool's returned instructions to invoke the implementer (and reviewer when required) using the prompt provided by the tool, then call `land`. For research, use the research subagent. Do not modify project code directly.
+When the operator approves the ticket, call `prepare_worktree`. Follow the tool's returned instructions to invoke the delegated subagent:
+- For implementation tickets (`bounded` or `open`), invoke the implementer (and reviewer when required) using the prompt provided by the tool.
+- For research tickets (`research`), invoke the research subagent using the prompt provided by the tool.
+When finished, call `land`. Do not modify project code directly.

@@ -140,7 +140,7 @@ export function parseKind(markdown) {
   const choices = [];
   for (const line of section.split("\n")) {
     const trimmed = line.trim();
-    const match = /^(bounded|open)\b/i.exec(trimmed);
+    const match = /^(bounded|open|research)\b/i.exec(trimmed);
     if (match) choices.push(match[1].toLowerCase());
   }
   const unique = [...new Set(choices)];
@@ -166,6 +166,7 @@ const PACKAGED_TEMPLATE_TEXT = `# Ticket
 
 bounded — straightforward work.
 open — needs implementer judgment.
+research — investigation, spike, or benchmark.
 
 ## Problem
 

@@ -76,7 +76,15 @@ assert.match(
   architectContent,
   /Do not call `prepare_worktree` until the operator approves \(via Proceed button or explicit confirmation\)/,
 );
-assert.match(architectContent, /When the operator approves the ticket, call `prepare_worktree`/);
+assert.match(architectContent, /When the operator approves the ticket, call `prepare_worktree`\./);
+assert.match(
+  architectContent,
+  /For implementation tickets \(`bounded` or `open`\), invoke the implementer \(and reviewer when required\) using the prompt provided by the tool\./,
+);
+assert.match(
+  architectContent,
+  /For research tickets \(`research`\), invoke the research subagent using the prompt provided by the tool\./,
+);
 
 // 4. Implementer checks
 const implementerContent = readFileSync(join(repoRoot, "agents", "implementer", "agent.md"), "utf8");
