@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
 import { buildPacket, parseDiffHunks } from "./packet.mjs";
 import { brainTicketPath, ensureTicket, ticketPath } from "./ticket.mjs";
 
@@ -328,7 +328,69 @@ export async function mainRepoRoot(cwd) {
   }
 }
 
-export async function retireWorktree(cwd, { worktree, branch, force = true } = {}) {
+export function normalizeUriPath(uri) {
+  if (typeof uri !== "string" || !uri.trim()) return null;
+  let decoded = uri.trim();
+  try {
+    decoded = decodeURIComponent(decoded);
+  } catch {}
+  const stripped = decoded.replace(/^file:\/\/(localhost)?/, "");
+  return resolve(stripped).replace(/\/+$/, "");
+}
+
+export async function cleanWorktreeProjects(mainRoot, worktreePath, options = {}) {
+  let target = worktreePath;
+  let opts = options;
+  if (typeof worktreePath === "object" && worktreePath !== null) {
+    opts = worktreePath;
+    target = mainRoot;
+  } else if (!worktreePath) {
+    target = mainRoot;
+  }
+
+  const targetNorm = normalizeUriPath(target);
+  if (!targetNorm) return [];
+
+  const home = opts?.home || homedir();
+  const projectsDir = join(home, ".gemini", "config", "projects");
+  if (!existsSync(projectsDir)) return [];
+
+  let entries = [];
+  try {
+    entries = await readdir(projectsDir);
+  } catch {
+    return [];
+  }
+
+  const unlinked = [];
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) continue;
+    const fullPath = join(projectsDir, entry);
+    try {
+      const content = await readFile(fullPath, "utf8");
+      const data = JSON.parse(content);
+      const resources = Array.isArray(data?.projectResources?.resources)
+        ? data.projectResources.resources
+        : [];
+      const matches =
+        resources.some((r) => {
+          const gitUri = normalizeUriPath(r?.gitFolder?.folderUri);
+          const folderUri = normalizeUriPath(r?.folderUri);
+          return gitUri === targetNorm || folderUri === targetNorm;
+        }) || normalizeUriPath(data?.projectResources?.folderUri) === targetNorm;
+
+      if (matches) {
+        await unlink(fullPath);
+        unlinked.push(fullPath);
+      }
+    } catch {
+      /* ignore unreadable or unparseable project files */
+    }
+  }
+  return unlinked;
+}
+
+export async function retireWorktree(cwd, { worktree, branch, force = true, home } = {}) {
   const targetWorktree = worktree || cwd;
   const mainRoot = await mainRepoRoot(targetWorktree);
 
@@ -369,10 +431,13 @@ export async function retireWorktree(cwd, { worktree, branch, force = true } = {
     }
   }
 
+  // 3. Clean up any project JSON files associated with this worktree
+  await cleanWorktreeProjects(mainRoot, targetWorktree, { home });
+
   return { retired: true, worktree: targetWorktree, branch: targetBranch };
 }
 
-export async function landWorktree(cwd, { worktree, branch, message, title, body, deleteBranch = true } = {}) {
+export async function landWorktree(cwd, { worktree, branch, message, title, body, deleteBranch = true, home } = {}) {
   const targetWorktree = worktree || cwd;
   const mainRoot = await mainRepoRoot(targetWorktree);
 
@@ -409,7 +474,7 @@ export async function landWorktree(cwd, { worktree, branch, message, title, body
   // safely retire the worktree and branch without erroring on an empty PR.
   if (!hasChanges) {
     if (deleteBranch) {
-      await retireWorktree(mainRoot, { worktree: targetWorktree, branch: targetBranch, force: true });
+      await retireWorktree(mainRoot, { worktree: targetWorktree, branch: targetBranch, force: true, home });
     }
     return {
       landed: true,
@@ -435,7 +500,7 @@ export async function landWorktree(cwd, { worktree, branch, message, title, body
   }
 
   if (deleteBranch) {
-    await retireWorktree(mainRoot, { worktree: targetWorktree, branch: targetBranch, force: true });
+    await retireWorktree(mainRoot, { worktree: targetWorktree, branch: targetBranch, force: true, home });
   }
 
   return {

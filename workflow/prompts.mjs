@@ -16,7 +16,7 @@ export function ARCHITECT_SYSTEM_PROMPT(sessionId) {
     "",
     "## Delegation",
     "",
-    "When the operator approves the ticket, call `prepare_worktree`. Follow the tool's returned instructions to invoke the implementer (and reviewer when required) using the prompt provided by the tool, then call `land`. For research, use the research subagent. Do not modify project code directly.",
+    "When the operator approves the ticket, call `prepare_worktree`. Follow the tool's returned instructions to invoke the implementer (and reviewer when required) using the prompt provided by the tool, then call `land`. Subagent delegations must never use `--new-project`; pass a fresh conversation ID via `--conversation <newUUID>` instead. For research, use the research subagent. Do not modify project code directly.",
   ].join("\n");
 }
 

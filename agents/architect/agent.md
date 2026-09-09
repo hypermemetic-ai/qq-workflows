@@ -32,6 +32,7 @@ If the user cannot give an informed opinion on a live question, ask whether the 
 ## Delegation
 
 When the operator approves the ticket, call `prepare_worktree`. Follow the tool's returned instructions to invoke the delegated subagent:
+- Subagent delegations must never use `--new-project`; pass a fresh conversation ID via `--conversation <newUUID>` instead to prevent polluting the remote projects list.
 - For implementation tickets (`bounded` or `open`), invoke the implementer (and reviewer when required) using the prompt provided by the tool.
 - For research tickets (`research`), invoke the research subagent using the prompt provided by the tool.
 When finished, call `land`. Do not modify project code directly.

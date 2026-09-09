@@ -113,12 +113,14 @@ export async function prepareWorktree(args = {}) {
     };
   }
 
+  const childSessionId = randomUUID();
   const implementerPrompt = `Implement .architect/ticket.md in the checkout. When finished, report your answer.`;
   const reviewerPrompt = `Follow .architect/ticket.md in the checkout. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.`;
+  const reviewerSessionId = randomUUID();
 
   const instructions = reviewRequired
-    ? `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: true\n\nNext steps:\n1. Invoke implementer subagent with Prompt: "${implementerPrompt}"\n2. When implementation finishes, invoke reviewer subagent with Prompt: "${reviewerPrompt}"\n3. When review passes, call 'land'.`
-    : `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. Invoke implementer subagent with Prompt: "${implementerPrompt}"\n2. When finished, call 'land'.`;
+    ? `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: true\n\nNext steps:\n1. Delegate using a fresh conversation: 'agy --agent implementer --conversation ${childSessionId} --print-timeout 60m --print "${implementerPrompt}"'\nDo NOT pass '--new-project'.\n2. When implementation finishes, invoke reviewer using a fresh conversation: 'agy --agent reviewer --conversation ${reviewerSessionId} --print-timeout 60m --print "${reviewerPrompt}"'\nDo NOT pass '--new-project'.\n3. When review passes, call 'land'.`
+    : `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. Delegate using a fresh conversation: 'agy --agent implementer --conversation ${childSessionId} --print-timeout 60m --print "${implementerPrompt}"'\nDo NOT pass '--new-project'.\n2. When finished, call 'land'.`;
 
   return {
     ok: true,
@@ -126,8 +128,9 @@ export async function prepareWorktree(args = {}) {
     branch: wt.branch,
     worktree: wt.cwd,
     reviewRequired,
+    childSessionId,
     implementerPrompt,
-    ...(reviewRequired ? { reviewerPrompt } : {}),
+    ...(reviewRequired ? { reviewerPrompt, reviewerSessionId } : {}),
     instructions,
   };
 }
