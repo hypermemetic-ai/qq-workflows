@@ -20,21 +20,31 @@ assert.match(template, /^## Kind/m);
 assert.match(template, /^## \[open\]/m);
 assert.match(template, /bounded — straightforward work/);
 assert.match(template, /open — needs implementer judgment/);
+assert.match(template, /research — investigation, spike, or benchmark/);
 
 assert.equal(parseKind(template), null);
 
+const templateKind =
+  "## Kind\n\nbounded — straightforward work.\nopen — needs implementer judgment.\nresearch — investigation, spike, or benchmark.\n";
+
 const bounded = `${template.replace(
-  "## Kind\n\nbounded — straightforward work.\nopen — needs implementer judgment.\n",
+  templateKind,
   "## Kind\n\nbounded\n",
 ).replace(/## \[open\][\s\S]*$/, "## [open]\n")}\n`;
 assert.equal(parseKind(bounded), "bounded");
 assert.equal(openSectionIsEmpty(bounded), true);
 
 const open = template.replace(
-  "## Kind\n\nbounded — straightforward work.\nopen — needs implementer judgment.\n",
+  templateKind,
   "## Kind\n\nopen\n",
 );
 assert.equal(parseKind(open), "open");
+
+const research = template.replace(
+  templateKind,
+  "## Kind\n\nresearch\n",
+);
+assert.equal(parseKind(research), "research");
 
 const dir = mkdtempSync(join(tmpdir(), "architect-ticket-"));
 try {

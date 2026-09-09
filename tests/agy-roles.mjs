@@ -22,11 +22,15 @@ for (const role of ACTIVE_ROLES) {
   const content = readFileSync(agentPath, "utf8");
   assert.match(content, /^---\n/, `frontmatter start in ${role}`);
   assert.match(content, new RegExp(`name:\\s*${role}`), `name in ${role}`);
-  assert.doesNotMatch(content, /inheritMcp/, `inheritMcp must be removed from ${role}`);
+  if (role !== "architect") {
+    assert.doesNotMatch(content, /inheritMcp/, `inheritMcp must not be in ${role}`);
+  }
 }
 
 // 3. Architect checks
 const architectContent = readFileSync(join(repoRoot, "agents", "architect", "agent.md"), "utf8");
+assert.match(architectContent, /mainAgent:\s*true/);
+assert.match(architectContent, /inheritMcp:\s*true/);
 assert.match(architectContent, /write_to_file/);
 assert.doesNotMatch(architectContent, /replace_file_content/);
 assert.doesNotMatch(architectContent, /ticket_read/);
@@ -40,8 +44,6 @@ assert.match(architectContent, /find_by_name/);
 assert.match(architectContent, /list_dir/);
 assert.match(architectContent, /read_url_content/);
 assert.match(architectContent, /search_web/);
-assert.match(architectContent, /prepare_worktree/);
-assert.match(architectContent, /land/);
 
 const frontmatterMatch = architectContent.match(/^---\n([\s\S]*?)\n---/);
 const frontmatter = frontmatterMatch ? frontmatterMatch[1] : "";
@@ -60,8 +62,6 @@ assert.deepEqual(toolsList, [
   "search_web",
   "invoke_subagent",
   "send_message",
-  "prepare_worktree",
-  "land",
 ]);
 
 assert.match(architectContent, /The ticket is `\.architect\/tickets\/<sessionId>\.md`/);
@@ -76,7 +76,15 @@ assert.match(
   architectContent,
   /Do not call `prepare_worktree` until the operator approves \(via Proceed button or explicit confirmation\)/,
 );
-assert.match(architectContent, /When the operator approves the ticket, call `prepare_worktree`/);
+assert.match(architectContent, /When the operator approves the ticket, call `prepare_worktree`\./);
+assert.match(
+  architectContent,
+  /For implementation tickets \(`bounded` or `open`\), invoke the implementer \(and reviewer when required\) using the prompt provided by the tool\./,
+);
+assert.match(
+  architectContent,
+  /For research tickets \(`research`\), invoke the research subagent using the prompt provided by the tool\./,
+);
 
 // 4. Implementer checks
 const implementerContent = readFileSync(join(repoRoot, "agents", "implementer", "agent.md"), "utf8");

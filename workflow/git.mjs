@@ -384,6 +384,43 @@ export async function landWorktree(cwd, { worktree, branch, message, title, body
   const commitMsg = message || title || `architect: ${targetBranch}`;
   const commitResult = await commitIfDirty(targetWorktree, commitMsg);
 
+  // Determine whether this worktree introduced any changes or commits against base
+  let hasChanges = commitResult.committed;
+  if (!hasChanges) {
+    let base = null;
+    try {
+      base = await defaultLocalBranch(targetWorktree);
+    } catch {
+      try {
+        base = await defaultBaseRef(targetWorktree);
+      } catch {}
+    }
+    if (base) {
+      try {
+        const count = await git(targetWorktree, ["rev-list", "--count", `${base}..${targetBranch}`]);
+        hasChanges = parseInt(count.trim(), 10) > 0;
+      } catch {
+        hasChanges = true;
+      }
+    }
+  }
+
+  // If there are no changes or commits to merge (e.g. read-only research worktree),
+  // safely retire the worktree and branch without erroring on an empty PR.
+  if (!hasChanges) {
+    if (deleteBranch) {
+      await retireWorktree(mainRoot, { worktree: targetWorktree, branch: targetBranch, force: true });
+    }
+    return {
+      landed: true,
+      retired: true,
+      branch: targetBranch,
+      method: "none",
+      pr: null,
+      mergeSha: null,
+    };
+  }
+
   const remote = await hasRemote(targetWorktree);
   let result;
   if (remote) {

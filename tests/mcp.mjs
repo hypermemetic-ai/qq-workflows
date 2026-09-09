@@ -28,7 +28,7 @@ assert.deepEqual(toolNames, ["land", "prepare_worktree"]);
 const prepareTool = TOOLS.find((t) => t.name === "prepare_worktree");
 assert.ok(prepareTool);
 assert.deepEqual(prepareTool.inputSchema.required, ["kind"]);
-assert.deepEqual(prepareTool.inputSchema.properties.kind.enum, ["bounded", "open"]);
+assert.deepEqual(prepareTool.inputSchema.properties.kind.enum, ["bounded", "open", "research"]);
 
 const landTool = TOOLS.find((t) => t.name === "land");
 assert.ok(landTool);
@@ -36,12 +36,12 @@ assert.ok(landTool);
 // 2. Validation failures
 await assert.rejects(
   () => prepareWorktree({}),
-  /kind is required: 'bounded' \| 'open'/,
+  /kind is required: 'bounded' \| 'open' \| 'research'/,
   "Must fail without kind",
 );
 await assert.rejects(
   () => prepareWorktree({ kind: "invalid" }),
-  /kind is required: 'bounded' \| 'open'/,
+  /kind is required: 'bounded' \| 'open' \| 'research'/,
   "Must fail with invalid kind",
 );
 
@@ -125,6 +125,68 @@ try {
 
   // Verify file landed in main
   assert.equal(readFileSync(join(repoDir, "code.txt"), "utf8"), "console.log('hello');\n");
+
+  // 6b. prepare_worktree with kind = research and test landing with changes
+  const researchSessionId = "abcdef99-1111-2222-3333-444455556666";
+  writeFileSync(join(ticketsDir, `${researchSessionId}.md`), "# Research Session Ticket\n\n## Kind\nresearch\n");
+
+  const researchResult = await prepareWorktree({
+    kind: "research",
+    sessionId: researchSessionId,
+    cwd: repoDir,
+  });
+
+  assert.equal(researchResult.ok, true);
+  assert.equal(researchResult.kind, "research");
+  assert.equal(researchResult.branch, "architect/research/abcdef99");
+  assert.equal(researchResult.reviewRequired, false);
+  assert.equal(researchResult.researcherPrompt, "Investigate .architect/ticket.md in the checkout. Report findings.");
+  assert.equal(researchResult.implementerPrompt, undefined);
+  assert.equal(researchResult.reviewerPrompt, undefined);
+  assert.equal(
+    researchResult.instructions,
+    `Worktree ready at ${researchResult.worktree}.\nBranch: ${researchResult.branch}\nReview required: false\n\nNext steps:\n1. Invoke research subagent with Prompt: "Investigate .architect/ticket.md in the checkout. Report findings."\n2. When finished, call 'land'.`,
+  );
+  assert.equal(
+    readFileSync(join(researchResult.worktree, ".architect", "ticket.md"), "utf8"),
+    "# Research Session Ticket\n\n## Kind\nresearch\n",
+  );
+
+  writeFileSync(join(researchResult.worktree, "findings.md"), "# Research Findings\n");
+  const landResearchResult = await land({
+    worktree: researchResult.worktree,
+    cwd: repoDir,
+    message: "docs: research findings",
+  });
+  assert.equal(landResearchResult.ok, true);
+  assert.equal(landResearchResult.landed, true);
+  assert.equal(landResearchResult.branch, "architect/research/abcdef99");
+  assert.equal(landResearchResult.method, "ff");
+  assert.equal(readFileSync(join(repoDir, "findings.md"), "utf8"), "# Research Findings\n");
+
+  // 6c. Test landing read-only research worktree with no diff/commits against base
+  const roSessionId = "ro998877-1111-2222-3333-444455556666";
+  writeFileSync(join(ticketsDir, `${roSessionId}.md`), "# Read-Only Research Ticket\n\n## Kind\nresearch\n");
+  const roResult = await prepareWorktree({
+    kind: "research",
+    sessionId: roSessionId,
+    cwd: repoDir,
+  });
+  assert.equal(roResult.ok, true);
+  assert.equal(roResult.branch, "architect/research/ro998877");
+  const landRoResult = await land({
+    worktree: roResult.worktree,
+    cwd: repoDir,
+  });
+  assert.equal(landRoResult.ok, true);
+  assert.equal(landRoResult.landed, true);
+  assert.equal(landRoResult.retired, true);
+  assert.equal(landRoResult.branch, "architect/research/ro998877");
+  assert.equal(landRoResult.method, "none");
+  assert.equal(landRoResult.pr, null);
+  const wtListAfterRo = await git(repoDir, ["worktree", "list"]);
+  assert.ok(!wtListAfterRo.includes("architect/research/ro998877"));
+  await assert.rejects(() => git(repoDir, ["rev-parse", "--verify", "refs/heads/architect/research/ro998877"]));
 
   // 7. Test ticket resolution in prepare_worktree
   // A. Brain artifact resolution
@@ -235,7 +297,7 @@ const errCallResp = await handleRpc("tools/call", {
   arguments: {},
 });
 assert.equal(errCallResp.isError, true);
-assert.match(errCallResp.content[0].text, /kind is required: 'bounded' \| 'open'/);
+assert.match(errCallResp.content[0].text, /kind is required: 'bounded' \| 'open' \| 'research'/);
 
 // Test startMcpServer via stream piping
 const stdinStream = new PassThrough();

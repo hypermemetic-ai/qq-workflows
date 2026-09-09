@@ -122,6 +122,7 @@ try {
 // Tests for worktree lifecycle and landing semantics
 assert.equal(implementerBranchName("bounded", "9cb8531b-1234"), "architect/bounded/9cb8531b");
 assert.equal(implementerBranchName("open", "9cb8531b-1234"), "architect/open/9cb8531b");
+assert.equal(implementerBranchName("research", "9cb8531b-1234"), "architect/research/9cb8531b");
 assert.match(worktreePathFor("/tmp/repo", "architect/bounded/9cb8531b"), /\.qq-worktrees\/repo\/architect-bounded-9cb8531b/);
 
 const lifecycleRepo = mkdtempSync(join(tmpdir(), "architect-lifecycle-"));
@@ -170,6 +171,59 @@ try {
 
   // Verify branch is deleted
   await assert.rejects(() => git(lifecycleRepo, ["rev-parse", "--verify", `refs/heads/${wt.branch}`]), /fatal:/);
+
+  // 4. Research worktree with changes
+  const resSessionId = "11223344-5566-7788-9900-aabbccddeeff";
+  const wtRes = await createWorktree(lifecycleRepo, { kind: "research", sessionId: resSessionId });
+  assert.equal(wtRes.branch, "architect/research/11223344");
+  writeFileSync(join(wtRes.cwd, "benchmark.txt"), "benchmark results\n");
+  const landResResult = await landWorktree(lifecycleRepo, {
+    worktree: wtRes.cwd,
+    branch: wtRes.branch,
+    message: "docs: benchmark results",
+  });
+  assert.equal(landResResult.landed, true);
+  assert.equal(landResResult.method, "ff");
+  assert.equal(landResResult.branch, "architect/research/11223344");
+  assert.equal(readFileSync(join(lifecycleRepo, "benchmark.txt"), "utf8"), "benchmark results\n");
+  assert.equal(await git(lifecycleRepo, ["log", "-1", "--pretty=%B"]), "docs: benchmark results");
+
+  // 5. Read-only research worktree with no changes (retires without merging)
+  const roSessionId = "55667788-9900-aabb-ccdd-eeff00112233";
+  const wtRo = await createWorktree(lifecycleRepo, { kind: "research", sessionId: roSessionId });
+  assert.equal(wtRo.branch, "architect/research/55667788");
+  const landRoResult = await landWorktree(lifecycleRepo, {
+    worktree: wtRo.cwd,
+    branch: wtRo.branch,
+  });
+  assert.equal(landRoResult.landed, true);
+  assert.equal(landRoResult.retired, true);
+  assert.equal(landRoResult.branch, "architect/research/55667788");
+  assert.equal(landRoResult.method, "none");
+  assert.equal(landRoResult.pr, null);
+  assert.equal(landRoResult.mergeSha, null);
+  const wtListRo = await git(lifecycleRepo, ["worktree", "list"]);
+  assert.ok(!wtListRo.includes(wtRo.branch), "read-only research worktree must not be listed");
+  await assert.rejects(() => git(lifecycleRepo, ["rev-parse", "--verify", `refs/heads/${wtRo.branch}`]), /fatal:/);
+
+  // 6. Read-only research worktree with remote configured (safely retires without failing on empty PR)
+  await git(lifecycleRepo, ["remote", "add", "origin", "https://example.com/repo.git"]);
+  assert.equal(await hasRemote(lifecycleRepo), true);
+  const roRemoteSession = "66778899-0011-2233-4455-667788990011";
+  const wtRoRemote = await createWorktree(lifecycleRepo, { kind: "research", sessionId: roRemoteSession });
+  const landRoRemoteResult = await landWorktree(lifecycleRepo, {
+    worktree: wtRoRemote.cwd,
+    branch: wtRoRemote.branch,
+  });
+  assert.equal(landRoRemoteResult.landed, true);
+  assert.equal(landRoRemoteResult.retired, true);
+  assert.equal(landRoRemoteResult.branch, "architect/research/66778899");
+  assert.equal(landRoRemoteResult.method, "none");
+  assert.equal(landRoRemoteResult.pr, null);
+  const wtListRoRemote = await git(lifecycleRepo, ["worktree", "list"]);
+  assert.ok(!wtListRoRemote.includes(wtRoRemote.branch), "remote read-only research worktree must not be listed");
+  await assert.rejects(() => git(lifecycleRepo, ["rev-parse", "--verify", `refs/heads/${wtRoRemote.branch}`]), /fatal:/);
+  await git(lifecycleRepo, ["remote", "remove", "origin"]);
 } finally {
   try {
     rmSync(join(dirname(lifecycleRepo), ".qq-worktrees", basename(lifecycleRepo)), { recursive: true, force: true });

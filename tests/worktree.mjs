@@ -10,6 +10,7 @@ const dir = mkdtempSync(join(tmpdir(), "architect-worktree-test-"));
 try {
   // Test implementerBranchName
   assert.equal(implementerBranchName("feat", "1234567890"), "architect/feat/12345678");
+  assert.equal(implementerBranchName("research", "1234567890"), "architect/research/12345678");
 
   // Setup mock source workspace with .zvec-grep
   const sourceCwd = join(dir, "source-repo");
