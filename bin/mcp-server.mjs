@@ -92,6 +92,11 @@ export async function prepareWorktree(args = {}) {
     throw new Error("kind is required: 'bounded' | 'open' | 'research'");
   }
 
+  const curr = await currentBranch(cwd).catch(() => null);
+  if ((curr && curr.startsWith("architect/")) || cwd.includes(".qq-worktrees") || resolve(cwd).includes(".qq-worktrees")) {
+    throw new Error("prepare_worktree cannot be called from within a delegated worktree");
+  }
+
   const root = await mainRepoRoot(cwd);
   const sessionId = await resolveSessionId(root, args.sessionId || args.id || args.conversationId);
 
@@ -137,6 +142,11 @@ export async function prepareWorktree(args = {}) {
 
 export async function land(args = {}) {
   const cwd = args.cwd || process.cwd();
+  const curr = await currentBranch(cwd).catch(() => null);
+  if (!args.worktree && (cwd.includes(".qq-worktrees") || resolve(cwd).includes(".qq-worktrees") || (curr && curr.startsWith("architect/")))) {
+    throw new Error("land must be called from the parent architect session");
+  }
+
   const root = await mainRepoRoot(cwd);
 
   let worktree = args.worktree;

@@ -91,6 +91,58 @@ try {
   const wtTicket = join(boundedResult.worktree, ".architect", "ticket.md");
   assert.equal(readFileSync(wtTicket, "utf8"), "# Test Session Ticket\n\n## Kind\nbounded\n");
 
+  // 4b. Verify runtime guards reject execution from within a delegated worktree
+  await assert.rejects(
+    () =>
+      prepareWorktree({
+        kind: "bounded",
+        cwd: boundedResult.worktree,
+      }),
+    /prepare_worktree cannot be called from within a delegated worktree/,
+    "prepareWorktree must reject execution when called from within a delegated worktree",
+  );
+
+  await assert.rejects(
+    () =>
+      land({
+        cwd: boundedResult.worktree,
+      }),
+    /land must be called from the parent architect session/,
+    "land must reject execution when called from within a delegated worktree without explicit worktree target",
+  );
+
+  // Verify runtime guards reject execution on architect/ branch outside .qq-worktrees
+  const branchRepo = mkdtempSync(join(tmpdir(), "architect-guard-test-"));
+  try {
+    await git(branchRepo, ["init", "-b", "architect/subagent-branch"]);
+    await git(branchRepo, ["config", "user.name", "MCP Test"]);
+    await git(branchRepo, ["config", "user.email", "mcp@example.invalid"]);
+    writeFileSync(join(branchRepo, "README.md"), "# Branch Test Repo\n");
+    await git(branchRepo, ["add", "README.md"]);
+    await git(branchRepo, ["commit", "-m", "init"]);
+
+    await assert.rejects(
+      () =>
+        prepareWorktree({
+          kind: "bounded",
+          cwd: branchRepo,
+        }),
+      /prepare_worktree cannot be called from within a delegated worktree/,
+      "prepareWorktree must reject execution on an architect/ branch",
+    );
+
+    await assert.rejects(
+      () =>
+        land({
+          cwd: branchRepo,
+        }),
+      /land must be called from the parent architect session/,
+      "land must reject execution on an architect/ branch without explicit worktree target",
+    );
+  } finally {
+    rmSync(branchRepo, { recursive: true, force: true });
+  }
+
   // 5. prepare_worktree with kind = open
   const openSessionId = "87654321-fedc-ba98-7654-3210fedcba98";
   writeFileSync(join(ticketsDir, `${openSessionId}.md`), "# Open Session Ticket\n\n## Kind\nopen\n");
