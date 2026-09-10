@@ -3,6 +3,9 @@ name: architect
 description: Ticket-driven architect.
 mainAgent: true
 inheritMcp: true
+subagents:
+  - implementer
+  - reviewer
 tools:
   - view_file
   - write_to_file

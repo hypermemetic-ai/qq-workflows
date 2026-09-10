@@ -70,19 +70,16 @@ for (let i = 0; i < args.length; i++) {
   filteredArgs.push(args[i]);
 }
 
-if (!sessionId) {
-  sessionId = randomUUID();
+if (sessionId) {
+  await ensureTicket(process.cwd(), { sessionId });
+  console.log(`[architect] Resuming session ticket at ${ticketPath(".", sessionId)}`);
 }
 
-// 1. Ensure ticket is created on disk before launching agy
-const { path } = await ensureTicket(process.cwd(), { sessionId });
-console.log(`[architect] Session ticket created at ${ticketPath(".", sessionId)}`);
-
-// 2. Launch agy with concrete conversation ID and agent
+// Launch agy with architect agent definition
 const agyArgs = [
   "--agent", "architect",
-  "--conversation", sessionId,
   "--dangerously-skip-permissions",
+  ...(sessionId ? ["--conversation", sessionId] : []),
   ...filteredArgs,
 ];
 

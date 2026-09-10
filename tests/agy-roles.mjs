@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..");
 
-const ACTIVE_ROLES = ["architect", "implementer", "reviewer", "researcher"];
-const RETIRED_ROLES = ["teacher"];
+const ACTIVE_ROLES = ["architect", "implementer", "reviewer"];
+const RETIRED_ROLES = ["teacher", "researcher"];
 
 // 1. Verify retired roles do not exist
 for (const role of RETIRED_ROLES) {
@@ -45,10 +45,13 @@ assert.match(architectContent, /search_web/);
 
 const frontmatterMatch = architectContent.match(/^---\n([\s\S]*?)\n---/);
 const frontmatter = frontmatterMatch ? frontmatterMatch[1] : "";
-const toolsList = frontmatter
-  .split("\n")
-  .filter((l) => l.trim().startsWith("- "))
-  .map((l) => l.trim().replace(/^-\s*/, ""));
+const toolsMatch = frontmatter.match(/tools:\n([\s\S]*?)(?:\n[a-zA-Z0-9_-]+:|$)/);
+const toolsList = toolsMatch
+  ? toolsMatch[1]
+      .split("\n")
+      .filter((l) => l.trim().startsWith("- "))
+      .map((l) => l.trim().replace(/^-\s*/, ""))
+  : [];
 assert.deepEqual(toolsList, [
   "view_file",
   "write_to_file",
@@ -108,34 +111,5 @@ assert.doesNotMatch(reviewerContent, /write_to_file/);
 assert.doesNotMatch(reviewerContent, /replace_file_content/);
 assert.match(reviewerContent, /Report findings\. Empty findings means it passed\./);
 assert.doesNotMatch(reviewerContent, /call done/);
-
-// 6. Researcher checks
-const researcherContent = readFileSync(join(repoRoot, "agents", "researcher", "agent.md"), "utf8");
-assert.match(researcherContent, /inheritMcp:\s*true/);
-assert.doesNotMatch(researcherContent, /write_to_file/);
-assert.doesNotMatch(researcherContent, /replace_file_content/);
-
-const researcherFmMatch = researcherContent.match(/^---\n([\s\S]*?)\n---/);
-const researcherFm = researcherFmMatch ? researcherFmMatch[1] : "";
-const researcherTools = researcherFm
-  .split("\n")
-  .filter((l) => l.trim().startsWith("- "))
-  .map((l) => l.trim().replace(/^-\s*/, ""));
-assert.deepEqual(researcherTools, [
-  "view_file",
-  "run_command",
-  "grep_search",
-  "find_by_name",
-  "list_dir",
-  "read_url_content",
-  "search_web",
-]);
-
-assert.match(researcherContent, /You are the researcher\. Work in the checkout\./);
-assert.match(researcherContent, /The ticket is \.architect\/ticket\.md\./);
-assert.match(researcherContent, /Investigate the ticket question, codebase, and documentation\./);
-assert.match(researcherContent, /Do not modify project code\./);
-assert.match(researcherContent, /When finished, report your findings\./);
-assert.doesNotMatch(researcherContent, /call done/);
 
 console.log("agy-roles tests passed successfully.");
