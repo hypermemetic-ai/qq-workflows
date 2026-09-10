@@ -100,7 +100,7 @@ export async function prepareWorktree(args = {}) {
 
   if (kind === "research") {
     const researcherPrompt = "Investigate .architect/ticket.md in the checkout. Report findings.";
-    const instructions = `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. Invoke research subagent with Prompt: "${researcherPrompt}"\n2. When finished, call 'land'.`;
+    const instructions = `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. Invoke research subagent with ticket path ${wt.cwd}/.architect/ticket.md and worktree cwd via run_command (with Cwd: ${wt.cwd}) using Prompt: "${researcherPrompt}"\n2. When finished, call 'land'.`;
 
     return {
       ok: true,
@@ -119,8 +119,8 @@ export async function prepareWorktree(args = {}) {
   const reviewerSessionId = randomUUID();
 
   const instructions = reviewRequired
-    ? `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: true\n\nNext steps:\n1. Delegate using a fresh conversation: 'agy --agent implementer --conversation ${childSessionId} --print-timeout 60m --print "${implementerPrompt}"'\nDo NOT pass '--new-project'.\n2. When implementation finishes, invoke reviewer using a fresh conversation: 'agy --agent reviewer --conversation ${reviewerSessionId} --print-timeout 60m --print "${reviewerPrompt}"'\nDo NOT pass '--new-project'.\n3. When review passes, call 'land'.`
-    : `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. Delegate using a fresh conversation: 'agy --agent implementer --conversation ${childSessionId} --print-timeout 60m --print "${implementerPrompt}"'\nDo NOT pass '--new-project'.\n2. When finished, call 'land'.`;
+    ? `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: true\n\nNext steps:\n1. Delegate via run_command (with Cwd: ${wt.cwd}) using a fresh conversation: 'agy --agent implementer --conversation ${childSessionId} --print-timeout 60m --print "${implementerPrompt}"'\nDo NOT pass '--new-project'.\n2. When implementation finishes, invoke reviewer via run_command (with Cwd: ${wt.cwd}) using a fresh conversation: 'agy --agent reviewer --conversation ${reviewerSessionId} --print-timeout 60m --print "${reviewerPrompt}"'\nDo NOT pass '--new-project'.\n3. When review passes, call 'land'.`
+    : `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. Delegate via run_command (with Cwd: ${wt.cwd}) using a fresh conversation: 'agy --agent implementer --conversation ${childSessionId} --print-timeout 60m --print "${implementerPrompt}"'\nDo NOT pass '--new-project'.\n2. When finished, call 'land'.`;
 
   return {
     ok: true,

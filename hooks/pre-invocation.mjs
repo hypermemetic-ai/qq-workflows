@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { ensureTicket, ticketPath } from "../workflow/ticket.mjs";
 
@@ -37,6 +38,17 @@ async function main() {
 
     // Inject the concrete ticket path on the first invocation or if newly created
     if (data.invocationNum === 1 || isNew) {
+      try {
+        const proc = spawn("orca", ["file", "open", concretePath], {
+          detached: true,
+          stdio: "ignore",
+        });
+        proc.on("error", () => {});
+        proc.unref();
+      } catch {
+        // Suppress errors so it never blocks or crashes if Orca is unavailable or fails
+      }
+
       const result = {
         injectSteps: [
           {
