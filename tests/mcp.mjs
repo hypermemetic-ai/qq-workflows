@@ -82,6 +82,8 @@ try {
   assert.ok(boundedResult.instructions.includes("Do NOT pass '--new-project'"));
   assert.ok(boundedResult.instructions.includes("agy --agent implementer"));
   assert.ok(boundedResult.instructions.includes("call 'land'"));
+  assert.ok(boundedResult.instructions.includes(`Cwd: ${boundedResult.worktree}`));
+  assert.ok(boundedResult.instructions.includes("run_command"));
   assert.equal(boundedResult.implementerPrompt, "Implement .architect/ticket.md in the checkout. When finished, report your answer.");
   assert.equal(boundedResult.reviewerPrompt, undefined);
 
@@ -106,6 +108,8 @@ try {
   assert.match(openResult.instructions, /--conversation [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
   assert.ok(openResult.instructions.includes("Do NOT pass '--new-project'"));
   assert.ok(openResult.instructions.includes("agy --agent reviewer"));
+  assert.ok(openResult.instructions.includes(`Cwd: ${openResult.worktree}`));
+  assert.ok(openResult.instructions.includes("run_command"));
   assert.equal(openResult.implementerPrompt, "Implement .architect/ticket.md in the checkout. When finished, report your answer.");
   assert.equal(
     openResult.reviewerPrompt,
@@ -147,9 +151,12 @@ try {
   assert.equal(researchResult.researcherPrompt, "Investigate .architect/ticket.md in the checkout. Report findings.");
   assert.equal(researchResult.implementerPrompt, undefined);
   assert.equal(researchResult.reviewerPrompt, undefined);
+  assert.ok(researchResult.instructions.includes(`Cwd: ${researchResult.worktree}`));
+  assert.ok(researchResult.instructions.includes(`${researchResult.worktree}/.architect/ticket.md`));
+  assert.ok(researchResult.instructions.includes("run_command"));
   assert.equal(
     researchResult.instructions,
-    `Worktree ready at ${researchResult.worktree}.\nBranch: ${researchResult.branch}\nReview required: false\n\nNext steps:\n1. Invoke research subagent with Prompt: "Investigate .architect/ticket.md in the checkout. Report findings."\n2. When finished, call 'land'.`,
+    `Worktree ready at ${researchResult.worktree}.\nBranch: ${researchResult.branch}\nReview required: false\n\nNext steps:\n1. Invoke research subagent with ticket path ${researchResult.worktree}/.architect/ticket.md and worktree cwd via run_command (with Cwd: ${researchResult.worktree}) using Prompt: "Investigate .architect/ticket.md in the checkout. Report findings."\n2. When finished, call 'land'.`,
   );
   assert.equal(
     readFileSync(join(researchResult.worktree, ".architect", "ticket.md"), "utf8"),
