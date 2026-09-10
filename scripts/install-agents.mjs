@@ -14,8 +14,8 @@ try {
 }
 const home = homedir();
 
-const ROLES = ["architect", "implementer", "reviewer"];
-const RETIRED_ROLES = ["teacher", "researcher"];
+const ROLES = ["architect", "implementer", "reviewer", "researcher"];
+const RETIRED_ROLES = ["teacher"];
 
 // 1. Install agent symlinks in ~/.gemini/config/agents/
 const agentsDir = join(home, ".gemini", "config", "agents");

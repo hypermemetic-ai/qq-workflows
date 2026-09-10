@@ -1,6 +1,7 @@
 ---
 name: implementer
 description: Code implementer working in a dedicated worktree.
+inheritMcp: true
 tools:
   - view_file
   - write_to_file

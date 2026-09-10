@@ -1,6 +1,7 @@
 ---
 name: reviewer
 description: Ticket-driven reviewer for architect sessions.
+inheritMcp: true
 tools:
   - view_file
   - run_command
