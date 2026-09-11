@@ -78,9 +78,8 @@ try {
   assert.equal(boundedResult.branch, "architect/bounded/12345678");
   assert.equal(boundedResult.reviewRequired, false);
   assert.ok(boundedResult.worktree.includes(".qq-worktrees"));
-  assert.match(boundedResult.instructions, /--conversation [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
-  assert.ok(boundedResult.instructions.includes("Do NOT pass '--new-project'"));
-  assert.ok(boundedResult.instructions.includes("agy --agent implementer"));
+  assert.ok(boundedResult.instructions.includes("dsh --profile implementer"));
+  assert.ok(boundedResult.instructions.includes(boundedResult.implementerPrompt));
   assert.ok(boundedResult.instructions.includes("call 'land'"));
   assert.ok(boundedResult.instructions.includes(`Cwd: ${boundedResult.worktree}`));
   assert.ok(boundedResult.instructions.includes("run_command"));
@@ -157,6 +156,8 @@ try {
   assert.equal(openResult.kind, "open");
   assert.equal(openResult.branch, "architect/open/87654321");
   assert.equal(openResult.reviewRequired, true);
+  assert.ok(openResult.instructions.includes("dsh --profile implementer"));
+  assert.ok(openResult.instructions.includes(openResult.implementerPrompt));
   assert.match(openResult.instructions, /--conversation [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
   assert.ok(openResult.instructions.includes("Do NOT pass '--new-project'"));
   assert.ok(openResult.instructions.includes("agy --agent reviewer"));
