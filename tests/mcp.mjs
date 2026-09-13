@@ -7,11 +7,18 @@ import { basename, dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { promisify } from "node:util";
 import {
+  PROVIDERS,
+  SEAT_PROVIDERS,
   TOOLS,
+  buildImplementerStep,
+  buildResearcherStep,
+  buildReviewerStep,
   callTool,
   handleRpc,
   land,
   prepareWorktree,
+  resolveProvider,
+  resolveSeatProvider,
   resolveSessionId,
   startMcpServer,
 } from "../bin/mcp-server.mjs";
@@ -19,6 +26,15 @@ import { git } from "../workflow/git.mjs";
 import { brainTicketPath } from "../workflow/ticket.mjs";
 
 const exec = promisify(execFile);
+
+async function retireTestWorktree(repo, result) {
+  try {
+    await git(repo, ["worktree", "remove", "--force", result.worktree]);
+  } catch {}
+  try {
+    await git(repo, ["branch", "-D", result.branch]);
+  } catch {}
+}
 
 // 1. Tool schema checks
 assert.equal(TOOLS.length, 2);
@@ -29,6 +45,102 @@ const prepareTool = TOOLS.find((t) => t.name === "prepare_worktree");
 assert.ok(prepareTool);
 assert.deepEqual(prepareTool.inputSchema.required, ["kind"]);
 assert.deepEqual(prepareTool.inputSchema.properties.kind.enum, ["bounded", "open", "research"]);
+assert.deepEqual(prepareTool.inputSchema.properties.provider.enum, ["muse", "gemini", "deepseek"]);
+assert.deepEqual(prepareTool.inputSchema.properties.implementerProvider.enum, ["muse", "gemini", "deepseek"]);
+assert.deepEqual(prepareTool.inputSchema.properties.reviewerProvider.enum, ["muse", "gemini", "deepseek"]);
+assert.deepEqual(prepareTool.inputSchema.properties.researcherProvider.enum, ["muse", "gemini", "deepseek"]);
+assert.equal(prepareTool.inputSchema.properties.engine, undefined);
+
+// 1b. Provider support table checks
+assert.deepEqual(PROVIDERS, ["muse", "gemini", "deepseek"]);
+assert.deepEqual(SEAT_PROVIDERS.implementer, ["muse", "gemini", "deepseek"]);
+assert.deepEqual(SEAT_PROVIDERS.reviewer, ["muse", "gemini"]);
+assert.deepEqual(SEAT_PROVIDERS.researcher, ["muse", "gemini"]);
+assert.deepEqual(SEAT_PROVIDERS.architect, ["muse", "gemini"]);
+
+// 1c. Per-seat command template checks (every supported seat x provider)
+assert.equal(
+  buildImplementerStep("/wt", "P", "muse", "uuid-1"),
+  `Delegate via run_command (with Cwd: /wt): 'muse exec --preset implementer --yolo "P"'`,
+);
+assert.equal(
+  buildImplementerStep("/wt", "P", "gemini", "uuid-1"),
+  `Delegate via run_command (with Cwd: /wt) using a fresh conversation: 'agy --agent implementer --conversation uuid-1 --print-timeout 60m --print "P"'\nDo NOT pass '--new-project'.`,
+);
+assert.equal(
+  buildImplementerStep("/wt", "P", "deepseek", "uuid-1"),
+  `Delegate via run_command (with Cwd: /wt): 'dsh --profile implementer "P"'`,
+);
+assert.equal(
+  buildReviewerStep("/wt", "P", "muse", "uuid-2"),
+  `invoke reviewer via run_command (with Cwd: /wt): 'muse exec --preset reviewer --yolo "P"'`,
+);
+assert.equal(
+  buildReviewerStep("/wt", "P", "gemini", "uuid-2"),
+  `invoke reviewer via run_command (with Cwd: /wt) using a fresh conversation: 'agy --agent reviewer --conversation uuid-2 --print-timeout 60m --print "P"'\nDo NOT pass '--new-project'.`,
+);
+assert.equal(
+  buildResearcherStep("/wt", "P", "muse"),
+  `Delegate via run_command (with Cwd: /wt): 'muse exec --preset researcher --yolo "P"'`,
+);
+assert.equal(
+  buildResearcherStep("/wt", "P", "gemini"),
+  `Invoke research subagent with ticket path /wt/.architect/ticket.md and worktree cwd via run_command (with Cwd: /wt) using Prompt: "P"`,
+);
+
+// 1d. Provider precedence checks (seat arg > seat env > global arg > global env > 'muse')
+assert.equal(resolveSeatProvider("implementer", {}, {}), "muse");
+assert.equal(resolveSeatProvider("reviewer", {}, {}), "muse");
+assert.equal(resolveSeatProvider("researcher", {}, {}), "muse");
+assert.equal(resolveSeatProvider("implementer", {}, { QQ_WORKFLOW_PROVIDER: "gemini" }), "gemini");
+assert.equal(
+  resolveSeatProvider("implementer", { provider: "deepseek" }, { QQ_WORKFLOW_PROVIDER: "gemini" }),
+  "deepseek",
+);
+assert.equal(
+  resolveSeatProvider("implementer", {}, { QQ_WORKFLOW_PROVIDER: "gemini", QQ_IMPLEMENTER_PROVIDER: "deepseek" }),
+  "deepseek",
+);
+assert.equal(
+  resolveSeatProvider(
+    "implementer",
+    { provider: "gemini", implementerProvider: "muse" },
+    { QQ_WORKFLOW_PROVIDER: "deepseek", QQ_IMPLEMENTER_PROVIDER: "deepseek" },
+  ),
+  "muse",
+);
+assert.equal(
+  resolveSeatProvider("reviewer", { provider: "deepseek", reviewerProvider: "muse" }, {}),
+  "muse",
+);
+assert.equal(resolveProvider("architect", {}), "muse");
+assert.equal(resolveProvider("architect", { seatEnv: "gemini" }), "gemini");
+
+// 1e. Provider error checks
+assert.throws(
+  () => resolveSeatProvider("implementer", { provider: "foo" }, {}),
+  /^Error: unknown provider 'foo': expected 'muse' \| 'gemini' \| 'deepseek'$/,
+);
+assert.throws(
+  () => resolveSeatProvider("implementer", { implementerProvider: "agy" }, {}),
+  /^Error: unknown provider 'agy': expected 'muse' \| 'gemini' \| 'deepseek'$/,
+);
+assert.throws(
+  () => resolveSeatProvider("implementer", {}, { QQ_WORKFLOW_PROVIDER: "dsh" }),
+  /^Error: unknown provider 'dsh': expected 'muse' \| 'gemini' \| 'deepseek'$/,
+);
+assert.throws(
+  () => resolveSeatProvider("reviewer", { provider: "deepseek" }, {}),
+  /^Error: provider 'deepseek' does not support seat 'reviewer'$/,
+);
+assert.throws(
+  () => resolveSeatProvider("researcher", { researcherProvider: "deepseek" }, {}),
+  /^Error: provider 'deepseek' does not support seat 'researcher'$/,
+);
+assert.throws(
+  () => resolveProvider("architect", { arg: "deepseek" }),
+  /^Error: provider 'deepseek' does not support seat 'architect'$/,
+);
 
 const landTool = TOOLS.find((t) => t.name === "land");
 assert.ok(landTool);
@@ -47,6 +159,12 @@ await assert.rejects(
 
 // 3. Functional test in a temporary repository
 const repoDir = mkdtempSync(join(tmpdir(), "architect-mcp-repo-"));
+// Provider env vars must not leak into default-resolution assertions.
+const savedProviderEnv = {};
+for (const key of ["QQ_WORKFLOW_PROVIDER", "QQ_IMPLEMENTER_PROVIDER", "QQ_REVIEWER_PROVIDER", "QQ_RESEARCHER_PROVIDER"]) {
+  savedProviderEnv[key] = process.env[key];
+  delete process.env[key];
+}
 try {
   await git(repoDir, ["init", "-b", "main"]);
   await git(repoDir, ["config", "user.name", "MCP Test"]);
@@ -77,6 +195,7 @@ try {
   assert.equal(boundedResult.kind, "bounded");
   assert.equal(boundedResult.branch, "architect/bounded/12345678");
   assert.equal(boundedResult.reviewRequired, false);
+  assert.equal(boundedResult.implementerProvider, "muse");
   assert.ok(boundedResult.instructions.includes("muse exec --preset implementer --yolo"));
   assert.ok(boundedResult.instructions.includes("call 'land'"));
   assert.ok(boundedResult.instructions.includes(`Cwd: ${boundedResult.worktree}`));
@@ -154,6 +273,8 @@ try {
   assert.equal(openResult.kind, "open");
   assert.equal(openResult.branch, "architect/open/87654321");
   assert.equal(openResult.reviewRequired, true);
+  assert.equal(openResult.implementerProvider, "muse");
+  assert.equal(openResult.reviewerProvider, "muse");
   assert.ok(openResult.instructions.includes("muse exec --preset implementer --yolo"));
   assert.ok(openResult.instructions.includes(openResult.implementerPrompt));
   assert.ok(openResult.instructions.includes("muse exec --preset reviewer --yolo"));
@@ -166,26 +287,151 @@ try {
     "Follow .architect/ticket.md in the checkout. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.",
   );
 
-  // 5b. Verify prepare_worktree with engine: "agy" outputs agy commands
-  const agySessionId = "11223344-5566-7788-99aa-bbccddeeff00";
-  writeFileSync(join(ticketsDir, `${agySessionId}.md`), "# Agy Session Ticket\n\n## Kind\nopen\n");
-  const agyResult = await prepareWorktree({
+  // 5b. Verify prepare_worktree with provider: "gemini" outputs agy commands
+  const geminiSessionId = "11223344-5566-7788-99aa-bbccddeeff00";
+  writeFileSync(join(ticketsDir, `${geminiSessionId}.md`), "# Gemini Session Ticket\n\n## Kind\nopen\n");
+  const geminiResult = await prepareWorktree({
     kind: "open",
-    sessionId: agySessionId,
+    sessionId: geminiSessionId,
     cwd: repoDir,
-    engine: "agy",
+    provider: "gemini",
   });
-  assert.equal(agyResult.ok, true);
-  assert.ok(agyResult.instructions.includes("agy --agent implementer"));
-  assert.match(agyResult.instructions, /--conversation [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
-  assert.ok(agyResult.instructions.includes("Do NOT pass '--new-project'"));
-  assert.ok(agyResult.instructions.includes("agy --agent reviewer"));
+  assert.equal(geminiResult.ok, true);
+  assert.equal(geminiResult.implementerProvider, "gemini");
+  assert.equal(geminiResult.reviewerProvider, "gemini");
+  assert.ok(geminiResult.instructions.includes("agy --agent implementer"));
+  assert.match(geminiResult.instructions, /--conversation [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
+  assert.ok(geminiResult.instructions.includes("Do NOT pass '--new-project'"));
+  assert.ok(geminiResult.instructions.includes("agy --agent reviewer"));
+  await retireTestWorktree(repoDir, geminiResult);
+
+  // 5c. Mixed seats: gemini implementer with default muse reviewer
+  const mixedSessionId = "22334455-6677-8899-aabb-ccddeeff0011";
+  writeFileSync(join(ticketsDir, `${mixedSessionId}.md`), "# Mixed Session Ticket\n\n## Kind\nopen\n");
+  const mixedResult = await prepareWorktree({
+    kind: "open",
+    sessionId: mixedSessionId,
+    cwd: repoDir,
+    implementerProvider: "gemini",
+  });
+  assert.equal(mixedResult.ok, true);
+  assert.equal(mixedResult.implementerProvider, "gemini");
+  assert.equal(mixedResult.reviewerProvider, "muse");
+  assert.ok(mixedResult.instructions.includes("agy --agent implementer"));
+  assert.ok(mixedResult.instructions.includes("muse exec --preset reviewer --yolo"));
+  await retireTestWorktree(repoDir, mixedResult);
+
+  // 5d. Global deepseek works for bounded (implementer-only delegation)
+  const dsSessionId = "33445566-7788-99aa-bbcc-ddeeff001122";
+  writeFileSync(join(ticketsDir, `${dsSessionId}.md`), "# DeepSeek Session Ticket\n\n## Kind\nbounded\n");
+  const dsResult = await prepareWorktree({
+    kind: "bounded",
+    sessionId: dsSessionId,
+    cwd: repoDir,
+    provider: "deepseek",
+  });
+  assert.equal(dsResult.ok, true);
+  assert.equal(dsResult.implementerProvider, "deepseek");
+  assert.ok(dsResult.instructions.includes('dsh --profile implementer "'));
+  await retireTestWorktree(repoDir, dsResult);
+
+  // 5e. Per-seat deepseek implementer on an open ticket with muse reviewer
+  const dsOpenSessionId = "44556677-8899-aabb-ccdd-eeff00112233";
+  writeFileSync(join(ticketsDir, `${dsOpenSessionId}.md`), "# DeepSeek Open Ticket\n\n## Kind\nopen\n");
+  const dsOpenResult = await prepareWorktree({
+    kind: "open",
+    sessionId: dsOpenSessionId,
+    cwd: repoDir,
+    implementerProvider: "deepseek",
+  });
+  assert.equal(dsOpenResult.ok, true);
+  assert.equal(dsOpenResult.implementerProvider, "deepseek");
+  assert.equal(dsOpenResult.reviewerProvider, "muse");
+  assert.ok(dsOpenResult.instructions.includes('dsh --profile implementer "'));
+  assert.ok(dsOpenResult.instructions.includes("muse exec --preset reviewer --yolo"));
+  await retireTestWorktree(repoDir, dsOpenResult);
+
+  // 5f. Global deepseek on an open ticket throws for the reviewer seat
+  // (no silent fallback) and leaves no worktree or branch behind.
+  const dsFailSessionId = "55667788-99aa-bbcc-ddee-ff0011223344";
+  writeFileSync(join(ticketsDir, `${dsFailSessionId}.md`), "# DeepSeek Fail Ticket\n\n## Kind\nopen\n");
+  await assert.rejects(
+    () =>
+      prepareWorktree({
+        kind: "open",
+        sessionId: dsFailSessionId,
+        cwd: repoDir,
+        provider: "deepseek",
+      }),
+    /^Error: provider 'deepseek' does not support seat 'reviewer'$/,
+  );
+  await assert.rejects(() => git(repoDir, ["rev-parse", "--verify", "refs/heads/architect/open/55667788"]));
+
+  // 5g. Explicit deepseek reviewer throws even with a valid global provider.
+  await assert.rejects(
+    () =>
+      prepareWorktree({
+        kind: "open",
+        sessionId: "66778899-aabb-ccdd-eeff-001122334455",
+        cwd: repoDir,
+        provider: "muse",
+        reviewerProvider: "deepseek",
+      }),
+    /^Error: provider 'deepseek' does not support seat 'reviewer'$/,
+  );
+
+  // 5h. Unknown provider strings throw.
+  await assert.rejects(
+    () =>
+      prepareWorktree({
+        kind: "bounded",
+        sessionId: "778899aa-bbcc-ddee-ff00-112233445566",
+        cwd: repoDir,
+        provider: "foo",
+      }),
+    /^Error: unknown provider 'foo': expected 'muse' \| 'gemini' \| 'deepseek'$/,
+  );
+  await assert.rejects(
+    () =>
+      prepareWorktree({
+        kind: "bounded",
+        sessionId: "889900aa-bbcc-ddee-ff00-112233445566",
+        cwd: repoDir,
+        implementerProvider: "agy",
+      }),
+    /^Error: unknown provider 'agy': expected 'muse' \| 'gemini' \| 'deepseek'$/,
+  );
+
+  // 5i. Env precedence end to end: seat env beats global env, seat arg beats all.
+  const envSessionId = "9900aabb-ccdd-eeff-0011-223344556677";
+  writeFileSync(join(ticketsDir, `${envSessionId}.md`), "# Env Session Ticket\n\n## Kind\nbounded\n");
+  process.env.QQ_WORKFLOW_PROVIDER = "gemini";
+  process.env.QQ_IMPLEMENTER_PROVIDER = "deepseek";
   try {
-    await git(repoDir, ["worktree", "remove", "--force", agyResult.worktree]);
-  } catch {}
-  try {
-    await git(repoDir, ["branch", "-D", agyResult.branch]);
-  } catch {}
+    const envResult = await prepareWorktree({
+      kind: "bounded",
+      sessionId: envSessionId,
+      cwd: repoDir,
+    });
+    assert.equal(envResult.implementerProvider, "deepseek");
+    assert.ok(envResult.instructions.includes('dsh --profile implementer "'));
+    await retireTestWorktree(repoDir, envResult);
+
+    const argWinsSessionId = "aa00bbcc-ddee-ff00-1122-334455667788";
+    writeFileSync(join(ticketsDir, `${argWinsSessionId}.md`), "# Arg Wins Ticket\n\n## Kind\nbounded\n");
+    const argWinsResult = await prepareWorktree({
+      kind: "bounded",
+      sessionId: argWinsSessionId,
+      cwd: repoDir,
+      implementerProvider: "muse",
+    });
+    assert.equal(argWinsResult.implementerProvider, "muse");
+    assert.ok(argWinsResult.instructions.includes("muse exec --preset implementer --yolo"));
+    await retireTestWorktree(repoDir, argWinsResult);
+  } finally {
+    delete process.env.QQ_WORKFLOW_PROVIDER;
+    delete process.env.QQ_IMPLEMENTER_PROVIDER;
+  }
 
   // 6. Test landing worktree
   // Make changes in bounded worktree
@@ -219,6 +465,7 @@ try {
   assert.equal(researchResult.kind, "research");
   assert.equal(researchResult.branch, "architect/research/abcdef99");
   assert.equal(researchResult.reviewRequired, false);
+  assert.equal(researchResult.researcherProvider, "muse");
   assert.equal(researchResult.researcherPrompt, "Investigate .architect/ticket.md in the checkout. Report findings.");
   assert.equal(researchResult.implementerPrompt, undefined);
   assert.equal(researchResult.reviewerPrompt, undefined);
@@ -232,6 +479,33 @@ try {
   assert.equal(
     readFileSync(join(researchResult.worktree, ".architect", "ticket.md"), "utf8"),
     "# Research Session Ticket\n\n## Kind\nresearch\n",
+  );
+
+  // 6b-ii. Gemini researcher uses the built-in research subagent text.
+  const gemResSessionId = "bb11cc22-ddee-ff00-1122-334455667788";
+  writeFileSync(join(ticketsDir, `${gemResSessionId}.md`), "# Gemini Research Ticket\n\n## Kind\nresearch\n");
+  const gemResResult = await prepareWorktree({
+    kind: "research",
+    sessionId: gemResSessionId,
+    cwd: repoDir,
+    researcherProvider: "gemini",
+  });
+  assert.equal(gemResResult.ok, true);
+  assert.equal(gemResResult.researcherProvider, "gemini");
+  assert.ok(gemResResult.instructions.includes("Invoke research subagent with ticket path"));
+  assert.ok(gemResResult.instructions.includes(`using Prompt: "${gemResResult.researcherPrompt}"`));
+  await retireTestWorktree(repoDir, gemResResult);
+
+  // 6b-iii. DeepSeek does not serve the researcher seat.
+  await assert.rejects(
+    () =>
+      prepareWorktree({
+        kind: "research",
+        sessionId: "cc22dd33-eeff-0011-2233-445566778899",
+        cwd: repoDir,
+        provider: "deepseek",
+      }),
+    /^Error: provider 'deepseek' does not support seat 'researcher'$/,
   );
 
   writeFileSync(join(researchResult.worktree, "findings.md"), "# Research Findings\n");
@@ -352,6 +626,10 @@ try {
     await git(repoDir, ["branch", "-D", openResult.branch]);
   } catch {}
 } finally {
+  for (const [key, value] of Object.entries(savedProviderEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   try {
     rmSync(join(dirname(repoDir), ".qq-worktrees", basename(repoDir)), { recursive: true, force: true });
   } catch {}

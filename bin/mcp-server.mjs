@@ -32,10 +32,25 @@ export const TOOLS = [
           type: "string",
           description: "Optional repository working directory (defaults to process.cwd())",
         },
-        engine: {
+        provider: {
           type: "string",
-          enum: ["muse", "agy"],
-          description: "Optional execution engine: 'muse' (default) or 'agy'",
+          enum: ["muse", "gemini", "deepseek"],
+          description: "Optional global provider default: 'muse' (default), 'gemini', or 'deepseek'. Per-seat providers override it.",
+        },
+        implementerProvider: {
+          type: "string",
+          enum: ["muse", "gemini", "deepseek"],
+          description: "Optional implementer seat provider: 'muse', 'gemini', or 'deepseek'. Overrides the global provider.",
+        },
+        reviewerProvider: {
+          type: "string",
+          enum: ["muse", "gemini", "deepseek"],
+          description: "Optional reviewer seat provider: 'muse' or 'gemini' ('deepseek' does not serve this seat). Overrides the global provider.",
+        },
+        researcherProvider: {
+          type: "string",
+          enum: ["muse", "gemini", "deepseek"],
+          description: "Optional researcher seat provider: 'muse' or 'gemini' ('deepseek' does not serve this seat). Overrides the global provider.",
         },
       },
       required: ["kind"],
@@ -91,12 +106,105 @@ export async function resolveSessionId(root, explicitId) {
   return (await resolveActiveSessionId(root, explicitId)) || randomUUID();
 }
 
+// Canonical providers. Only these strings are accepted; there are no
+// aliases (e.g. 'agy' for gemini, 'dsh' for deepseek).
+export const PROVIDERS = ["muse", "gemini", "deepseek"];
+
+// Which providers serve which seat. Wiring a provider into another seat
+// later is additive: extend the seat's list and add its template below.
+export const SEAT_PROVIDERS = {
+  implementer: ["muse", "gemini", "deepseek"],
+  reviewer: ["muse", "gemini"],
+  researcher: ["muse", "gemini"],
+  architect: ["muse", "gemini"],
+};
+
+export function assertKnownProvider(value) {
+  if (!PROVIDERS.includes(value)) {
+    throw new Error(`unknown provider '${value}': expected 'muse' | 'gemini' | 'deepseek'`);
+  }
+  return value;
+}
+
+// Resolve which provider serves a seat. Precedence:
+// seat arg > seat env > global arg > global env > 'muse'.
+// Unknown strings always throw; a known provider that does not serve the
+// seat throws with no silent fallback.
+export function resolveProvider(seat, { arg, seatEnv, globalArg, globalEnv } = {}) {
+  for (const value of [arg, seatEnv, globalArg, globalEnv]) {
+    if (value !== undefined && value !== null) assertKnownProvider(value);
+  }
+  const raw = arg ?? seatEnv ?? globalArg ?? globalEnv ?? "muse";
+  if (!SEAT_PROVIDERS[seat].includes(raw)) {
+    throw new Error(`provider '${raw}' does not support seat '${seat}'`);
+  }
+  return raw;
+}
+
+const SEAT_ARGS = {
+  implementer: "implementerProvider",
+  reviewer: "reviewerProvider",
+  researcher: "researcherProvider",
+};
+
+const SEAT_ENVS = {
+  implementer: "QQ_IMPLEMENTER_PROVIDER",
+  reviewer: "QQ_REVIEWER_PROVIDER",
+  researcher: "QQ_RESEARCHER_PROVIDER",
+};
+
+export function resolveSeatProvider(seat, args = {}, env = process.env) {
+  return resolveProvider(seat, {
+    arg: args[SEAT_ARGS[seat]],
+    seatEnv: env[SEAT_ENVS[seat]],
+    globalArg: args.provider,
+    globalEnv: env.QQ_WORKFLOW_PROVIDER,
+  });
+}
+
+// Per-seat command templates, keyed by provider. Each template renders one
+// delegation step; unsupported seat x provider pairs have no template.
+const IMPLEMENTER_TEMPLATES = {
+  muse: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'muse exec --preset implementer --yolo "${prompt}"'`,
+  gemini: (cwd, prompt, conversationId) =>
+    `Delegate via run_command (with Cwd: ${cwd}) using a fresh conversation: 'agy --agent implementer --conversation ${conversationId} --print-timeout 60m --print "${prompt}"'\nDo NOT pass '--new-project'.`,
+  deepseek: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'dsh --profile implementer "${prompt}"'`,
+};
+
+const REVIEWER_TEMPLATES = {
+  muse: (cwd, prompt) => `invoke reviewer via run_command (with Cwd: ${cwd}): 'muse exec --preset reviewer --yolo "${prompt}"'`,
+  gemini: (cwd, prompt, conversationId) =>
+    `invoke reviewer via run_command (with Cwd: ${cwd}) using a fresh conversation: 'agy --agent reviewer --conversation ${conversationId} --print-timeout 60m --print "${prompt}"'\nDo NOT pass '--new-project'.`,
+};
+
+const RESEARCHER_TEMPLATES = {
+  muse: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'muse exec --preset researcher --yolo "${prompt}"'`,
+  gemini: (cwd, prompt) => `Invoke research subagent with ticket path ${cwd}/.architect/ticket.md and worktree cwd via run_command (with Cwd: ${cwd}) using Prompt: "${prompt}"`,
+};
+
+export function buildImplementerStep(cwd, prompt, provider, conversationId) {
+  return IMPLEMENTER_TEMPLATES[provider](cwd, prompt, conversationId);
+}
+
+export function buildReviewerStep(cwd, prompt, provider, conversationId) {
+  return REVIEWER_TEMPLATES[provider](cwd, prompt, conversationId);
+}
+
+export function buildResearcherStep(cwd, prompt, provider) {
+  return RESEARCHER_TEMPLATES[provider](cwd, prompt);
+}
+
 export async function prepareWorktree(args = {}) {
   const { kind, cwd = process.cwd() } = args;
-  const engine = args.engine || process.env.QQ_WORKFLOW_ENGINE || process.env.DELEGATION_ENGINE || "muse";
   if (!kind || (kind !== "bounded" && kind !== "open" && kind !== "research")) {
     throw new Error("kind is required: 'bounded' | 'open' | 'research'");
   }
+  // Resolve providers before creating anything so a bad value fails fast
+  // without leaving a stray worktree or branch behind. Only seats the kind
+  // delegates to are resolved; config for unused seats is inert.
+  const implementerProvider = kind === "research" ? null : resolveSeatProvider("implementer", args);
+  const reviewerProvider = kind === "open" ? resolveSeatProvider("reviewer", args) : null;
+  const researcherProvider = kind === "research" ? resolveSeatProvider("researcher", args) : null;
 
   const curr = await currentBranch(cwd).catch(() => null);
   if ((curr && curr.startsWith("architect/")) || cwd.includes(".qq-worktrees") || resolve(cwd).includes(".qq-worktrees")) {
@@ -111,9 +219,8 @@ export async function prepareWorktree(args = {}) {
 
   if (kind === "research") {
     const researcherPrompt = "Investigate .architect/ticket.md in the checkout. Report findings.";
-    const instructions = engine === "agy"
-      ? `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. Invoke research subagent with ticket path ${wt.cwd}/.architect/ticket.md and worktree cwd via run_command (with Cwd: ${wt.cwd}) using Prompt: "${researcherPrompt}"\n2. When finished, call 'land'.`
-      : `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. Delegate via run_command (with Cwd: ${wt.cwd}): 'muse exec --preset researcher --yolo "${researcherPrompt}"'\n2. When finished, call 'land'.`;
+    const step = buildResearcherStep(wt.cwd, researcherPrompt, researcherProvider);
+    const instructions = `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. ${step}\n2. When finished, call 'land'.`;
 
     return {
       ok: true,
@@ -122,6 +229,7 @@ export async function prepareWorktree(args = {}) {
       worktree: wt.cwd,
       reviewRequired: false,
       researcherPrompt,
+      researcherProvider,
       instructions,
     };
   }
@@ -131,16 +239,10 @@ export async function prepareWorktree(args = {}) {
   const reviewerPrompt = `Follow .architect/ticket.md in the checkout. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.`;
   const reviewerSessionId = randomUUID();
 
-  let instructions;
-  if (engine === "agy") {
-    instructions = reviewRequired
-      ? `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: true\n\nNext steps:\n1. Delegate via run_command (with Cwd: ${wt.cwd}) using a fresh conversation: 'agy --agent implementer --conversation ${childSessionId} --print-timeout 60m --print "${implementerPrompt}"'\nDo NOT pass '--new-project'.\n2. When implementation finishes, invoke reviewer via run_command (with Cwd: ${wt.cwd}) using a fresh conversation: 'agy --agent reviewer --conversation ${reviewerSessionId} --print-timeout 60m --print "${reviewerPrompt}"'\nDo NOT pass '--new-project'.\n3. When review passes, call 'land'.`
-      : `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. Delegate via run_command (with Cwd: ${wt.cwd}) using a fresh conversation: 'agy --agent implementer --conversation ${childSessionId} --print-timeout 60m --print "${implementerPrompt}"'\nDo NOT pass '--new-project'.\n2. When finished, call 'land'.`;
-  } else {
-    instructions = reviewRequired
-      ? `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: true\n\nNext steps:\n1. Delegate via run_command (with Cwd: ${wt.cwd}): 'muse exec --preset implementer --yolo "${implementerPrompt}"'\n2. When implementation finishes, invoke reviewer via run_command (with Cwd: ${wt.cwd}): 'muse exec --preset reviewer --yolo "${reviewerPrompt}"'\n3. When review passes, call 'land'.`
-      : `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. Delegate via run_command (with Cwd: ${wt.cwd}): 'muse exec --preset implementer --yolo "${implementerPrompt}"'\n2. When finished, call 'land'.`;
-  }
+  const implementerStep = buildImplementerStep(wt.cwd, implementerPrompt, implementerProvider, childSessionId);
+  const instructions = reviewRequired
+    ? `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: true\n\nNext steps:\n1. ${implementerStep}\n2. When implementation finishes, ${buildReviewerStep(wt.cwd, reviewerPrompt, reviewerProvider, reviewerSessionId)}\n3. When review passes, call 'land'.`
+    : `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. ${implementerStep}\n2. When finished, call 'land'.`;
 
   return {
     ok: true,
@@ -150,7 +252,8 @@ export async function prepareWorktree(args = {}) {
     reviewRequired,
     childSessionId,
     implementerPrompt,
-    ...(reviewRequired ? { reviewerPrompt, reviewerSessionId } : {}),
+    implementerProvider,
+    ...(reviewRequired ? { reviewerPrompt, reviewerSessionId, reviewerProvider } : {}),
     instructions,
   };
 }

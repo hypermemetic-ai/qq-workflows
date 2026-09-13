@@ -49,6 +49,32 @@ agy --agent architect
 
 Or invoke `architect` from an active Antigravity session.
 
+## Providers
+
+Each delegation seat (implementer, reviewer, researcher, architect) is served by a provider. Every seat defaults to `muse`; DeepSeek serves implementation only:
+
+| Seat | `muse` | `gemini` | `deepseek` |
+| --- | --- | --- | --- |
+| implementer | ✓ | ✓ | ✓ |
+| reviewer | ✓ | ✓ | — |
+| researcher | ✓ | ✓ | — |
+| architect | ✓ | ✓ | — |
+
+`muse` delegates via `muse exec --preset <seat> --yolo`, `gemini` via `agy --agent <seat> --conversation <uuid> --print-timeout 60m --print` (Gemini's built-in research subagent serves the researcher seat), and `deepseek` via `dsh --profile implementer`.
+
+Switch providers globally or per seat. Per-seat precedence: seat arg > seat env > global arg > global env > `muse`:
+
+| Scope | `prepare_worktree` arg | Env |
+| --- | --- | --- |
+| global | `provider` | `QQ_WORKFLOW_PROVIDER` |
+| implementer | `implementerProvider` | `QQ_IMPLEMENTER_PROVIDER` |
+| reviewer | `reviewerProvider` | `QQ_REVIEWER_PROVIDER` |
+| researcher | `researcherProvider` | `QQ_RESEARCHER_PROVIDER` |
+
+The architect launcher takes `--provider` / `ARCHITECT_PROVIDER` (default `muse`, served via opencode).
+
+Unknown provider strings throw `unknown provider '<x>': expected 'muse' | 'gemini' | 'deepseek'`. A known provider resolving for a seat it does not serve throws `provider '<p>' does not support seat '<seat>'` with no silent fallback — so a global `deepseek` works for `bounded` tickets, while `open`/`research` tickets need explicit per-seat overrides for the reviewer/researcher seats.
+
 ## Development & Testing
 
 Run the test suite:

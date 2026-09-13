@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { ensureTicket, ticketPath } from "../workflow/ticket.mjs";
 
 import { createWorktree, landWorktree, retireWorktree } from "../workflow/git.mjs";
+import { resolveProvider } from "./mcp-server.mjs";
 
 const realAgy = process.env.REAL_AGY_BIN || "/home/qqp/.local/bin/agy";
 const args = process.argv.slice(2);
@@ -75,19 +76,30 @@ if (sessionId) {
   console.log(`[architect] Resuming session ticket at ${ticketPath(".", sessionId)}`);
 }
 
-// Determine architect engine (default: opencode / Muse Spark)
-let engine = process.env.ARCHITECT_ENGINE || "opencode";
+// Determine architect seat provider (default: muse, served via opencode)
+let providerArg;
 const finalArgs = [];
 for (let i = 0; i < filteredArgs.length; i++) {
-  if (filteredArgs[i] === "--engine" && i + 1 < filteredArgs.length) {
-    engine = filteredArgs[++i];
+  if (filteredArgs[i] === "--provider" && i + 1 < filteredArgs.length) {
+    providerArg = filteredArgs[++i];
   } else {
     finalArgs.push(filteredArgs[i]);
   }
 }
 
+let provider;
+try {
+  provider = resolveProvider("architect", {
+    arg: providerArg,
+    seatEnv: process.env.ARCHITECT_PROVIDER,
+  });
+} catch (err) {
+  console.error(`[architect] ${err.message}`);
+  process.exit(1);
+}
+
 let child;
-if (engine === "agy" || engine === "gemini") {
+if (provider === "gemini") {
   const agyArgs = [
     "--agent", "architect",
     "--dangerously-skip-permissions",
