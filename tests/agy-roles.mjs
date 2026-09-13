@@ -71,11 +71,11 @@ assert.match(architectContent, /teach until the user is informed enough to decid
 assert.match(architectContent, /call `prepare_worktree`/);
 assert.match(architectContent, /call `land`/);
 assert.match(architectContent, /Ask questions one at a time with recommendations\./);
-assert.match(architectContent, /Populate ticket and testing plan collaboratively with the operator/);
-assert.match(architectContent, /RequestFeedback: false/);
+assert.match(architectContent, /Populate ticket and testing plan collaboratively with the operator\./);
+assert.doesNotMatch(architectContent, /RequestFeedback: false/);
 assert.match(
   architectContent,
-  /Do not call `prepare_worktree` until the operator approves \(via Proceed button or explicit confirmation\)/,
+  /Do not call `prepare_worktree` until the operator explicitly approves\./,
 );
 assert.match(architectContent, /When the operator approves the ticket, call `prepare_worktree`\./);
 assert.match(
@@ -85,14 +85,6 @@ assert.match(
 assert.match(
   architectContent,
   /For research tickets \(`research`\), invoke the research subagent using the prompt provided by the tool\./,
-);
-assert.match(
-  architectContent,
-  /Subagent delegations must never use `--new-project`/,
-);
-assert.match(
-  architectContent,
-  /--conversation <newUUID>/,
 );
 
 // 4. Implementer checks

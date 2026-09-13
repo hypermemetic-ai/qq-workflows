@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Ticket-driven planning, in-session teaching, and subagent delegation for Google Antigravity.",
+  "description": "Ticket-driven planning, in-session teaching, and multi-provider subagent delegation.",
   "bin": {
     "architect": "bin/architect.mjs"
   },

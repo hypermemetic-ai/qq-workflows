@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { ensureTicket, ticketPath } from "../workflow/ticket.mjs";
 
 import { createWorktree, landWorktree, retireWorktree } from "../workflow/git.mjs";
+import { resolveProvider } from "./mcp-server.mjs";
 
 const realAgy = process.env.REAL_AGY_BIN || "/home/qqp/.local/bin/agy";
 const args = process.argv.slice(2);
@@ -75,15 +76,46 @@ if (sessionId) {
   console.log(`[architect] Resuming session ticket at ${ticketPath(".", sessionId)}`);
 }
 
-// Launch agy with architect agent definition
-const agyArgs = [
-  "--agent", "architect",
-  "--dangerously-skip-permissions",
-  ...(sessionId ? ["--conversation", sessionId] : []),
-  ...filteredArgs,
-];
+// Determine architect seat provider (default: muse, served via opencode)
+let providerArg;
+const finalArgs = [];
+for (let i = 0; i < filteredArgs.length; i++) {
+  if (filteredArgs[i] === "--provider" && i + 1 < filteredArgs.length) {
+    providerArg = filteredArgs[++i];
+  } else {
+    finalArgs.push(filteredArgs[i]);
+  }
+}
 
-const child = spawn(realAgy, agyArgs, { stdio: "inherit" });
+let provider;
+try {
+  provider = resolveProvider("architect", {
+    arg: providerArg,
+    seatEnv: process.env.ARCHITECT_PROVIDER,
+  });
+} catch (err) {
+  console.error(`[architect] ${err.message}`);
+  process.exit(1);
+}
+
+let child;
+if (provider === "gemini") {
+  const agyArgs = [
+    "--agent", "architect",
+    "--dangerously-skip-permissions",
+    ...(sessionId ? ["--conversation", sessionId] : []),
+    ...finalArgs,
+  ];
+  child = spawn(realAgy, agyArgs, { stdio: "inherit" });
+} else {
+  const opencodeBin = process.env.OPENCODE_BIN || "/home/qqp/.local/bin/opencode";
+  const opencodeArgs = [
+    ...(sessionId ? ["--session", sessionId] : []),
+    ...finalArgs,
+  ];
+  child = spawn(opencodeBin, opencodeArgs, { stdio: "inherit" });
+}
+
 child.on("exit", (code, signal) => {
   if (signal) process.kill(process.pid, signal);
   else process.exit(code ?? 0);
