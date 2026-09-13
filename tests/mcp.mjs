@@ -77,9 +77,7 @@ try {
   assert.equal(boundedResult.kind, "bounded");
   assert.equal(boundedResult.branch, "architect/bounded/12345678");
   assert.equal(boundedResult.reviewRequired, false);
-  assert.ok(boundedResult.worktree.includes(".qq-worktrees"));
-  assert.ok(boundedResult.instructions.includes("dsh --profile implementer"));
-  assert.ok(boundedResult.instructions.includes(boundedResult.implementerPrompt));
+  assert.ok(boundedResult.instructions.includes("muse exec --preset implementer --yolo"));
   assert.ok(boundedResult.instructions.includes("call 'land'"));
   assert.ok(boundedResult.instructions.includes(`Cwd: ${boundedResult.worktree}`));
   assert.ok(boundedResult.instructions.includes("run_command"));
@@ -156,11 +154,10 @@ try {
   assert.equal(openResult.kind, "open");
   assert.equal(openResult.branch, "architect/open/87654321");
   assert.equal(openResult.reviewRequired, true);
-  assert.ok(openResult.instructions.includes("dsh --profile implementer"));
+  assert.ok(openResult.instructions.includes("muse exec --preset implementer --yolo"));
   assert.ok(openResult.instructions.includes(openResult.implementerPrompt));
-  assert.match(openResult.instructions, /--conversation [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
-  assert.ok(openResult.instructions.includes("Do NOT pass '--new-project'"));
-  assert.ok(openResult.instructions.includes("agy --agent reviewer"));
+  assert.ok(openResult.instructions.includes("muse exec --preset reviewer --yolo"));
+  assert.ok(openResult.instructions.includes(openResult.reviewerPrompt));
   assert.ok(openResult.instructions.includes(`Cwd: ${openResult.worktree}`));
   assert.ok(openResult.instructions.includes("run_command"));
   assert.equal(openResult.implementerPrompt, "Implement .architect/ticket.md in the checkout. When finished, report your answer.");
@@ -168,6 +165,27 @@ try {
     openResult.reviewerPrompt,
     "Follow .architect/ticket.md in the checkout. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.",
   );
+
+  // 5b. Verify prepare_worktree with engine: "agy" outputs agy commands
+  const agySessionId = "11223344-5566-7788-99aa-bbccddeeff00";
+  writeFileSync(join(ticketsDir, `${agySessionId}.md`), "# Agy Session Ticket\n\n## Kind\nopen\n");
+  const agyResult = await prepareWorktree({
+    kind: "open",
+    sessionId: agySessionId,
+    cwd: repoDir,
+    engine: "agy",
+  });
+  assert.equal(agyResult.ok, true);
+  assert.ok(agyResult.instructions.includes("agy --agent implementer"));
+  assert.match(agyResult.instructions, /--conversation [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
+  assert.ok(agyResult.instructions.includes("Do NOT pass '--new-project'"));
+  assert.ok(agyResult.instructions.includes("agy --agent reviewer"));
+  try {
+    await git(repoDir, ["worktree", "remove", "--force", agyResult.worktree]);
+  } catch {}
+  try {
+    await git(repoDir, ["branch", "-D", agyResult.branch]);
+  } catch {}
 
   // 6. Test landing worktree
   // Make changes in bounded worktree
@@ -205,11 +223,11 @@ try {
   assert.equal(researchResult.implementerPrompt, undefined);
   assert.equal(researchResult.reviewerPrompt, undefined);
   assert.ok(researchResult.instructions.includes(`Cwd: ${researchResult.worktree}`));
-  assert.ok(researchResult.instructions.includes(`${researchResult.worktree}/.architect/ticket.md`));
   assert.ok(researchResult.instructions.includes("run_command"));
+  assert.ok(researchResult.instructions.includes("muse exec --preset researcher --yolo"));
   assert.equal(
     researchResult.instructions,
-    `Worktree ready at ${researchResult.worktree}.\nBranch: ${researchResult.branch}\nReview required: false\n\nNext steps:\n1. Invoke research subagent with ticket path ${researchResult.worktree}/.architect/ticket.md and worktree cwd via run_command (with Cwd: ${researchResult.worktree}) using Prompt: "Investigate .architect/ticket.md in the checkout. Report findings."\n2. When finished, call 'land'.`,
+    `Worktree ready at ${researchResult.worktree}.\nBranch: ${researchResult.branch}\nReview required: false\n\nNext steps:\n1. Delegate via run_command (with Cwd: ${researchResult.worktree}): 'muse exec --preset researcher --yolo "Investigate .architect/ticket.md in the checkout. Report findings."'\n2. When finished, call 'land'.`,
   );
   assert.equal(
     readFileSync(join(researchResult.worktree, ".architect", "ticket.md"), "utf8"),

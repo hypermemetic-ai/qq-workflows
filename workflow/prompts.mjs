@@ -7,8 +7,8 @@ export function ARCHITECT_SYSTEM_PROMPT(sessionId) {
     "",
     "## Guidelines",
     "- Ask questions one at a time with recommendations.",
-    "- Populate ticket and testing plan collaboratively with the operator, presenting the ticket artifact with `RequestFeedback: false`.",
-    "- Do not call `prepare_worktree` until the operator approves (via Proceed button or explicit confirmation).",
+    "- Populate ticket and testing plan collaboratively with the operator.",
+    "- Do not call `prepare_worktree` until the operator explicitly approves.",
     "",
     "## Teaching",
     "",
@@ -16,7 +16,10 @@ export function ARCHITECT_SYSTEM_PROMPT(sessionId) {
     "",
     "## Delegation",
     "",
-    "When the operator approves the ticket, call `prepare_worktree`. Follow the tool's returned instructions to invoke the implementer (and reviewer when required) using the prompt provided by the tool, then call `land`. Subagent delegations must never use `--new-project`; pass a fresh conversation ID via `--conversation <newUUID>` instead. For research, use the research subagent. Do not modify project code directly.",
+    "When the operator approves the ticket, call `prepare_worktree`. Follow the tool's returned instructions to invoke the delegated subagent:",
+    "- For implementation tickets (`bounded` or `open`), invoke the implementer (and reviewer when required) using the prompt provided by the tool.",
+    "- For research tickets (`research`), invoke the research subagent using the prompt provided by the tool.",
+    "When finished, call `land`. Do not modify project code directly.",
   ].join("\n");
 }
 

@@ -32,6 +32,11 @@ export const TOOLS = [
           type: "string",
           description: "Optional repository working directory (defaults to process.cwd())",
         },
+        engine: {
+          type: "string",
+          enum: ["muse", "agy"],
+          description: "Optional execution engine: 'muse' (default) or 'agy'",
+        },
       },
       required: ["kind"],
     },
@@ -88,6 +93,7 @@ export async function resolveSessionId(root, explicitId) {
 
 export async function prepareWorktree(args = {}) {
   const { kind, cwd = process.cwd() } = args;
+  const engine = args.engine || process.env.QQ_WORKFLOW_ENGINE || process.env.DELEGATION_ENGINE || "muse";
   if (!kind || (kind !== "bounded" && kind !== "open" && kind !== "research")) {
     throw new Error("kind is required: 'bounded' | 'open' | 'research'");
   }
@@ -105,7 +111,9 @@ export async function prepareWorktree(args = {}) {
 
   if (kind === "research") {
     const researcherPrompt = "Investigate .architect/ticket.md in the checkout. Report findings.";
-    const instructions = `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. Invoke research subagent with ticket path ${wt.cwd}/.architect/ticket.md and worktree cwd via run_command (with Cwd: ${wt.cwd}) using Prompt: "${researcherPrompt}"\n2. When finished, call 'land'.`;
+    const instructions = engine === "agy"
+      ? `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. Invoke research subagent with ticket path ${wt.cwd}/.architect/ticket.md and worktree cwd via run_command (with Cwd: ${wt.cwd}) using Prompt: "${researcherPrompt}"\n2. When finished, call 'land'.`
+      : `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. Delegate via run_command (with Cwd: ${wt.cwd}): 'muse exec --preset researcher --yolo "${researcherPrompt}"'\n2. When finished, call 'land'.`;
 
     return {
       ok: true,
@@ -123,9 +131,16 @@ export async function prepareWorktree(args = {}) {
   const reviewerPrompt = `Follow .architect/ticket.md in the checkout. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.`;
   const reviewerSessionId = randomUUID();
 
-  const instructions = reviewRequired
-    ? `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: true\n\nNext steps:\n1. Delegate via run_command (with Cwd: ${wt.cwd}): 'dsh --profile implementer "${implementerPrompt}"'\n2. When implementation finishes, invoke reviewer via run_command (with Cwd: ${wt.cwd}) using a fresh conversation: 'agy --agent reviewer --conversation ${reviewerSessionId} --print-timeout 60m --print "${reviewerPrompt}"'\nDo NOT pass '--new-project'.\n3. When review passes, call 'land'.`
-    : `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. Delegate via run_command (with Cwd: ${wt.cwd}): 'dsh --profile implementer "${implementerPrompt}"'\n2. When finished, call 'land'.`;
+  let instructions;
+  if (engine === "agy") {
+    instructions = reviewRequired
+      ? `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: true\n\nNext steps:\n1. Delegate via run_command (with Cwd: ${wt.cwd}) using a fresh conversation: 'agy --agent implementer --conversation ${childSessionId} --print-timeout 60m --print "${implementerPrompt}"'\nDo NOT pass '--new-project'.\n2. When implementation finishes, invoke reviewer via run_command (with Cwd: ${wt.cwd}) using a fresh conversation: 'agy --agent reviewer --conversation ${reviewerSessionId} --print-timeout 60m --print "${reviewerPrompt}"'\nDo NOT pass '--new-project'.\n3. When review passes, call 'land'.`
+      : `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. Delegate via run_command (with Cwd: ${wt.cwd}) using a fresh conversation: 'agy --agent implementer --conversation ${childSessionId} --print-timeout 60m --print "${implementerPrompt}"'\nDo NOT pass '--new-project'.\n2. When finished, call 'land'.`;
+  } else {
+    instructions = reviewRequired
+      ? `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: true\n\nNext steps:\n1. Delegate via run_command (with Cwd: ${wt.cwd}): 'muse exec --preset implementer --yolo "${implementerPrompt}"'\n2. When implementation finishes, invoke reviewer via run_command (with Cwd: ${wt.cwd}): 'muse exec --preset reviewer --yolo "${reviewerPrompt}"'\n3. When review passes, call 'land'.`
+      : `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. Delegate via run_command (with Cwd: ${wt.cwd}): 'muse exec --preset implementer --yolo "${implementerPrompt}"'\n2. When finished, call 'land'.`;
+  }
 
   return {
     ok: true,

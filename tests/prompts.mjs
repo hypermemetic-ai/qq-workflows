@@ -15,11 +15,11 @@ assert.match(ARCHITECT_SYSTEM_PROMPT(), /call `land`/);
 assert.doesNotMatch(ARCHITECT_SYSTEM_PROMPT(), /ticket_write/);
 assert.doesNotMatch(ARCHITECT_SYSTEM_PROMPT(), /ticket_read/);
 assert.match(ARCHITECT_SYSTEM_PROMPT(), /Ask questions one at a time with recommendations\./);
-assert.match(ARCHITECT_SYSTEM_PROMPT(), /Populate ticket and testing plan collaboratively with the operator/);
-assert.match(ARCHITECT_SYSTEM_PROMPT(), /RequestFeedback: false/);
+assert.match(ARCHITECT_SYSTEM_PROMPT(), /Populate ticket and testing plan collaboratively with the operator\./);
+assert.doesNotMatch(ARCHITECT_SYSTEM_PROMPT(), /RequestFeedback: false/);
 assert.match(
   ARCHITECT_SYSTEM_PROMPT(),
-  /Do not call `prepare_worktree` until the operator approves \(via Proceed button or explicit confirmation\)/,
+  /Do not call `prepare_worktree` until the operator explicitly approves\./,
 );
 assert.match(ARCHITECT_SYSTEM_PROMPT(), /When the operator approves the ticket, call `prepare_worktree`/);
 

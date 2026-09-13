@@ -75,15 +75,35 @@ if (sessionId) {
   console.log(`[architect] Resuming session ticket at ${ticketPath(".", sessionId)}`);
 }
 
-// Launch agy with architect agent definition
-const agyArgs = [
-  "--agent", "architect",
-  "--dangerously-skip-permissions",
-  ...(sessionId ? ["--conversation", sessionId] : []),
-  ...filteredArgs,
-];
+// Determine architect engine (default: opencode / Muse Spark)
+let engine = process.env.ARCHITECT_ENGINE || "opencode";
+const finalArgs = [];
+for (let i = 0; i < filteredArgs.length; i++) {
+  if (filteredArgs[i] === "--engine" && i + 1 < filteredArgs.length) {
+    engine = filteredArgs[++i];
+  } else {
+    finalArgs.push(filteredArgs[i]);
+  }
+}
 
-const child = spawn(realAgy, agyArgs, { stdio: "inherit" });
+let child;
+if (engine === "agy" || engine === "gemini") {
+  const agyArgs = [
+    "--agent", "architect",
+    "--dangerously-skip-permissions",
+    ...(sessionId ? ["--conversation", sessionId] : []),
+    ...finalArgs,
+  ];
+  child = spawn(realAgy, agyArgs, { stdio: "inherit" });
+} else {
+  const opencodeBin = process.env.OPENCODE_BIN || "/home/qqp/.local/bin/opencode";
+  const opencodeArgs = [
+    ...(sessionId ? ["--session", sessionId] : []),
+    ...finalArgs,
+  ];
+  child = spawn(opencodeBin, opencodeArgs, { stdio: "inherit" });
+}
+
 child.on("exit", (code, signal) => {
   if (signal) process.kill(process.pid, signal);
   else process.exit(code ?? 0);
