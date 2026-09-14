@@ -12,6 +12,7 @@ import {
   mainRepoRoot,
   parseWorktreePorcelain,
 } from "../workflow/git.mjs";
+import { resolveTicketSource } from "../workflow/ticket.mjs";
 export const TOOLS = [
   {
     name: "prepare_worktree",
@@ -103,7 +104,11 @@ export async function resolveActiveSessionId(root, explicitId) {
 }
 
 export async function resolveSessionId(root, explicitId) {
-  return (await resolveActiveSessionId(root, explicitId)) || randomUUID();
+  const resolved = await resolveActiveSessionId(root, explicitId);
+  if (!resolved) {
+    throw new Error("no active ticket: pass sessionId or create .architect/tickets/<id>.md");
+  }
+  return resolved;
 }
 
 // Canonical providers. Only these strings are accepted; there are no
@@ -165,21 +170,21 @@ export function resolveSeatProvider(seat, args = {}, env = process.env) {
 // Per-seat command templates, keyed by provider. Each template renders one
 // delegation step; unsupported seat x provider pairs have no template.
 const IMPLEMENTER_TEMPLATES = {
-  muse: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'muse exec --preset implementer --yolo "${prompt}"'`,
+  muse: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'muse exec --preset implementer --yolo "${prompt} Leave changes uncommitted. Do not commit, push, review, or land."'`,
   gemini: (cwd, prompt, conversationId) =>
-    `Delegate via run_command (with Cwd: ${cwd}) using a fresh conversation: 'agy --agent implementer --conversation ${conversationId} --print-timeout 60m --print "${prompt}"'\nDo NOT pass '--new-project'.`,
-  deepseek: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'dsh --profile implementer "${prompt}"'`,
+    `Delegate via run_command (with Cwd: ${cwd}) using a fresh conversation: 'agy --agent implementer --conversation ${conversationId} --print-timeout 60m --print "${prompt} Leave changes uncommitted. Do not commit, push, review, or land."'\nDo NOT pass '--new-project'.`,
+  deepseek: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'dsh --profile implementer "${prompt} Leave changes uncommitted. Do not commit, push, review, or land."'`,
 };
 
 const REVIEWER_TEMPLATES = {
-  muse: (cwd, prompt) => `invoke reviewer via run_command (with Cwd: ${cwd}): 'muse exec --preset reviewer --yolo "${prompt}"'`,
+  muse: (cwd, prompt) => `invoke reviewer via run_command (with Cwd: ${cwd}): 'muse exec --preset reviewer --yolo "${prompt} Do not commit, push, or land."'`,
   gemini: (cwd, prompt, conversationId) =>
-    `invoke reviewer via run_command (with Cwd: ${cwd}) using a fresh conversation: 'agy --agent reviewer --conversation ${conversationId} --print-timeout 60m --print "${prompt}"'\nDo NOT pass '--new-project'.`,
+    `invoke reviewer via run_command (with Cwd: ${cwd}) using a fresh conversation: 'agy --agent reviewer --conversation ${conversationId} --print-timeout 60m --print "${prompt} Do not commit, push, or land."'\nDo NOT pass '--new-project'.`,
 };
 
 const RESEARCHER_TEMPLATES = {
-  muse: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'muse exec --preset researcher --yolo "${prompt}"'`,
-  gemini: (cwd, prompt) => `Invoke research subagent with ticket path ${cwd}/.architect/ticket.md and worktree cwd via run_command (with Cwd: ${cwd}) using Prompt: "${prompt}"`,
+  muse: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'muse exec --preset researcher --yolo "${prompt} Leave files uncommitted. Do not commit, push, or land."'`,
+  gemini: (cwd, prompt) => `Invoke research subagent with ticket path ${cwd}/.architect/ticket.md and worktree cwd via run_command (with Cwd: ${cwd}) using Prompt: "${prompt} Leave files uncommitted. Do not commit, push, or land."`,
 };
 
 export function buildImplementerStep(cwd, prompt, provider, conversationId) {
@@ -213,6 +218,8 @@ export async function prepareWorktree(args = {}) {
 
   const root = await mainRepoRoot(cwd);
   const sessionId = await resolveSessionId(root, args.sessionId || args.id || args.conversationId);
+  // Fail fast on a missing ticket before any worktree or branch exists.
+  await resolveTicketSource(root, sessionId);
 
   const wt = await createWorktree(root, { kind, sessionId });
   const reviewRequired = kind === "open";

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { ensureTicket, ticketPath } from "../workflow/ticket.mjs";
 
 import { createWorktree, landWorktree, retireWorktree } from "../workflow/git.mjs";
@@ -20,7 +21,11 @@ if (sub === "prepare") {
     else if ((args[i] === "--session" || args[i] === "-c" || args[i] === "--conversation") && i + 1 < args.length) { sessionId = args[++i]; }
     else if (args[i] === "--base" && i + 1 < args.length) { base = args[++i]; }
   }
-  const result = await createWorktree(process.cwd(), { kind, sessionId: sessionId || randomUUID(), base });
+  if (!sessionId) {
+    console.error("usage: architect prepare --kind <bounded|open|research> --session <id> [--base <ref>]");
+    process.exit(2);
+  }
+  const result = await createWorktree(process.cwd(), { kind, sessionId, base });
   console.log(JSON.stringify(result));
   process.exit(0);
 }
@@ -76,7 +81,7 @@ if (sessionId) {
   console.log(`[architect] Resuming session ticket at ${ticketPath(".", sessionId)}`);
 }
 
-// Determine architect seat provider (default: muse, served via opencode)
+// Determine architect seat provider (default: muse, served via muse-architect)
 let providerArg;
 const finalArgs = [];
 for (let i = 0; i < filteredArgs.length; i++) {
@@ -108,12 +113,12 @@ if (provider === "gemini") {
   ];
   child = spawn(realAgy, agyArgs, { stdio: "inherit" });
 } else {
-  const opencodeBin = process.env.OPENCODE_BIN || "/home/qqp/.local/bin/opencode";
-  const opencodeArgs = [
+  const museArchitectBin = process.env.MUSE_ARCHITECT_BIN || join(homedir(), ".local", "bin", "muse-architect");
+  const museArchitectArgs = [
     ...(sessionId ? ["--session", sessionId] : []),
     ...finalArgs,
   ];
-  child = spawn(opencodeBin, opencodeArgs, { stdio: "inherit" });
+  child = spawn(museArchitectBin, museArchitectArgs, { stdio: "inherit" });
 }
 
 child.on("exit", (code, signal) => {

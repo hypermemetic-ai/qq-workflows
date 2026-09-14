@@ -93,6 +93,7 @@ assert.match(implementerContent, /write_to_file/);
 assert.match(implementerContent, /replace_file_content/);
 assert.match(implementerContent, /run_command/);
 assert.match(implementerContent, /Implement \.architect\/ticket\.md\./);
+assert.match(implementerContent, /Leave changes uncommitted\. Do not commit, push, review, or land\./);
 assert.match(implementerContent, /report your answer/);
 assert.doesNotMatch(implementerContent, /call done/);
 
@@ -101,7 +102,8 @@ const reviewerContent = readFileSync(join(repoRoot, "agents", "reviewer", "agent
 assert.match(reviewerContent, /run_command/);
 assert.doesNotMatch(reviewerContent, /write_to_file/);
 assert.doesNotMatch(reviewerContent, /replace_file_content/);
+assert.match(reviewerContent, /Do not commit, push, or land\./);
 assert.match(reviewerContent, /Report findings\. Empty findings means it passed\./);
 assert.doesNotMatch(reviewerContent, /call done/);
 
-console.log("agy-roles tests passed successfully.");
+console.log("roles tests passed successfully.");

@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -19,8 +19,6 @@ import {
   retireWorktree,
   worktreePathFor,
 } from "../workflow/git.mjs";
-import { brainTicketPath } from "../workflow/ticket.mjs";
-
 const exec = promisify(execFile);
 
 async function git(cwd, args) {
@@ -134,6 +132,17 @@ try {
   await git(lifecycleRepo, ["add", "init.txt"]);
   await git(lifecycleRepo, ["commit", "-m", "initial"]);
 
+  // Seed session tickets: createWorktree fails fast without one.
+  mkdirSync(join(lifecycleRepo, ".architect", "tickets"), { recursive: true });
+  for (const id of [
+    "abcdef12-3456-7890-abcd-ef1234567890",
+    "11223344-5566-7788-9900-aabbccddeeff",
+    "55667788-9900-aabb-ccdd-eeff00112233",
+    "66778899-0011-2233-4455-667788990011",
+  ]) {
+    writeFileSync(join(lifecycleRepo, ".architect", "tickets", `${id}.md`), `# Ticket ${id}\n`);
+  }
+
   // 1. Prepare worktree branch
   const sessionId = "abcdef12-3456-7890-abcd-ef1234567890";
   const wt = await createWorktree(lifecycleRepo, { kind: "bounded", sessionId });
@@ -141,6 +150,10 @@ try {
   assert.equal(wt.reused, false);
   assert.ok(wt.cwd.includes("architect-bounded-abcdef12"));
   assert.equal(await git(wt.cwd, ["branch", "--show-current"]), wt.branch);
+  assert.equal(
+    readFileSync(join(wt.cwd, ".architect", "ticket.md"), "utf8"),
+    `# Ticket ${sessionId}\n`,
+  );
 
   // Calling createWorktree again reuses existing worktree
   const reused = await createWorktree(lifecycleRepo, { kind: "bounded", sessionId });
@@ -231,10 +244,8 @@ try {
   rmSync(lifecycleRepo, { recursive: true, force: true });
 }
 
-// 4. Test createWorktree ticket resolution priority
+// 4. Test createWorktree ticket resolution: exact, prefix, then fail fast
 const ticketRepo = mkdtempSync(join(tmpdir(), "architect-ticket-resolution-"));
-const brainSession = "sess-brain-1234";
-const brainFile = brainTicketPath(brainSession);
 try {
   await git(ticketRepo, ["init", "-b", "main"]);
   await git(ticketRepo, ["config", "user.name", "Architect Test"]);
@@ -254,33 +265,36 @@ try {
   );
   await retireWorktree(ticketRepo, { worktree: wt1.cwd, branch: wt1.branch });
 
-  // 2. Brain ticket artifact ~/.gemini/antigravity-cli/brain/<sessionId>/ticket.md
-  mkdirSync(dirname(brainFile), { recursive: true });
-  writeFileSync(brainFile, "# Brain Session Ticket\n");
-  const wt2 = await createWorktree(ticketRepo, { kind: "bounded", sessionId: brainSession });
+  // 2. Prefix match: a short id resolves the full session file
+  const wtPrefix = await createWorktree(ticketRepo, { kind: "bounded", sessionId: "sess-ticket" });
   assert.equal(
-    readFileSync(join(wt2.cwd, ".architect", "ticket.md"), "utf8"),
-    "# Brain Session Ticket\n",
+    readFileSync(join(wtPrefix.cwd, ".architect", "ticket.md"), "utf8"),
+    "# Session 1 Ticket\n",
   );
-  await retireWorktree(ticketRepo, { worktree: wt2.cwd, branch: wt2.branch });
+  await retireWorktree(ticketRepo, { worktree: wtPrefix.cwd, branch: wtPrefix.branch });
 
-  // 3. Fallback to .architect/ticket.md
-  const s3 = "sess-fallback-3333";
-  writeFileSync(join(ticketRepo, ".architect", "ticket.md"), "# Repo Fallback Ticket\n");
-  const wt3 = await createWorktree(ticketRepo, { kind: "bounded", sessionId: s3 });
-  assert.equal(
-    readFileSync(join(wt3.cwd, ".architect", "ticket.md"), "utf8"),
-    "# Repo Fallback Ticket\n",
+  // 3. Unknown session throws before any worktree or branch exists, even
+  // when a root .architect/ticket.md exists (the root fallback is gone).
+  writeFileSync(join(ticketRepo, ".architect", "ticket.md"), "# Repo Root Ticket\n");
+  await assert.rejects(
+    () => createWorktree(ticketRepo, { kind: "bounded", sessionId: "sess-unknown-9999" }),
+    /^Error: no ticket resolved for session 'sess-unknown-9999'$/,
   );
-  await retireWorktree(ticketRepo, { worktree: wt3.cwd, branch: wt3.branch });
+  await assert.rejects(() => git(ticketRepo, ["rev-parse", "--verify", "refs/heads/architect/bounded/sessunkn"]));
+  const wtListAfterThrow = await git(ticketRepo, ["worktree", "list"]);
+  assert.ok(!wtListAfterThrow.includes("architect/bounded/sessunkn"), "failed resolution must not leave a worktree");
+
+  // 4. Missing session id throws the no-active-ticket error with no strays.
+  await assert.rejects(
+    () => createWorktree(ticketRepo, { kind: "bounded" }),
+    /^Error: no active ticket: pass sessionId or create \.architect\/tickets\/<id>\.md$/,
+  );
+  await assert.rejects(() => git(ticketRepo, ["rev-parse", "--verify", "refs/heads/architect/bounded"]));
 } finally {
   try {
     rmSync(join(dirname(ticketRepo), ".qq-worktrees", basename(ticketRepo)), { recursive: true, force: true });
   } catch {}
   rmSync(ticketRepo, { recursive: true, force: true });
-  try {
-    rmSync(join(homedir(), ".gemini", "antigravity-cli", "brain", brainSession), { recursive: true, force: true });
-  } catch {}
 }
 
 console.log("Git tests passed cleanly.");

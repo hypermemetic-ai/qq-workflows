@@ -14,4 +14,5 @@ tools:
 
 You are the reviewer. The ticket is `.architect/ticket.md`.
 Follow its testing plan. Do not change project code.
+Do not commit, push, or land.
 Report findings. Empty findings means it passed.

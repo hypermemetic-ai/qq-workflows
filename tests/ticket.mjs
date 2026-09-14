@@ -1,18 +1,24 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as ticketModule from "../workflow/ticket.mjs";
 import {
-  applyTicketEdit,
-  brainTicketPath,
   ensureTicket,
   loadPackagedTemplate,
   openSectionIsEmpty,
   parseKind,
-  ticketRead,
-  ticketWrite,
+  resolveTicketSource,
+  templatePath,
+  ticketPath,
 } from "../workflow/ticket.mjs";
+
+// Dead tools stay dead: the ticket-tool API and brain mirror are gone.
+assert.equal(ticketModule.ticketRead, undefined);
+assert.equal(ticketModule.ticketWrite, undefined);
+assert.equal(ticketModule.applyTicketEdit, undefined);
+assert.equal(ticketModule.brainTicketPath, undefined);
 
 const template = await loadPackagedTemplate();
 assert.match(template, /^# Ticket/m);
@@ -21,6 +27,7 @@ assert.match(template, /^## \[open\]/m);
 assert.match(template, /bounded — straightforward work/);
 assert.match(template, /open — needs implementer judgment/);
 assert.match(template, /research — investigation, spike, or benchmark/);
+assert.doesNotMatch(template, /scratch\.md/);
 
 assert.equal(parseKind(template), null);
 
@@ -46,83 +53,83 @@ const research = template.replace(
 );
 assert.equal(parseKind(research), "research");
 
+// Path helpers
+assert.equal(ticketPath("/repo"), join("/repo", ".architect", "ticket.md"));
+assert.equal(ticketPath("/repo", "sess-1"), join("/repo", ".architect", "tickets", "sess-1.md"));
+assert.equal(templatePath("/repo"), join("/repo", ".architect", "template.md"));
+
 const dir = mkdtempSync(join(tmpdir(), "architect-ticket-"));
 try {
   const created = await ensureTicket(dir);
   assert.equal(created.created, true);
   assert.equal(created.text, template);
-  assert.equal(readFileSync(join(dir, ".architect/ticket.md"), "utf8"), template);
-  mkdirSync(join(dir, ".architect"), { recursive: true });
-  const again = await ticketRead(dir);
-  assert.equal(again.text, template);
-  const replaced = await ticketWrite(dir, {
-    old_string: "The specific situation that is failing today.",
-    new_string: "The login button 500s.",
-  });
-  assert.match(replaced.text, /The login button 500s/);
-  const whole = await ticketWrite(dir, { text: bounded });
-  assert.equal(parseKind(whole.text), "bounded");
-  assert.equal(openSectionIsEmpty(whole.text), true);
+  assert.equal(created.path, join(dir, ".architect", "ticket.md"));
+  assert.equal(readFileSync(join(dir, ".architect", "ticket.md"), "utf8"), template);
 
-  // Session-scoped ticket tests
+  // ensureTicket is idempotent for existing tickets
+  const again = await ensureTicket(dir);
+  assert.equal(again.created, false);
+  assert.equal(again.text, template);
+
+  // Session-scoped tickets are isolated per session id
   const session1 = "session-test-1";
   const session2 = "session-test-2";
   const s1Created = await ensureTicket(dir, { sessionId: session1 });
   assert.equal(s1Created.created, true);
   assert.equal(s1Created.path, join(dir, ".architect", "tickets", `${session1}.md`));
   assert.equal(s1Created.text, template);
-  assert.equal(readFileSync(join(dir, ".architect", "tickets", `${session1}.md`), "utf8"), template);
 
-  // ticketRead with sessionId
-  const s1Read = await ticketRead(dir, undefined, session1);
-  assert.equal(s1Read.text, template);
-  const s1ReadDirect = await ticketRead(dir, session1);
-  assert.equal(s1ReadDirect.text, template);
+  writeFileSync(join(dir, ".architect", "tickets", `${session1}.md`), bounded);
+  const s2Created = await ensureTicket(dir, { sessionId: session2 });
+  assert.equal(s2Created.created, true);
+  assert.equal(s2Created.text, template);
+  assert.equal(parseKind(readFileSync(join(dir, ".architect", "tickets", `${session1}.md`), "utf8")), "bounded");
 
-  // ticketWrite with sessionId
-  const s1Modified = await ticketWrite(dir, { text: bounded }, undefined, session1);
-  assert.equal(parseKind(s1Modified.text), "bounded");
-  assert.equal(readFileSync(join(dir, ".architect", "tickets", `${session1}.md`), "utf8"), bounded);
-  assert.equal(readFileSync(brainTicketPath(session1), "utf8"), bounded);
-  assert.equal(s1Modified.artifactPath, brainTicketPath(session1));
+  // resolveTicketSource: exact match
+  assert.equal(
+    await resolveTicketSource(dir, session1),
+    join(dir, ".architect", "tickets", `${session1}.md`),
+  );
 
-  // Custom io.home test
-  const session3 = "session-test-3";
-  const customHome = mkdtempSync(join(tmpdir(), "brain-test-home-"));
-  try {
-    const s3Custom = await ticketWrite(dir, { text: bounded }, { home: customHome }, session3);
-    assert.equal(
-      readFileSync(join(customHome, ".gemini", "antigravity-cli", "brain", session3, "ticket.md"), "utf8"),
-      bounded,
-    );
-    assert.equal(
-      s3Custom.artifactPath,
-      join(customHome, ".gemini", "antigravity-cli", "brain", session3, "ticket.md"),
-    );
-  } finally {
-    rmSync(customHome, { recursive: true, force: true });
-  }
+  // resolveTicketSource: prefix match (short id resolves the full file)
+  mkdirSync(join(dir, ".architect", "tickets"), { recursive: true });
+  writeFileSync(join(dir, ".architect", "tickets", "abcdef12-3456-7890-abcd-ef1234567890.md"), bounded);
+  assert.equal(
+    await resolveTicketSource(dir, "abcdef12"),
+    join(dir, ".architect", "tickets", "abcdef12-3456-7890-abcd-ef1234567890.md"),
+  );
 
-  // session-2 starts clean with template, isolated from session-1
-  const s2Read = await ticketRead(dir, session2);
-  assert.equal(s2Read.text, template);
-  assert.equal(parseKind(s2Read.text), null);
-  assert.equal(readFileSync(join(dir, ".architect", "tickets", `${session2}.md`), "utf8"), template);
+  // resolveTicketSource: reverse prefix (full id resolves a short-named file)
+  writeFileSync(join(dir, ".architect", "tickets", "xyz.md"), bounded);
+  assert.equal(
+    await resolveTicketSource(dir, "xyz-9999"),
+    join(dir, ".architect", "tickets", "xyz.md"),
+  );
 
-  // Backward compatibility: ticketRead/ticketWrite without sessionId still uses .architect/ticket.md
-  const fallbackRead = await ticketRead(dir);
-  assert.equal(fallbackRead.path, join(dir, ".architect", "ticket.md"));
-  assert.equal(fallbackRead.text, bounded);
+  // resolveTicketSource: unknown session throws, no fallback to .architect/ticket.md
+  await assert.rejects(
+    () => resolveTicketSource(dir, "no-such-session"),
+    /^Error: no ticket resolved for session 'no-such-session'$/,
+  );
+
+  // resolveTicketSource: missing session id throws the no-active-ticket error
+  await assert.rejects(
+    () => resolveTicketSource(dir, undefined),
+    /^Error: no active ticket: pass sessionId or create \.architect\/tickets\/<id>\.md$/,
+  );
 } finally {
   rmSync(dir, { recursive: true, force: true });
-  try {
-    rmSync(join(homedir(), ".gemini", "antigravity-cli", "brain", session1), { recursive: true, force: true });
-    rmSync(join(homedir(), ".gemini", "antigravity-cli", "brain", session2), { recursive: true, force: true });
-  } catch {}
 }
 
-const edited = applyTicketEdit("alpha beta alpha", { old_string: "alpha", new_string: "gamma", replace_all: true });
-assert.equal(edited, "gamma beta gamma");
-assert.throws(() => applyTicketEdit("alpha beta alpha", { old_string: "alpha", new_string: "gamma" }));
-assert.throws(() => applyTicketEdit("hello", { old_string: "missing", new_string: "x" }));
-assert.throws(() => applyTicketEdit("hello", { text: "x", old_string: "h", new_string: "y" }));
+// resolveTicketSource with no tickets directory at all still throws (no fallback)
+const empty = mkdtempSync(join(tmpdir(), "architect-ticket-empty-"));
+try {
+  await assert.rejects(
+    () => resolveTicketSource(empty, "sess-1"),
+    /^Error: no ticket resolved for session 'sess-1'$/,
+  );
+} finally {
+  rmSync(empty, { recursive: true, force: true });
+}
+
+console.log("Ticket tests passed cleanly.");
