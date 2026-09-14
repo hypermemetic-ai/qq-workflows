@@ -13,8 +13,6 @@ The specific situation that is failing today.
 
 Behavioral invariants that gate acceptance, and feasible real-world failures that must not happen.
 
-If this repository provides `.architect/scratch.md`, use it to plan the test environment. Record any different setup this work needs.
-
 ## [open]
 
 ### Budget

@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { promisify } from "node:util";
@@ -23,7 +23,6 @@ import {
   startMcpServer,
 } from "../bin/mcp-server.mjs";
 import { git } from "../workflow/git.mjs";
-import { brainTicketPath } from "../workflow/ticket.mjs";
 
 const exec = promisify(execFile);
 
@@ -58,35 +57,47 @@ assert.deepEqual(SEAT_PROVIDERS.reviewer, ["muse", "gemini"]);
 assert.deepEqual(SEAT_PROVIDERS.researcher, ["muse", "gemini"]);
 assert.deepEqual(SEAT_PROVIDERS.architect, ["muse", "gemini"]);
 
-// 1c. Per-seat command template checks (every supported seat x provider)
+// 1c. Per-seat command template checks (every supported seat x provider).
+// Ownership lines ride inside the child prompt so every child sees them.
+const IMPLEMENTER_OWNERSHIP = "Leave changes uncommitted. Do not commit, push, review, or land.";
+const REVIEWER_OWNERSHIP = "Do not commit, push, or land.";
+const RESEARCHER_OWNERSHIP = "Leave files uncommitted. Do not commit, push, or land.";
 assert.equal(
   buildImplementerStep("/wt", "P", "muse", "uuid-1"),
-  `Delegate via run_command (with Cwd: /wt): 'muse exec --preset implementer --yolo "P"'`,
+  `Delegate via run_command (with Cwd: /wt): 'muse exec --preset implementer --yolo "P ${IMPLEMENTER_OWNERSHIP}"'`,
 );
 assert.equal(
   buildImplementerStep("/wt", "P", "gemini", "uuid-1"),
-  `Delegate via run_command (with Cwd: /wt) using a fresh conversation: 'agy --agent implementer --conversation uuid-1 --print-timeout 60m --print "P"'\nDo NOT pass '--new-project'.`,
+  `Delegate via run_command (with Cwd: /wt) using a fresh conversation: 'agy --agent implementer --conversation uuid-1 --print-timeout 60m --print "P ${IMPLEMENTER_OWNERSHIP}"'\nDo NOT pass '--new-project'.`,
 );
 assert.equal(
   buildImplementerStep("/wt", "P", "deepseek", "uuid-1"),
-  `Delegate via run_command (with Cwd: /wt): 'dsh --profile implementer "P"'`,
+  `Delegate via run_command (with Cwd: /wt): 'dsh --profile implementer "P ${IMPLEMENTER_OWNERSHIP}"'`,
 );
 assert.equal(
   buildReviewerStep("/wt", "P", "muse", "uuid-2"),
-  `invoke reviewer via run_command (with Cwd: /wt): 'muse exec --preset reviewer --yolo "P"'`,
+  `invoke reviewer via run_command (with Cwd: /wt): 'muse exec --preset reviewer --yolo "P ${REVIEWER_OWNERSHIP}"'`,
 );
 assert.equal(
   buildReviewerStep("/wt", "P", "gemini", "uuid-2"),
-  `invoke reviewer via run_command (with Cwd: /wt) using a fresh conversation: 'agy --agent reviewer --conversation uuid-2 --print-timeout 60m --print "P"'\nDo NOT pass '--new-project'.`,
+  `invoke reviewer via run_command (with Cwd: /wt) using a fresh conversation: 'agy --agent reviewer --conversation uuid-2 --print-timeout 60m --print "P ${REVIEWER_OWNERSHIP}"'\nDo NOT pass '--new-project'.`,
 );
 assert.equal(
   buildResearcherStep("/wt", "P", "muse"),
-  `Delegate via run_command (with Cwd: /wt): 'muse exec --preset researcher --yolo "P"'`,
+  `Delegate via run_command (with Cwd: /wt): 'muse exec --preset researcher --yolo "P ${RESEARCHER_OWNERSHIP}"'`,
 );
 assert.equal(
   buildResearcherStep("/wt", "P", "gemini"),
-  `Invoke research subagent with ticket path /wt/.architect/ticket.md and worktree cwd via run_command (with Cwd: /wt) using Prompt: "P"`,
+  `Invoke research subagent with ticket path /wt/.architect/ticket.md and worktree cwd via run_command (with Cwd: /wt) using Prompt: "P ${RESEARCHER_OWNERSHIP}"`,
 );
+// Every template carries its seat's ownership line.
+for (const provider of ["muse", "gemini", "deepseek"]) {
+  assert.ok(buildImplementerStep("/wt", "Do it", provider, "uuid-1").includes(IMPLEMENTER_OWNERSHIP));
+}
+for (const provider of ["muse", "gemini"]) {
+  assert.ok(buildReviewerStep("/wt", "Check it", provider, "uuid-2").includes(REVIEWER_OWNERSHIP));
+  assert.ok(buildResearcherStep("/wt", "Study it", provider).includes(RESEARCHER_OWNERSHIP));
+}
 
 // 1d. Provider precedence checks (seat arg > seat env > global arg > global env > 'muse')
 assert.equal(resolveSeatProvider("implementer", {}, {}), "muse");
@@ -197,6 +208,7 @@ try {
   assert.equal(boundedResult.reviewRequired, false);
   assert.equal(boundedResult.implementerProvider, "muse");
   assert.ok(boundedResult.instructions.includes("muse exec --preset implementer --yolo"));
+  assert.ok(boundedResult.instructions.includes(IMPLEMENTER_OWNERSHIP));
   assert.ok(boundedResult.instructions.includes("call 'land'"));
   assert.ok(boundedResult.instructions.includes(`Cwd: ${boundedResult.worktree}`));
   assert.ok(boundedResult.instructions.includes("run_command"));
@@ -277,8 +289,10 @@ try {
   assert.equal(openResult.reviewerProvider, "muse");
   assert.ok(openResult.instructions.includes("muse exec --preset implementer --yolo"));
   assert.ok(openResult.instructions.includes(openResult.implementerPrompt));
+  assert.ok(openResult.instructions.includes(IMPLEMENTER_OWNERSHIP));
   assert.ok(openResult.instructions.includes("muse exec --preset reviewer --yolo"));
   assert.ok(openResult.instructions.includes(openResult.reviewerPrompt));
+  assert.ok(openResult.instructions.includes(REVIEWER_OWNERSHIP));
   assert.ok(openResult.instructions.includes(`Cwd: ${openResult.worktree}`));
   assert.ok(openResult.instructions.includes("run_command"));
   assert.equal(openResult.implementerPrompt, "Implement .architect/ticket.md in the checkout. When finished, report your answer.");
@@ -379,6 +393,7 @@ try {
       }),
     /^Error: provider 'deepseek' does not support seat 'reviewer'$/,
   );
+  await assert.rejects(() => git(repoDir, ["rev-parse", "--verify", "refs/heads/architect/open/66778899"]));
 
   // 5h. Unknown provider strings throw.
   await assert.rejects(
@@ -472,9 +487,10 @@ try {
   assert.ok(researchResult.instructions.includes(`Cwd: ${researchResult.worktree}`));
   assert.ok(researchResult.instructions.includes("run_command"));
   assert.ok(researchResult.instructions.includes("muse exec --preset researcher --yolo"));
+  assert.ok(researchResult.instructions.includes(RESEARCHER_OWNERSHIP));
   assert.equal(
     researchResult.instructions,
-    `Worktree ready at ${researchResult.worktree}.\nBranch: ${researchResult.branch}\nReview required: false\n\nNext steps:\n1. Delegate via run_command (with Cwd: ${researchResult.worktree}): 'muse exec --preset researcher --yolo "Investigate .architect/ticket.md in the checkout. Report findings."'\n2. When finished, call 'land'.`,
+    `Worktree ready at ${researchResult.worktree}.\nBranch: ${researchResult.branch}\nReview required: false\n\nNext steps:\n1. Delegate via run_command (with Cwd: ${researchResult.worktree}): 'muse exec --preset researcher --yolo "Investigate .architect/ticket.md in the checkout. Report findings. ${RESEARCHER_OWNERSHIP}"'\n2. When finished, call 'land'.`,
   );
   assert.equal(
     readFileSync(join(researchResult.worktree, ".architect", "ticket.md"), "utf8"),
@@ -493,7 +509,7 @@ try {
   assert.equal(gemResResult.ok, true);
   assert.equal(gemResResult.researcherProvider, "gemini");
   assert.ok(gemResResult.instructions.includes("Invoke research subagent with ticket path"));
-  assert.ok(gemResResult.instructions.includes(`using Prompt: "${gemResResult.researcherPrompt}"`));
+  assert.ok(gemResResult.instructions.includes(`using Prompt: "${gemResResult.researcherPrompt} ${RESEARCHER_OWNERSHIP}"`));
   await retireTestWorktree(repoDir, gemResResult);
 
   // 6b-iii. DeepSeek does not serve the researcher seat.
@@ -544,55 +560,70 @@ try {
   assert.ok(!wtListAfterRo.includes("architect/research/ro998877"));
   await assert.rejects(() => git(repoDir, ["rev-parse", "--verify", "refs/heads/architect/research/ro998877"]));
 
-  // 7. Test ticket resolution in prepare_worktree
-  // A. Brain artifact resolution
-  const brainSessionId = "brain-session-0001";
-  const brainPath = brainTicketPath(brainSessionId);
-  mkdirSync(dirname(brainPath), { recursive: true });
-  writeFileSync(brainPath, "# Brain Ticket\n\n## Kind\nbounded\n");
-
-  const brainResult = await prepareWorktree({
-    kind: "bounded",
-    sessionId: brainSessionId,
-    cwd: repoDir,
-  });
-  assert.equal(brainResult.ok, true);
-  assert.equal(
-    readFileSync(join(brainResult.worktree, ".architect", "ticket.md"), "utf8"),
-    "# Brain Ticket\n\n## Kind\nbounded\n",
-  );
-
-  // Clean up brain worktree
-  try {
-    await git(repoDir, ["worktree", "remove", "--force", brainResult.worktree]);
-  } catch {}
-  try {
-    await git(repoDir, ["branch", "-D", brainResult.branch]);
-  } catch {}
-
-  // B. Fallback to .architect/ticket.md when neither session ticket nor brain ticket exists
-  const fallbackSessionId = "fallback-session-0002";
+  // 7. Test ticket resolution in prepare_worktree: exact, prefix, then fail
+  // fast with no stray worktree or branch. There are no brain or root
+  // fallbacks anymore.
+  // A. Unknown session id throws even when a root .architect/ticket.md exists.
   const rootArchitectDir = join(repoDir, ".architect");
-  writeFileSync(join(rootArchitectDir, "ticket.md"), "# Root Fallback Ticket\n\n## Kind\nbounded\n");
+  writeFileSync(join(rootArchitectDir, "ticket.md"), "# Root Ticket (not a fallback)\n\n## Kind\nbounded\n");
+  await assert.rejects(
+    () =>
+      prepareWorktree({
+        kind: "bounded",
+        sessionId: "missing-session-0001",
+        cwd: repoDir,
+      }),
+    /^Error: no ticket resolved for session 'missing-session-0001'$/,
+  );
+  await assert.rejects(() => git(repoDir, ["rev-parse", "--verify", "refs/heads/architect/bounded/missings"]));
+  const wtListAfterMissing = await git(repoDir, ["worktree", "list"]);
+  assert.ok(!wtListAfterMissing.includes("architect/bounded/missings"));
 
-  const fbResult = await prepareWorktree({
+  // B. Prefix ids still resolve: a short id finds the full session file.
+  const prefixSessionId = "prefixaa11-2233-4455-6677-889900aabbcc";
+  writeFileSync(join(ticketsDir, `${prefixSessionId}.md`), "# Prefix Ticket\n\n## Kind\nbounded\n");
+  const prefixResult = await prepareWorktree({
     kind: "bounded",
-    sessionId: fallbackSessionId,
+    sessionId: "prefixaa11",
     cwd: repoDir,
   });
-  assert.equal(fbResult.ok, true);
+  assert.equal(prefixResult.ok, true);
+  assert.equal(prefixResult.branch, "architect/bounded/prefixaa");
   assert.equal(
-    readFileSync(join(fbResult.worktree, ".architect", "ticket.md"), "utf8"),
-    "# Root Fallback Ticket\n\n## Kind\nbounded\n",
+    readFileSync(join(prefixResult.worktree, ".architect", "ticket.md"), "utf8"),
+    "# Prefix Ticket\n\n## Kind\nbounded\n",
   );
+  await retireTestWorktree(repoDir, prefixResult);
 
-  // Clean up fallback worktree
+  // C. No explicit id and no tickets on disk throws the no-active-ticket
+  // error before anything is created.
+  const emptyRepo = mkdtempSync(join(tmpdir(), "architect-mcp-empty-"));
   try {
-    await git(repoDir, ["worktree", "remove", "--force", fbResult.worktree]);
-  } catch {}
-  try {
-    await git(repoDir, ["branch", "-D", fbResult.branch]);
-  } catch {}
+    await git(emptyRepo, ["init", "-b", "main"]);
+    await git(emptyRepo, ["config", "user.name", "MCP Test"]);
+    await git(emptyRepo, ["config", "user.email", "mcp@example.invalid"]);
+    writeFileSync(join(emptyRepo, "README.md"), "# Empty\n");
+    await git(emptyRepo, ["add", "README.md"]);
+    await git(emptyRepo, ["commit", "-m", "init"]);
+    await assert.rejects(
+      () => resolveSessionId(emptyRepo),
+      /^Error: no active ticket: pass sessionId or create \.architect\/tickets\/<id>\.md$/,
+    );
+    await assert.rejects(
+      () =>
+        prepareWorktree({
+          kind: "bounded",
+          cwd: emptyRepo,
+        }),
+      /^Error: no active ticket: pass sessionId or create \.architect\/tickets\/<id>\.md$/,
+    );
+    const emptyBranches = await git(emptyRepo, ["branch", "--list", "architect/*"]);
+    assert.equal(emptyBranches.trim(), "");
+    const emptyWtList = await git(emptyRepo, ["worktree", "list"]);
+    assert.ok(!emptyWtList.includes("architect/"));
+  } finally {
+    rmSync(emptyRepo, { recursive: true, force: true });
+  }
 
   // 8. Test RPC tools/call rejects removed ticket tools
   const rpcRead = await handleRpc("tools/call", {
@@ -634,10 +665,6 @@ try {
     rmSync(join(dirname(repoDir), ".qq-worktrees", basename(repoDir)), { recursive: true, force: true });
   } catch {}
   rmSync(repoDir, { recursive: true, force: true });
-  try {
-    rmSync(join(homedir(), ".gemini", "antigravity-cli", "brain", sessionId), { recursive: true, force: true });
-    rmSync(join(homedir(), ".gemini", "antigravity-cli", "brain", "brain-session-0001"), { recursive: true, force: true });
-  } catch {}
 }
 
 // 9. RPC & JSON-RPC stdio protocol tests

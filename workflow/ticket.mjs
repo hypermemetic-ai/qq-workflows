@@ -1,6 +1,6 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 
 export const TICKET_RELATIVE = ".architect/ticket.md";
 export const TEMPLATE_RELATIVE = ".architect/template.md";
@@ -10,11 +10,6 @@ export function ticketPath(cwd, sessionId) {
     return join(cwd, ".architect", "tickets", `${sessionId}.md`);
   }
   return join(cwd, TICKET_RELATIVE);
-}
-
-export function brainTicketPath(sessionId, home = homedir()) {
-  if (!sessionId) return null;
-  return join(home, ".gemini", "antigravity-cli", "brain", sessionId, "ticket.md");
 }
 
 export function templatePath(cwd) {
@@ -46,80 +41,22 @@ export async function ensureTicket(cwd, { readFileFn = readFile, writeFileFn = w
   return { path, text: template, created: true };
 }
 
-export function applyTicketEdit(current, input) {
-  if (input == null || typeof input !== "object" || Array.isArray(input)) {
-    throw new Error("ticket_write requires text or old_string/new_string");
+// Resolve the on-disk ticket for a session: exact match, then prefix match
+// (either direction), else throw. There is no fallback: a missing ticket
+// fails fast so a child can never execute a dead spec.
+export async function resolveTicketSource(root, sessionId) {
+  if (!sessionId) {
+    throw new Error("no active ticket: pass sessionId or create .architect/tickets/<id>.md");
   }
-  const hasText = Object.hasOwn(input, "text");
-  const hasOld = Object.hasOwn(input, "old_string");
-  const hasNew = Object.hasOwn(input, "new_string");
-  if (hasText) {
-    if (hasOld || hasNew) throw new Error("ticket_write: use text or old_string/new_string, not both");
-    if (typeof input.text !== "string") throw new Error("ticket_write text must be a string");
-    return input.text;
+  const exact = ticketPath(root, sessionId);
+  if (existsSync(exact)) return exact;
+  const ticketsDir = join(root, ".architect", "tickets");
+  if (existsSync(ticketsDir)) {
+    const files = await readdir(ticketsDir);
+    const match = files.find((f) => f.endsWith(".md") && (f.startsWith(sessionId) || sessionId.startsWith(basename(f, ".md"))));
+    if (match) return join(ticketsDir, match);
   }
-  if (!hasOld || !hasNew) throw new Error("ticket_write requires text or old_string/new_string");
-  if (typeof input.old_string !== "string" || typeof input.new_string !== "string") {
-    throw new Error("ticket_write old_string and new_string must be strings");
-  }
-  if (input.replace_all === true) {
-    if (!current.includes(input.old_string)) {
-      throw new Error("ticket_write old_string not found");
-    }
-    return current.split(input.old_string).join(input.new_string);
-  }
-  const index = current.indexOf(input.old_string);
-  if (index < 0) throw new Error("ticket_write old_string not found");
-  const second = current.indexOf(input.old_string, index + input.old_string.length);
-  if (second >= 0) throw new Error("ticket_write old_string matched more than once; pass replace_all");
-  return current.slice(0, index) + input.new_string + current.slice(index + input.old_string.length);
-}
-
-export async function ticketRead(cwd, io, sessionId) {
-  let resolvedIo = io;
-  let resolvedSessionId = sessionId;
-  if (typeof io === "string") {
-    resolvedSessionId = io;
-    resolvedIo = {};
-  } else if (io && typeof io === "object") {
-    if (!resolvedSessionId && io.sessionId) {
-      resolvedSessionId = io.sessionId;
-    }
-  }
-  const { path, text } = await ensureTicket(cwd, { ...resolvedIo, sessionId: resolvedSessionId });
-  return { path, text };
-}
-
-export async function ticketWrite(cwd, input, io = {}, sessionId) {
-  let resolvedIo = io;
-  let resolvedSessionId = sessionId;
-  if (typeof io === "string") {
-    resolvedSessionId = io;
-    resolvedIo = {};
-  } else if (io && typeof io === "object") {
-    if (!resolvedSessionId && io.sessionId) {
-      resolvedSessionId = io.sessionId;
-    }
-  }
-  const { path, text } = await ensureTicket(cwd, { ...resolvedIo, sessionId: resolvedSessionId });
-  const next = applyTicketEdit(text, input);
-  const writeFileFn = resolvedIo?.writeFileFn ?? writeFile;
-  const mkdirFn = resolvedIo?.mkdirFn ?? mkdir;
-  await writeFileFn(path, next);
-
-  let artifactPath = null;
-  if (resolvedSessionId) {
-    const home = resolvedIo?.home ?? homedir();
-    artifactPath = brainTicketPath(resolvedSessionId, home);
-    try {
-      await mkdirFn(dirname(artifactPath), { recursive: true });
-      await writeFileFn(artifactPath, next);
-    } catch {
-      // Safe creation: ignore mirror write errors so workflow continues
-    }
-  }
-
-  return { path, text: next, ...(artifactPath ? { artifactPath } : {}) };
+  throw new Error(`no ticket resolved for session '${sessionId}'`);
 }
 
 export function extractSection(markdown, heading) {
@@ -175,8 +112,6 @@ The specific situation that is failing today.
 ## Testing plan
 
 Behavioral invariants that gate acceptance, and feasible real-world failures that must not happen.
-
-If this repository provides \`.architect/scratch.md\`, use it to plan the test environment. Record any different setup this work needs.
 
 ## [open]
 

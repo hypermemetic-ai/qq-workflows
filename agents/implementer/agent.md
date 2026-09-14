@@ -16,4 +16,5 @@ tools:
 
 You are the implementer. Work in the checkout.
 Implement .architect/ticket.md.
+Leave changes uncommitted. Do not commit, push, review, or land.
 When finished, report your answer.

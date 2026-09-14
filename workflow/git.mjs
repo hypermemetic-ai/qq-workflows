@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:f
 import { basename, dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { buildPacket, parseDiffHunks } from "./packet.mjs";
-import { brainTicketPath, ensureTicket, ticketPath } from "./ticket.mjs";
+import { resolveTicketSource } from "./ticket.mjs";
 
 const exec = promisify(execFile);
 
@@ -243,6 +243,8 @@ export function worktreePathFor(mainRoot, branch, env = process.env) {
 
 export async function createWorktree(cwd, { kind = "bounded", sessionId, branch: customBranch, base = "HEAD" } = {}) {
   const root = await mainRepoRoot(cwd);
+  // Fail fast on a missing ticket before any worktree or branch exists.
+  const srcTicket = await resolveTicketSource(root, sessionId);
   const branch = customBranch || implementerBranchName(kind, sessionId);
   const dest = worktreePathFor(root, branch);
 
@@ -280,39 +282,14 @@ export async function createWorktree(cwd, { kind = "bounded", sessionId, branch:
   }
 
   // Copy ticket into the worktree as .architect/ticket.md
+  // (resolution already failed fast above; the copy itself stays best-effort)
   try {
-    let srcTicket = null;
-    if (sessionId) {
-      const candidate = ticketPath(root, sessionId);
-      if (existsSync(candidate)) {
-        srcTicket = candidate;
-      } else {
-        const ticketsDir = join(root, ".architect", "tickets");
-        if (existsSync(ticketsDir)) {
-          const files = await readdir(ticketsDir);
-          const match = files.find(f => f.endsWith(".md") && (f.startsWith(sessionId) || sessionId.startsWith(basename(f, ".md"))));
-          if (match) srcTicket = join(ticketsDir, match);
-        }
-      }
-      if (!srcTicket) {
-        const brainTicket = brainTicketPath(sessionId);
-        if (brainTicket && existsSync(brainTicket)) {
-          srcTicket = brainTicket;
-        }
-      }
-    }
-    if (!srcTicket) {
-      const rootTicket = join(root, ".architect", "ticket.md");
-      if (existsSync(rootTicket)) srcTicket = rootTicket;
-    }
-    if (srcTicket && existsSync(srcTicket)) {
-      const destTicketDir = join(dest, ".architect");
-      await mkdir(destTicketDir, { recursive: true });
-      const content = await readFile(srcTicket, "utf8");
-      await writeFile(join(destTicketDir, "ticket.md"), content, "utf8");
-    }
+    const destTicketDir = join(dest, ".architect");
+    await mkdir(destTicketDir, { recursive: true });
+    const content = await readFile(srcTicket, "utf8");
+    await writeFile(join(destTicketDir, "ticket.md"), content, "utf8");
   } catch {
-    /* ticket copy best-effort if missing */
+    /* ticket copy best-effort on IO errors */
   }
 
   return { cwd: dest, worktree: dest, branch, reused: false };
