@@ -20,6 +20,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   installAgents,
+  mergeCodexConfig,
   mergeMuseSettings,
   museConfigDir,
 } from "../scripts/install-agents.mjs";
@@ -27,6 +28,7 @@ import {
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..");
 const shimPath = join(repoRoot, "bin", "muse-architect.sh");
+const codexShimPath = join(repoRoot, "bin", "codex-architect.sh");
 const architectBin = join(repoRoot, "bin", "architect.mjs");
 const mcpServerBin = join(repoRoot, "bin", "mcp-server.mjs");
 
@@ -34,7 +36,25 @@ const mcpServerBin = join(repoRoot, "bin", "mcp-server.mjs");
 // home root, and every shim launch overrides HOME in its subprocess env.
 const savedXdg = process.env.XDG_CONFIG_HOME;
 
-// 1. mergeMuseSettings is pure: missing presets become {}, everything else stays.
+// 1. mergeCodexConfig is pure: disables shell tools, configures MCP servers
+{
+  const fresh = mergeCodexConfig(undefined, { mcpServerBin, zgBin: "zg", promptFile: "/p/prompt.md" });
+  assert.ok(fresh.includes('model_instructions_file = "/p/prompt.md"'));
+  assert.ok(fresh.includes("[features]"));
+  assert.ok(fresh.includes("shell_tool = false"));
+  assert.ok(fresh.includes("unified_exec = false"));
+  assert.ok(fresh.includes("[mcp_servers.qq-workflows]"));
+  assert.ok(fresh.includes(`args = ["${mcpServerBin}"]`));
+  assert.ok(fresh.includes("[mcp_servers.zvec_grep]"));
+
+  const existing = `model = "custom"\n[features]\nshell_tool = true\n`;
+  const merged = mergeCodexConfig(existing, { mcpServerBin, zgBin: "zg" });
+  assert.ok(merged.includes('model = "custom"'));
+  assert.ok(merged.includes("shell_tool = false"));
+  assert.ok(merged.includes("unified_exec = false"));
+}
+
+// 1b. mergeMuseSettings is pure: missing presets become {}, everything else stays.
 {
   const fresh = mergeMuseSettings(undefined, mcpServerBin);
   assert.deepEqual(fresh.presets, { architect: {}, implementer: {}, reviewer: {}, researcher: {} });
@@ -120,8 +140,17 @@ try {
   const shimLink = join(tempHome, ".local", "bin", "muse-architect");
   assert.ok(lstatSync(shimLink).isSymbolicLink());
   assert.equal(readlinkSync(shimLink), shimPath);
+  const codexShimLink = join(tempHome, ".local", "bin", "codex-architect");
+  assert.ok(lstatSync(codexShimLink).isSymbolicLink());
+  assert.equal(readlinkSync(codexShimLink), codexShimPath);
+  const codexConf = readFileSync(join(tempHome, ".codex", "config.toml"), "utf8");
+  assert.ok(codexConf.includes("shell_tool = false"));
+  assert.ok(codexConf.includes("unified_exec = false"));
+  assert.ok(codexConf.includes("[mcp_servers.qq-workflows]"));
+  assert.ok(codexConf.includes("[mcp_servers.zvec_grep]"));
   assert.equal(existsSync(join(tempHome, ".local", "bin", "opencode")), false);
   assert.ok(logs.some((line) => line.includes("muse-architect")));
+  assert.ok(logs.some((line) => line.includes("codex-architect")));
   assert.ok(logs.some((line) => line.includes("Installation complete!")));
 
   // Second run preserves pre-existing preset content and other keys.
@@ -193,7 +222,7 @@ try {
   const installerSrc = readFileSync(join(repoRoot, "scripts", "install-agents.mjs"), "utf8");
   assert.equal(installerSrc.match(/homedir\(\)/g)?.length ?? 0, 1);
   assert.match(installerSrc, /home = homedir\(\)/);
-  assert.equal(installerSrc.match(/installSymlink\(/g)?.length ?? 0, 3); // helper def + 2 calls
+  assert.equal(installerSrc.match(/installSymlink\(/g)?.length ?? 0, 4); // helper def + 3 calls
   assert.doesNotMatch(installerSrc, /child_process/);
   assert.doesNotMatch(installerSrc, /execFile|execSync|spawnSync|spawn\(/);
 }
@@ -434,10 +463,88 @@ function expectedPromptBody(sessionId) {
     const launcherSrc = readFileSync(architectBin, "utf8");
     assert.match(launcherSrc, /MUSE_ARCHITECT_BIN/);
     assert.match(launcherSrc, /muse-architect/);
+    assert.match(launcherSrc, /CODEX_ARCHITECT_BIN/);
+    assert.match(launcherSrc, /codex-architect/);
     assert.doesNotMatch(launcherSrc, /OPENCODE_BIN/);
     assert.doesNotMatch(launcherSrc, /opencode/i);
   } finally {
     rmSync(cliWork, { recursive: true, force: true });
+  }
+}
+
+// 11. Codex Shim: --help/--version exit clean with no side effects.
+accessSync(codexShimPath, constants.X_OK);
+{
+  const probeHome = mkdtempSync(join(tmpdir(), "architect-codex-shim-home-"));
+  const probeWork = mkdtempSync(join(tmpdir(), "architect-codex-shim-work-"));
+  try {
+    const env = { ...process.env, HOME: probeHome };
+    delete env.XDG_CONFIG_HOME;
+    delete env.CODEX_HOME;
+    const help = execFileSync(codexShimPath, ["--help"], { cwd: probeWork, env, encoding: "utf8" });
+    assert.match(help, /Usage: codex-architect/);
+    const version = execFileSync(codexShimPath, ["--version"], { cwd: probeWork, env, encoding: "utf8" });
+    const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+    assert.equal(version.trim(), `codex-architect ${pkg.version}`);
+    assert.equal(existsSync(join(probeWork, ".architect")), false);
+    assert.equal(existsSync(join(probeHome, ".codex")), false);
+  } finally {
+    rmSync(probeHome, { recursive: true, force: true });
+    rmSync(probeWork, { recursive: true, force: true });
+  }
+}
+
+// 12. Codex Shim: full launch against a fake codex.
+{
+  const launchHome = mkdtempSync(join(tmpdir(), "architect-codex-launch-home-"));
+  const launchWork = mkdtempSync(join(tmpdir(), "architect-codex-launch-work-"));
+  const fakeBin = mkdtempSync(join(tmpdir(), "architect-codex-fakebin-"));
+  try {
+    const codexRecord = join(launchHome, "codex-call.txt");
+    writeFileSync(
+      join(fakeBin, "codex"),
+      `#!/usr/bin/env bash\necho "ARGS: $@" > ${codexRecord}\n`,
+    );
+    execFileSync("chmod", ["+x", join(fakeBin, "codex")]);
+
+    const sessionId = "codex-sess-1234";
+    const env = { ...process.env, HOME: launchHome, PATH: [fakeBin, "/usr/bin", "/bin"].join(":") };
+    delete env.XDG_CONFIG_HOME;
+    delete env.CODEX_HOME;
+
+    execFileSync(codexShimPath, ["--session", sessionId], {
+      cwd: launchWork,
+      env,
+      encoding: "utf8",
+    });
+
+    // Check ticket created from template
+    assert.equal(
+      readFileSync(join(launchWork, ".architect", "tickets", `${sessionId}.md`), "utf8"),
+      readFileSync(join(repoRoot, ".architect", "template.md"), "utf8"),
+    );
+
+    // Check prompt rendered with Astra delegation model, tool list, and Git lifecycle
+    const promptPath = join(launchHome, ".codex", "architect-instructions.md");
+    assert.ok(existsSync(promptPath));
+    const prompt = readFileSync(promptPath, "utf8");
+    assert.ok(prompt.includes("You are the architect collaborating with the operator."));
+    assert.ok(prompt.includes("Git Lifecycle"));
+    assert.ok(prompt.includes("Tools & Delegation Model"));
+    assert.ok(prompt.includes("dispatch_runner"));
+    assert.ok(prompt.includes("dispatch_execution"));
+    assert.ok(prompt.includes(sessionId));
+
+    // Check fake codex was invoked with disabled shell tools and model_instructions_file
+    const call = readFileSync(codexRecord, "utf8");
+    assert.ok(call.includes("features.shell_tool=false"));
+    assert.ok(call.includes("features.unified_exec=false"));
+    assert.ok(call.includes("model_instructions_file"));
+    assert.ok(call.includes("gpt-6-astra"));
+  } finally {
+    rmSync(launchHome, { recursive: true, force: true });
+    rmSync(launchWork, { recursive: true, force: true });
+    rmSync(fakeBin, { recursive: true, force: true });
   }
 }
 

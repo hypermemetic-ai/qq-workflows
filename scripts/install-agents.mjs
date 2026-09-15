@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mainRepoRoot } from "../workflow/git.mjs";
 
-export const ROLES = ["architect", "implementer", "reviewer"];
+export const ROLES = ["architect", "implementer", "reviewer", "runner"];
 export const RETIRED_ROLES = ["teacher", "researcher"];
 export const MUSE_PRESET_NAMES = ["architect", "implementer", "reviewer", "researcher"];
 
@@ -50,6 +50,52 @@ export function mergeMuseSettings(existing, mcpServerBin) {
   };
   config.mcpServers = servers;
   return config;
+}
+
+export function mergeCodexConfig(existingTomlText, { mcpServerBin, zgBin = "zg", promptFile } = {}) {
+  let content = String(existingTomlText || "").trim();
+
+  if (promptFile) {
+    if (/^model_instructions_file\s*=/m.test(content)) {
+      content = content.replace(/^model_instructions_file\s*=.*$/m, `model_instructions_file = "${promptFile}"`);
+    } else {
+      content = `model_instructions_file = "${promptFile}"\n${content}`.trim();
+    }
+  }
+
+  if (/^\[features\]/m.test(content)) {
+    if (/^shell_tool\s*=/m.test(content)) {
+      content = content.replace(/^shell_tool\s*=.*$/m, "shell_tool = false");
+    } else {
+      content = content.replace(/^\[features\]/m, "[features]\nshell_tool = false");
+    }
+    if (/^unified_exec\s*=/m.test(content)) {
+      content = content.replace(/^unified_exec\s*=.*$/m, "unified_exec = false");
+    } else {
+      content = content.replace(/^\[features\]/m, "[features]\nunified_exec = false");
+    }
+  } else {
+    content += `\n\n[features]\nshell_tool = false\nunified_exec = false`;
+  }
+
+  function removeSection(toml, sectionHeader) {
+    const pattern = new RegExp(`\\[${sectionHeader.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\][\\s\\S]*?(?=\\n\\[|$)`);
+    return toml.replace(pattern, "").trim();
+  }
+
+  if (mcpServerBin) {
+    content = removeSection(content, 'mcp_servers."qq-workflows"');
+    content = removeSection(content, "mcp_servers.qq-workflows");
+    content += `\n\n[mcp_servers.qq-workflows]\ncommand = "node"\nargs = ["${mcpServerBin}"]`;
+  }
+
+  if (zgBin) {
+    content = removeSection(content, 'mcp_servers."zvec_grep"');
+    content = removeSection(content, "mcp_servers.zvec_grep");
+    content += `\n\n[mcp_servers.zvec_grep]\ncommand = "${zgBin}"\nargs = ["server", "--stdio", "--mcp-toolset", "agent"]`;
+  }
+
+  return `${content.trim()}\n`;
 }
 
 function installSymlink(targetPath, sourcePath, label, log) {
@@ -218,8 +264,40 @@ export async function installAgents({ home = homedir(), xdgConfigHome = process.
     }
   }
 
+  // 9. Codex configuration: ~/.codex/config.toml
+  const codexDir = join(home, ".codex");
+  const codexConfigPath = join(codexDir, "config.toml");
+  const promptFile = join(codexDir, "architect-instructions.md");
+  try {
+    mkdirSync(codexDir, { recursive: true });
+    let existing;
+    if (existsSync(codexConfigPath)) {
+      try {
+        existing = readFileSync(codexConfigPath, "utf8");
+      } catch {
+        existing = undefined;
+      }
+    }
+    const merged = mergeCodexConfig(existing, {
+      mcpServerBin,
+      zgBin: "zg",
+      promptFile,
+    });
+    writeFileSync(codexConfigPath, merged, "utf8");
+    log(`Configured codex in ${codexConfigPath}`);
+  } catch (err) {
+    warn("Failed to update codex config.toml", err);
+  }
+
+  // 10. Install codex-architect launcher symlink into ~/.local/bin/codex-architect
+  try {
+    installSymlink(join(localBin, "codex-architect"), join(root, "bin", "codex-architect.sh"), "codex-architect launcher", log);
+  } catch (err) {
+    warn("Failed to symlink bin/codex-architect.sh", err);
+  }
+
   log("Installation complete!");
-  return { home, museDir, museSettingsPath, repoRoot: root };
+  return { home, museDir, museSettingsPath, codexDir, codexConfigPath, repoRoot: root };
 }
 
 const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);

@@ -112,6 +112,13 @@ if (provider === "gemini") {
     ...finalArgs,
   ];
   child = spawn(realAgy, agyArgs, { stdio: "inherit" });
+} else if (provider === "codex" || provider === "astra") {
+  const codexArchitectBin = process.env.CODEX_ARCHITECT_BIN || join(homedir(), ".local", "bin", "codex-architect");
+  const codexArchitectArgs = [
+    ...(sessionId ? ["--session", sessionId] : []),
+    ...finalArgs,
+  ];
+  child = spawn(codexArchitectBin, codexArchitectArgs, { stdio: "inherit" });
 } else {
   const museArchitectBin = process.env.MUSE_ARCHITECT_BIN || join(homedir(), ".local", "bin", "muse-architect");
   const museArchitectArgs = [
