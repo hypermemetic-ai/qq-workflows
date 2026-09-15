@@ -21,10 +21,13 @@ import { fileURLToPath } from "node:url";
 import {
   cleanMuseAuth,
   configureOrcaSettings,
+  ensureOrcaMuseSparkDisplay,
   installAgents,
   mergeCodexConfig,
   mergeMuseSettings,
   museConfigDir,
+  patchOrcaMuseSparkDisplayName,
+  resolveOrcaOutDir,
 } from "../scripts/install-agents.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -135,7 +138,7 @@ try {
   assert.ok(lstatSync(architectLink).isSymbolicLink());
   assert.equal(readlinkSync(architectLink), join(repoRoot, "bin", "architect.mjs"));
 
-  // Muse side: settings, presets, launcher symlink, no opencode.
+  // Muse side: settings, presets, launcher symlink, opencode alias.
   const settings = JSON.parse(readFileSync(join(tempHome, ".config", "muse", "settings.json"), "utf8"));
   assert.deepEqual(settings.presets, { architect: {}, implementer: {}, reviewer: {}, researcher: {} });
   assert.deepEqual(settings.mcpServers["qq-workflows"], { command: "node", args: [mcpServerBin] });
@@ -150,10 +153,25 @@ try {
   assert.ok(codexConf.includes("unified_exec = false"));
   assert.ok(codexConf.includes("[mcp_servers.qq-workflows]"));
   assert.ok(codexConf.includes("[mcp_servers.zvec_grep]"));
-  assert.equal(existsSync(join(tempHome, ".local", "bin", "opencode")), false);
+  const opencodeLink = join(tempHome, ".local", "bin", "opencode");
+  assert.ok(lstatSync(opencodeLink).isSymbolicLink());
+  assert.equal(readlinkSync(opencodeLink), shimPath);
+  accessSync(opencodeLink, constants.X_OK);
   assert.ok(logs.some((line) => line.includes("muse-architect")));
   assert.ok(logs.some((line) => line.includes("codex-architect")));
+  assert.ok(logs.some((line) => line.includes("opencode alias")));
   assert.ok(logs.some((line) => line.includes("Installation complete!")));
+
+  // The alias answers --help/--version cleanly (exit 0, no side effects).
+  {
+    const env = { ...process.env, HOME: tempHome };
+    delete env.XDG_CONFIG_HOME;
+    const help = execFileSync(opencodeLink, ["--help"], { env, encoding: "utf8" });
+    assert.match(help, /Usage: muse-architect/);
+    const version = execFileSync(opencodeLink, ["--version"], { env, encoding: "utf8" });
+    const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+    assert.equal(version.trim(), `muse-architect ${pkg.version}`);
+  }
 
   // Second run preserves pre-existing preset content and other keys.
   const seeded = {
@@ -169,16 +187,36 @@ try {
   assert.deepEqual(resealed.mcpServers.other, { command: "o", args: [] });
   assert.deepEqual(resealed.mcpServers["qq-workflows"], { command: "node", args: [mcpServerBin] });
 
-  // Stale opencode alias to our launcher is removed with a note; a foreign
-  // opencode entry is left alone.
-  symlinkSync(shimLink, join(tempHome, ".local", "bin", "opencode"));
+  // Rerun keeps the alias pointed at this repo's launcher.
   const notes = [];
   await installAgents({ home: tempHome, xdgConfigHome: "", repoRoot, log: (m) => notes.push(m) });
-  assert.equal(existsSync(join(tempHome, ".local", "bin", "opencode")), false);
-  assert.ok(notes.some((line) => line.includes("opencode") && line.includes("Removed")));
+  assert.ok(lstatSync(join(tempHome, ".local", "bin", "opencode")).isSymbolicLink());
+  assert.equal(readlinkSync(join(tempHome, ".local", "bin", "opencode")), shimPath);
+  assert.ok(notes.some((line) => line.includes("opencode alias already installed")));
+
+  // A drifted alias to our launcher (stale repo path) is repointed with a note.
+  rmSync(join(tempHome, ".local", "bin", "opencode"));
+  symlinkSync(shimLink, join(tempHome, ".local", "bin", "opencode"));
+  const repointNotes = [];
+  await installAgents({ home: tempHome, xdgConfigHome: "", repoRoot, log: (m) => repointNotes.push(m) });
+  assert.equal(readlinkSync(join(tempHome, ".local", "bin", "opencode")), shimPath);
+  assert.ok(repointNotes.some((line) => line.includes("opencode") && line.includes("Repointed")));
+
+  // A foreign opencode file is left alone with a note.
+  rmSync(join(tempHome, ".local", "bin", "opencode"));
   writeFileSync(join(tempHome, ".local", "bin", "opencode"), "#!/bin/sh\n");
-  await installAgents({ home: tempHome, xdgConfigHome: "", repoRoot, log: () => {} });
+  const foreignNotes = [];
+  await installAgents({ home: tempHome, xdgConfigHome: "", repoRoot, log: (m) => foreignNotes.push(m) });
   assert.equal(readFileSync(join(tempHome, ".local", "bin", "opencode"), "utf8"), "#!/bin/sh\n");
+  assert.ok(foreignNotes.some((line) => line.includes("Leaving foreign opencode entry alone")));
+
+  // A foreign opencode symlink is left alone with a note.
+  rmSync(join(tempHome, ".local", "bin", "opencode"));
+  symlinkSync("/opt/opencode/bin/opencode", join(tempHome, ".local", "bin", "opencode"));
+  const foreignLinkNotes = [];
+  await installAgents({ home: tempHome, xdgConfigHome: "", repoRoot, log: (m) => foreignLinkNotes.push(m) });
+  assert.equal(readlinkSync(join(tempHome, ".local", "bin", "opencode")), "/opt/opencode/bin/opencode");
+  assert.ok(foreignLinkNotes.some((line) => line.includes("Leaving foreign opencode symlink alone")));
 
   // Stale hardcoded architect prompt is removed with a note.
   const staleAgents = join(tempHome, ".config", "muse", "architect", "AGENTS.md");
@@ -655,6 +693,207 @@ accessSync(codexShimPath, constants.X_OK);
     assert.ok(tomlContent.includes("[mcp_servers.zvec_grep]"));
   } finally {
     rmSync(testHome, { recursive: true, force: true });
+  }
+}
+
+// 15. patchOrcaMuseSparkDisplayName is pure: display labels become
+// "Muse Spark" while ids, commands, model labels, and identifiers stay.
+{
+  const displayMap = "exports.TUI_AGENT_DISPLAY_NAMES = {\n    opencode: 'OpenCode',\n    pi: 'Pi',\n};";
+  const patchedMap = patchOrcaMuseSparkDisplayName(displayMap);
+  assert.ok(patchedMap.includes("opencode: 'Muse Spark'"));
+  assert.ok(patchedMap.includes("pi: 'Pi'"));
+  assert.ok(!patchedMap.includes("OpenCode"));
+
+  const commitSpec = [
+    "opencode: {",
+    "    id: 'opencode',",
+    "    label: 'OpenCode',",
+    "    binary: 'opencode',",
+    "    models: [{ id: 'opencode/gpt-5.4-mini', label: 'OpenCode GPT 5.4 Mini' }],",
+    "},",
+  ].join("\n");
+  const patchedSpec = patchOrcaMuseSparkDisplayName(commitSpec);
+  assert.ok(patchedSpec.includes("label: 'Muse Spark'"));
+  assert.ok(patchedSpec.includes("id: 'opencode'"));
+  assert.ok(patchedSpec.includes("binary: 'opencode'"));
+  assert.ok(patchedSpec.includes("label: 'OpenCode GPT 5.4 Mini'"));
+
+  const chunk = "const e={opencode:`OpenCode`,pi:`Pi`};function t(e){return O(e)?`OpenCode`:T(e,`opencode`)?`OpenCode`:x}";
+  const patchedChunk = patchOrcaMuseSparkDisplayName(chunk);
+  assert.ok(!patchedChunk.includes("`OpenCode`"));
+  assert.ok(patchedChunk.includes("opencode:`Muse Spark`"));
+
+  const status = "opencode:{workingLabel:`OpenCode`,permissionLabel:`OpenCode - action required`,idleLabel:`OpenCode ready`}";
+  const patchedStatus = patchOrcaMuseSparkDisplayName(status);
+  assert.ok(patchedStatus.includes("workingLabel:`Muse Spark`"));
+  assert.ok(patchedStatus.includes("permissionLabel:`Muse Spark - action required`"));
+  assert.ok(patchedStatus.includes("idleLabel:`Muse Spark ready`"));
+
+  const reverse = "    OpenCode: 'opencode',\n    'MiMo Code': 'mimo-code',";
+  const patchedReverse = patchOrcaMuseSparkDisplayName(reverse);
+  assert.ok(patchedReverse.includes("OpenCode: 'opencode', 'Muse Spark': 'opencode'"));
+  const reverseMin = 'OpenCode:`opencode`,"MiMo Code":`mimo-code`';
+  assert.ok(
+    patchOrcaMuseSparkDisplayName(reverseMin).includes('OpenCode:`opencode`,"Muse Spark":`opencode`'),
+  );
+
+  const locale = '{"catalog":{"e7a4ca5103":"OpenCode","760bc6883d":"Codex"}}';
+  assert.ok(patchOrcaMuseSparkDisplayName(locale).includes('"e7a4ca5103":"Muse Spark"'));
+
+  // Non-labels untouched: identifiers, commands, worker messages, Go strings.
+  const untouched = [
+    "function isOpenCodeNativeTitle(title) {}",
+    "exports.capOpenCodeHookText = capOpenCodeHookText;",
+    'require("./opencode-terminal-title")',
+    "detectCmd: 'opencode'",
+    "`OpenCode SQLite worker exited with code ${e}`",
+    '"OpenCodeUsagePane"',
+    '"OpenCode Go"',
+    "// Why: OpenCode owns semantic OSC session titles",
+    "'OpenCode DeepSeek V4 Flash Free'",
+  ].join("\n");
+  assert.equal(patchOrcaMuseSparkDisplayName(untouched), untouched);
+
+  // Idempotent: a second application changes nothing.
+  for (const sample of [displayMap, commitSpec, chunk, status, reverse, reverseMin, locale]) {
+    const once = patchOrcaMuseSparkDisplayName(sample);
+    assert.equal(patchOrcaMuseSparkDisplayName(once), once);
+  }
+  assert.equal(patchOrcaMuseSparkDisplayName(""), "");
+  assert.equal(patchOrcaMuseSparkDisplayName(undefined), "");
+  assert.equal(patchOrcaMuseSparkDisplayName(null), "");
+}
+
+// 16. resolveOrcaOutDir discovers the unpacked tree from a home dir only.
+{
+  const fakeHome = mkdtempSync(join(tmpdir(), "architect-orca-resolve-home-"));
+  try {
+    assert.equal(resolveOrcaOutDir(fakeHome), null);
+    const resDir = join(fakeHome, "fake-orca", "resources");
+    const binFile = join(resDir, "bin", "orca-ide");
+    mkdirSync(join(resDir, "bin"), { recursive: true });
+    writeFileSync(binFile, "#!/bin/sh\n");
+    mkdirSync(join(fakeHome, ".local", "bin"), { recursive: true });
+    symlinkSync(binFile, join(fakeHome, ".local", "bin", "orca"));
+    // Bin link present but no unpacked tree yet: still null.
+    assert.equal(resolveOrcaOutDir(fakeHome), null);
+    const outDir = join(resDir, "app.asar.unpacked", "out");
+    mkdirSync(outDir, { recursive: true });
+    assert.equal(resolveOrcaOutDir(fakeHome), outDir);
+    // orca-ide-only install resolves too.
+    rmSync(join(fakeHome, ".local", "bin", "orca"));
+    symlinkSync(binFile, join(fakeHome, ".local", "bin", "orca-ide"));
+    assert.equal(resolveOrcaOutDir(fakeHome), outDir);
+    // Chained orca -> orca-ide -> install (mirrors the real layout).
+    symlinkSync(join(fakeHome, ".local", "bin", "orca-ide"), join(fakeHome, ".local", "bin", "orca"));
+    assert.equal(resolveOrcaOutDir(fakeHome), outDir);
+  } finally {
+    rmSync(fakeHome, { recursive: true, force: true });
+  }
+}
+
+// 17. ensureOrcaMuseSparkDisplay patches staged bundles, ignores the rest.
+{
+  const outDir = mkdtempSync(join(tmpdir(), "architect-orca-out-"));
+  try {
+    const shared = join(outDir, "shared");
+    const chunks = join(outDir, "main", "chunks");
+    mkdirSync(shared, { recursive: true });
+    mkdirSync(chunks, { recursive: true });
+    writeFileSync(join(shared, "tui-agent-display-names.js"), "exports.X = {\n    opencode: 'OpenCode',\n};\n");
+    writeFileSync(
+      join(shared, "commit-message-agent-specs-primary.js"),
+      "opencode: {\n    id: 'opencode',\n    label: 'OpenCode',\n    binary: 'opencode',\n}\n",
+    );
+    writeFileSync(join(chunks, "tui-agent-display-names-HASH.js"), "const e={opencode:`OpenCode`,pi:`Pi`};\n");
+    writeFileSync(join(chunks, "notes.txt"), "opencode: 'OpenCode'\n");
+    writeFileSync(join(shared, "unrelated.js"), "const x = 1;\n");
+    const logs = [];
+    const first = ensureOrcaMuseSparkDisplay(outDir, { log: (m) => logs.push(m) });
+    assert.equal(first.scanned, 4);
+    assert.equal(first.patched.length, 3);
+    assert.ok(
+      readFileSync(join(shared, "tui-agent-display-names.js"), "utf8").includes("opencode: 'Muse Spark'"),
+    );
+    const spec = readFileSync(join(shared, "commit-message-agent-specs-primary.js"), "utf8");
+    assert.ok(spec.includes("label: 'Muse Spark'"));
+    assert.ok(spec.includes("binary: 'opencode'"));
+    assert.ok(
+      readFileSync(join(chunks, "tui-agent-display-names-HASH.js"), "utf8").includes(
+        "opencode:`Muse Spark`",
+      ),
+    );
+    assert.equal(readFileSync(join(chunks, "notes.txt"), "utf8"), "opencode: 'OpenCode'\n");
+    assert.ok(logs.some((line) => line.includes("Patched Orca Muse Spark display name")));
+    const second = ensureOrcaMuseSparkDisplay(outDir, { log: () => {} });
+    assert.equal(second.scanned, 4);
+    assert.equal(second.patched.length, 0);
+    assert.deepEqual(ensureOrcaMuseSparkDisplay(join(outDir, "missing")).patched, []);
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+}
+
+// 18. installAgents end-to-end with a staged fake Orca: alias plus display
+// patch in one run, rerun is a no-op, explicit orcaOutDir wins, and homes
+// without Orca stay silent.
+{
+  const testHome = mkdtempSync(join(tmpdir(), "architect-orca-e2e-home-"));
+  try {
+    const resDir = join(testHome, "fake-orca", "resources");
+    const shared = join(resDir, "app.asar.unpacked", "out", "shared");
+    mkdirSync(join(resDir, "bin"), { recursive: true });
+    mkdirSync(shared, { recursive: true });
+    writeFileSync(join(resDir, "bin", "orca-ide"), "#!/bin/sh\n");
+    mkdirSync(join(testHome, ".local", "bin"), { recursive: true });
+    symlinkSync(join(resDir, "bin", "orca-ide"), join(testHome, ".local", "bin", "orca"));
+    writeFileSync(join(shared, "tui-agent-display-names.js"), "exports.X = { opencode: 'OpenCode' };\n");
+    const logs = [];
+    const result = await installAgents({ home: testHome, xdgConfigHome: "", repoRoot, log: (m) => logs.push(m) });
+    assert.equal(result.orcaOutDir, join(resDir, "app.asar.unpacked", "out"));
+    assert.ok(
+      readFileSync(join(shared, "tui-agent-display-names.js"), "utf8").includes("opencode: 'Muse Spark'"),
+    );
+    assert.ok(lstatSync(join(testHome, ".local", "bin", "opencode")).isSymbolicLink());
+    assert.equal(readlinkSync(join(testHome, ".local", "bin", "opencode")), shimPath);
+    assert.ok(logs.some((line) => line.includes("Patched Orca Muse Spark display name")));
+    const rerunLogs = [];
+    await installAgents({ home: testHome, xdgConfigHome: "", repoRoot, log: (m) => rerunLogs.push(m) });
+    assert.ok(rerunLogs.some((line) => line.includes("already current")));
+    assert.ok(rerunLogs.some((line) => line.includes("opencode alias already installed")));
+  } finally {
+    rmSync(testHome, { recursive: true, force: true });
+  }
+
+  const optHome = mkdtempSync(join(tmpdir(), "architect-orca-opt-home-"));
+  const optOut = mkdtempSync(join(tmpdir(), "architect-orca-opt-out-"));
+  try {
+    writeFileSync(join(optOut, "tui-agent-display-names.js"), "exports.X = { opencode: 'OpenCode' };\n");
+    const result = await installAgents({
+      home: optHome,
+      xdgConfigHome: "",
+      repoRoot,
+      orcaOutDir: optOut,
+      log: () => {},
+    });
+    assert.equal(result.orcaOutDir, optOut);
+    assert.ok(
+      readFileSync(join(optOut, "tui-agent-display-names.js"), "utf8").includes("'Muse Spark'"),
+    );
+
+    const bareHome = mkdtempSync(join(tmpdir(), "architect-orca-bare-home-"));
+    try {
+      const logs = [];
+      const bare = await installAgents({ home: bareHome, xdgConfigHome: "", repoRoot, log: (m) => logs.push(m) });
+      assert.equal(bare.orcaOutDir, null);
+      assert.ok(!logs.some((line) => line.includes("Muse Spark display name")));
+    } finally {
+      rmSync(bareHome, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(optHome, { recursive: true, force: true });
+    rmSync(optOut, { recursive: true, force: true });
   }
 }
 
