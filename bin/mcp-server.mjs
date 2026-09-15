@@ -1,7 +1,9 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import {
@@ -12,7 +14,17 @@ import {
   mainRepoRoot,
   parseWorktreePorcelain,
 } from "../workflow/git.mjs";
-import { resolveTicketSource } from "../workflow/ticket.mjs";
+import {
+  CANONICAL_PROVIDERS,
+  PROVIDERS,
+  assertKnownProvider,
+  normalizeProvider,
+  resolveTicketSource,
+  ticketPath,
+} from "../workflow/ticket.mjs";
+
+export { CANONICAL_PROVIDERS, PROVIDERS, assertKnownProvider, normalizeProvider };
+
 export const TOOLS = [
   {
     name: "prepare_worktree",
@@ -35,23 +47,23 @@ export const TOOLS = [
         },
         provider: {
           type: "string",
-          enum: ["muse", "gemini", "deepseek"],
-          description: "Optional global provider default: 'muse' (default), 'gemini', or 'deepseek'. Per-seat providers override it.",
+          enum: ["muse", "gemini", "deepseek", "codex", "astra"],
+          description: "Optional global provider default: 'muse' (default), 'gemini', 'deepseek', 'codex', or 'astra'. Per-seat providers override it.",
         },
         implementerProvider: {
           type: "string",
-          enum: ["muse", "gemini", "deepseek"],
-          description: "Optional implementer seat provider: 'muse', 'gemini', or 'deepseek'. Overrides the global provider.",
+          enum: ["muse", "gemini", "deepseek", "codex", "astra"],
+          description: "Optional implementer seat provider. Overrides the global provider.",
         },
         reviewerProvider: {
           type: "string",
-          enum: ["muse", "gemini", "deepseek"],
-          description: "Optional reviewer seat provider: 'muse' or 'gemini' ('deepseek' does not serve this seat). Overrides the global provider.",
+          enum: ["muse", "gemini", "deepseek", "codex", "astra"],
+          description: "Optional reviewer seat provider. Overrides the global provider.",
         },
         researcherProvider: {
           type: "string",
-          enum: ["muse", "gemini", "deepseek"],
-          description: "Optional researcher seat provider: 'muse' or 'gemini' ('deepseek' does not serve this seat). Overrides the global provider.",
+          enum: ["muse", "gemini", "deepseek", "codex", "astra"],
+          description: "Optional researcher seat provider. Overrides the global provider.",
         },
       },
       required: ["kind"],
@@ -76,6 +88,200 @@ export const TOOLS = [
           description: "Optional working directory (defaults to process.cwd())",
         },
       },
+    },
+  },
+  {
+    name: "dispatch_runner",
+    description: "Spawn a background Gemini runner for research, deep investigation, diagnostics, or test runs.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task: {
+          type: "string",
+          description: "Task description, research question, or command instructions for the runner",
+        },
+        targetPaths: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional list of target file or directory paths to investigate",
+        },
+        cwd: {
+          type: "string",
+          description: "Optional working directory (defaults to process.cwd())",
+        },
+      },
+      required: ["task"],
+    },
+  },
+  {
+    name: "check_runner",
+    description: "Check telemetry, trajectory, and status of a running or finished runner.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runnerId: {
+          type: "string",
+          description: "Tracking ID of the runner",
+        },
+      },
+      required: ["runnerId"],
+    },
+  },
+  {
+    name: "steer_runner",
+    description: "Inject a one-way instruction to course-correct a running runner.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runnerId: {
+          type: "string",
+          description: "Tracking ID of the runner",
+        },
+        instruction: {
+          type: "string",
+          description: "Instruction to guide the runner",
+        },
+      },
+      required: ["runnerId", "instruction"],
+    },
+  },
+  {
+    name: "cancel_runner",
+    description: "Cancel and terminate a running runner process cleanly.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runnerId: {
+          type: "string",
+          description: "Tracking ID of the runner",
+        },
+      },
+      required: ["runnerId"],
+    },
+  },
+  {
+    name: "await_runner",
+    description: "Wait for a runner to complete and return its synthesized findings.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runnerId: {
+          type: "string",
+          description: "Tracking ID of the runner",
+        },
+        timeoutMs: {
+          type: "number",
+          description: "Maximum time to wait in milliseconds (defaults to 300000)",
+        },
+      },
+      required: ["runnerId"],
+    },
+  },
+  {
+    name: "dispatch_execution",
+    description: "Provision dedicated worktree, run implementer, run reviewer (for open kind) with retry loop, and automatically land on passing review.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "string",
+          enum: ["bounded", "open"],
+          description: "Work kind: 'bounded' or 'open'",
+        },
+        sessionId: {
+          type: "string",
+          description: "Optional session ID. Defaults to active ticket in .architect/tickets/",
+        },
+        cwd: {
+          type: "string",
+          description: "Optional repository working directory (defaults to process.cwd())",
+        },
+        provider: {
+          type: "string",
+          enum: ["muse", "gemini", "deepseek", "codex", "astra"],
+          description: "Optional provider default",
+        },
+        implementerProvider: {
+          type: "string",
+          enum: ["muse", "gemini", "deepseek", "codex", "astra"],
+        },
+        reviewerProvider: {
+          type: "string",
+          enum: ["muse", "gemini", "codex", "astra"],
+        },
+      },
+      required: ["kind"],
+    },
+  },
+  {
+    name: "check_execution",
+    description: "Check progress, active phase, telemetry, and status of an execution pipeline.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "Tracking ID of the execution",
+        },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "await_execution",
+    description: "Wait for an execution pipeline to finish and return the final verified story and landing outcome.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "Tracking ID of the execution",
+        },
+        timeoutMs: {
+          type: "number",
+          description: "Maximum time to wait in milliseconds (defaults to 600000)",
+        },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "read_ticket",
+    description: "Read the active session ticket (.architect/tickets/<sessionId>.md).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: {
+          type: "string",
+          description: "Optional session ID",
+        },
+        cwd: {
+          type: "string",
+          description: "Optional working directory",
+        },
+      },
+    },
+  },
+  {
+    name: "update_ticket",
+    description: "Update the active session ticket (.architect/tickets/<sessionId>.md).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        content: {
+          type: "string",
+          description: "Updated markdown content for the ticket",
+        },
+        sessionId: {
+          type: "string",
+          description: "Optional session ID",
+        },
+        cwd: {
+          type: "string",
+          description: "Optional working directory",
+        },
+      },
+      required: ["content"],
     },
   },
 ];
@@ -111,25 +317,14 @@ export async function resolveSessionId(root, explicitId) {
   return resolved;
 }
 
-// Canonical providers. Only these strings are accepted; there are no
-// aliases (e.g. 'agy' for gemini, 'dsh' for deepseek).
-export const PROVIDERS = ["muse", "gemini", "deepseek"];
-
 // Which providers serve which seat. Wiring a provider into another seat
 // later is additive: extend the seat's list and add its template below.
 export const SEAT_PROVIDERS = {
-  implementer: ["muse", "gemini", "deepseek"],
-  reviewer: ["muse", "gemini"],
-  researcher: ["muse", "gemini"],
-  architect: ["muse", "gemini"],
+  implementer: ["muse", "gemini", "deepseek", "codex", "astra"],
+  reviewer: ["muse", "gemini", "codex", "astra"],
+  researcher: ["muse", "gemini", "codex", "astra"],
+  architect: ["muse", "gemini", "codex", "astra"],
 };
-
-export function assertKnownProvider(value) {
-  if (!PROVIDERS.includes(value)) {
-    throw new Error(`unknown provider '${value}': expected 'muse' | 'gemini' | 'deepseek'`);
-  }
-  return value;
-}
 
 // Resolve which provider serves a seat. Precedence:
 // seat arg > seat env > global arg > global env > 'muse'.
@@ -140,10 +335,11 @@ export function resolveProvider(seat, { arg, seatEnv, globalArg, globalEnv } = {
     if (value !== undefined && value !== null) assertKnownProvider(value);
   }
   const raw = arg ?? seatEnv ?? globalArg ?? globalEnv ?? "muse";
-  if (!SEAT_PROVIDERS[seat].includes(raw)) {
+  const normalized = normalizeProvider(raw);
+  if (!SEAT_PROVIDERS[seat].includes(raw) && !SEAT_PROVIDERS[seat].includes(normalized)) {
     throw new Error(`provider '${raw}' does not support seat '${seat}'`);
   }
-  return raw;
+  return normalized;
 }
 
 const SEAT_ARGS = {
@@ -174,29 +370,38 @@ const IMPLEMENTER_TEMPLATES = {
   gemini: (cwd, prompt, conversationId) =>
     `Delegate via run_command (with Cwd: ${cwd}) using a fresh conversation: 'agy --agent implementer --conversation ${conversationId} --print-timeout 60m --print "${prompt} Leave changes uncommitted. Do not commit, push, review, or land."'\nDo NOT pass '--new-project'.`,
   deepseek: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'dsh --profile implementer "${prompt} Leave changes uncommitted. Do not commit, push, review, or land."'`,
+  codex: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'codex exec --profile implementer "${prompt} Leave changes uncommitted. Do not commit, push, review, or land."'`,
 };
+IMPLEMENTER_TEMPLATES.astra = IMPLEMENTER_TEMPLATES.codex;
 
 const REVIEWER_TEMPLATES = {
   muse: (cwd, prompt) => `invoke reviewer via run_command (with Cwd: ${cwd}): 'muse exec --preset reviewer --yolo "${prompt} Do not commit, push, or land."'`,
   gemini: (cwd, prompt, conversationId) =>
     `invoke reviewer via run_command (with Cwd: ${cwd}) using a fresh conversation: 'agy --agent reviewer --conversation ${conversationId} --print-timeout 60m --print "${prompt} Do not commit, push, or land."'\nDo NOT pass '--new-project'.`,
+  codex: (cwd, prompt) => `invoke reviewer via run_command (with Cwd: ${cwd}): 'codex exec --profile reviewer "${prompt} Do not commit, push, or land."'`,
 };
+REVIEWER_TEMPLATES.astra = REVIEWER_TEMPLATES.codex;
 
 const RESEARCHER_TEMPLATES = {
   muse: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'muse exec --preset researcher --yolo "${prompt} Leave files uncommitted. Do not commit, push, or land."'`,
   gemini: (cwd, prompt) => `Invoke research subagent with ticket path ${cwd}/.architect/ticket.md and worktree cwd via run_command (with Cwd: ${cwd}) using Prompt: "${prompt} Leave files uncommitted. Do not commit, push, or land."`,
+  codex: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'codex exec --profile researcher "${prompt} Leave files uncommitted. Do not commit, push, or land."'`,
 };
+RESEARCHER_TEMPLATES.astra = RESEARCHER_TEMPLATES.codex;
 
 export function buildImplementerStep(cwd, prompt, provider, conversationId) {
-  return IMPLEMENTER_TEMPLATES[provider](cwd, prompt, conversationId);
+  const p = normalizeProvider(provider);
+  return IMPLEMENTER_TEMPLATES[p](cwd, prompt, conversationId);
 }
 
 export function buildReviewerStep(cwd, prompt, provider, conversationId) {
-  return REVIEWER_TEMPLATES[provider](cwd, prompt, conversationId);
+  const p = normalizeProvider(provider);
+  return REVIEWER_TEMPLATES[p](cwd, prompt, conversationId);
 }
 
 export function buildResearcherStep(cwd, prompt, provider) {
-  return RESEARCHER_TEMPLATES[provider](cwd, prompt);
+  const p = normalizeProvider(provider);
+  return RESEARCHER_TEMPLATES[p](cwd, prompt);
 }
 
 export async function prepareWorktree(args = {}) {
@@ -308,12 +513,775 @@ export async function land(args = {}) {
   };
 }
 
+function addTrajectory(target, entry) {
+  target.trajectory.push(entry);
+  if (target.trajectory.length > 25) {
+    target.trajectory.shift();
+  }
+}
+
+// ============================================================================
+// Runner helper implementation
+// ============================================================================
+
+export const RUNNERS = new Map();
+
+export async function dispatchRunner(args = {}) {
+  const { task, targetPaths, cwd = process.cwd() } = args;
+  if (!task || typeof task !== "string" || !task.trim()) {
+    throw new Error("task is required");
+  }
+
+  const runnerId = randomUUID();
+  const startedAt = Date.now();
+  const runner = {
+    id: runnerId,
+    runnerId,
+    task,
+    targetPaths: Array.isArray(targetPaths) ? targetPaths : [],
+    cwd,
+    status: "running",
+    startedAt,
+    activeTool: null,
+    trajectory: [],
+    result: null,
+    error: null,
+    process: null,
+  };
+  RUNNERS.set(runnerId, runner);
+
+  startRunnerProcess(runner);
+
+  return { ok: true, runnerId, status: "running" };
+}
+
+function startRunnerProcess(runner) {
+  if (globalThis.__QQ_TEST_RUNNER_HANDLER) {
+    try {
+      globalThis.__QQ_TEST_RUNNER_HANDLER(runner);
+    } catch (err) {
+      runner.status = "failed";
+      runner.error = { message: err.message };
+    }
+    return;
+  }
+
+  let prompt = runner.task;
+  if (runner.targetPaths.length > 0) {
+    prompt += `\n\nTarget paths to inspect:\n${runner.targetPaths.join("\n")}`;
+  }
+
+  const bin = process.env.QQ_RUNNER_BIN || process.env.REAL_AGY_BIN || "agy";
+  const childArgs = [
+    "--agent", "runner",
+    "--dangerously-skip-permissions",
+    "--output-format", "stream-json",
+    "--print", prompt,
+  ];
+
+  let child;
+  try {
+    child = spawn(bin, childArgs, {
+      cwd: runner.cwd,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env },
+    });
+  } catch (err) {
+    runner.status = "failed";
+    runner.error = { message: err.message };
+    return;
+  }
+  runner.process = child;
+
+  const rl = createInterface({ input: child.stdout });
+  let rawOutput = "";
+  let stderrBuf = "";
+
+  rl.on("line", (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    rawOutput += line + "\n";
+    try {
+      const event = JSON.parse(trimmed);
+      handleRunnerEvent(runner, event);
+    } catch {
+      addTrajectory(runner, { action: "log", message: trimmed.slice(0, 200), timestamp: Date.now() });
+    }
+  });
+
+  child.stderr.on("data", (chunk) => {
+    stderrBuf += chunk.toString("utf8");
+  });
+
+  child.on("close", (code, signal) => {
+    if (runner.status === "cancelled") return;
+    if (signal === "SIGTERM" || signal === "SIGINT") {
+      runner.status = "cancelled";
+      runner.activeTool = null;
+      return;
+    }
+    if (code === 0) {
+      if (runner.status === "running") {
+        runner.status = "completed";
+        if (!runner.result) {
+          runner.result = rawOutput.trim();
+        }
+      }
+    } else {
+      if (runner.status === "running") {
+        runner.status = "failed";
+        runner.error = {
+          message: `Runner process exited with code ${code}`,
+          exitCode: code,
+          stderr: stderrBuf.trim(),
+        };
+      }
+    }
+    runner.activeTool = null;
+  });
+
+  child.on("error", (err) => {
+    if (runner.status === "cancelled") return;
+    runner.status = "failed";
+    runner.error = {
+      message: err.message,
+      stderr: stderrBuf.trim(),
+    };
+    runner.activeTool = null;
+  });
+}
+
+function handleRunnerEvent(runner, event) {
+  if (event.event === "step_update" && event.step_update) {
+    const su = event.step_update;
+    if (su.step_type === "tool") {
+      if (su.state === "ACTIVE") {
+        runner.activeTool = {
+          name: su.tool_name,
+          startedAt: Date.now(),
+        };
+      } else if (su.state === "DONE") {
+        runner.activeTool = null;
+        addTrajectory(runner, {
+          action: su.tool_name,
+          parameters: su.tool_info?.parameters,
+          duration: su.duration_seconds,
+          timestamp: Date.now(),
+        });
+      }
+    } else if (su.step_type === "agent_response") {
+      if (su.state === "ACTIVE") {
+        runner.activeTool = {
+          name: "thinking",
+          startedAt: Date.now(),
+        };
+      } else if (su.state === "DONE") {
+        runner.activeTool = null;
+        addTrajectory(runner, {
+          action: "agent_response",
+          duration: su.duration_seconds,
+          timestamp: Date.now(),
+        });
+      }
+    }
+  } else if (event.event === "result" && event.result) {
+    const res = event.result;
+    if (res.status === "SUCCESS") {
+      runner.status = "completed";
+      runner.result = res.response;
+    } else {
+      runner.status = "failed";
+      runner.error = {
+        message: res.error || "Runner reported error",
+        details: res,
+      };
+    }
+    runner.activeTool = null;
+  }
+}
+
+export async function checkRunner(args = {}) {
+  const runnerId = args.runnerId || args.id;
+  if (!runnerId) throw new Error("runnerId is required");
+  const runner = RUNNERS.get(runnerId);
+  if (!runner) throw new Error(`no runner found for id '${runnerId}'`);
+
+  const elapsedSeconds = Math.round((Date.now() - runner.startedAt) / 1000);
+  const activeTool = runner.activeTool ? {
+    name: runner.activeTool.name,
+    durationSeconds: Math.round((Date.now() - runner.activeTool.startedAt) / 1000),
+  } : null;
+
+  return {
+    runnerId: runner.id,
+    status: runner.status,
+    elapsedSeconds,
+    activeTool,
+    trajectory: [...runner.trajectory],
+    ...(runner.status === "completed" ? { result: runner.result } : {}),
+    ...(runner.status === "failed" ? { error: runner.error } : {}),
+  };
+}
+
+export async function steerRunner(args = {}) {
+  const runnerId = args.runnerId || args.id;
+  const instruction = args.instruction;
+  if (!runnerId) throw new Error("runnerId is required");
+  if (!instruction || typeof instruction !== "string") throw new Error("instruction is required");
+  const runner = RUNNERS.get(runnerId);
+  if (!runner) throw new Error(`no runner found for id '${runnerId}'`);
+  if (runner.status !== "running") {
+    throw new Error(`cannot steer runner in status '${runner.status}'`);
+  }
+
+  addTrajectory(runner, {
+    action: "steer",
+    instruction,
+    timestamp: Date.now(),
+  });
+
+  if (runner.onSteer && typeof runner.onSteer === "function") {
+    runner.onSteer(instruction);
+  }
+
+  if (runner.process && runner.process.stdin && runner.process.stdin.writable) {
+    try {
+      runner.process.stdin.write(`${instruction}\n`);
+    } catch {
+      /* ignore pipe error */
+    }
+  }
+
+  return { ok: true, runnerId, steered: true };
+}
+
+export async function cancelRunner(args = {}) {
+  const runnerId = args.runnerId || args.id;
+  if (!runnerId) throw new Error("runnerId is required");
+  const runner = RUNNERS.get(runnerId);
+  if (!runner) throw new Error(`no runner found for id '${runnerId}'`);
+
+  if (runner.status === "running") {
+    runner.status = "cancelled";
+    runner.activeTool = null;
+    addTrajectory(runner, { action: "cancelled", timestamp: Date.now() });
+    if (runner.process) {
+      try {
+        runner.process.kill("SIGTERM");
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  return { ok: true, runnerId, status: "cancelled" };
+}
+
+export async function awaitRunner(args = {}) {
+  const runnerId = args.runnerId || args.id;
+  const timeoutMs = args.timeoutMs || 300000;
+  if (!runnerId) throw new Error("runnerId is required");
+  const runner = RUNNERS.get(runnerId);
+  if (!runner) throw new Error(`no runner found for id '${runnerId}'`);
+
+  const start = Date.now();
+  while (runner.status === "running") {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`timed out waiting for runner '${runnerId}' after ${timeoutMs}ms`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+
+  if (runner.status === "completed") {
+    return {
+      ok: true,
+      runnerId,
+      result: runner.result,
+    };
+  }
+
+  if (runner.status === "cancelled") {
+    const err = new Error(`Runner '${runnerId}' was cancelled`);
+    err.status = "cancelled";
+    throw err;
+  }
+
+  const err = new Error(runner.error?.message || `Runner '${runnerId}' failed`);
+  err.error = runner.error;
+  throw err;
+}
+
+// ============================================================================
+// Automated Execution Pipeline
+// ============================================================================
+
+export const EXECUTIONS = new Map();
+
+export function evaluateReviewPassed(output) {
+  if (!output || !output.trim()) return true;
+  const text = output.trim();
+  if (/verdict:\s*pass\b/i.test(text)) return true;
+  if (/verdict:\s*fail\b/i.test(text)) return false;
+  if (/defect|failed|error|regression/i.test(text) && !/no defects|all tests pass|0 defects|passed/i.test(text)) {
+    return false;
+  }
+  return true;
+}
+
+async function runChildSubagent(execution, { role, cwd, prompt, provider }) {
+  if (globalThis.__QQ_TEST_SUBAGENT_HANDLER) {
+    try {
+      const res = await globalThis.__QQ_TEST_SUBAGENT_HANDLER({ role, cwd, prompt, provider, execution });
+      return res;
+    } catch (err) {
+      return { ok: false, error: { message: err.message } };
+    }
+  }
+
+  const conversationId = randomUUID();
+  let bin, args;
+  const p = normalizeProvider(provider);
+  if (p === "gemini") {
+    bin = process.env.REAL_AGY_BIN || "agy";
+    args = [
+      "--agent", role,
+      "--conversation", conversationId,
+      "--dangerously-skip-permissions",
+      "--output-format", "stream-json",
+      "--print-timeout", "60m",
+      "--print", prompt,
+    ];
+  } else if (p === "deepseek") {
+    bin = "dsh";
+    args = ["--profile", role, prompt];
+  } else if (p === "codex") {
+    bin = "codex";
+    args = ["exec", "--profile", role, prompt];
+  } else {
+    bin = "muse";
+    args = ["exec", "--preset", role, "--yolo", prompt];
+  }
+
+  return new Promise((resolvePromise) => {
+    let output = "";
+    let stderr = "";
+    let child;
+    try {
+      child = spawn(bin, args, {
+        cwd,
+        stdio: ["pipe", "pipe", "pipe"],
+        env: { ...process.env },
+      });
+    } catch (err) {
+      resolvePromise({ ok: false, error: { message: err.message } });
+      return;
+    }
+    execution.activeChild = child;
+
+    const rl = createInterface({ input: child.stdout });
+    rl.on("line", (line) => {
+      output += line + "\n";
+      try {
+        const ev = JSON.parse(line.trim());
+        handleExecutionStreamEvent(execution, ev);
+      } catch {
+        /* text output */
+      }
+    });
+
+    child.stderr.on("data", (d) => {
+      stderr += d.toString("utf8");
+    });
+
+    child.on("close", (code) => {
+      execution.activeChild = null;
+      execution.activeTool = null;
+      if (code === 0) {
+        resolvePromise({ ok: true, output: output.trim() });
+      } else {
+        resolvePromise({
+          ok: false,
+          output: output.trim(),
+          error: { message: `Child process exited with code ${code}`, exitCode: code, stderr: stderr.trim() },
+        });
+      }
+    });
+
+    child.on("error", (err) => {
+      execution.activeChild = null;
+      execution.activeTool = null;
+      resolvePromise({
+        ok: false,
+        error: { message: err.message, stderr: stderr.trim() },
+      });
+    });
+  });
+}
+
+function handleExecutionStreamEvent(execution, event) {
+  if (event.event === "step_update" && event.step_update) {
+    const su = event.step_update;
+    if (su.step_type === "tool") {
+      if (su.state === "ACTIVE") {
+        execution.activeTool = {
+          name: su.tool_name,
+          startedAt: Date.now(),
+        };
+      } else if (su.state === "DONE") {
+        execution.activeTool = null;
+        addTrajectory(execution, {
+          action: su.tool_name,
+          duration: su.duration_seconds,
+          timestamp: Date.now(),
+        });
+      }
+    }
+  }
+}
+
+async function runExecutionPipeline(execution) {
+  const { root, kind, sessionId, args } = execution;
+
+  addTrajectory(execution, { action: "provision_worktree", timestamp: Date.now() });
+  const wt = await createWorktree(root, { kind, sessionId });
+  execution.worktree = wt.cwd;
+  execution.branch = wt.branch;
+  addTrajectory(execution, {
+    action: "worktree_ready",
+    worktree: wt.cwd,
+    branch: wt.branch,
+    timestamp: Date.now(),
+  });
+
+  execution.phase = "implementing";
+  const implementerProvider = resolveSeatProvider("implementer", args);
+  addTrajectory(execution, {
+    action: "implementer_started",
+    provider: implementerProvider,
+    timestamp: Date.now(),
+  });
+
+  const implementerPrompt = "Implement .architect/ticket.md in the checkout. When finished, report your answer.";
+  const implementerRes = await runChildSubagent(execution, {
+    role: "implementer",
+    cwd: wt.cwd,
+    prompt: implementerPrompt,
+    provider: implementerProvider,
+  });
+
+  if (implementerRes.error) {
+    execution.status = "failed";
+    execution.error = {
+      phase: "implementing",
+      message: implementerRes.error.message || "Implementer failed",
+      exitCode: implementerRes.error.exitCode,
+      stderr: implementerRes.error.stderr,
+    };
+    return;
+  }
+
+  addTrajectory(execution, {
+    action: "implementer_completed",
+    timestamp: Date.now(),
+  });
+
+  let reviewerSummary = null;
+
+  if (kind === "open") {
+    execution.phase = "reviewing";
+    const reviewerProvider = resolveSeatProvider("reviewer", args);
+    addTrajectory(execution, {
+      action: "reviewer_started",
+      provider: reviewerProvider,
+      timestamp: Date.now(),
+    });
+
+    const reviewerPrompt = "Follow .architect/ticket.md in the checkout. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.";
+    let reviewRes = await runChildSubagent(execution, {
+      role: "reviewer",
+      cwd: wt.cwd,
+      prompt: reviewerPrompt,
+      provider: reviewerProvider,
+    });
+
+    if (reviewRes.error) {
+      execution.status = "failed";
+      execution.error = {
+        phase: "reviewing",
+        message: reviewRes.error.message || "Reviewer failed",
+        exitCode: reviewRes.error.exitCode,
+        stderr: reviewRes.error.stderr,
+      };
+      return;
+    }
+
+    let reviewPassed = evaluateReviewPassed(reviewRes.output);
+    reviewerSummary = reviewRes.output;
+
+    if (!reviewPassed) {
+      execution.phase = "retrying";
+      addTrajectory(execution, {
+        action: "review_failed_retrying",
+        findings: reviewRes.output,
+        timestamp: Date.now(),
+      });
+
+      const retryPrompt = `Implement .architect/ticket.md in the checkout. The reviewer found defects:\n${reviewRes.output}\nPlease resolve these defects. When finished, report your answer.`;
+      const retryImplRes = await runChildSubagent(execution, {
+        role: "implementer",
+        cwd: wt.cwd,
+        prompt: retryPrompt,
+        provider: implementerProvider,
+      });
+
+      if (retryImplRes.error) {
+        execution.status = "failed";
+        execution.error = {
+          phase: "retrying",
+          message: retryImplRes.error.message || "Implementer retry failed",
+          exitCode: retryImplRes.error.exitCode,
+          stderr: retryImplRes.error.stderr,
+        };
+        return;
+      }
+
+      execution.phase = "reviewing";
+      addTrajectory(execution, {
+        action: "reviewer_second_run",
+        timestamp: Date.now(),
+      });
+
+      reviewRes = await runChildSubagent(execution, {
+        role: "reviewer",
+        cwd: wt.cwd,
+        prompt: reviewerPrompt,
+        provider: reviewerProvider,
+      });
+
+      if (reviewRes.error) {
+        execution.status = "failed";
+        execution.error = {
+          phase: "reviewing",
+          message: reviewRes.error.message || "Second reviewer invocation failed",
+          exitCode: reviewRes.error.exitCode,
+          stderr: reviewRes.error.stderr,
+        };
+        return;
+      }
+
+      reviewPassed = evaluateReviewPassed(reviewRes.output);
+      reviewerSummary = reviewRes.output;
+
+      if (!reviewPassed) {
+        execution.status = "failed";
+        execution.error = {
+          phase: "reviewing",
+          message: `Review failed after retry: ${reviewRes.output}`,
+          findings: reviewRes.output,
+        };
+        return;
+      }
+    }
+  }
+
+  execution.phase = "landing";
+  addTrajectory(execution, {
+    action: "landing_started",
+    worktree: wt.cwd,
+    branch: wt.branch,
+    timestamp: Date.now(),
+  });
+
+  const landResult = await landWorktree(root, {
+    worktree: wt.cwd,
+    branch: wt.branch,
+    message: args.message || `feat: implement and verify ${wt.branch}`,
+  });
+
+  execution.phase = "completed";
+  execution.status = "completed";
+  execution.result = {
+    verifiedStory: `Worktree ${wt.branch} successfully verified and landed.`,
+    landingOutcome: landResult,
+    implementerSummary: implementerRes.output,
+    reviewerSummary,
+  };
+  addTrajectory(execution, {
+    action: "execution_completed",
+    landResult,
+    timestamp: Date.now(),
+  });
+}
+
+export async function dispatchExecution(args = {}) {
+  const { kind, cwd = process.cwd() } = args;
+  if (!kind || (kind !== "bounded" && kind !== "open")) {
+    throw new Error("kind is required: 'bounded' | 'open'");
+  }
+
+  const root = await mainRepoRoot(cwd);
+  const sessionId = await resolveSessionId(root, args.sessionId || args.id);
+  await resolveTicketSource(root, sessionId);
+
+  const id = randomUUID();
+  const startedAt = Date.now();
+  const execution = {
+    id,
+    kind,
+    sessionId,
+    root,
+    cwd,
+    args,
+    status: "running",
+    phase: "implementing",
+    startedAt,
+    activeTool: null,
+    trajectory: [],
+    result: null,
+    error: null,
+    activeChild: null,
+  };
+  EXECUTIONS.set(id, execution);
+
+  runExecutionPipeline(execution).catch((err) => {
+    if (execution.status === "running") {
+      execution.status = "failed";
+      execution.error = {
+        phase: execution.phase,
+        message: err.message,
+        stack: err.stack,
+      };
+    }
+  });
+
+  return { ok: true, id, status: "running", phase: "implementing" };
+}
+
+export async function checkExecution(args = {}) {
+  const id = args.id || args.executionId;
+  if (!id) throw new Error("id is required");
+  const exec = EXECUTIONS.get(id);
+  if (!exec) throw new Error(`no execution found for id '${id}'`);
+
+  const elapsedSeconds = Math.round((Date.now() - exec.startedAt) / 1000);
+  const activeTool = exec.activeTool ? {
+    name: exec.activeTool.name,
+    durationSeconds: Math.round((Date.now() - exec.activeTool.startedAt) / 1000),
+  } : null;
+
+  return {
+    id: exec.id,
+    status: exec.status,
+    phase: exec.phase,
+    elapsedSeconds,
+    activeTool,
+    trajectory: [...exec.trajectory],
+    ...(exec.status === "completed" ? { result: exec.result } : {}),
+    ...(exec.status === "failed" ? { error: exec.error } : {}),
+  };
+}
+
+export async function awaitExecution(args = {}) {
+  const id = args.id || args.executionId;
+  const timeoutMs = args.timeoutMs || 600000;
+  if (!id) throw new Error("id is required");
+  const exec = EXECUTIONS.get(id);
+  if (!exec) throw new Error(`no execution found for id '${id}'`);
+
+  const start = Date.now();
+  while (exec.status === "running") {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`timed out waiting for execution '${id}' after ${timeoutMs}ms`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+
+  if (exec.status === "completed") {
+    return {
+      ok: true,
+      id,
+      status: "completed",
+      result: exec.result,
+    };
+  }
+
+  const err = new Error(exec.error?.message || `Execution '${id}' failed in phase '${exec.phase}'`);
+  err.error = exec.error;
+  throw err;
+}
+
+// ============================================================================
+// Dedicated Ticket Tools
+// ============================================================================
+
+export async function readTicket(args = {}) {
+  const cwd = args.cwd || process.cwd();
+  const root = await mainRepoRoot(cwd);
+  const sessionId = await resolveSessionId(root, args.sessionId || args.id);
+  const path = await resolveTicketSource(root, sessionId);
+  const content = await readFile(path, "utf8");
+  return {
+    ok: true,
+    sessionId,
+    path,
+    content,
+    text: content,
+  };
+}
+
+export async function updateTicket(args = {}) {
+  const { content, cwd = process.cwd() } = args;
+  if (content === undefined || typeof content !== "string") {
+    throw new Error("content is required and must be a string");
+  }
+  const root = await mainRepoRoot(cwd);
+  const sessionId = await resolveSessionId(root, args.sessionId || args.id);
+  const path = ticketPath(root, sessionId);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, content, "utf8");
+  return {
+    ok: true,
+    sessionId,
+    path,
+  };
+}
+
 export async function callTool(name, args = {}) {
   if (name === "prepare_worktree") {
     return prepareWorktree(args);
   }
   if (name === "land") {
     return land(args);
+  }
+  if (name === "dispatch_runner") {
+    return dispatchRunner(args);
+  }
+  if (name === "check_runner") {
+    return checkRunner(args);
+  }
+  if (name === "steer_runner") {
+    return steerRunner(args);
+  }
+  if (name === "cancel_runner") {
+    return cancelRunner(args);
+  }
+  if (name === "await_runner") {
+    return awaitRunner(args);
+  }
+  if (name === "dispatch_execution") {
+    return dispatchExecution(args);
+  }
+  if (name === "check_execution") {
+    return checkExecution(args);
+  }
+  if (name === "await_execution") {
+    return awaitExecution(args);
+  }
+  if (name === "read_ticket") {
+    return readTicket(args);
+  }
+  if (name === "update_ticket") {
+    return updateTicket(args);
   }
   throw new Error(`Unknown tool: ${name}`);
 }

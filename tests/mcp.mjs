@@ -7,20 +7,33 @@ import { basename, dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { promisify } from "node:util";
 import {
+  CANONICAL_PROVIDERS,
+  EXECUTIONS,
   PROVIDERS,
+  RUNNERS,
   SEAT_PROVIDERS,
   TOOLS,
+  awaitExecution,
+  awaitRunner,
   buildImplementerStep,
   buildResearcherStep,
   buildReviewerStep,
   callTool,
+  cancelRunner,
+  checkExecution,
+  checkRunner,
+  dispatchExecution,
+  dispatchRunner,
   handleRpc,
   land,
   prepareWorktree,
+  readTicket,
   resolveProvider,
   resolveSeatProvider,
   resolveSessionId,
   startMcpServer,
+  steerRunner,
+  updateTicket,
 } from "../bin/mcp-server.mjs";
 import { git } from "../workflow/git.mjs";
 
@@ -36,26 +49,39 @@ async function retireTestWorktree(repo, result) {
 }
 
 // 1. Tool schema checks
-assert.equal(TOOLS.length, 2);
+assert.equal(TOOLS.length, 12);
 const toolNames = TOOLS.map((t) => t.name).sort();
-assert.deepEqual(toolNames, ["land", "prepare_worktree"]);
+assert.deepEqual(toolNames, [
+  "await_execution",
+  "await_runner",
+  "cancel_runner",
+  "check_execution",
+  "check_runner",
+  "dispatch_execution",
+  "dispatch_runner",
+  "land",
+  "prepare_worktree",
+  "read_ticket",
+  "steer_runner",
+  "update_ticket",
+]);
 
 const prepareTool = TOOLS.find((t) => t.name === "prepare_worktree");
 assert.ok(prepareTool);
 assert.deepEqual(prepareTool.inputSchema.required, ["kind"]);
 assert.deepEqual(prepareTool.inputSchema.properties.kind.enum, ["bounded", "open", "research"]);
-assert.deepEqual(prepareTool.inputSchema.properties.provider.enum, ["muse", "gemini", "deepseek"]);
-assert.deepEqual(prepareTool.inputSchema.properties.implementerProvider.enum, ["muse", "gemini", "deepseek"]);
-assert.deepEqual(prepareTool.inputSchema.properties.reviewerProvider.enum, ["muse", "gemini", "deepseek"]);
-assert.deepEqual(prepareTool.inputSchema.properties.researcherProvider.enum, ["muse", "gemini", "deepseek"]);
+assert.deepEqual(prepareTool.inputSchema.properties.provider.enum, ["muse", "gemini", "deepseek", "codex", "astra"]);
+assert.deepEqual(prepareTool.inputSchema.properties.implementerProvider.enum, ["muse", "gemini", "deepseek", "codex", "astra"]);
+assert.deepEqual(prepareTool.inputSchema.properties.reviewerProvider.enum, ["muse", "gemini", "deepseek", "codex", "astra"]);
+assert.deepEqual(prepareTool.inputSchema.properties.researcherProvider.enum, ["muse", "gemini", "deepseek", "codex", "astra"]);
 assert.equal(prepareTool.inputSchema.properties.engine, undefined);
 
 // 1b. Provider support table checks
-assert.deepEqual(PROVIDERS, ["muse", "gemini", "deepseek"]);
-assert.deepEqual(SEAT_PROVIDERS.implementer, ["muse", "gemini", "deepseek"]);
-assert.deepEqual(SEAT_PROVIDERS.reviewer, ["muse", "gemini"]);
-assert.deepEqual(SEAT_PROVIDERS.researcher, ["muse", "gemini"]);
-assert.deepEqual(SEAT_PROVIDERS.architect, ["muse", "gemini"]);
+assert.deepEqual(PROVIDERS, ["muse", "gemini", "deepseek", "codex", "astra"]);
+assert.deepEqual(SEAT_PROVIDERS.implementer, ["muse", "gemini", "deepseek", "codex", "astra"]);
+assert.deepEqual(SEAT_PROVIDERS.reviewer, ["muse", "gemini", "codex", "astra"]);
+assert.deepEqual(SEAT_PROVIDERS.researcher, ["muse", "gemini", "codex", "astra"]);
+assert.deepEqual(SEAT_PROVIDERS.architect, ["muse", "gemini", "codex", "astra"]);
 
 // 1c. Per-seat command template checks (every supported seat x provider).
 // Ownership lines ride inside the child prompt so every child sees them.
@@ -75,12 +101,28 @@ assert.equal(
   `Delegate via run_command (with Cwd: /wt): 'dsh --profile implementer "P ${IMPLEMENTER_OWNERSHIP}"'`,
 );
 assert.equal(
+  buildImplementerStep("/wt", "P", "codex", "uuid-1"),
+  `Delegate via run_command (with Cwd: /wt): 'codex exec --profile implementer "P ${IMPLEMENTER_OWNERSHIP}"'`,
+);
+assert.equal(
+  buildImplementerStep("/wt", "P", "astra", "uuid-1"),
+  `Delegate via run_command (with Cwd: /wt): 'codex exec --profile implementer "P ${IMPLEMENTER_OWNERSHIP}"'`,
+);
+assert.equal(
   buildReviewerStep("/wt", "P", "muse", "uuid-2"),
   `invoke reviewer via run_command (with Cwd: /wt): 'muse exec --preset reviewer --yolo "P ${REVIEWER_OWNERSHIP}"'`,
 );
 assert.equal(
   buildReviewerStep("/wt", "P", "gemini", "uuid-2"),
   `invoke reviewer via run_command (with Cwd: /wt) using a fresh conversation: 'agy --agent reviewer --conversation uuid-2 --print-timeout 60m --print "P ${REVIEWER_OWNERSHIP}"'\nDo NOT pass '--new-project'.`,
+);
+assert.equal(
+  buildReviewerStep("/wt", "P", "codex", "uuid-2"),
+  `invoke reviewer via run_command (with Cwd: /wt): 'codex exec --profile reviewer "P ${REVIEWER_OWNERSHIP}"'`,
+);
+assert.equal(
+  buildReviewerStep("/wt", "P", "astra", "uuid-2"),
+  `invoke reviewer via run_command (with Cwd: /wt): 'codex exec --profile reviewer "P ${REVIEWER_OWNERSHIP}"'`,
 );
 assert.equal(
   buildResearcherStep("/wt", "P", "muse"),
@@ -90,11 +132,19 @@ assert.equal(
   buildResearcherStep("/wt", "P", "gemini"),
   `Invoke research subagent with ticket path /wt/.architect/ticket.md and worktree cwd via run_command (with Cwd: /wt) using Prompt: "P ${RESEARCHER_OWNERSHIP}"`,
 );
+assert.equal(
+  buildResearcherStep("/wt", "P", "codex"),
+  `Delegate via run_command (with Cwd: /wt): 'codex exec --profile researcher "P ${RESEARCHER_OWNERSHIP}"'`,
+);
+assert.equal(
+  buildResearcherStep("/wt", "P", "astra"),
+  `Delegate via run_command (with Cwd: /wt): 'codex exec --profile researcher "P ${RESEARCHER_OWNERSHIP}"'`,
+);
 // Every template carries its seat's ownership line.
-for (const provider of ["muse", "gemini", "deepseek"]) {
+for (const provider of ["muse", "gemini", "deepseek", "codex", "astra"]) {
   assert.ok(buildImplementerStep("/wt", "Do it", provider, "uuid-1").includes(IMPLEMENTER_OWNERSHIP));
 }
-for (const provider of ["muse", "gemini"]) {
+for (const provider of ["muse", "gemini", "codex", "astra"]) {
   assert.ok(buildReviewerStep("/wt", "Check it", provider, "uuid-2").includes(REVIEWER_OWNERSHIP));
   assert.ok(buildResearcherStep("/wt", "Study it", provider).includes(RESEARCHER_OWNERSHIP));
 }
@@ -124,21 +174,27 @@ assert.equal(
   resolveSeatProvider("reviewer", { provider: "deepseek", reviewerProvider: "muse" }, {}),
   "muse",
 );
+assert.equal(resolveSeatProvider("implementer", { provider: "codex" }, {}), "codex");
+assert.equal(resolveSeatProvider("implementer", { provider: "astra" }, {}), "codex");
+assert.equal(resolveSeatProvider("reviewer", { provider: "astra" }, {}), "codex");
+assert.equal(resolveSeatProvider("researcher", { provider: "codex" }, {}), "codex");
 assert.equal(resolveProvider("architect", {}), "muse");
 assert.equal(resolveProvider("architect", { seatEnv: "gemini" }), "gemini");
+assert.equal(resolveProvider("architect", { arg: "astra" }), "codex");
+assert.equal(resolveProvider("architect", { seatEnv: "codex" }), "codex");
 
 // 1e. Provider error checks
 assert.throws(
   () => resolveSeatProvider("implementer", { provider: "foo" }, {}),
-  /^Error: unknown provider 'foo': expected 'muse' \| 'gemini' \| 'deepseek'$/,
+  /^Error: unknown provider 'foo': expected 'muse' \| 'gemini' \| 'deepseek' \| 'codex' \| 'astra'$/,
 );
 assert.throws(
   () => resolveSeatProvider("implementer", { implementerProvider: "agy" }, {}),
-  /^Error: unknown provider 'agy': expected 'muse' \| 'gemini' \| 'deepseek'$/,
+  /^Error: unknown provider 'agy': expected 'muse' \| 'gemini' \| 'deepseek' \| 'codex' \| 'astra'$/,
 );
 assert.throws(
   () => resolveSeatProvider("implementer", {}, { QQ_WORKFLOW_PROVIDER: "dsh" }),
-  /^Error: unknown provider 'dsh': expected 'muse' \| 'gemini' \| 'deepseek'$/,
+  /^Error: unknown provider 'dsh': expected 'muse' \| 'gemini' \| 'deepseek' \| 'codex' \| 'astra'$/,
 );
 assert.throws(
   () => resolveSeatProvider("reviewer", { provider: "deepseek" }, {}),
@@ -404,7 +460,7 @@ try {
         cwd: repoDir,
         provider: "foo",
       }),
-    /^Error: unknown provider 'foo': expected 'muse' \| 'gemini' \| 'deepseek'$/,
+    /^Error: unknown provider 'foo': expected 'muse' \| 'gemini' \| 'deepseek' \| 'codex' \| 'astra'$/,
   );
   await assert.rejects(
     () =>
@@ -414,7 +470,7 @@ try {
         cwd: repoDir,
         implementerProvider: "agy",
       }),
-    /^Error: unknown provider 'agy': expected 'muse' \| 'gemini' \| 'deepseek'$/,
+    /^Error: unknown provider 'agy': expected 'muse' \| 'gemini' \| 'deepseek' \| 'codex' \| 'astra'$/,
   );
 
   // 5i. Env precedence end to end: seat env beats global env, seat arg beats all.
@@ -447,6 +503,38 @@ try {
     delete process.env.QQ_WORKFLOW_PROVIDER;
     delete process.env.QQ_IMPLEMENTER_PROVIDER;
   }
+
+  // 5j. prepare_worktree with provider: "codex" outputs codex exec commands
+  const codexSessionId = "c0dec0de-1122-3344-5566-778899aabbcc";
+  writeFileSync(join(ticketsDir, `${codexSessionId}.md`), "# Codex Session Ticket\n\n## Kind\nopen\n");
+  const codexResult = await prepareWorktree({
+    kind: "open",
+    sessionId: codexSessionId,
+    cwd: repoDir,
+    provider: "codex",
+  });
+  assert.equal(codexResult.ok, true);
+  assert.equal(codexResult.implementerProvider, "codex");
+  assert.equal(codexResult.reviewerProvider, "codex");
+  assert.ok(codexResult.instructions.includes("codex exec --profile implementer"));
+  assert.ok(codexResult.instructions.includes("codex exec --profile reviewer"));
+  await retireTestWorktree(repoDir, codexResult);
+
+  // 5k. prepare_worktree with provider: "astra" normalizes to codex commands
+  const astraSessionId = "a577a000-1122-3344-5566-778899aabbcc";
+  writeFileSync(join(ticketsDir, `${astraSessionId}.md`), "# Astra Session Ticket\n\n## Kind\nopen\n");
+  const astraResult = await prepareWorktree({
+    kind: "open",
+    sessionId: astraSessionId,
+    cwd: repoDir,
+    provider: "astra",
+  });
+  assert.equal(astraResult.ok, true);
+  assert.equal(astraResult.implementerProvider, "codex");
+  assert.equal(astraResult.reviewerProvider, "codex");
+  assert.ok(astraResult.instructions.includes("codex exec --profile implementer"));
+  assert.ok(astraResult.instructions.includes("codex exec --profile reviewer"));
+  await retireTestWorktree(repoDir, astraResult);
 
   // 6. Test landing worktree
   // Make changes in bounded worktree
@@ -523,6 +611,20 @@ try {
       }),
     /^Error: provider 'deepseek' does not support seat 'researcher'$/,
   );
+
+  // 6b-iv. Codex / Astra researcher
+  const astraResSessionId = "a577a999-ddee-ff00-1122-334455667788";
+  writeFileSync(join(ticketsDir, `${astraResSessionId}.md`), "# Astra Research Ticket\n\n## Kind\nresearch\n");
+  const astraResResult = await prepareWorktree({
+    kind: "research",
+    sessionId: astraResSessionId,
+    cwd: repoDir,
+    researcherProvider: "astra",
+  });
+  assert.equal(astraResResult.ok, true);
+  assert.equal(astraResResult.researcherProvider, "codex");
+  assert.ok(astraResResult.instructions.includes("codex exec --profile researcher"));
+  await retireTestWorktree(repoDir, astraResResult);
 
   writeFileSync(join(researchResult.worktree, "findings.md"), "# Research Findings\n");
   const landResearchResult = await land({
@@ -625,21 +727,28 @@ try {
     rmSync(emptyRepo, { recursive: true, force: true });
   }
 
-  // 8. Test RPC tools/call rejects removed ticket tools
-  const rpcRead = await handleRpc("tools/call", {
-    name: "ticket_read",
-    arguments: { cwd: repoDir, sessionId },
-  });
-  assert.equal(rpcRead.isError, true);
-  assert.match(rpcRead.content[0].text, /Unknown tool: ticket_read/);
+  // 8. Test dedicated ticket tools: read_ticket and update_ticket
+  const readTicketRes = await callTool("read_ticket", { cwd: repoDir, sessionId });
+  assert.equal(readTicketRes.ok, true);
+  assert.equal(readTicketRes.sessionId, sessionId);
+  assert.ok(readTicketRes.content.includes("Test Session Ticket"));
 
-  const rpcWrite = await handleRpc("tools/call", {
-    name: "ticket_write",
-    arguments: { cwd: repoDir, sessionId },
+  const updateTicketRes = await callTool("update_ticket", {
+    cwd: repoDir,
+    sessionId,
+    content: "# Updated Ticket Content\n\n## Kind\nbounded\n",
   });
-  assert.equal(rpcWrite.isError, true);
-  assert.match(rpcWrite.content[0].text, /Unknown tool: ticket_write/);
+  assert.equal(updateTicketRes.ok, true);
 
+  const readAgain = await callTool("read_ticket", { cwd: repoDir, sessionId });
+  assert.equal(readAgain.content, "# Updated Ticket Content\n\n## Kind\nbounded\n");
+
+  await assert.rejects(
+    () => updateTicket({ cwd: repoDir, sessionId, content: null }),
+    /content is required and must be a string/,
+  );
+
+  // Test that generic write tools or removed legacy names are rejected
   await assert.rejects(
     () => callTool("ticket_read"),
     /Unknown tool: ticket_read/,
@@ -648,6 +757,240 @@ try {
     () => callTool("ticket_write"),
     /Unknown tool: ticket_write/,
   );
+  await assert.rejects(
+    () => callTool("write_file"),
+    /Unknown tool: write_file/,
+  );
+
+  // 9. Runner tools: dispatch_runner, check_runner, steer_runner, cancel_runner, await_runner
+  await assert.rejects(
+    () => dispatchRunner({}),
+    /task is required/,
+  );
+
+  // Simulated runner with active tool and trajectory
+  let mockRunner;
+  globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => {
+    mockRunner = runner;
+    runner.activeTool = { name: "grep_search", startedAt: Date.now() };
+    runner.trajectory.push({ action: "grep_search", duration: 1.2, timestamp: Date.now() });
+  };
+
+  const dispatchRes = await dispatchRunner({
+    task: "Investigate error handling in foo.mjs",
+    targetPaths: ["foo.mjs", "bar.mjs"],
+    cwd: repoDir,
+  });
+  assert.equal(dispatchRes.ok, true);
+  assert.ok(dispatchRes.runnerId);
+  assert.equal(dispatchRes.status, "running");
+
+  const checkRunningRes = await checkRunner({ runnerId: dispatchRes.runnerId });
+  assert.equal(checkRunningRes.runnerId, dispatchRes.runnerId);
+  assert.equal(checkRunningRes.status, "running");
+  assert.equal(typeof checkRunningRes.elapsedSeconds, "number");
+  assert.ok(checkRunningRes.activeTool);
+  assert.equal(checkRunningRes.activeTool.name, "grep_search");
+  assert.equal(checkRunningRes.trajectory.length, 1);
+  assert.equal(checkRunningRes.trajectory[0].action, "grep_search");
+
+  // Steer runner
+  let steeredInstruction = null;
+  mockRunner.onSteer = (inst) => {
+    steeredInstruction = inst;
+  };
+  const steerRes = await steerRunner({ runnerId: dispatchRes.runnerId, instruction: "Also check baz.mjs" });
+  assert.equal(steerRes.ok, true);
+  assert.equal(steeredInstruction, "Also check baz.mjs");
+  const checkSteeredRes = await checkRunner({ runnerId: dispatchRes.runnerId });
+  assert.equal(checkSteeredRes.trajectory.length, 2);
+  assert.equal(checkSteeredRes.trajectory[1].action, "steer");
+  assert.equal(checkSteeredRes.trajectory[1].instruction, "Also check baz.mjs");
+
+  // Complete runner
+  mockRunner.activeTool = null;
+  mockRunner.status = "completed";
+  mockRunner.result = { summary: "Found 2 call sites", filesChecked: ["foo.mjs", "baz.mjs"] };
+
+  const checkCompletedRes = await checkRunner({ runnerId: dispatchRes.runnerId });
+  assert.equal(checkCompletedRes.status, "completed");
+  assert.equal(checkCompletedRes.activeTool, null);
+  assert.deepEqual(checkCompletedRes.result, mockRunner.result);
+
+  const awaitRes = await awaitRunner({ runnerId: dispatchRes.runnerId });
+  assert.equal(awaitRes.ok, true);
+  assert.deepEqual(awaitRes.result, mockRunner.result);
+
+  // Runner cancellation
+  globalThis.__QQ_TEST_RUNNER_HANDLER = () => {};
+  const cancelDispatch = await dispatchRunner({ task: "long task", cwd: repoDir });
+  const cancelRes = await cancelRunner({ runnerId: cancelDispatch.runnerId });
+  assert.equal(cancelRes.ok, true);
+  assert.equal(cancelRes.status, "cancelled");
+
+  const checkCancelled = await checkRunner({ runnerId: cancelDispatch.runnerId });
+  assert.equal(checkCancelled.status, "cancelled");
+  assert.ok(checkCancelled.trajectory.some((t) => t.action === "cancelled"));
+
+  await assert.rejects(
+    () => awaitRunner({ runnerId: cancelDispatch.runnerId }),
+    /was cancelled/,
+  );
+
+  // Runner failure
+  globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => {
+    runner.status = "failed";
+    runner.error = { message: "Simulated runner crash", exitCode: 1 };
+  };
+  const failDispatch = await dispatchRunner({ task: "failing task", cwd: repoDir });
+  const checkFailed = await checkRunner({ runnerId: failDispatch.runnerId });
+  assert.equal(checkFailed.status, "failed");
+  assert.equal(checkFailed.error.message, "Simulated runner crash");
+
+  await assert.rejects(
+    () => awaitRunner({ runnerId: failDispatch.runnerId }),
+    /Simulated runner crash/,
+  );
+
+  delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+
+  // 10. Automated execution pipeline: dispatch_execution, check_execution, await_execution
+  await assert.rejects(
+    () => dispatchExecution({}),
+    /kind is required: 'bounded' \| 'open'/,
+  );
+  await assert.rejects(
+    () => dispatchExecution({ kind: "invalid" }),
+    /kind is required: 'bounded' \| 'open'/,
+  );
+
+  // Bounded execution: implementer runs -> auto lands into main
+  const boundedExecSessionId = "exec-bounded-1111-2222-3333-444455556666";
+  writeFileSync(join(ticketsDir, `${boundedExecSessionId}.md`), "# Bounded Exec Ticket\n\n## Kind\nbounded\n");
+
+  globalThis.__QQ_TEST_SUBAGENT_HANDLER = async ({ role, cwd }) => {
+    assert.equal(role, "implementer");
+    writeFileSync(join(cwd, "bounded-exec-file.txt"), "bounded exec content\n");
+    return { ok: true, output: "Implemented bounded task successfully." };
+  };
+
+  const boundedExec = await dispatchExecution({
+    kind: "bounded",
+    sessionId: boundedExecSessionId,
+    cwd: repoDir,
+  });
+  assert.equal(boundedExec.ok, true);
+  assert.ok(boundedExec.id);
+  assert.equal(boundedExec.status, "running");
+
+  const boundedExecDone = await awaitExecution({ id: boundedExec.id });
+  assert.equal(boundedExecDone.status, "completed");
+  assert.ok(boundedExecDone.result.landingOutcome.landed);
+  assert.equal(readFileSync(join(repoDir, "bounded-exec-file.txt"), "utf8"), "bounded exec content\n");
+
+  const checkBoundedDone = await checkExecution({ id: boundedExec.id });
+  assert.equal(checkBoundedDone.status, "completed");
+  assert.equal(checkBoundedDone.phase, "completed");
+  assert.ok(checkBoundedDone.trajectory.some((t) => t.action === "implementer_completed"));
+  assert.ok(checkBoundedDone.trajectory.some((t) => t.action === "execution_completed"));
+
+  // Open execution: implementer -> reviewer FAIL -> implementer retry -> reviewer PASS -> auto lands
+  const openExecSessionId = "exec-open-2222-3333-4444-555566667777";
+  writeFileSync(join(ticketsDir, `${openExecSessionId}.md`), "# Open Exec Ticket\n\n## Kind\nopen\n");
+
+  let callCount = 0;
+  globalThis.__QQ_TEST_SUBAGENT_HANDLER = async ({ role, cwd, prompt }) => {
+    callCount++;
+    if (callCount === 1) {
+      assert.equal(role, "implementer");
+      writeFileSync(join(cwd, "feature.txt"), "v1 buggy");
+      return { ok: true, output: "Finished initial implementation" };
+    } else if (callCount === 2) {
+      assert.equal(role, "reviewer");
+      return { ok: true, output: "Verdict: FAIL\nDefect: buggy feature" };
+    } else if (callCount === 3) {
+      assert.equal(role, "implementer");
+      assert.ok(prompt.includes("The reviewer found defects:"));
+      writeFileSync(join(cwd, "feature.txt"), "v2 fixed");
+      return { ok: true, output: "Fixed the bug" };
+    } else if (callCount === 4) {
+      assert.equal(role, "reviewer");
+      return { ok: true, output: "Verdict: PASS\nAll verification steps passed." };
+    }
+    throw new Error(`Unexpected call #${callCount}`);
+  };
+
+  const openExec = await dispatchExecution({
+    kind: "open",
+    sessionId: openExecSessionId,
+    cwd: repoDir,
+  });
+  assert.equal(openExec.ok, true);
+
+  const openExecDone = await awaitExecution({ id: openExec.id });
+  assert.equal(openExecDone.status, "completed");
+  assert.ok(openExecDone.result.landingOutcome.landed);
+  assert.equal(readFileSync(join(repoDir, "feature.txt"), "utf8"), "v2 fixed");
+  assert.equal(callCount, 4);
+
+  const checkOpenDone = await checkExecution({ id: openExec.id });
+  assert.equal(checkOpenDone.status, "completed");
+  assert.ok(checkOpenDone.trajectory.some((t) => t.action === "review_failed_retrying"));
+  assert.ok(checkOpenDone.trajectory.some((t) => t.action === "reviewer_second_run"));
+  assert.ok(checkOpenDone.trajectory.some((t) => t.action === "execution_completed"));
+
+  // Open execution where reviewer fails twice -> marks execution as failed and bubbles error
+  const openFailSessionId = "exec-fail-3333-4444-5555-666677778888";
+  writeFileSync(join(ticketsDir, `${openFailSessionId}.md`), "# Open Fail Ticket\n\n## Kind\nopen\n");
+
+  globalThis.__QQ_TEST_SUBAGENT_HANDLER = async ({ role }) => {
+    if (role === "implementer") {
+      return { ok: true, output: "Implementer done" };
+    }
+    return { ok: true, output: "Verdict: FAIL\nPersistent flaw" };
+  };
+
+  const openFailExec = await dispatchExecution({
+    kind: "open",
+    sessionId: openFailSessionId,
+    cwd: repoDir,
+  });
+
+  await assert.rejects(
+    () => awaitExecution({ id: openFailExec.id }),
+    /Review failed after retry/,
+  );
+
+  const checkFail = await checkExecution({ id: openFailExec.id });
+  assert.equal(checkFail.status, "failed");
+  assert.equal(checkFail.phase, "reviewing");
+  assert.ok(checkFail.error.message.includes("Review failed after retry"));
+
+  // Implementer failure bubbles cleanly
+  const implFailSessionId = "exec-implfail-4444-5555-6666-777788889999";
+  writeFileSync(join(ticketsDir, `${implFailSessionId}.md`), "# Impl Fail Ticket\n\n## Kind\nbounded\n");
+
+  globalThis.__QQ_TEST_SUBAGENT_HANDLER = async () => {
+    return { ok: false, error: { message: "Syntax error in build", exitCode: 1, stderr: "Error: build failed" } };
+  };
+
+  const implFailExec = await dispatchExecution({
+    kind: "bounded",
+    sessionId: implFailSessionId,
+    cwd: repoDir,
+  });
+
+  await assert.rejects(
+    () => awaitExecution({ id: implFailExec.id }),
+    /Syntax error in build/,
+  );
+
+  const checkImplFail = await checkExecution({ id: implFailExec.id });
+  assert.equal(checkImplFail.status, "failed");
+  assert.equal(checkImplFail.phase, "implementing");
+  assert.equal(checkImplFail.error.exitCode, 1);
+
+  delete globalThis.__QQ_TEST_SUBAGENT_HANDLER;
 
   // Clean up open worktree
   try {
@@ -667,7 +1010,7 @@ try {
   rmSync(repoDir, { recursive: true, force: true });
 }
 
-// 9. RPC & JSON-RPC stdio protocol tests
+// 11. RPC & JSON-RPC stdio protocol tests
 const initResp = await handleRpc("initialize", {});
 assert.equal(initResp.serverInfo.name, "qq-workflows");
 assert.equal(initResp.serverInfo.version, "0.2.0");
@@ -676,7 +1019,7 @@ const pingResp = await handleRpc("ping", {});
 assert.deepEqual(pingResp, {});
 
 const listResp = await handleRpc("tools/list", {});
-assert.equal(listResp.tools.length, 2);
+assert.equal(listResp.tools.length, 12);
 
 // tools/call with missing kind should return isError: true
 const errCallResp = await handleRpc("tools/call", {
@@ -716,7 +1059,7 @@ assert.equal(responses[0].id, 1);
 assert.equal(responses[0].result.serverInfo.name, "qq-workflows");
 
 assert.equal(responses[1].id, 2);
-assert.equal(responses[1].result.tools.length, 2);
+assert.equal(responses[1].result.tools.length, 12);
 
 assert.equal(responses[2].id, 3);
 assert.deepEqual(responses[2].result, {});

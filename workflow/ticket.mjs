@@ -59,6 +59,44 @@ export async function resolveTicketSource(root, sessionId) {
   throw new Error(`no ticket resolved for session '${sessionId}'`);
 }
 
+export const PROVIDERS = ["muse", "gemini", "deepseek", "codex", "astra"];
+export const CANONICAL_PROVIDERS = ["muse", "gemini", "deepseek", "codex"];
+
+export function normalizeProvider(value) {
+  if (typeof value !== "string") return value;
+  const p = value.trim().toLowerCase();
+  if (p === "astra") return "codex";
+  return p;
+}
+
+export function isKnownProvider(value) {
+  if (typeof value !== "string") return false;
+  return PROVIDERS.includes(value.trim().toLowerCase());
+}
+
+export function assertKnownProvider(value) {
+  if (!isKnownProvider(value)) {
+    throw new Error(`unknown provider '${value}': expected 'muse' | 'gemini' | 'deepseek' | 'codex' | 'astra'`);
+  }
+  return normalizeProvider(value);
+}
+
+export async function readTicket(cwd, sessionId) {
+  const path = sessionId ? await resolveTicketSource(cwd, sessionId) : ticketPath(cwd);
+  const content = await readFile(path, "utf8");
+  return { path, content, text: content };
+}
+
+export async function updateTicket(cwd, content, sessionId) {
+  if (typeof content !== "string") {
+    throw new Error("content must be a string");
+  }
+  const path = sessionId ? ticketPath(cwd, sessionId) : ticketPath(cwd);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, content, "utf8");
+  return { path, content, text: content };
+}
+
 export function extractSection(markdown, heading) {
   const source = String(markdown ?? "");
   const name = String(heading ?? "").replace(/^\[/, "").replace(/\]$/, "");
@@ -79,6 +117,20 @@ export function parseKind(markdown) {
     const trimmed = line.trim();
     const match = /^(bounded|open|research)\b/i.exec(trimmed);
     if (match) choices.push(match[1].toLowerCase());
+  }
+  const unique = [...new Set(choices)];
+  if (unique.length === 1) return unique[0];
+  return null;
+}
+
+export function parseProvider(markdown) {
+  const section = extractSection(markdown, "Provider");
+  if (section == null) return null;
+  const choices = [];
+  for (const line of section.split("\n")) {
+    const trimmed = line.trim();
+    const match = /^(muse|gemini|deepseek|codex|astra)\b/i.exec(trimmed);
+    if (match) choices.push(normalizeProvider(match[1].toLowerCase()));
   }
   const unique = [...new Set(choices)];
   if (unique.length === 1) return unique[0];
