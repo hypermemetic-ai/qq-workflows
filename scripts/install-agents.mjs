@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -142,6 +142,96 @@ export function mergeCodexConfig(existingTomlText, { mcpServerBin, zgBin = "zg",
   return `${content.trim()}\n`;
 }
 
+// Orca ships its built-in opencode integration slot under the display name
+// "OpenCode" in several bundles (tui-agent-display-names.js,
+// commit-message-agent-specs-primary.js, and minified main chunks). We reuse
+// that slot for Muse Spark: ~/.local/bin/opencode points at
+// bin/muse-architect.sh, so Orca detects the slot as installed
+// (detectCmd: 'opencode'). This pure transform renames only the slot's
+// display labels to "Muse Spark". Agent ids, detectCmd/binary values, model
+// labels, hook identifiers, and comments are deliberately left untouched.
+export function patchOrcaMuseSparkDisplayName(content) {
+  let out = String(content ?? "");
+  // Status labels first: each contains the bare label as a prefix.
+  out = out.split("'OpenCode - action required'").join("'Muse Spark - action required'");
+  out = out.split("'OpenCode ready'").join("'Muse Spark ready'");
+  out = out.split("`OpenCode - action required`").join("`Muse Spark - action required`");
+  out = out.split("`OpenCode ready`").join("`Muse Spark ready`");
+  // Bare display labels in shared registries and minified chunks.
+  out = out.split("'OpenCode'").join("'Muse Spark'");
+  out = out.split("`OpenCode`").join("`Muse Spark`");
+  // Localized agent-catalog label for the opencode slot.
+  out = out.split('"e7a4ca5103":"OpenCode"').join('"e7a4ca5103":"Muse Spark"');
+  // Reverse display-name -> agent-id maps: add the new display name as an
+  // alias so both old ("OpenCode") and new ("Muse Spark") titles resolve.
+  // Guarded so reruns never duplicate the alias.
+  if (out.includes("OpenCode: 'opencode'") && !out.includes("'Muse Spark': 'opencode'")) {
+    out = out.split("OpenCode: 'opencode'").join("OpenCode: 'opencode', 'Muse Spark': 'opencode'");
+  }
+  if (out.includes("OpenCode:`opencode`") && !out.includes('"Muse Spark":`opencode`')) {
+    out = out.split("OpenCode:`opencode`").join("OpenCode:`opencode`,\"Muse Spark\":`opencode`");
+  }
+  return out;
+}
+
+// Locate Orca's unpacked JS tree from a home dir: ~/.local/bin/orca[-ide]
+// resolves (through symlinks) to <resources>/bin/orca-ide, and the shipped
+// bundles live in <resources>/app.asar.unpacked/out. Home-scoped on purpose:
+// temp-home installer runs must never touch the real Orca install.
+export function resolveOrcaOutDir(home) {
+  for (const name of ["orca", "orca-ide"]) {
+    try {
+      const candidate = join(home, ".local", "bin", name);
+      if (!lstatSync(candidate, { throwIfNoEntry: false })) continue;
+      const outDir = join(dirname(dirname(realpathSync(candidate))), "app.asar.unpacked", "out");
+      if (existsSync(outDir)) return outDir;
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  return null;
+}
+
+// Patch every shipped Orca bundle under outDir so the opencode slot shows
+// as "Muse Spark". Idempotent: reruns rewrite nothing. Best-effort per file.
+export function ensureOrcaMuseSparkDisplay(outDir, { log = () => {} } = {}) {
+  const patched = [];
+  let scanned = 0;
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith(".js")) continue;
+      scanned += 1;
+      let raw;
+      try {
+        raw = readFileSync(full, "utf8");
+      } catch {
+        continue;
+      }
+      const updated = patchOrcaMuseSparkDisplayName(raw);
+      if (updated !== raw) {
+        try {
+          writeFileSync(full, updated, "utf8");
+          patched.push(full);
+          log(`Patched Orca Muse Spark display name in ${full}`);
+        } catch {
+          /* best-effort per file */
+        }
+      }
+    }
+  };
+  try {
+    walk(outDir);
+  } catch {
+    /* missing/unreadable tree: nothing to patch */
+  }
+  return { scanned, patched };
+}
+
 function installSymlink(targetPath, sourcePath, label, log) {
   const stat = lstatSync(targetPath, { throwIfNoEntry: false });
   if (stat) {
@@ -151,7 +241,7 @@ function installSymlink(targetPath, sourcePath, label, log) {
   log(`Installed ${label} symlink: ${targetPath} -> ${sourcePath}`);
 }
 
-export async function installAgents({ home = homedir(), xdgConfigHome = process.env.XDG_CONFIG_HOME, repoRoot = null, log = console.log } = {}) {
+export async function installAgents({ home = homedir(), xdgConfigHome = process.env.XDG_CONFIG_HOME, repoRoot = null, orcaOutDir = null, log = console.log } = {}) {
   const root = repoRoot ?? (await resolveRepoRoot(defaultStartDir()));
   const warn = (message, error) => {
     if (error !== undefined) console.error(message, error);
@@ -293,20 +383,35 @@ export async function installAgents({ home = homedir(), xdgConfigHome = process.
     warn("Failed to symlink bin/muse-architect.sh", err);
   }
 
-  // 7. Remove the stale opencode alias, but only when it is our symlink to
-  // the muse-architect launcher; anything else named opencode is left alone.
+  // 7. Ensure the opencode alias points at the muse-architect launcher so
+  // Orca detects its opencode slot (detectCmd: 'opencode') as installed.
+  // A foreign opencode entry (the real OpenCode CLI, not our symlink) is
+  // always left alone.
   try {
     const opencodeLink = join(localBin, "opencode");
+    const museArchitectShim = join(root, "bin", "muse-architect.sh");
     const stat = lstatSync(opencodeLink, { throwIfNoEntry: false });
-    if (stat?.isSymbolicLink()) {
+    if (!stat) {
+      symlinkSync(museArchitectShim, opencodeLink);
+      log(`Installed opencode alias symlink: ${opencodeLink} -> ${museArchitectShim}`);
+    } else if (stat.isSymbolicLink()) {
       const target = readlinkSync(opencodeLink);
       if (target.includes("muse-architect")) {
-        rmSync(opencodeLink);
-        log(`Removed stale opencode alias: ${opencodeLink} -> ${target}`);
+        if (target !== museArchitectShim) {
+          rmSync(opencodeLink);
+          symlinkSync(museArchitectShim, opencodeLink);
+          log(`Repointed opencode alias: ${opencodeLink} -> ${museArchitectShim}`);
+        } else {
+          log(`opencode alias already installed: ${opencodeLink} -> ${target}`);
+        }
+      } else {
+        log(`Leaving foreign opencode symlink alone: ${opencodeLink} -> ${target}`);
       }
+    } else {
+      log(`Leaving foreign opencode entry alone: ${opencodeLink}`);
     }
-  } catch {
-    /* best-effort alias cleanup */
+  } catch (err) {
+    warn("Failed to ensure opencode alias", err);
   }
 
   // 8. Remove the stale hardcoded architect prompt (the launcher now renders
@@ -417,8 +522,25 @@ export async function installAgents({ home = homedir(), xdgConfigHome = process.
     }
   }
 
+  // 12. Rename Orca's built-in opencode slot display labels to "Muse Spark"
+  // so the provider/agent lists show Muse Spark. Detection still uses the
+  // opencode command from step 7. Home-scoped: without an Orca install
+  // under this home root there is nothing to patch.
+  let orcaDisplayOutDir = null;
+  try {
+    orcaDisplayOutDir = orcaOutDir ?? resolveOrcaOutDir(home);
+    if (orcaDisplayOutDir) {
+      const { scanned, patched } = ensureOrcaMuseSparkDisplay(orcaDisplayOutDir, { log });
+      if (patched.length === 0) {
+        log(`Orca Muse Spark display names already current (${scanned} bundles scanned)`);
+      }
+    }
+  } catch (err) {
+    warn("Failed to patch Orca display names", err);
+  }
+
   log("Installation complete!");
-  return { home, museDir, museSettingsPath, codexDir, codexConfigPath, repoRoot: root };
+  return { home, museDir, museSettingsPath, codexDir, codexConfigPath, repoRoot: root, orcaOutDir: orcaDisplayOutDir };
 }
 
 const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);

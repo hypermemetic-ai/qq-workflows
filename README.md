@@ -31,12 +31,13 @@ This:
 
 - Ensures `presets.{architect,implementer,reviewer,researcher}` exist in the muse `settings.json` (`$XDG_CONFIG_HOME/muse` when set, else `~/.config/muse`), creating missing names as `{}` while preserving all pre-existing content, and registers the `qq-workflows` MCP server there.
 - Links the `muse-architect` launcher into `~/.local/bin/` (target: `bin/muse-architect.sh` in this repo).
+- Links the `opencode` alias into `~/.local/bin/` (target: `bin/muse-architect.sh`) so Orca detects its built-in opencode slot as installed, and renames that slot's display labels to `Muse Spark` in Orca's shipped bundles (a foreign `opencode` entry is always left alone).
 - Links `architect`, `implementer`, and `reviewer` into `~/.gemini/config/agents/`.
 - Configures the `architect-ticket` `PreInvocation` hook in `~/.gemini/config/hooks.json` to automatically create `.architect/tickets/<sessionId>.md` from template before turn 1.
 - Registers the `qq-workflows` MCP server in `~/.gemini/config/mcp_config.json` providing `prepare_worktree` and `land`.
 - Installs the `architect` CLI launcher into `~/.local/bin/architect`.
 
-The installer also removes two stale artifacts when present (with a stdout note): the old `opencode` → `muse-architect` alias in `~/.local/bin/` (anything else named `opencode` is left alone) and the hardcoded `architect/AGENTS.md` prompt (the launcher now renders from `agents/architect/agent.md`).
+The installer also removes one stale artifact when present (with a stdout note): the hardcoded `architect/AGENTS.md` prompt (the launcher now renders from `agents/architect/agent.md`).
 
 Old ticket mirrors under `~/.gemini/antigravity-cli/brain/` from previous versions are orphaned and harmless; the installer leaves user files alone and never recreates them.
 
