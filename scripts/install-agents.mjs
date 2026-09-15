@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,6 +50,50 @@ export function mergeMuseSettings(existing, mcpServerBin) {
   };
   config.mcpServers = servers;
   return config;
+}
+
+export function cleanMuseAuth(authJsonText) {
+  if (!authJsonText) return authJsonText;
+  try {
+    const data = JSON.parse(authJsonText);
+    if (data && typeof data === "object" && data.providers && typeof data.providers === "object") {
+      let changed = false;
+      for (const provider of Object.values(data.providers)) {
+        if (provider && typeof provider === "object" && "api_key" in provider) {
+          delete provider.api_key;
+          changed = true;
+        }
+      }
+      if (changed) {
+        return `${JSON.stringify(data, null, 2)}\n`;
+      }
+    }
+    return authJsonText;
+  } catch {
+    return authJsonText;
+  }
+}
+
+export function configureOrcaSettings(existingOrcaDataText, { codexCommand = "codex-architect" } = {}) {
+  let data = {};
+  if (existingOrcaDataText && typeof existingOrcaDataText === "string") {
+    try {
+      data = JSON.parse(existingOrcaDataText);
+    } catch {
+      data = {};
+    }
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    data = {};
+  }
+  data.settings = data.settings && typeof data.settings === "object" && !Array.isArray(data.settings)
+    ? { ...data.settings }
+    : {};
+  data.settings.agentCmdOverrides = data.settings.agentCmdOverrides && typeof data.settings.agentCmdOverrides === "object" && !Array.isArray(data.settings.agentCmdOverrides)
+    ? { ...data.settings.agentCmdOverrides }
+    : {};
+  data.settings.agentCmdOverrides.codex = codexCommand;
+  return `${JSON.stringify(data, null, 2)}\n`;
 }
 
 export function mergeCodexConfig(existingTomlText, { mcpServerBin, zgBin = "zg", promptFile } = {}) {
@@ -225,6 +269,23 @@ export async function installAgents({ home = homedir(), xdgConfigHome = process.
     warn("Failed to update muse settings.json", err);
   }
 
+  // 5b. Sanitize muse auth.json (strip contributor api_key so subscription token is used)
+  for (const dir of new Set([museDir, join(home, ".config", "muse")])) {
+    const authPath = join(dir, "auth.json");
+    if (existsSync(authPath)) {
+      try {
+        const raw = readFileSync(authPath, "utf8");
+        const cleaned = cleanMuseAuth(raw);
+        if (cleaned !== raw) {
+          writeFileSync(authPath, cleaned, "utf8");
+          log(`Sanitized muse auth in ${authPath}`);
+        }
+      } catch (err) {
+        warn(`Failed to clean muse auth in ${authPath}`, err);
+      }
+    }
+  }
+
   // 6. Install muse-architect launcher symlink into ~/.local/bin/muse-architect
   try {
     installSymlink(join(localBin, "muse-architect"), join(root, "bin", "muse-architect.sh"), "muse-architect launcher", log);
@@ -294,6 +355,66 @@ export async function installAgents({ home = homedir(), xdgConfigHome = process.
     installSymlink(join(localBin, "codex-architect"), join(root, "bin", "codex-architect.sh"), "codex-architect launcher", log);
   } catch (err) {
     warn("Failed to symlink bin/codex-architect.sh", err);
+  }
+
+  // 11. Configure Orca: agentCmdOverrides for codex and managed account config.toml
+  const orcaBaseDir = join(home, ".config", "orca");
+  if (existsSync(orcaBaseDir)) {
+    const profileCandidates = [join(orcaBaseDir, "orca-data.json")];
+    const profilesDir = join(orcaBaseDir, "profiles");
+    if (existsSync(profilesDir)) {
+      try {
+        for (const entry of readdirSync(profilesDir, { withFileTypes: true })) {
+          if (entry.isDirectory()) {
+            profileCandidates.push(join(profilesDir, entry.name, "orca-data.json"));
+          }
+        }
+      } catch {}
+    }
+    for (const dataPath of profileCandidates) {
+      if (existsSync(dataPath)) {
+        try {
+          const raw = readFileSync(dataPath, "utf8");
+          const updated = configureOrcaSettings(raw);
+          if (updated !== raw) {
+            writeFileSync(dataPath, updated, "utf8");
+            log(`Configured Orca codex override in ${dataPath}`);
+          }
+        } catch (err) {
+          warn(`Failed to update Orca settings in ${dataPath}`, err);
+        }
+      }
+    }
+
+    const codexConfigCandidates = [join(orcaBaseDir, "codex-runtime-home", "home", "config.toml")];
+    const codexAccountsDir = join(orcaBaseDir, "codex-accounts");
+    if (existsSync(codexAccountsDir)) {
+      try {
+        for (const entry of readdirSync(codexAccountsDir, { withFileTypes: true })) {
+          if (entry.isDirectory()) {
+            codexConfigCandidates.push(join(codexAccountsDir, entry.name, "home", "config.toml"));
+          }
+        }
+      } catch {}
+    }
+    for (const configPath of codexConfigCandidates) {
+      if (existsSync(configPath)) {
+        try {
+          const raw = readFileSync(configPath, "utf8");
+          const merged = mergeCodexConfig(raw, {
+            mcpServerBin,
+            zgBin: "zg",
+            promptFile,
+          });
+          if (merged !== raw) {
+            writeFileSync(configPath, merged, "utf8");
+            log(`Configured Orca managed codex in ${configPath}`);
+          }
+        } catch (err) {
+          warn(`Failed to update Orca codex config in ${configPath}`, err);
+        }
+      }
+    }
   }
 
   log("Installation complete!");

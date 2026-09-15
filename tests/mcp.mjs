@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFile, execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -853,6 +853,36 @@ try {
   );
 
   delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+
+  // Runner process spawns with --model gemini-3.8-flash-high by default
+  {
+    const fakeRunnerDir = mkdtempSync(join(tmpdir(), "test-runner-bin-"));
+    try {
+      const runnerLog = join(fakeRunnerDir, "runner-call.txt");
+      const fakeAgy = join(fakeRunnerDir, "fake-agy.sh");
+      writeFileSync(
+        fakeAgy,
+        `#!/usr/bin/env bash\necho "$@" > "${runnerLog}"\n`,
+      );
+      execFileSync("chmod", ["+x", fakeAgy]);
+
+      const prevRunnerBin = process.env.QQ_RUNNER_BIN;
+      process.env.QQ_RUNNER_BIN = fakeAgy;
+      try {
+        await dispatchRunner({ task: "test model flag", cwd: repoDir });
+        await new Promise((r) => setTimeout(r, 200));
+        assert.ok(existsSync(runnerLog));
+        const loggedArgs = readFileSync(runnerLog, "utf8");
+        assert.ok(loggedArgs.includes("--model gemini-3.8-flash-high"));
+        assert.ok(loggedArgs.includes("--agent runner"));
+      } finally {
+        if (prevRunnerBin !== undefined) process.env.QQ_RUNNER_BIN = prevRunnerBin;
+        else delete process.env.QQ_RUNNER_BIN;
+      }
+    } finally {
+      rmSync(fakeRunnerDir, { recursive: true, force: true });
+    }
+  }
 
   // 10. Automated execution pipeline: dispatch_execution, check_execution, await_execution
   await assert.rejects(
