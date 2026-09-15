@@ -19,6 +19,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  cleanMuseAuth,
+  configureOrcaSettings,
   installAgents,
   mergeCodexConfig,
   mergeMuseSettings,
@@ -545,6 +547,114 @@ accessSync(codexShimPath, constants.X_OK);
     rmSync(launchHome, { recursive: true, force: true });
     rmSync(launchWork, { recursive: true, force: true });
     rmSync(fakeBin, { recursive: true, force: true });
+  }
+}
+
+// 12. cleanMuseAuth is pure: removes api_key from providers while preserving tokens
+{
+  const withKey = JSON.stringify({
+    schema_version: 1,
+    providers: {
+      meta: {
+        access_token: "sub-token-123",
+        api_key: "contributor-key-456",
+        mechanism: "oauth",
+        user_email: "test@example.com",
+      },
+    },
+  });
+  const cleaned = cleanMuseAuth(withKey);
+  const parsed = JSON.parse(cleaned);
+  assert.equal(parsed.providers.meta.access_token, "sub-token-123");
+  assert.equal(parsed.providers.meta.api_key, undefined);
+  assert.equal(parsed.providers.meta.mechanism, "oauth");
+
+  const withoutKey = JSON.stringify({
+    schema_version: 1,
+    providers: {
+      meta: {
+        access_token: "sub-token-123",
+      },
+    },
+  });
+  assert.equal(cleanMuseAuth(withoutKey), withoutKey);
+  assert.equal(cleanMuseAuth(""), "");
+}
+
+// 13. configureOrcaSettings is pure: sets agentCmdOverrides.codex to codex-architect
+{
+  const fresh = configureOrcaSettings(undefined);
+  const freshParsed = JSON.parse(fresh);
+  assert.equal(freshParsed.settings.agentCmdOverrides.codex, "codex-architect");
+
+  const existing = JSON.stringify({
+    settings: {
+      workspaceDir: "/ws",
+      agentCmdOverrides: {
+        claude: "custom-claude",
+      },
+    },
+  });
+  const merged = configureOrcaSettings(existing);
+  const mergedParsed = JSON.parse(merged);
+  assert.equal(mergedParsed.settings.workspaceDir, "/ws");
+  assert.equal(mergedParsed.settings.agentCmdOverrides.claude, "custom-claude");
+  assert.equal(mergedParsed.settings.agentCmdOverrides.codex, "codex-architect");
+}
+
+// 14. installAgents cleans muse auth and configures Orca files
+{
+  const testHome = mkdtempSync(join(tmpdir(), "architect-orca-install-home-"));
+  try {
+    // Setup fake muse auth
+    const museDir = join(testHome, ".config", "muse");
+    mkdirSync(museDir, { recursive: true });
+    writeFileSync(
+      join(museDir, "auth.json"),
+      JSON.stringify({
+        providers: {
+          meta: {
+            access_token: "oauth-tok",
+            api_key: "bad-contrib-key",
+          },
+        },
+      }),
+    );
+
+    // Setup fake orca profile and managed codex account
+    const orcaProfileDir = join(testHome, ".config", "orca", "profiles", "local-default");
+    mkdirSync(orcaProfileDir, { recursive: true });
+    writeFileSync(
+      join(orcaProfileDir, "orca-data.json"),
+      JSON.stringify({
+        settings: { workspaceDir: "/test" },
+      }),
+    );
+
+    const codexAccDir = join(testHome, ".config", "orca", "codex-accounts", "acc-uuid", "home");
+    mkdirSync(codexAccDir, { recursive: true });
+    writeFileSync(join(codexAccDir, "config.toml"), 'model = "gpt-6-astra"\n');
+
+    await installAgents({ home: testHome, repoRoot });
+
+    // Assert muse auth sanitized
+    const authParsed = JSON.parse(readFileSync(join(museDir, "auth.json"), "utf8"));
+    assert.equal(authParsed.providers.meta.access_token, "oauth-tok");
+    assert.equal(authParsed.providers.meta.api_key, undefined);
+
+    // Assert Orca settings updated
+    const orcaParsed = JSON.parse(readFileSync(join(orcaProfileDir, "orca-data.json"), "utf8"));
+    assert.equal(orcaParsed.settings.agentCmdOverrides.codex, "codex-architect");
+    assert.equal(orcaParsed.settings.workspaceDir, "/test");
+
+    // Assert Orca managed codex config updated
+    const tomlContent = readFileSync(join(codexAccDir, "config.toml"), "utf8");
+    assert.ok(tomlContent.includes("[features]"));
+    assert.ok(tomlContent.includes("shell_tool = false"));
+    assert.ok(tomlContent.includes("[mcp_servers.qq-workflows]"));
+    assert.ok(tomlContent.includes("[mcp_servers.zvec_grep]"));
+  } finally {
+    rmSync(testHome, { recursive: true, force: true });
   }
 }
 

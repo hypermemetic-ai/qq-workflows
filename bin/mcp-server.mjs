@@ -572,8 +572,10 @@ function startRunnerProcess(runner) {
   }
 
   const bin = process.env.QQ_RUNNER_BIN || process.env.REAL_AGY_BIN || "agy";
+  const runnerModel = process.env.QQ_RUNNER_MODEL || "gemini-3.8-flash-high";
   const childArgs = [
     "--agent", "runner",
+    "--model", runnerModel,
     "--dangerously-skip-permissions",
     "--output-format", "stream-json",
     "--print", prompt,
@@ -859,7 +861,16 @@ async function runChildSubagent(execution, { role, cwd, prompt, provider }) {
     args = ["exec", "--profile", role, prompt];
   } else {
     bin = "muse";
-    args = ["exec", "--preset", role, "--yolo", prompt];
+    const museModel = process.env.QQ_MUSE_MODEL || "muse-spark-1.3";
+    const museEffort = process.env.QQ_MUSE_REASONING_EFFORT || "max";
+    args = [
+      "exec",
+      "--preset", role,
+      "--model", museModel,
+      "--reasoning-effort", museEffort,
+      "--yolo",
+      prompt,
+    ];
   }
 
   return new Promise((resolvePromise) => {
