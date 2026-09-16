@@ -106,7 +106,12 @@ EOF
   fi
 fi
 
-if command -v orca >/dev/null 2>&1; then
+# Notify Orca IDE to open the ticket file in an editor pane if available.
+# On Linux, Orca IDE installs its CLI as `orca-ide` to avoid colliding with
+# the system screen reader (`orca`). On macOS and other platforms, it is `orca`.
+if command -v orca-ide >/dev/null 2>&1; then
+  (orca-ide file open "${TICKET_PATH}" || true) </dev/null >/dev/null 2>&1 &
+elif [ "$(uname -s)" != "Linux" ] && command -v orca >/dev/null 2>&1; then
   (orca file open "${TICKET_PATH}" || true) </dev/null >/dev/null 2>&1 &
 fi
 

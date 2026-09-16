@@ -321,6 +321,9 @@ function writeFakeBin(fakeBin, recordDir) {
   const orcaRecord = join(recordDir, "orca-call.txt");
   writeFileSync(join(fakeBin, "orca"), `#!/usr/bin/env bash\necho "ORCA: $@" > ${orcaRecord}\n`);
   execFileSync("chmod", ["+x", join(fakeBin, "orca")]);
+  try {
+    symlinkSync("orca", join(fakeBin, "orca-ide"));
+  } catch {}
   return { museRecord, orcaRecord };
 }
 
@@ -554,6 +557,11 @@ accessSync(codexShimPath, constants.X_OK);
       `#!/usr/bin/env bash\necho "ARGS: $@" > ${codexRecord}\n`,
     );
     execFileSync("chmod", ["+x", join(fakeBin, "codex")]);
+    writeFileSync(join(fakeBin, "orca"), `#!/usr/bin/env bash\nexit 0\n`);
+    execFileSync("chmod", ["+x", join(fakeBin, "orca")]);
+    try {
+      symlinkSync("orca", join(fakeBin, "orca-ide"));
+    } catch {}
 
     const sessionId = "codex-sess-1234";
     const env = { ...process.env, HOME: launchHome, PATH: [fakeBin, "/usr/bin", "/bin"].join(":") };
