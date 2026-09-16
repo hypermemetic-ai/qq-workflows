@@ -68,24 +68,19 @@ assert.deepEqual(toolsList, [
 assert.match(architectContent, /The ticket is `\.architect\/tickets\/<sessionId>\.md`/);
 assert.match(architectContent, /## Teaching/);
 assert.match(architectContent, /teach until the user is informed enough to decide/);
-assert.match(architectContent, /call `prepare_worktree`/);
-assert.match(architectContent, /call `land`/);
+assert.match(architectContent, /call `dispatch_execution\(kind\)`/);
+assert.match(architectContent, /await_execution/);
+assert.match(architectContent, /dispatch_runner/);
 assert.match(architectContent, /Ask questions one at a time with recommendations\./);
 assert.match(architectContent, /Populate ticket and testing plan collaboratively with the operator\./);
 assert.doesNotMatch(architectContent, /RequestFeedback: false/);
 assert.match(
   architectContent,
-  /Do not call `prepare_worktree` until the operator explicitly approves\./,
+  /Do not call `dispatch_execution` until the operator explicitly approves\./,
 );
-assert.match(architectContent, /When the operator approves the ticket, call `prepare_worktree`\./);
-assert.match(
-  architectContent,
-  /For implementation tickets \(`bounded` or `open`\), invoke the implementer \(and reviewer when required\) using the prompt provided by the tool\./,
-);
-assert.match(
-  architectContent,
-  /For research tickets \(`research`\), invoke the research subagent using the prompt provided by the tool\./,
-);
+assert.match(architectContent, /When the operator approves the ticket, call `dispatch_execution\(kind\)`\./);
+assert.doesNotMatch(architectContent, /prepare_worktree/);
+assert.doesNotMatch(architectContent, /call `land`/);
 
 // 4. Implementer checks
 const implementerContent = readFileSync(join(repoRoot, "agents", "implementer", "agent.md"), "utf8");
