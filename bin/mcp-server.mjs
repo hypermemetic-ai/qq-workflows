@@ -698,7 +698,10 @@ function startRunnerProcess(runner) {
   });
 
   child.on("close", (code, signal) => {
-    if (runner.status === "cancelled") return;
+    if (runner.status === "cancelled" || runner.status === "completed") {
+      runner.activeTool = null;
+      return;
+    }
     if (signal === "SIGTERM" || signal === "SIGINT") {
       runner.status = "cancelled";
       runner.activeTool = null;
@@ -725,7 +728,7 @@ function startRunnerProcess(runner) {
   });
 
   child.on("error", (err) => {
-    if (runner.status === "cancelled") return;
+    if (runner.status === "cancelled" || runner.status === "completed") return;
     runner.status = "failed";
     runner.error = {
       message: err.message,
@@ -735,7 +738,7 @@ function startRunnerProcess(runner) {
   });
 }
 
-function handleRunnerEvent(runner, event) {
+export function handleRunnerEvent(runner, event) {
   if (event.event === "step_update" && event.step_update) {
     const su = event.step_update;
     if (su.step_type === "tool") {
@@ -752,6 +755,20 @@ function handleRunnerEvent(runner, event) {
           duration: su.duration_seconds,
           timestamp: Date.now(),
         });
+        // Immediate termination on complete_task: mark completed and kill child process.
+        if (su.tool_name === "complete_task") {
+          const key = process.env.GEMINI_CONVERSATION_ID || process.env.ASTRA_CONVERSATION_ID || "default";
+          const recorded = COMPLETE_TASK_REGISTRY.get(key);
+          const params = su.tool_info?.parameters;
+          const response = recorded?.response ?? params?.response ?? null;
+          const data_points = recorded?.data_points ?? params?.data_points ?? [];
+          runner.status = "completed";
+          runner.result = { response, data_points };
+          runner.activeTool = null;
+          if (runner.process) {
+            try { runner.process.kill("SIGTERM"); } catch {}
+          }
+        }
       }
     } else if (su.step_type === "agent_response") {
       if (su.state === "ACTIVE") {
