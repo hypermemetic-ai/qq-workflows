@@ -115,7 +115,7 @@ export const TOOLS = [
   },
   {
     name: "check_runner",
-    description: "Check telemetry, trajectory, and status of a running or finished runner.",
+    description: "Check telemetry, trajectory, and status of a running or finished runner. Point-in-time read; surfaces the stuck-suspicion flag with evidence when silent past threshold.",
     inputSchema: {
       type: "object",
       properties: {
@@ -161,17 +161,13 @@ export const TOOLS = [
   },
   {
     name: "await_runner",
-    description: "Wait for a runner to complete and return its synthesized findings.",
+    description: "Wait for a runner and return status by 4:50: terminal payload if finished, needs-decision with stall evidence if silent past threshold, or running-fine heartbeat. Never fails for clocks; re-await while running. Parking an await on running work is safe.",
     inputSchema: {
       type: "object",
       properties: {
         runnerId: {
           type: "string",
           description: "Tracking ID of the runner",
-        },
-        timeoutMs: {
-          type: "number",
-          description: "Maximum time to wait in milliseconds (defaults to 300000)",
         },
       },
       required: ["runnerId"],
@@ -215,7 +211,7 @@ export const TOOLS = [
   },
   {
     name: "check_execution",
-    description: "Check progress, active phase, telemetry, and status of an execution pipeline.",
+    description: "Check progress, active phase, telemetry, and status of an execution pipeline. Point-in-time read; surfaces the stuck-suspicion flag with evidence when silent past threshold.",
     inputSchema: {
       type: "object",
       properties: {
@@ -229,17 +225,13 @@ export const TOOLS = [
   },
   {
     name: "await_execution",
-    description: "Wait for an execution pipeline to finish and return the final verified story and landing outcome.",
+    description: "Wait for an execution pipeline and return status by 4:50: terminal payload if finished, needs-decision with stall evidence if silent past threshold, or running-fine heartbeat. Never fails for clocks; re-await while running. Parking an await on running work is safe.",
     inputSchema: {
       type: "object",
       properties: {
         id: {
           type: "string",
           description: "Tracking ID of the execution",
-        },
-        timeoutMs: {
-          type: "number",
-          description: "Maximum time to wait in milliseconds (defaults to 600000)",
         },
       },
       required: ["id"],
@@ -603,6 +595,158 @@ function addTrajectory(target, entry) {
 }
 
 // ============================================================================
+// Watchdog: bounded waits, suspicion-with-evidence, dead-process reconcile
+// ============================================================================
+//
+// The MCP client transport kills any call open past ~300s. Awaits therefore
+// return status by 4:50 every time: terminal payload if finished,
+// needs-decision with stall evidence if the work looks stuck, or a
+// running-fine heartbeat if nothing to report. Elapsed time never fails a
+// wait — there is no timeout-as-error.
+//
+// Suspicion is evidence-triggered (full silence past a threshold), while the
+// 4:50 heartbeat is a status report forced by the harness cliff. Neither is
+// a verdict: time gates evidence, it is not the verdict. Healthy work can go
+// quiet that long (buffered test output, quiet reporters, one long single
+// test), so the threshold means "quiet long enough that the architect should
+// take a look" — never "sure it's stuck."
+//
+// Evaluation is on-access (check_*/await_* drive the check): no background
+// timer, no sticky flag. Each call recomputes suspicion from last-activity;
+// delivering a needs-decision envelope touches nothing underneath, so the
+// flag inherently clears on delivery and re-arms on the next access if the
+// work is still silent. Re-await keeps watching with nothing lost.
+
+export const AWAIT_CALL_WINDOW_MS = 290_000; // 4:50 — always home before the ~300s harness cliff
+export const LONG_TOOL_SUSPICION_MS = 600_000; // 10:00 absolute for known-long shell tools
+
+// Tools whose quiet runs are legitimately long (test suites, builds). All
+// other tools (and the between-tools idle state) trip suspicion after one
+// quiet 4:50 call window.
+export const LONG_RUNNING_TOOLS = ["run_command"];
+
+function watchdogOverrides() {
+  const o = globalThis.__QQ_TEST_WATCHDOG;
+  if (o && typeof o === "object") return o;
+  return {};
+}
+
+export function awaitWindowMs() {
+  const o = watchdogOverrides();
+  if (typeof o.awaitWindowMs === "number" && o.awaitWindowMs > 0) return o.awaitWindowMs;
+  return AWAIT_CALL_WINDOW_MS;
+}
+
+export function longToolSuspicionMs() {
+  const o = watchdogOverrides();
+  if (typeof o.longToolMs === "number" && o.longToolMs > 0) return o.longToolMs;
+  return LONG_TOOL_SUSPICION_MS;
+}
+
+// Per-tool max-duration contract: generous maxima per tool; tool started +
+// nothing changed past its max = stuck-suspect (notify with evidence, never
+// a verdict).
+export function toolSilenceThresholdMs(toolName) {
+  if (toolName && LONG_RUNNING_TOOLS.includes(toolName)) return longToolSuspicionMs();
+  return awaitWindowMs();
+}
+
+function touchActivity(target, now = Date.now()) {
+  target.lastActivityAt = now;
+}
+
+function appendTail(target, key, text, max = 2000) {
+  if (!text) return;
+  const next = (target[key] || "") + text;
+  target[key] = next.length > max ? next.slice(next.length - max) : next;
+}
+
+function activeToolView(activeTool, now = Date.now()) {
+  if (!activeTool) return null;
+  return {
+    name: activeTool.name,
+    durationSeconds: Math.max(0, Math.round((now - activeTool.startedAt) / 1000)),
+  };
+}
+
+// Evaluate stuck-suspicion for a running tracker (runner or execution).
+// Returns null when healthy or terminal; otherwise a suspicion evidence
+// object (active tool + duration, last trajectory steps, elapsed and silence
+// durations). Never touches the work underneath.
+export function evaluateSuspicion(tracker, now = Date.now()) {
+  if (!tracker || tracker.status !== "running") return null;
+  const lastActivity = tracker.lastActivityAt || tracker.startedAt || now;
+  const silenceMs = Math.max(0, now - lastActivity);
+  const thresholdMs = toolSilenceThresholdMs(tracker.activeTool?.name);
+  if (silenceMs < thresholdMs) return null;
+  const elapsedSeconds = Math.round((now - (tracker.startedAt || now)) / 1000);
+  const silenceSeconds = Math.round(silenceMs / 1000);
+  const thresholdSeconds = Math.round(thresholdMs / 1000);
+  const toolName = tracker.activeTool?.name || "none";
+  return {
+    suspect: true,
+    reason: `No output or tool transitions for ${silenceSeconds}s (threshold ${thresholdSeconds}s for tool '${toolName}'). Quiet long enough to take a look — not a verdict of stuck.`,
+    activeTool: activeToolView(tracker.activeTool, now),
+    elapsedSeconds,
+    silenceSeconds,
+    thresholdSeconds,
+    trajectory: Array.isArray(tracker.trajectory) ? [...tracker.trajectory] : [],
+  };
+}
+
+// 99%+ auto-case set: cases where diagnosing plus reporting without asking
+// is 99%+ accurate. When in doubt, notify (needs-decision) instead.
+//
+// 1. dead-process reconcile — the helper process has observably exited
+//    (kernel-reported exitCode/signalCode) while our tracker still says
+//    "running". Nothing is killed (there is nothing left to kill — we only
+//    read the exit fields, never call kill()); reporting the exit code plus
+//    the last output is factual bookkeeping, not a judgment call.
+//    Rationale for 99%+: exit status is kernel truth, not inference; the
+//    only alternative (leaving a dead tracker "running" forever) is
+//    strictly worse. No live process is ever touched by this path.
+//
+// No other auto-cases exist today. In particular, silence-past-threshold
+// is notify-first (needs-decision, process left alive) because healthy work
+// (buffered test output, quiet reporters, one long single test) can go
+// quiet that long.
+export function reconcileDeadRunner(runner) {
+  if (!runner || runner.status !== "running") return null;
+  const proc = runner.process;
+  if (!proc) return null;
+  const exitCode = proc.exitCode;
+  const signalCode = proc.signalCode;
+  const exited = typeof exitCode === "number" || typeof signalCode === "string";
+  if (!exited) return null;
+  // Dead: fix the books to match reality. Terminal transitions only out of
+  // "running" (caller guarantees this); never overwrite another terminal
+  // state and never signal the (already dead) process.
+  if (signalCode === "SIGTERM" || signalCode === "SIGINT") {
+    runner.status = "cancelled";
+    runner.activeTool = null;
+    return { reconciled: true, status: "cancelled", signalCode };
+  }
+  if (exitCode === 0) {
+    runner.status = "completed";
+    if (runner.result == null) {
+      const tail = (runner.outputTail || "").trim();
+      runner.result = tail || "";
+    }
+    runner.activeTool = null;
+    return { reconciled: true, status: "completed", exitCode };
+  }
+  runner.status = "failed";
+  runner.error = {
+    message: `Runner process exited with code ${exitCode}`,
+    exitCode,
+    stderr: sanitizeHeadTail((runner.stderrTail || "").trim()),
+    outputTail: sanitizeHeadTail((runner.outputTail || "").trim()),
+  };
+  runner.activeTool = null;
+  return { reconciled: true, status: "failed", exitCode };
+}
+
+// ============================================================================
 // Runner helper implementation
 // ============================================================================
 
@@ -624,11 +768,14 @@ export async function dispatchRunner(args = {}) {
     cwd,
     status: "running",
     startedAt,
+    lastActivityAt: startedAt,
     activeTool: null,
     trajectory: [],
     result: null,
     error: null,
     process: null,
+    outputTail: "",
+    stderrTail: "",
   };
   RUNNERS.set(runnerId, runner);
 
@@ -660,6 +807,7 @@ function startRunnerProcess(runner) {
     "--model", runnerModel,
     "--dangerously-skip-permissions",
     "--output-format", "stream-json",
+    "--print-timeout", "60m",
     "--print", prompt,
   ];
 
@@ -685,6 +833,9 @@ function startRunnerProcess(runner) {
     const trimmed = line.trim();
     if (!trimmed) return;
     rawOutput += line + "\n";
+    // Any output byte is liveness: output flowing = working.
+    touchActivity(runner);
+    appendTail(runner, "outputTail", line + "\n");
     try {
       const event = JSON.parse(trimmed);
       handleRunnerEvent(runner, event);
@@ -694,41 +845,44 @@ function startRunnerProcess(runner) {
   });
 
   child.stderr.on("data", (chunk) => {
-    stderrBuf += chunk.toString("utf8");
+    const text = chunk.toString("utf8");
+    stderrBuf += text;
+    touchActivity(runner);
+    appendTail(runner, "stderrTail", text);
   });
 
   child.on("close", (code, signal) => {
-    if (runner.status === "cancelled" || runner.status === "completed") {
+    // Terminal-overwrite guard: late or duplicate process events must never
+    // overwrite an already-recorded terminal state. Transition out of
+    // "running" only.
+    if (runner.status !== "running") {
       runner.activeTool = null;
       return;
     }
+    touchActivity(runner);
     if (signal === "SIGTERM" || signal === "SIGINT") {
       runner.status = "cancelled";
       runner.activeTool = null;
       return;
     }
     if (code === 0) {
-      if (runner.status === "running") {
-        runner.status = "completed";
-        if (!runner.result) {
-          runner.result = rawOutput.trim();
-        }
+      runner.status = "completed";
+      if (runner.result == null) {
+        runner.result = rawOutput.trim();
       }
     } else {
-      if (runner.status === "running") {
-        runner.status = "failed";
-        runner.error = {
-          message: `Runner process exited with code ${code}`,
-          exitCode: code,
-          stderr: sanitizeHeadTail(stderrBuf.trim()),
-        };
-      }
+      runner.status = "failed";
+      runner.error = {
+        message: `Runner process exited with code ${code}`,
+        exitCode: code,
+        stderr: sanitizeHeadTail(stderrBuf.trim()),
+      };
     }
     runner.activeTool = null;
   });
 
   child.on("error", (err) => {
-    if (runner.status === "cancelled" || runner.status === "completed") return;
+    if (runner.status !== "running") return;
     runner.status = "failed";
     runner.error = {
       message: err.message,
@@ -741,6 +895,8 @@ function startRunnerProcess(runner) {
 export function handleRunnerEvent(runner, event) {
   if (event.event === "step_update" && event.step_update) {
     const su = event.step_update;
+    // Any transition is liveness.
+    touchActivity(runner);
     if (su.step_type === "tool") {
       if (su.state === "ACTIVE") {
         runner.activeTool = {
@@ -756,7 +912,8 @@ export function handleRunnerEvent(runner, event) {
           timestamp: Date.now(),
         });
         // Immediate termination on complete_task: mark completed and kill child process.
-        if (su.tool_name === "complete_task") {
+        // Terminal-overwrite guard: only out of "running".
+        if (su.tool_name === "complete_task" && runner.status === "running") {
           const key = process.env.GEMINI_CONVERSATION_ID || process.env.ASTRA_CONVERSATION_ID || "default";
           const recorded = COMPLETE_TASK_REGISTRY.get(key);
           const params = su.tool_info?.parameters;
@@ -786,6 +943,12 @@ export function handleRunnerEvent(runner, event) {
       }
     }
   } else if (event.event === "result" && event.result) {
+    touchActivity(runner);
+    // Terminal-overwrite guard: only out of "running".
+    if (runner.status !== "running") {
+      runner.activeTool = null;
+      return;
+    }
     const res = event.result;
     if (res.status === "SUCCESS") {
       runner.status = "completed";
@@ -807,21 +970,40 @@ export async function checkRunner(args = {}) {
   const runner = RUNNERS.get(runnerId);
   if (!runner) throw new Error(`no runner found for id '${runnerId}'`);
 
-  const elapsedSeconds = Math.round((Date.now() - runner.startedAt) / 1000);
-  const activeTool = runner.activeTool ? {
-    name: runner.activeTool.name,
-    durationSeconds: Math.round((Date.now() - runner.activeTool.startedAt) / 1000),
-  } : null;
+  // Dead-process reconcile first: fix the books before reporting.
+  reconcileDeadRunner(runner);
+
+  const now = Date.now();
+  const elapsedSeconds = Math.round((now - runner.startedAt) / 1000);
+  const activeTool = activeToolView(runner.activeTool, now);
+
+  if (runner.status !== "running") {
+    return {
+      runnerId: runner.id,
+      status: runner.status,
+      elapsedSeconds,
+      activeTool,
+      trajectory: [...runner.trajectory],
+      suspicion: null,
+      stuckSuspect: false,
+      // Note: result is intentionally omitted from checkRunner even when completed.
+      // Use await_runner to retrieve the final result.
+      ...(runner.status === "failed" ? { error: runner.error } : {}),
+    };
+  }
+
+  const suspicion = evaluateSuspicion(runner, now);
+  const silenceSeconds = Math.max(0, Math.round((now - (runner.lastActivityAt || runner.startedAt)) / 1000));
 
   return {
     runnerId: runner.id,
     status: runner.status,
     elapsedSeconds,
+    silenceSeconds,
     activeTool,
     trajectory: [...runner.trajectory],
-    // Note: result is intentionally omitted from checkRunner even when completed.
-    // Use await_runner to retrieve the final result.
-    ...(runner.status === "failed" ? { error: runner.error } : {}),
+    suspicion,
+    stuckSuspect: suspicion !== null,
   };
 }
 
@@ -881,36 +1063,79 @@ export async function cancelRunner(args = {}) {
 
 export async function awaitRunner(args = {}) {
   const runnerId = args.runnerId || args.id;
-  const timeoutMs = args.timeoutMs || 300000;
   if (!runnerId) throw new Error("runnerId is required");
   const runner = RUNNERS.get(runnerId);
   if (!runner) throw new Error(`no runner found for id '${runnerId}'`);
+  // Legacy timeoutMs is accepted but never fails the wait: awaits return
+  // status by 4:50 every time (heartbeat, suspicion, or terminal). There is
+  // no timeout-as-error.
 
+  const windowMs = awaitWindowMs();
   const start = Date.now();
-  while (runner.status === "running") {
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(`timed out waiting for runner '${runnerId}' after ${timeoutMs}ms`);
+  for (;;) {
+    // Dead-process reconcile on every pass: a dead helper reports factually.
+    reconcileDeadRunner(runner);
+
+    if (runner.status === "completed") {
+      return {
+        ok: true,
+        runnerId,
+        status: "completed",
+        result: runner.result,
+      };
     }
+    if (runner.status === "cancelled") {
+      const err = new Error(`Runner '${runnerId}' was cancelled`);
+      err.status = "cancelled";
+      throw err;
+    }
+    if (runner.status === "failed") {
+      const err = new Error(runner.error?.message || `Runner '${runnerId}' failed`);
+      err.error = runner.error;
+      throw err;
+    }
+
+    // Running: suspicion-with-evidence ends the wait immediately with a
+    // needs-decision envelope. The work underneath is untouched.
+    const now = Date.now();
+    const suspicion = evaluateSuspicion(runner, now);
+    if (suspicion) {
+      const elapsedSeconds = Math.round((now - runner.startedAt) / 1000);
+      const silenceSeconds = Math.max(0, Math.round((now - (runner.lastActivityAt || runner.startedAt)) / 1000));
+      const activeTool = activeToolView(runner.activeTool, now);
+      const trajectory = [...runner.trajectory];
+      return {
+        ok: true,
+        runnerId,
+        status: "running",
+        needsDecision: true,
+        suspicion,
+        elapsedSeconds,
+        silenceSeconds,
+        activeTool,
+        trajectory,
+      };
+    }
+
+    // Window expired with nothing to report: running-fine heartbeat. The
+    // work continues underneath; re-await keeps watching.
+    if (now - start >= windowMs) {
+      const elapsedSeconds = Math.round((now - runner.startedAt) / 1000);
+      const silenceSeconds = Math.max(0, Math.round((now - (runner.lastActivityAt || runner.startedAt)) / 1000));
+      return {
+        ok: true,
+        runnerId,
+        status: "running",
+        heartbeat: true,
+        elapsedSeconds,
+        silenceSeconds,
+        activeTool: activeToolView(runner.activeTool, now),
+        trajectory: [...runner.trajectory],
+      };
+    }
+
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-
-  if (runner.status === "completed") {
-    return {
-      ok: true,
-      runnerId,
-      result: runner.result,
-    };
-  }
-
-  if (runner.status === "cancelled") {
-    const err = new Error(`Runner '${runnerId}' was cancelled`);
-    err.status = "cancelled";
-    throw err;
-  }
-
-  const err = new Error(runner.error?.message || `Runner '${runnerId}' failed`);
-  err.error = runner.error;
-  throw err;
 }
 
 // ============================================================================
@@ -992,6 +1217,8 @@ async function runChildSubagent(execution, { role, cwd, prompt, provider }) {
     const rl = createInterface({ input: child.stdout });
     rl.on("line", (line) => {
       output += line + "\n";
+      // Child liveness + output recency feed the execution watchdog.
+      touchActivity(execution);
       try {
         const ev = JSON.parse(line.trim());
         handleExecutionStreamEvent(execution, ev);
@@ -1002,6 +1229,7 @@ async function runChildSubagent(execution, { role, cwd, prompt, provider }) {
 
     child.stderr.on("data", (d) => {
       stderr += d.toString("utf8");
+      touchActivity(execution);
     });
 
     child.on("close", (code) => {
@@ -1032,6 +1260,7 @@ async function runChildSubagent(execution, { role, cwd, prompt, provider }) {
 function handleExecutionStreamEvent(execution, event) {
   if (event.event === "step_update" && event.step_update) {
     const su = event.step_update;
+    touchActivity(execution);
     if (su.step_type === "tool") {
       if (su.state === "ACTIVE") {
         execution.activeTool = {
@@ -1053,10 +1282,12 @@ function handleExecutionStreamEvent(execution, event) {
 async function runExecutionPipeline(execution) {
   const { root, kind, sessionId, args } = execution;
 
+  touchActivity(execution);
   addTrajectory(execution, { action: "provision_worktree", timestamp: Date.now() });
   const wt = await createWorktree(root, { kind, sessionId });
   execution.worktree = wt.cwd;
   execution.branch = wt.branch;
+  touchActivity(execution);
   addTrajectory(execution, {
     action: "worktree_ready",
     worktree: wt.cwd,
@@ -1079,6 +1310,7 @@ async function runExecutionPipeline(execution) {
     prompt: implementerPrompt,
     provider: implementerProvider,
   });
+  touchActivity(execution);
 
   if (implementerRes.error) {
     execution.status = "failed";
@@ -1114,6 +1346,7 @@ async function runExecutionPipeline(execution) {
       prompt: reviewerPrompt,
       provider: reviewerProvider,
     });
+    touchActivity(execution);
 
     if (reviewRes.error) {
       execution.status = "failed";
@@ -1144,6 +1377,7 @@ async function runExecutionPipeline(execution) {
         prompt: retryPrompt,
         provider: implementerProvider,
       });
+      touchActivity(execution);
 
       if (retryImplRes.error) {
         execution.status = "failed";
@@ -1168,6 +1402,7 @@ async function runExecutionPipeline(execution) {
         prompt: reviewerPrompt,
         provider: reviewerProvider,
       });
+      touchActivity(execution);
 
       if (reviewRes.error) {
         execution.status = "failed";
@@ -1208,6 +1443,7 @@ async function runExecutionPipeline(execution) {
     branch: wt.branch,
     message: args.message || `feat: implement and verify ${wt.branch}`,
   });
+  touchActivity(execution);
 
   execution.phase = "completed";
   execution.status = "completed";
@@ -1246,6 +1482,7 @@ export async function dispatchExecution(args = {}) {
     status: "running",
     phase: "implementing",
     startedAt,
+    lastActivityAt: startedAt,
     activeTool: null,
     trajectory: [],
     result: null,
@@ -1274,51 +1511,110 @@ export async function checkExecution(args = {}) {
   const exec = EXECUTIONS.get(id);
   if (!exec) throw new Error(`no execution found for id '${id}'`);
 
-  const elapsedSeconds = Math.round((Date.now() - exec.startedAt) / 1000);
-  const activeTool = exec.activeTool ? {
-    name: exec.activeTool.name,
-    durationSeconds: Math.round((Date.now() - exec.activeTool.startedAt) / 1000),
-  } : null;
+  const now = Date.now();
+  const elapsedSeconds = Math.round((now - exec.startedAt) / 1000);
+  const activeTool = activeToolView(exec.activeTool, now);
+
+  if (exec.status !== "running") {
+    return {
+      id: exec.id,
+      status: exec.status,
+      phase: exec.phase,
+      elapsedSeconds,
+      activeTool,
+      trajectory: [...exec.trajectory],
+      suspicion: null,
+      stuckSuspect: false,
+      ...(exec.status === "completed" ? { result: exec.result } : {}),
+      ...(exec.status === "failed" ? { error: exec.error } : {}),
+    };
+  }
+
+  const suspicion = evaluateSuspicion(exec, now);
+  const silenceSeconds = Math.max(0, Math.round((now - (exec.lastActivityAt || exec.startedAt)) / 1000));
 
   return {
     id: exec.id,
     status: exec.status,
     phase: exec.phase,
     elapsedSeconds,
+    silenceSeconds,
     activeTool,
     trajectory: [...exec.trajectory],
-    ...(exec.status === "completed" ? { result: exec.result } : {}),
-    ...(exec.status === "failed" ? { error: exec.error } : {}),
+    suspicion,
+    stuckSuspect: suspicion !== null,
   };
 }
 
 export async function awaitExecution(args = {}) {
   const id = args.id || args.executionId;
-  const timeoutMs = args.timeoutMs || 600000;
   if (!id) throw new Error("id is required");
   const exec = EXECUTIONS.get(id);
   if (!exec) throw new Error(`no execution found for id '${id}'`);
+  // Legacy timeoutMs is accepted but never fails the wait: awaits return
+  // status by 4:50 every time (heartbeat, suspicion, or terminal). There is
+  // no timeout-as-error.
 
+  const windowMs = awaitWindowMs();
   const start = Date.now();
-  while (exec.status === "running") {
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(`timed out waiting for execution '${id}' after ${timeoutMs}ms`);
+  for (;;) {
+    if (exec.status === "completed") {
+      return {
+        ok: true,
+        id,
+        status: "completed",
+        result: exec.result,
+      };
     }
+    if (exec.status === "failed") {
+      const err = new Error(exec.error?.message || `Execution '${id}' failed in phase '${exec.phase}'`);
+      err.error = exec.error;
+      throw err;
+    }
+
+    // Running: suspicion-with-evidence ends the wait immediately with a
+    // needs-decision envelope. The work underneath is untouched.
+    const now = Date.now();
+    const suspicion = evaluateSuspicion(exec, now);
+    if (suspicion) {
+      const elapsedSeconds = Math.round((now - exec.startedAt) / 1000);
+      const silenceSeconds = Math.max(0, Math.round((now - (exec.lastActivityAt || exec.startedAt)) / 1000));
+      const activeTool = activeToolView(exec.activeTool, now);
+      const trajectory = [...exec.trajectory];
+      return {
+        ok: true,
+        id,
+        status: "running",
+        phase: exec.phase,
+        needsDecision: true,
+        suspicion,
+        elapsedSeconds,
+        silenceSeconds,
+        activeTool,
+        trajectory,
+      };
+    }
+
+    // Window expired with nothing to report: running-fine heartbeat. The
+    // work continues underneath; re-await keeps watching.
+    if (now - start >= windowMs) {
+      const elapsedSeconds = Math.round((now - exec.startedAt) / 1000);
+      const silenceSeconds = Math.max(0, Math.round((now - (exec.lastActivityAt || exec.startedAt)) / 1000));
+      return {
+        ok: true,
+        id,
+        status: "running",
+        phase: exec.phase,
+        heartbeat: true,
+        elapsedSeconds,
+        silenceSeconds,
+        activeTool: activeToolView(exec.activeTool, now),
+        trajectory: [...exec.trajectory],
+      };
+    }
+
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-
-  if (exec.status === "completed") {
-    return {
-      ok: true,
-      id,
-      status: "completed",
-      result: exec.result,
-    };
-  }
-
-  const err = new Error(exec.error?.message || `Execution '${id}' failed in phase '${exec.phase}'`);
-  err.error = exec.error;
-  throw err;
 }
 
 // ============================================================================

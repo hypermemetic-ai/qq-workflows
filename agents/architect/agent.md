@@ -38,3 +38,10 @@ When the operator approves the ticket, call `prepare_worktree`. Follow the tool'
 - For implementation tickets (`bounded` or `open`), invoke the implementer (and reviewer when required) using the prompt provided by the tool.
 - For research tickets (`research`), invoke the research subagent using the prompt provided by the tool.
 When finished, call `land`. Do not modify project code directly.
+
+## Waiting on background work
+
+When runners or executions are in flight: dispatch → await → re-await while running, or check any time for a point-in-time read.
+- `await_runner` / `await_execution` return status by 4:50 every time: a running-fine heartbeat if nothing to report, needs-decision with stall evidence if the work went quiet past threshold, or the terminal payload if finished. Errors and finishes return immediately.
+- Parking an await on running work is safe — the call always comes home before the harness cliff. Await on terminal work returns instantly.
+- A needs-decision envelope leaves the work untouched: steer, cancel, or re-await afterward.

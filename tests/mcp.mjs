@@ -7,15 +7,19 @@ import { basename, dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { promisify } from "node:util";
 import {
+  AWAIT_CALL_WINDOW_MS,
   CANONICAL_PROVIDERS,
   COMPLETE_TASK_REGISTRY,
   EXECUTIONS,
+  LONG_RUNNING_TOOLS,
+  LONG_TOOL_SUSPICION_MS,
   PROVIDERS,
   RUNNERS,
   SEAT_PROVIDERS,
   TOOLS,
   awaitExecution,
   awaitRunner,
+  awaitWindowMs,
   buildImplementerStep,
   buildResearcherStep,
   buildReviewerStep,
@@ -26,17 +30,21 @@ import {
   completeTask,
   dispatchExecution,
   dispatchRunner,
+  evaluateSuspicion,
   handleRpc,
   handleRunnerEvent,
   land,
+  longToolSuspicionMs,
   prepareWorktree,
   readTicket,
+  reconcileDeadRunner,
   resolveProvider,
   resolveSeatProvider,
   resolveSessionId,
   sanitizeHeadTail,
   startMcpServer,
   steerRunner,
+  toolSilenceThresholdMs,
   updateTicket,
 } from "../bin/mcp-server.mjs";
 import { git } from "../workflow/git.mjs";
@@ -1555,6 +1563,494 @@ assert.equal(ctRes.dataPointsCount, 2);
   assert.deepEqual(fakeRunner.result.data_points, testDataPoints);
   assert.ok(killCalled);
   assert.equal(killSignal, "SIGTERM");
+}
+
+// ============================================================================
+// Watchdog: bounded awaits, suspicion-with-evidence, dead-process reconcile
+// ============================================================================
+
+// W1. Named constants: 4:50 call window and 10-minute long-tool tripwire,
+// plus the per-tool max-duration contract.
+assert.equal(AWAIT_CALL_WINDOW_MS, 290_000, "4:50 call window must be 290000ms");
+assert.equal(LONG_TOOL_SUSPICION_MS, 600_000, "long-tool tripwire must be 600000ms");
+assert.ok(LONG_RUNNING_TOOLS.includes("run_command"), "run_command must be a known-long tool");
+assert.equal(awaitWindowMs(), 290_000);
+assert.equal(longToolSuspicionMs(), 600_000);
+assert.equal(toolSilenceThresholdMs("run_command"), 600_000);
+assert.equal(toolSilenceThresholdMs("view_file"), 290_000);
+assert.equal(toolSilenceThresholdMs("grep_search"), 290_000);
+assert.equal(toolSilenceThresholdMs("thinking"), 290_000);
+assert.equal(toolSilenceThresholdMs(null), 290_000);
+assert.equal(toolSilenceThresholdMs(undefined), 290_000);
+
+// W1b. Await schemas carry no timeout: elapsed time never fails a wait.
+{
+  const awaitRunnerTool = TOOLS.find((t) => t.name === "await_runner");
+  const awaitExecTool = TOOLS.find((t) => t.name === "await_execution");
+  assert.equal(awaitRunnerTool.inputSchema.properties.timeoutMs, undefined);
+  assert.equal(awaitExecTool.inputSchema.properties.timeoutMs, undefined);
+  assert.ok(awaitRunnerTool.description.includes("4:50"));
+  assert.ok(awaitExecTool.description.includes("4:50"));
+}
+
+// W2. Fully-silent runner past threshold: await returns a needs-decision
+// envelope with stall evidence (not a failure, not a bare timeout), the
+// child process is NOT killed, and check_runner surfaces the same flag.
+{
+  globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => {
+    runner.activeTool = { name: "view_file", startedAt: Date.now() - 300_000 };
+    runner.trajectory.push({ action: "view_file", target: "a.mjs", timestamp: Date.now() - 300_000 });
+  };
+  const disp = await dispatchRunner({ task: "silent runner", cwd: tmpdir() });
+  const runner = RUNNERS.get(disp.runnerId);
+  runner.startedAt = Date.now() - 300_000;
+  runner.lastActivityAt = Date.now() - 300_000;
+  let killed = false;
+  runner.process = { exitCode: null, signalCode: null, kill: () => { killed = true; } };
+
+  const check = await checkRunner({ runnerId: disp.runnerId });
+  assert.equal(check.status, "running");
+  assert.equal(check.stuckSuspect, true);
+  assert.ok(check.suspicion, "check must surface the suspicion flag");
+  assert.equal(check.suspicion.suspect, true);
+  assert.ok(check.suspicion.activeTool, "evidence carries the active tool");
+  assert.equal(check.suspicion.activeTool.name, "view_file");
+  assert.ok(check.suspicion.activeTool.durationSeconds >= 290);
+  assert.ok(Array.isArray(check.suspicion.trajectory), "evidence carries last trajectory steps");
+  assert.ok(check.suspicion.elapsedSeconds >= 290, "evidence carries elapsed duration");
+  assert.ok(check.suspicion.silenceSeconds >= 290, "evidence carries silence duration");
+
+  const t0 = Date.now();
+  const waited = await awaitRunner({ runnerId: disp.runnerId });
+  const elapsed = Date.now() - t0;
+  assert.ok(elapsed < 10_000, `silent-past-threshold await must return promptly, took ${elapsed}ms`);
+  assert.equal(waited.status, "running");
+  assert.equal(waited.needsDecision, true);
+  assert.ok(waited.suspicion);
+  assert.equal(waited.suspicion.activeTool.name, "view_file");
+  assert.ok(waited.heartbeat === undefined, "suspicion is not a heartbeat");
+  assert.equal(runner.status, "running", "await must leave the work untouched");
+  assert.equal(killed, false, "watchdog suspicion must never kill the child process");
+
+  // Still silent afterwards: check keeps surfacing the flag (re-armed).
+  const checkAgain = await checkRunner({ runnerId: disp.runnerId });
+  assert.equal(checkAgain.stuckSuspect, true);
+  delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+}
+
+// W3. Dead-process reconcile (the 99%+ auto-case): the helper already
+// exited but the tracker missed it, so the sweeper fixes the books to match
+// reality and reports what happened. No live process is ever killed by it.
+{
+  // 3a. Exited with code 1 while "running" -> failed with exit code + tails.
+  globalThis.__QQ_TEST_RUNNER_HANDLER = () => {};
+  const disp = await dispatchRunner({ task: "dead helper", cwd: tmpdir() });
+  const runner = RUNNERS.get(disp.runnerId);
+  let killed = false;
+  runner.process = { exitCode: 1, signalCode: null, kill: () => { killed = true; } };
+  runner.outputTail = "last helper lines\n";
+  runner.stderrTail = "boom\n";
+  const rec = reconcileDeadRunner(runner);
+  assert.ok(rec && rec.reconciled, "dead process must reconcile");
+  assert.equal(rec.status, "failed");
+  assert.equal(runner.status, "failed");
+  assert.equal(runner.error.exitCode, 1);
+  assert.match(runner.error.message, /exited with code 1/);
+  assert.ok(runner.error.stderr.includes("boom"));
+  assert.ok(runner.error.outputTail.includes("last helper lines"));
+  assert.equal(killed, false, "reconcile must never kill (nothing left to kill)");
+  await assert.rejects(() => awaitRunner({ runnerId: disp.runnerId }), /exited with code 1/);
+
+  // 3b. Exited 0 while "running" -> completed with last output as result.
+  const dispOk = await dispatchRunner({ task: "dead ok helper", cwd: tmpdir() });
+  const runnerOk = RUNNERS.get(dispOk.runnerId);
+  runnerOk.process = { exitCode: 0, signalCode: null };
+  runnerOk.outputTail = "final findings\n";
+  const recOk = reconcileDeadRunner(runnerOk);
+  assert.equal(recOk.status, "completed");
+  assert.equal(runnerOk.status, "completed");
+  assert.equal(runnerOk.result, "final findings");
+  const awaitOk = await awaitRunner({ runnerId: dispOk.runnerId });
+  assert.equal(awaitOk.status, "completed");
+  assert.equal(awaitOk.result, "final findings");
+
+  // 3c. Live process (no exit fields) is never reconciled.
+  const dispLive = await dispatchRunner({ task: "live helper", cwd: tmpdir() });
+  const runnerLive = RUNNERS.get(dispLive.runnerId);
+  runnerLive.process = { exitCode: null, signalCode: null, kill: () => {} };
+  assert.equal(reconcileDeadRunner(runnerLive), null);
+  assert.equal(runnerLive.status, "running");
+  // No process at all (test double) is never reconciled either.
+  runnerLive.process = null;
+  assert.equal(reconcileDeadRunner(runnerLive), null);
+
+  // 3d. Reconcile never overwrites an already-terminal tracker.
+  const dispTerm = await dispatchRunner({ task: "terminal helper", cwd: tmpdir() });
+  const runnerTerm = RUNNERS.get(dispTerm.runnerId);
+  runnerTerm.status = "failed";
+  runnerTerm.error = { message: "original diagnosis" };
+  runnerTerm.process = { exitCode: 1, signalCode: null };
+  assert.equal(reconcileDeadRunner(runnerTerm), null);
+  assert.equal(runnerTerm.error.message, "original diagnosis");
+  delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+}
+
+// W4. Healthy 6-minute runner: check shows running-with-progress throughout;
+// await-after-completion returns the result immediately.
+{
+  globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => {
+    runner.activeTool = { name: "grep_search", startedAt: Date.now() };
+    runner.trajectory.push({ action: "grep_search", target: "q in /src", timestamp: Date.now() });
+  };
+  const disp = await dispatchRunner({ task: "healthy long runner", cwd: tmpdir() });
+  const runner = RUNNERS.get(disp.runnerId);
+  runner.startedAt = Date.now() - 360_000; // 6 minutes in, still producing
+  runner.lastActivityAt = Date.now();
+  const check = await checkRunner({ runnerId: disp.runnerId });
+  assert.equal(check.status, "running");
+  assert.equal(check.stuckSuspect, false);
+  assert.equal(check.suspicion, null);
+  assert.ok(check.elapsedSeconds >= 350);
+
+  runner.status = "completed";
+  runner.result = { response: "done after 6 minutes" };
+  runner.activeTool = null;
+  const t0 = Date.now();
+  const waited = await awaitRunner({ runnerId: disp.runnerId });
+  assert.ok(Date.now() - t0 < 5_000, "await on terminal work must return instantly");
+  assert.equal(waited.status, "completed");
+  assert.deepEqual(waited.result, { response: "done after 6 minutes" });
+  delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+}
+
+// W5. Long legitimately-busy step (stdout flowing, no tool-DONE yet): never
+// watchdog-marked; check shows running with progress.
+{
+  globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => {
+    // Tool started 8 minutes ago, but output is flowing right now.
+    runner.activeTool = { name: "run_command", startedAt: Date.now() - 480_000 };
+  };
+  const disp = await dispatchRunner({ task: "busy shell step", cwd: tmpdir() });
+  const runner = RUNNERS.get(disp.runnerId);
+  runner.startedAt = Date.now() - 480_000;
+  runner.lastActivityAt = Date.now(); // stdout flowing
+  const check = await checkRunner({ runnerId: disp.runnerId });
+  assert.equal(check.status, "running");
+  assert.equal(check.stuckSuspect, false, "flowing output must never be marked");
+  assert.equal(check.suspicion, null);
+  assert.equal(check.activeTool.name, "run_command");
+
+  // Same for a normal tool with fresh output despite an old start.
+  runner.activeTool = { name: "view_file", startedAt: Date.now() - 360_000 };
+  runner.lastActivityAt = Date.now();
+  const check2 = await checkRunner({ runnerId: disp.runnerId });
+  assert.equal(check2.stuckSuspect, false);
+  delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+}
+
+// W6. Unsure case (chatter without tool progress past the threshold): await
+// returns needs-decision with evidence, the process is NOT killed, and the
+// architect can steer, cancel, or re-await afterward.
+{
+  globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => {
+    runner.activeTool = { name: "thinking", startedAt: Date.now() - 300_000 };
+    runner.trajectory.push({ action: "log", message: "earlier chatter", timestamp: Date.now() - 300_000 });
+  };
+  const disp = await dispatchRunner({ task: "unsure runner", cwd: tmpdir() });
+  const runner = RUNNERS.get(disp.runnerId);
+  runner.startedAt = Date.now() - 300_000;
+  runner.lastActivityAt = Date.now() - 300_000;
+  let killed = false;
+  runner.process = { exitCode: null, signalCode: null, kill: () => { killed = true; } };
+
+  const waited = await awaitRunner({ runnerId: disp.runnerId });
+  assert.equal(waited.needsDecision, true);
+  assert.ok(waited.suspicion.trajectory.length >= 1);
+  assert.equal(runner.status, "running");
+  assert.equal(killed, false);
+
+  // Steer still works afterward.
+  let steered = null;
+  runner.onSteer = (inst) => { steered = inst; };
+  const steerRes = await steerRunner({ runnerId: disp.runnerId, instruction: "focus on foo" });
+  assert.equal(steerRes.ok, true);
+  assert.equal(steered, "focus on foo");
+  assert.equal(runner.status, "running");
+
+  // Re-await still works afterward (still silent -> needs-decision again).
+  const rewaited = await awaitRunner({ runnerId: disp.runnerId });
+  assert.equal(rewaited.needsDecision, true);
+  assert.equal(runner.status, "running");
+
+  // Cancel still works afterward.
+  const cancelRes = await cancelRunner({ runnerId: disp.runnerId });
+  assert.equal(cancelRes.status, "cancelled");
+  assert.equal(runner.status, "cancelled");
+  delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+}
+
+// W7. Runner that fails fast: await returns the failure immediately
+// with the error (unchanged behavior).
+{
+  globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => {
+    runner.status = "failed";
+    runner.error = { message: "fast crash", exitCode: 1 };
+  };
+  const disp = await dispatchRunner({ task: "fast fail", cwd: tmpdir() });
+  const t0 = Date.now();
+  await assert.rejects(() => awaitRunner({ runnerId: disp.runnerId }), /fast crash/);
+  assert.ok(Date.now() - t0 < 5_000, "fast failure must surface immediately");
+  delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+}
+
+// W8. First-window semantics with short test thresholds (no minute-long
+// sleeps): a fully-quiet first window returns suspicion for normal tools,
+// while a quiet shell tool gets a running-fine heartbeat first and
+// suspicion only at its 10-minute absolute tripwire.
+{
+  globalThis.__QQ_TEST_WATCHDOG = { awaitWindowMs: 150, longToolMs: 1200 };
+  try {
+    assert.equal(awaitWindowMs(), 150);
+    assert.equal(longToolSuspicionMs(), 1200);
+    assert.equal(toolSilenceThresholdMs("view_file"), 150);
+    assert.equal(toolSilenceThresholdMs("run_command"), 1200);
+
+    // 8a. Normal tool, quiet from await entry -> suspicion at window end.
+    globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => {
+      runner.activeTool = { name: "view_file", startedAt: Date.now() };
+    };
+    const dispNormal = await dispatchRunner({ task: "quiet normal", cwd: tmpdir() });
+    const waitedNormal = await awaitRunner({ runnerId: dispNormal.runnerId });
+    assert.equal(waitedNormal.status, "running");
+    assert.equal(waitedNormal.needsDecision, true, "quiet normal tool must trip suspicion in its first window");
+    assert.equal(waitedNormal.heartbeat, undefined);
+    assert.equal(RUNNERS.get(dispNormal.runnerId).status, "running");
+
+    // 8b. Shell tool, quiet from await entry -> heartbeat (tripwire is later).
+    globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => {
+      runner.activeTool = { name: "run_command", startedAt: Date.now() };
+    };
+    const dispShell = await dispatchRunner({ task: "quiet shell", cwd: tmpdir() });
+    const t0 = Date.now();
+    const waitedShell = await awaitRunner({ runnerId: dispShell.runnerId });
+    const shellElapsed = Date.now() - t0;
+    assert.equal(waitedShell.status, "running");
+    assert.equal(waitedShell.heartbeat, true, "quiet shell must heartbeat first, not suspect");
+    assert.equal(waitedShell.needsDecision, undefined);
+    assert.ok(shellElapsed >= 100 && shellElapsed < 10_000, `heartbeat must wait out the window, took ${shellElapsed}ms`);
+    assert.equal(RUNNERS.get(dispShell.runnerId).status, "running");
+
+    // 8c. Shell tool quiet past its absolute tripwire -> suspicion.
+    const runnerShell = RUNNERS.get(dispShell.runnerId);
+    runnerShell.lastActivityAt = Date.now() - 1500;
+    const waitedShellLate = await awaitRunner({ runnerId: dispShell.runnerId });
+    assert.equal(waitedShellLate.needsDecision, true, "shell past its tripwire must suspect");
+    assert.equal(waitedShellLate.suspicion.activeTool.name, "run_command");
+  } finally {
+    delete globalThis.__QQ_TEST_WATCHDOG;
+    delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+  }
+  assert.equal(awaitWindowMs(), AWAIT_CALL_WINDOW_MS, "test overrides must not leak");
+}
+
+// W9. No timeout-as-error, ever: a legacy timeoutMs cannot fail a wait.
+{
+  globalThis.__QQ_TEST_WATCHDOG = { awaitWindowMs: 120, longToolMs: 1200 };
+  globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => {
+    runner.activeTool = { name: "run_command", startedAt: Date.now() };
+  };
+  try {
+    const disp = await dispatchRunner({ task: "legacy timeoutMs", cwd: tmpdir() });
+    // Under the old contract timeoutMs=1 would throw almost instantly.
+    const waited = await awaitRunner({ runnerId: disp.runnerId, timeoutMs: 1 });
+    assert.equal(waited.status, "running");
+    assert.equal(waited.heartbeat, true);
+  } finally {
+    delete globalThis.__QQ_TEST_WATCHDOG;
+    delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+  }
+}
+
+// W10. Terminal-overwrite guard: late or duplicate process events must never
+// overwrite an already-recorded terminal state.
+{
+  // Late failure diagnosis must not clobber a completed result.
+  const completedRunner = {
+    id: "w10-completed", status: "completed", activeTool: null,
+    trajectory: [], result: "good result", error: null, process: null,
+    startedAt: Date.now(), lastActivityAt: Date.now(),
+  };
+  handleRunnerEvent(completedRunner, { event: "result", result: { status: "FAILURE", error: "late crash" } });
+  assert.equal(completedRunner.status, "completed");
+  assert.equal(completedRunner.result, "good result");
+  assert.equal(completedRunner.error, null);
+
+  // Late complete_task must not clobber a recorded failure.
+  const failedRunner = {
+    id: "w10-failed", status: "failed", activeTool: null,
+    trajectory: [], result: null, error: { message: "original diagnosis" }, process: null,
+    startedAt: Date.now(), lastActivityAt: Date.now(),
+  };
+  handleRunnerEvent(failedRunner, {
+    event: "step_update",
+    step_update: { step_type: "tool", state: "DONE", tool_name: "complete_task", duration_seconds: 0.1 },
+  });
+  assert.equal(failedRunner.status, "failed");
+  assert.equal(failedRunner.error.message, "original diagnosis");
+  assert.equal(failedRunner.result, null);
+
+  // Transitions are liveness: a step event refreshes lastActivityAt.
+  const livelyRunner = {
+    id: "w10-lively", status: "running", activeTool: null,
+    trajectory: [], result: null, error: null, process: null,
+    startedAt: Date.now() - 60_000, lastActivityAt: Date.now() - 60_000,
+  };
+  handleRunnerEvent(livelyRunner, {
+    event: "step_update",
+    step_update: { step_type: "tool", state: "ACTIVE", tool_name: "grep_search" },
+  });
+  assert.ok(Date.now() - livelyRunner.lastActivityAt < 5_000, "tool transitions must count as activity");
+  assert.equal(evaluateSuspicion(livelyRunner), null);
+}
+
+// W11. Runner spawn passes --print-timeout 60m (matching implementer/reviewer
+// steps) so the CLI's own 5m default can't truncate long investigations.
+{
+  const fakeDir = mkdtempSync(join(tmpdir(), "test-runner-timeout-"));
+  try {
+    const callLog = join(fakeDir, "runner-call.txt");
+    const fakeAgy = join(fakeDir, "fake-agy.sh");
+    writeFileSync(fakeAgy, `#!/usr/bin/env bash\necho "$@" > "${callLog}"\n`);
+    execFileSync("chmod", ["+x", fakeAgy]);
+    const prevBin = process.env.QQ_RUNNER_BIN;
+    process.env.QQ_RUNNER_BIN = fakeAgy;
+    try {
+      await dispatchRunner({ task: "print-timeout probe", cwd: tmpdir() });
+      await new Promise((r) => setTimeout(r, 300));
+      assert.ok(existsSync(callLog));
+      const logged = readFileSync(callLog, "utf8");
+      assert.ok(logged.includes("--print-timeout"), "runner spawn must pass --print-timeout");
+      assert.ok(logged.includes("60m"), "runner print-timeout must be 60m");
+    } finally {
+      if (prevBin !== undefined) process.env.QQ_RUNNER_BIN = prevBin;
+      else delete process.env.QQ_RUNNER_BIN;
+    }
+  } finally {
+    rmSync(fakeDir, { recursive: true, force: true });
+  }
+}
+
+// W12. Execution parity: await_execution gets the identical guarantee
+// (status by 4:50, notify-with-evidence, never hang, never fail for clocks).
+{
+  // 12a. Silent execution -> needs-decision with evidence; check agrees.
+  const silentExec = {
+    id: "w12-silent", kind: "bounded", status: "running", phase: "implementing",
+    startedAt: Date.now() - 300_000, lastActivityAt: Date.now() - 300_000,
+    activeTool: { name: "view_file", startedAt: Date.now() - 300_000 },
+    trajectory: [{ action: "implementer_started", timestamp: Date.now() - 300_000 }],
+    result: null, error: null, activeChild: null,
+  };
+  EXECUTIONS.set(silentExec.id, silentExec);
+  try {
+    const check = await checkExecution({ id: silentExec.id });
+    assert.equal(check.status, "running");
+    assert.equal(check.phase, "implementing");
+    assert.equal(check.stuckSuspect, true);
+    assert.ok(check.suspicion);
+    assert.equal(check.suspicion.activeTool.name, "view_file");
+
+    const waited = await awaitExecution({ id: silentExec.id });
+    assert.equal(waited.status, "running");
+    assert.equal(waited.needsDecision, true);
+    assert.ok(waited.suspicion);
+    assert.equal(silentExec.status, "running", "execution suspicion must leave work untouched");
+  } finally {
+    EXECUTIONS.delete(silentExec.id);
+  }
+
+  // 12b. Healthy execution -> heartbeat at window end (short test window).
+  globalThis.__QQ_TEST_WATCHDOG = { awaitWindowMs: 120, longToolMs: 1200 };
+  const liveExec = {
+    id: "w12-live", kind: "open", status: "running", phase: "reviewing",
+    startedAt: Date.now(), lastActivityAt: Date.now(),
+    activeTool: { name: "run_command", startedAt: Date.now() },
+    trajectory: [{ action: "reviewer_started", timestamp: Date.now() }],
+    result: null, error: null, activeChild: null,
+  };
+  EXECUTIONS.set(liveExec.id, liveExec);
+  try {
+    const t0 = Date.now();
+    const waited = await awaitExecution({ id: liveExec.id });
+    const elapsed = Date.now() - t0;
+    assert.equal(waited.status, "running");
+    assert.equal(waited.heartbeat, true);
+    assert.equal(waited.phase, "reviewing");
+    assert.ok(elapsed >= 80 && elapsed < 10_000, `execution heartbeat must wait out the window, took ${elapsed}ms`);
+
+    // Legacy timeoutMs cannot fail an execution wait either.
+    const waitedLegacy = await awaitExecution({ id: liveExec.id, timeoutMs: 1 });
+    assert.equal(waitedLegacy.heartbeat, true);
+  } finally {
+    EXECUTIONS.delete(liveExec.id);
+    delete globalThis.__QQ_TEST_WATCHDOG;
+  }
+
+  // 12c. Terminal executions: await returns instantly, failures throw fast.
+  const doneExec = {
+    id: "w12-done", kind: "bounded", status: "completed", phase: "completed",
+    startedAt: Date.now() - 60_000, lastActivityAt: Date.now(),
+    activeTool: null, trajectory: [], result: { verifiedStory: "ok" }, error: null, activeChild: null,
+  };
+  EXECUTIONS.set(doneExec.id, doneExec);
+  try {
+    const t0 = Date.now();
+    const waited = await awaitExecution({ id: doneExec.id });
+    assert.ok(Date.now() - t0 < 5_000);
+    assert.equal(waited.status, "completed");
+    assert.deepEqual(waited.result, { verifiedStory: "ok" });
+  } finally {
+    EXECUTIONS.delete(doneExec.id);
+  }
+  const failExec = {
+    id: "w12-fail", kind: "bounded", status: "failed", phase: "implementing",
+    startedAt: Date.now() - 60_000, lastActivityAt: Date.now(),
+    activeTool: null, trajectory: [], result: null,
+    error: { phase: "implementing", message: "exec impl blew up" }, activeChild: null,
+  };
+  EXECUTIONS.set(failExec.id, failExec);
+  try {
+    await assert.rejects(() => awaitExecution({ id: failExec.id }), /exec impl blew up/);
+  } finally {
+    EXECUTIONS.delete(failExec.id);
+  }
+}
+
+// W13. Bounded waits keep the pipe usable: after an await comes home,
+// later calls on the same surface still work (no wedge).
+{
+  globalThis.__QQ_TEST_WATCHDOG = { awaitWindowMs: 100, longToolMs: 1200 };
+  globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => {
+    runner.activeTool = { name: "run_command", startedAt: Date.now() };
+  };
+  try {
+    const disp = await dispatchRunner({ task: "pipe stays usable", cwd: tmpdir() });
+    const first = await awaitRunner({ runnerId: disp.runnerId });
+    assert.equal(first.heartbeat, true);
+    // Later calls still work: point-in-time read, steer, re-await, cancel.
+    const check = await checkRunner({ runnerId: disp.runnerId });
+    assert.equal(check.status, "running");
+    const runner = RUNNERS.get(disp.runnerId);
+    runner.onSteer = () => {};
+    assert.equal((await steerRunner({ runnerId: disp.runnerId, instruction: "keep going" })).ok, true);
+    const second = await awaitRunner({ runnerId: disp.runnerId });
+    assert.equal(second.status, "running");
+    assert.equal((await cancelRunner({ runnerId: disp.runnerId })).status, "cancelled");
+    await assert.rejects(() => awaitRunner({ runnerId: disp.runnerId }), /was cancelled/);
+  } finally {
+    delete globalThis.__QQ_TEST_WATCHDOG;
+    delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+  }
 }
 
 console.log("MCP server tests passed cleanly.");
