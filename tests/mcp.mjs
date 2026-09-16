@@ -31,6 +31,7 @@ import {
   dispatchExecution,
   dispatchRunner,
   evaluateSuspicion,
+  handleExecutionStreamEvent,
   handleRpc,
   handleRunnerEvent,
   land,
@@ -2094,6 +2095,352 @@ assert.equal(toolSilenceThresholdMs(undefined), 290_000);
   } finally {
     delete globalThis.__QQ_TEST_WATCHDOG;
     delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+  }
+}
+
+// ============================================================================
+// Execution stream ingestion: subagent JSONL populates trajectory + clean output
+// ============================================================================
+
+function makeStreamTestExecution() {
+  return {
+    id: "exec-stream-test",
+    status: "running",
+    phase: "implementing",
+    startedAt: Date.now(),
+    lastActivityAt: Date.now() - 60_000,
+    activeTool: null,
+    trajectory: [],
+  };
+}
+
+// S1. Muse tool_batch.effect.started sets execution.activeTool.
+{
+  const exec = makeStreamTestExecution();
+  handleExecutionStreamEvent(exec, {
+    payload_type: "tool_batch.effect.started",
+    payload: {
+      record: {
+        tool_name: "read_file",
+        call_id: "call-1",
+        parallel_profile: { kind: "file_read", subject: "workspace:foo.mjs" },
+      },
+    },
+  });
+  assert.equal(exec.activeTool.name, "read_file");
+  assert.ok(typeof exec.activeTool.startedAt === "number");
+  assert.ok(Date.now() - exec.lastActivityAt < 5_000, "tool transitions must count as activity");
+}
+
+// S2. Muse tool_batch.effect.terminal clears activeTool and appends
+// { action, target, timestamp }, correlating the tool name via the started
+// event (real terminal records carry no tool_name).
+{
+  const exec = makeStreamTestExecution();
+  handleExecutionStreamEvent(exec, {
+    payload_type: "tool_batch.effect.started",
+    payload: {
+      record: {
+        tool_name: "read_file",
+        call_id: "call-9",
+        parallel_profile: { kind: "file_read", subject: "workspace:foo.mjs" },
+      },
+    },
+  });
+  handleExecutionStreamEvent(exec, {
+    payload_type: "tool_batch.effect.terminal",
+    payload: { record: { call_id: "call-9" } },
+  });
+  assert.equal(exec.activeTool, null);
+  assert.equal(exec.trajectory.length, 1);
+  assert.equal(exec.trajectory[0].action, "read_file");
+  assert.equal(exec.trajectory[0].target, "workspace:foo.mjs");
+  assert.ok(exec.trajectory[0].timestamp);
+
+  // A terminal record carrying its own tool_name works too.
+  handleExecutionStreamEvent(exec, {
+    payload_type: "tool_batch.effect.terminal",
+    payload: { record: { tool_name: "bash", target: "npm test" } },
+  });
+  assert.equal(exec.trajectory.length, 2);
+  assert.equal(exec.trajectory[1].action, "bash");
+  assert.equal(exec.trajectory[1].target, "npm test");
+}
+
+// S3. Muse run.terminal.completed captures payload.text as clean output.
+{
+  const exec = makeStreamTestExecution();
+  exec.activeTool = { name: "read_file", startedAt: Date.now() };
+  handleExecutionStreamEvent(exec, {
+    payload_type: "run.terminal.completed",
+    payload: { kind: "run_terminal", terminal: "completed", text: "# Done\nAll changes implemented." },
+  });
+  assert.equal(exec._cleanOutput, "# Done\nAll changes implemented.");
+  assert.equal(exec.activeTool, null);
+}
+
+// S4. Gemini step_update ACTIVE/DONE updates activeTool + trajectory, and
+// result captures clean output without driving execution status.
+{
+  const exec = makeStreamTestExecution();
+  handleExecutionStreamEvent(exec, {
+    event: "step_update",
+    step_update: { step_type: "tool", state: "ACTIVE", tool_name: "view_file" },
+  });
+  assert.equal(exec.activeTool.name, "view_file");
+  handleExecutionStreamEvent(exec, {
+    event: "step_update",
+    step_update: {
+      step_type: "tool",
+      state: "DONE",
+      tool_name: "view_file",
+      duration_seconds: 1.2,
+      tool_info: { parameters: { AbsolutePath: "/repo/foo.mjs" } },
+    },
+  });
+  assert.equal(exec.activeTool, null);
+  assert.equal(exec.trajectory.length, 1);
+  assert.equal(exec.trajectory[0].action, "view_file");
+  assert.equal(exec.trajectory[0].target, "/repo/foo.mjs");
+  assert.equal(exec.trajectory[0].parameters, undefined);
+  handleExecutionStreamEvent(exec, {
+    event: "result",
+    result: { status: "SUCCESS", response: "Gemini final answer." },
+  });
+  assert.equal(exec._cleanOutput, "Gemini final answer.");
+  assert.equal(exec.status, "running", "a child result event must never drive execution status");
+}
+
+// S5. Codex item.started/item.completed updates activeTool + trajectory, and
+// agent_message items accumulate clean output.
+{
+  const exec = makeStreamTestExecution();
+  handleExecutionStreamEvent(exec, {
+    type: "item.started",
+    item: { id: "item_0", type: "command_execution", command: ["cat", "package.json"], status: "in_progress" },
+  });
+  assert.equal(exec.activeTool.name, "command_execution");
+  handleExecutionStreamEvent(exec, {
+    type: "item.completed",
+    item: { id: "item_0", type: "command_execution", command: ["cat", "package.json"], status: "completed" },
+  });
+  assert.equal(exec.activeTool, null);
+  assert.equal(exec.trajectory.length, 1);
+  assert.equal(exec.trajectory[0].action, "command_execution");
+  assert.equal(exec.trajectory[0].target, "cat package.json");
+  handleExecutionStreamEvent(exec, {
+    type: "item.completed",
+    item: { id: "item_1", type: "agent_message", text: "Codex finished the task." },
+  });
+  assert.equal(exec._cleanOutput, "Codex finished the task.");
+  // Reasoning items carry no trajectory signal.
+  const before = exec.trajectory.length;
+  handleExecutionStreamEvent(exec, {
+    type: "item.completed",
+    item: { id: "item_2", type: "reasoning", text: "thinking..." },
+  });
+  assert.equal(exec.trajectory.length, before);
+}
+
+// S6. Trajectory recycling invariant: >25 tool events cap at 25 items,
+// evicting provision_worktree and preserving chronological order.
+{
+  const exec = makeStreamTestExecution();
+  exec.trajectory.push({ action: "provision_worktree", timestamp: Date.now() });
+  for (let i = 1; i <= 30; i++) {
+    handleExecutionStreamEvent(exec, {
+      payload_type: "tool_batch.effect.started",
+      payload: { record: { tool_name: `tool-${i}`, call_id: `call-${i}` } },
+    });
+    handleExecutionStreamEvent(exec, {
+      payload_type: "tool_batch.effect.terminal",
+      payload: { record: { call_id: `call-${i}` } },
+    });
+  }
+  assert.equal(exec.trajectory.length, 25);
+  assert.ok(!exec.trajectory.some((t) => t.action === "provision_worktree"));
+  // 1 + 30 = 31 entries, keep the last 25 -> first kept is tool-6.
+  for (let i = 0; i < 25; i++) {
+    assert.equal(exec.trajectory[i].action, `tool-${6 + i}`);
+  }
+}
+
+// S7. Pipeline with a fake muse binary: --json is passed, 30 streamed tool
+// events recycle the trajectory past provision_worktree, and the summary is
+// clean markdown rather than raw JSONL.
+{
+  const pipeRepo = mkdtempSync(join(tmpdir(), "architect-exec-stream-"));
+  const fakeBin = mkdtempSync(join(tmpdir(), "architect-exec-fakebin-"));
+  const prevPath = process.env.PATH;
+  try {
+    await git(pipeRepo, ["init", "-b", "main"]);
+    await git(pipeRepo, ["config", "user.name", "MCP Test"]);
+    await git(pipeRepo, ["config", "user.email", "mcp@example.invalid"]);
+    writeFileSync(join(pipeRepo, "README.md"), "# Stream\n");
+    await git(pipeRepo, ["add", "README.md"]);
+    await git(pipeRepo, ["commit", "-m", "init"]);
+    const streamSessId = "e7e7e7e7-1111-2222-3333-444444444444";
+    mkdirSync(join(pipeRepo, ".architect", "tickets"), { recursive: true });
+    writeFileSync(join(pipeRepo, ".architect", "tickets", `${streamSessId}.md`), "# Stream Ticket\n\n## Kind\nbounded\n");
+
+    const argsLog = join(fakeBin, "muse-args.txt");
+    const streamLines = [];
+    for (let i = 1; i <= 30; i++) {
+      streamLines.push(
+        `printf '%s\\n' '{"payload_type":"tool_batch.effect.started","payload":{"record":{"tool_name":"stream-tool-${i}","call_id":"call-${i}","parallel_profile":{"subject":"workspace:file-${i}.mjs"}}}}'`,
+      );
+      streamLines.push(
+        `printf '%s\\n' '{"payload_type":"tool_batch.effect.terminal","payload":{"record":{"call_id":"call-${i}"}}}'`,
+      );
+    }
+    writeFileSync(
+      join(fakeBin, "muse"),
+      `#!/usr/bin/env bash\necho "$@" > "${argsLog}"\necho probe > stream-probe.txt\n${streamLines.join("\n")}\nprintf '%s\\n' '{"payload_type":"run.terminal.completed","payload":{"kind":"run_terminal","terminal":"completed","text":"## Done\\nStreamed implementation complete."}}'\n`,
+    );
+    execFileSync("chmod", ["+x", join(fakeBin, "muse")]);
+    process.env.PATH = `${fakeBin}:${prevPath}`;
+
+    const disp = await dispatchExecution({ kind: "bounded", sessionId: streamSessId, cwd: pipeRepo });
+    const done = await awaitExecution({ id: disp.id });
+    assert.equal(done.status, "completed");
+
+    const loggedArgs = readFileSync(argsLog, "utf8");
+    assert.ok(loggedArgs.includes("--json"), "muse spawn must pass --json");
+
+    const check = await checkExecution({ id: disp.id });
+    // 3 milestones + 30 tools + 3 closing milestones = 36 entries -> keep last 25.
+    assert.equal(check.trajectory.length, 25);
+    assert.ok(!check.trajectory.some((t) => t.action === "provision_worktree"));
+    assert.equal(check.trajectory[0].action, "stream-tool-9");
+    assert.equal(check.trajectory[0].target, "workspace:file-9.mjs");
+    assert.equal(check.trajectory[22].action, "implementer_completed");
+    assert.equal(check.trajectory[23].action, "landing_started");
+    assert.equal(check.trajectory[24].action, "execution_completed");
+
+    assert.ok(done.result.implementerSummary.includes("Streamed implementation complete."));
+    assert.ok(!done.result.implementerSummary.includes("payload_type"));
+    assert.ok(!done.result.implementerSummary.includes("tool_batch"));
+  } finally {
+    process.env.PATH = prevPath;
+    try {
+      rmSync(join(dirname(pipeRepo), ".qq-worktrees", basename(pipeRepo)), { recursive: true, force: true });
+    } catch {}
+    rmSync(pipeRepo, { recursive: true, force: true });
+    rmSync(fakeBin, { recursive: true, force: true });
+  }
+}
+
+// S8. Pipeline with a fake codex binary: --json is passed, tool items enter
+// the trajectory, and the agent_message becomes the clean summary.
+{
+  const pipeRepo = mkdtempSync(join(tmpdir(), "architect-exec-codex-"));
+  const fakeBin = mkdtempSync(join(tmpdir(), "architect-exec-codexbin-"));
+  const prevPath = process.env.PATH;
+  try {
+    await git(pipeRepo, ["init", "-b", "main"]);
+    await git(pipeRepo, ["config", "user.name", "MCP Test"]);
+    await git(pipeRepo, ["config", "user.email", "mcp@example.invalid"]);
+    writeFileSync(join(pipeRepo, "README.md"), "# Codex\n");
+    await git(pipeRepo, ["add", "README.md"]);
+    await git(pipeRepo, ["commit", "-m", "init"]);
+    const codexSessId = "c0dec0de-1111-2222-3333-444444444444";
+    mkdirSync(join(pipeRepo, ".architect", "tickets"), { recursive: true });
+    writeFileSync(join(pipeRepo, ".architect", "tickets", `${codexSessId}.md`), "# Codex Ticket\n\n## Kind\nbounded\n");
+
+    const argsLog = join(fakeBin, "codex-args.txt");
+    writeFileSync(
+      join(fakeBin, "codex"),
+      `#!/usr/bin/env bash\necho "$@" > "${argsLog}"\necho probe > codex-probe.txt\n` +
+        `printf '%s\\n' '{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":["cat","package.json"],"status":"in_progress"}}'\n` +
+        `printf '%s\\n' '{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":["cat","package.json"],"status":"completed"}}'\n` +
+        `printf '%s\\n' '{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","tool":"list_files","status":"in_progress"}}'\n` +
+        `printf '%s\\n' '{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","tool":"list_files","status":"completed"}}'\n` +
+        `printf '%s\\n' '{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Codex finished the task."}}'\n` +
+        `printf '%s\\n' '{"type":"turn.completed","usage":{}}'\n`,
+    );
+    execFileSync("chmod", ["+x", join(fakeBin, "codex")]);
+    process.env.PATH = `${fakeBin}:${prevPath}`;
+
+    const disp = await dispatchExecution({
+      kind: "bounded",
+      sessionId: codexSessId,
+      cwd: pipeRepo,
+      implementerProvider: "codex",
+    });
+    const done = await awaitExecution({ id: disp.id });
+    assert.equal(done.status, "completed");
+
+    const loggedArgs = readFileSync(argsLog, "utf8");
+    assert.ok(loggedArgs.includes("--json"), "codex spawn must pass --json");
+
+    const check = await checkExecution({ id: disp.id });
+    const actions = check.trajectory.map((t) => t.action);
+    assert.ok(actions.includes("command_execution"));
+    assert.ok(actions.includes("list_files"));
+    const cmdEntry = check.trajectory.find((t) => t.action === "command_execution");
+    assert.equal(cmdEntry.target, "cat package.json");
+
+    assert.equal(done.result.implementerSummary, "Codex finished the task.");
+    assert.ok(!done.result.implementerSummary.includes("item.completed"));
+  } finally {
+    process.env.PATH = prevPath;
+    try {
+      rmSync(join(dirname(pipeRepo), ".qq-worktrees", basename(pipeRepo)), { recursive: true, force: true });
+    } catch {}
+    rmSync(pipeRepo, { recursive: true, force: true });
+    rmSync(fakeBin, { recursive: true, force: true });
+  }
+}
+
+// S9. Text-mode fallback: a child with no structured terminal event resolves
+// with accumulated plain text, and long lines become bounded log entries.
+{
+  const pipeRepo = mkdtempSync(join(tmpdir(), "architect-exec-text-"));
+  const fakeBin = mkdtempSync(join(tmpdir(), "architect-exec-textbin-"));
+  const prevPath = process.env.PATH;
+  try {
+    await git(pipeRepo, ["init", "-b", "main"]);
+    await git(pipeRepo, ["config", "user.name", "MCP Test"]);
+    await git(pipeRepo, ["config", "user.email", "mcp@example.invalid"]);
+    writeFileSync(join(pipeRepo, "README.md"), "# Text\n");
+    await git(pipeRepo, ["add", "README.md"]);
+    await git(pipeRepo, ["commit", "-m", "init"]);
+    const textSessId = "9e9e9e9e-1111-2222-3333-444444444444";
+    mkdirSync(join(pipeRepo, ".architect", "tickets"), { recursive: true });
+    writeFileSync(join(pipeRepo, ".architect", "tickets", `${textSessId}.md`), "# Text Ticket\n\n## Kind\nbounded\n");
+
+    const longLine = `LONG-${"x".repeat(500)}`;
+    writeFileSync(
+      join(fakeBin, "dsh"),
+      `#!/usr/bin/env bash\necho probe > text-probe.txt\nprintf '%s\\n' 'Plain text implementation report.' '${longLine}'\n`,
+    );
+    execFileSync("chmod", ["+x", join(fakeBin, "dsh")]);
+    process.env.PATH = `${fakeBin}:${prevPath}`;
+
+    const disp = await dispatchExecution({
+      kind: "bounded",
+      sessionId: textSessId,
+      cwd: pipeRepo,
+      implementerProvider: "deepseek",
+    });
+    const done = await awaitExecution({ id: disp.id });
+    assert.equal(done.status, "completed");
+    assert.ok(done.result.implementerSummary.includes("Plain text implementation report."));
+    assert.ok(done.result.implementerSummary.includes(longLine));
+
+    const check = await checkExecution({ id: disp.id });
+    const logs = check.trajectory.filter((t) => t.action === "log");
+    assert.ok(logs.length >= 2, "text lines must be recorded as log entries");
+    for (const entry of logs) {
+      assert.ok(entry.message.length <= 200, "log messages must be bounded");
+    }
+  } finally {
+    process.env.PATH = prevPath;
+    try {
+      rmSync(join(dirname(pipeRepo), ".qq-worktrees", basename(pipeRepo)), { recursive: true, force: true });
+    } catch {}
+    rmSync(pipeRepo, { recursive: true, force: true });
+    rmSync(fakeBin, { recursive: true, force: true });
   }
 }
 

@@ -1201,7 +1201,7 @@ async function runChildSubagent(execution, { role, cwd, prompt, provider }) {
     args = ["--profile", role, prompt];
   } else if (p === "codex") {
     bin = "codex";
-    args = ["exec", "--profile", role, prompt];
+    args = ["exec", "--profile", role, "--json", prompt];
   } else {
     bin = "muse";
     const museModel = process.env.QQ_MUSE_MODEL || "muse-spark-1.3";
@@ -1212,9 +1212,15 @@ async function runChildSubagent(execution, { role, cwd, prompt, provider }) {
       "--model", museModel,
       "--reasoning-effort", museEffort,
       "--yolo",
+      "--json",
       prompt,
     ];
   }
+
+  // Fresh per-child stream state. Structured terminal text wins; accumulated
+  // plain-text lines are the fallback when no terminal event is emitted.
+  delete execution._cleanOutput;
+  delete execution._musePendingTools;
 
   return new Promise((resolvePromise) => {
     let output = "";
@@ -1234,14 +1240,24 @@ async function runChildSubagent(execution, { role, cwd, prompt, provider }) {
 
     const rl = createInterface({ input: child.stdout });
     rl.on("line", (line) => {
-      output += line + "\n";
+      const trimmed = line.trim();
+      if (!trimmed) return;
       // Child liveness + output recency feed the execution watchdog.
       touchActivity(execution);
+      let structured = null;
       try {
-        const ev = JSON.parse(line.trim());
-        handleExecutionStreamEvent(execution, ev);
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === "object" && ("event" in parsed || "payload_type" in parsed || "type" in parsed)) {
+          structured = parsed;
+        }
       } catch {
         /* text output */
+      }
+      if (structured) {
+        handleExecutionStreamEvent(execution, structured);
+      } else {
+        output += line + "\n";
+        addTrajectory(execution, { action: "log", message: trimmed.slice(0, 200), timestamp: Date.now() });
       }
     });
 
@@ -1250,15 +1266,26 @@ async function runChildSubagent(execution, { role, cwd, prompt, provider }) {
       touchActivity(execution);
     });
 
+    function finishCleanOutput() {
+      const clean =
+        typeof execution._cleanOutput === "string" && execution._cleanOutput.trim()
+          ? execution._cleanOutput.trim()
+          : output.trim();
+      delete execution._cleanOutput;
+      delete execution._musePendingTools;
+      return clean;
+    }
+
     child.on("close", (code) => {
       execution.activeChild = null;
       execution.activeTool = null;
+      const finalOutput = finishCleanOutput();
       if (code === 0) {
-        resolvePromise({ ok: true, output: output.trim() });
+        resolvePromise({ ok: true, output: finalOutput });
       } else {
         resolvePromise({
           ok: false,
-          output: output.trim(),
+          output: finalOutput,
           error: { message: `Child process exited with code ${code}`, exitCode: code, stderr: stderr.trim() },
         });
       }
@@ -1267,6 +1294,8 @@ async function runChildSubagent(execution, { role, cwd, prompt, provider }) {
     child.on("error", (err) => {
       execution.activeChild = null;
       execution.activeTool = null;
+      delete execution._cleanOutput;
+      delete execution._musePendingTools;
       resolvePromise({
         ok: false,
         error: { message: err.message, stderr: stderr.trim() },
@@ -1275,7 +1304,64 @@ async function runChildSubagent(execution, { role, cwd, prompt, provider }) {
   });
 }
 
-function handleExecutionStreamEvent(execution, event) {
+function capTargetText(s) {
+  if (typeof s !== "string") return undefined;
+  return s.length <= 80 ? s : s.slice(0, 79) + "…";
+}
+
+function appendCleanOutput(execution, text) {
+  if (typeof text !== "string" || !text.trim()) return;
+  execution._cleanOutput = execution._cleanOutput ? `${execution._cleanOutput}\n${text}` : text;
+}
+
+function museToolTarget(record) {
+  if (!record || typeof record !== "object") return undefined;
+  if (typeof record.target === "string") return capTargetText(record.target);
+  return capTargetText(record.parallel_profile?.subject);
+}
+
+function rememberMusePendingTool(execution, record, name, target) {
+  if (!record || typeof record !== "object" || !name) return;
+  if (!execution._musePendingTools) execution._musePendingTools = new Map();
+  for (const key of [record.call_id, record.effect_id, record.task_id]) {
+    if (key) execution._musePendingTools.set(key, { name, target });
+  }
+}
+
+function resolveMusePendingTool(execution, record) {
+  if (!record || typeof record !== "object" || !execution._musePendingTools) return {};
+  for (const key of [record.call_id, record.effect_id, record.task_id]) {
+    if (key && execution._musePendingTools.has(key)) {
+      return execution._musePendingTools.get(key);
+    }
+  }
+  return {};
+}
+
+function forgetMusePendingTool(execution, record) {
+  if (!record || typeof record !== "object" || !execution._musePendingTools) return;
+  for (const key of [record.call_id, record.effect_id, record.task_id]) {
+    if (key) execution._musePendingTools.delete(key);
+  }
+}
+
+function codexToolName(item) {
+  if (!item || typeof item !== "object") return "codex_tool";
+  return item.tool || item.name || item.type || "codex_tool";
+}
+
+function codexToolTarget(item) {
+  if (!item || typeof item !== "object") return undefined;
+  const direct = item.path || item.file || item.filename || item.url;
+  if (typeof direct === "string") return capTargetText(direct);
+  if (Array.isArray(item.command)) return capTargetText(item.command.join(" "));
+  if (typeof item.command === "string") return capTargetText(item.command);
+  return undefined;
+}
+
+export function handleExecutionStreamEvent(execution, event) {
+  if (!event || typeof event !== "object") return;
+  // ---- Gemini: step_update (tool ACTIVE / DONE) ----
   if (event.event === "step_update" && event.step_update) {
     const su = event.step_update;
     touchActivity(execution);
@@ -1289,11 +1375,101 @@ function handleExecutionStreamEvent(execution, event) {
         execution.activeTool = null;
         addTrajectory(execution, {
           action: su.tool_name,
+          parameters: su.tool_info?.parameters,
           duration: su.duration_seconds,
           timestamp: Date.now(),
         });
       }
     }
+    return;
+  }
+  // ---- Gemini: result (terminal clean output; never drives execution status) ----
+  if (event.event === "result" && event.result) {
+    touchActivity(execution);
+    const res = event.result;
+    if (typeof res.response === "string") {
+      appendCleanOutput(execution, res.response);
+    } else if (typeof res.text === "string") {
+      appendCleanOutput(execution, res.text);
+    } else if (res.response != null) {
+      try {
+        appendCleanOutput(execution, JSON.stringify(res.response));
+      } catch {
+        /* ignore unserializable result */
+      }
+    }
+    execution.activeTool = null;
+    return;
+  }
+  // ---- Muse: tool_batch.effect.started ----
+  if (event.payload_type === "tool_batch.effect.started") {
+    touchActivity(execution);
+    const record = event.payload?.record;
+    const toolName = record?.tool_name || event.tool_name;
+    if (toolName) {
+      execution.activeTool = {
+        name: toolName,
+        startedAt: Date.now(),
+      };
+      rememberMusePendingTool(execution, record, toolName, museToolTarget(record));
+    }
+    return;
+  }
+  // ---- Muse: tool_batch.effect.terminal ----
+  // The terminal record carries no tool_name, so correlate via the
+  // started-event pending entry (call/effect/task id) or the active tool.
+  if (event.payload_type === "tool_batch.effect.terminal") {
+    touchActivity(execution);
+    const record = event.payload?.record;
+    const pending = resolveMusePendingTool(execution, record);
+    const name = record?.tool_name || event.tool_name || pending.name || execution.activeTool?.name;
+    const target = museToolTarget(record) ?? pending.target;
+    forgetMusePendingTool(execution, record);
+    execution.activeTool = null;
+    if (name) {
+      const entry = { action: name, timestamp: Date.now() };
+      if (target !== undefined) entry.target = target;
+      if (record?.parameters !== undefined) entry.parameters = record.parameters;
+      addTrajectory(execution, entry);
+    }
+    return;
+  }
+  // ---- Muse: run.terminal.completed (terminal clean output) ----
+  if (
+    event.payload_type === "run.terminal.completed" ||
+    (event.payload?.kind === "run_terminal" && event.payload?.terminal === "completed")
+  ) {
+    touchActivity(execution);
+    appendCleanOutput(execution, event.payload?.text);
+    execution.activeTool = null;
+    return;
+  }
+  // ---- Codex: item.started / item.completed ----
+  if (event.type === "item.started" && event.item) {
+    touchActivity(execution);
+    const item = event.item;
+    if (item.type === "agent_message" || item.type === "reasoning") return;
+    execution.activeTool = {
+      name: codexToolName(item),
+      startedAt: Date.now(),
+    };
+    return;
+  }
+  if (event.type === "item.completed" && event.item) {
+    touchActivity(execution);
+    const item = event.item;
+    if (item.type === "agent_message") {
+      appendCleanOutput(execution, item.text);
+      return;
+    }
+    if (item.type === "reasoning") return;
+    execution.activeTool = null;
+    addTrajectory(execution, {
+      action: codexToolName(item),
+      ...(codexToolTarget(item) !== undefined ? { target: codexToolTarget(item) } : {}),
+      timestamp: Date.now(),
+    });
+    return;
   }
 }
 
