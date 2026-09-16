@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:f
 import { basename, dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { buildPacket, parseDiffHunks } from "./packet.mjs";
-import { resolveTicketSource } from "./ticket.mjs";
+import { archiveAndClearTicket, resolveTicketSource } from "./ticket.mjs";
 
 const exec = promisify(execFile);
 
@@ -422,7 +422,7 @@ export async function retireWorktree(cwd, { worktree, branch, force = true, home
   return { retired: true, worktree: targetWorktree, branch: targetBranch };
 }
 
-export async function landWorktree(cwd, { worktree, branch, message, title, body, deleteBranch = true, home } = {}) {
+export async function landWorktree(cwd, { worktree, branch, message, title, body, deleteBranch = true, home, sessionId: explicitSessionId, clearTicket = true } = {}) {
   const targetWorktree = worktree || cwd;
   const mainRoot = await mainRepoRoot(targetWorktree);
 
@@ -433,6 +433,12 @@ export async function landWorktree(cwd, { worktree, branch, message, title, body
 
   const commitMsg = message || title || `architect: ${targetBranch}`;
   const commitResult = await commitIfDirty(targetWorktree, commitMsg);
+
+  const resolveSessionTag = () => {
+    if (explicitSessionId) return explicitSessionId;
+    const match = /^architect\/(?:bounded|open|research)\/([a-zA-Z0-9]+)$/.exec(targetBranch);
+    return match ? match[1] : null;
+  };
 
   // Determine whether this worktree introduced any changes or commits against base
   let hasChanges = commitResult.committed;
@@ -461,6 +467,18 @@ export async function landWorktree(cwd, { worktree, branch, message, title, body
     if (deleteBranch) {
       await retireWorktree(mainRoot, { worktree: targetWorktree, branch: targetBranch, force: true, home });
     }
+    let ticketArchived = false;
+    let archivePath = null;
+    if (clearTicket) {
+      const sessionTag = resolveSessionTag();
+      if (sessionTag) {
+        try {
+          const archResult = await archiveAndClearTicket(mainRoot, sessionTag);
+          ticketArchived = Boolean(archResult?.archived);
+          archivePath = archResult?.archivePath ?? null;
+        } catch {}
+      }
+    }
     return {
       landed: true,
       retired: true,
@@ -468,6 +486,8 @@ export async function landWorktree(cwd, { worktree, branch, message, title, body
       method: "none",
       pr: null,
       mergeSha: null,
+      ticketArchived,
+      ...(archivePath ? { archivePath } : {}),
     };
   }
 
@@ -488,12 +508,32 @@ export async function landWorktree(cwd, { worktree, branch, message, title, body
     await retireWorktree(mainRoot, { worktree: targetWorktree, branch: targetBranch, force: true, home });
   }
 
+  let ticketArchived = false;
+  let archivePath = null;
+  if (clearTicket) {
+    const sessionTag = resolveSessionTag();
+    if (sessionTag) {
+      try {
+        let prNum;
+        if (result?.pr) {
+          const prMatch = /\/pull\/(\d+)/.exec(result.pr);
+          if (prMatch) prNum = prMatch[1];
+        }
+        const archResult = await archiveAndClearTicket(mainRoot, sessionTag, { prNumber: prNum });
+        ticketArchived = Boolean(archResult?.archived);
+        archivePath = archResult?.archivePath ?? null;
+      } catch {}
+    }
+  }
+
   return {
     landed: true,
     branch: targetBranch,
     method: remote ? "pr" : "ff",
     pr: result.pr ?? null,
     mergeSha: result.mergeSha ?? result.sha ?? null,
+    ticketArchived,
+    ...(archivePath ? { archivePath } : {}),
   };
 }
 

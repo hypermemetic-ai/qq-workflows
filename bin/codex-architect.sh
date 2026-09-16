@@ -106,7 +106,12 @@ EOF
   fi
 fi
 
-if command -v orca >/dev/null 2>&1; then
+# Notify Orca IDE to open the ticket file in an editor pane if available.
+# On Linux, Orca IDE installs its CLI as `orca-ide` to avoid colliding with
+# the system screen reader (`orca`). On macOS and other platforms, it is `orca`.
+if command -v orca-ide >/dev/null 2>&1; then
+  (orca-ide file open "${TICKET_PATH}" || true) </dev/null >/dev/null 2>&1 &
+elif [ "$(uname -s)" != "Linux" ] && command -v orca >/dev/null 2>&1; then
   (orca file open "${TICKET_PATH}" || true) </dev/null >/dev/null 2>&1 &
 fi
 
@@ -128,15 +133,15 @@ Worktrees live under \`.qq-worktrees/\` on dedicated branches. When changes are 
 ## Tools & Delegation Model
 You operate with a high-leverage, bounded tool surface:
 - \`zvec_grep_search\`: Fast, indexed semantic search across the repository to discover concepts, file paths, and anchors.
-- \`dispatch_runner(task, [targetPaths])\`: Asynchronously dispatches a Gemini runner helper for research, deep investigation, code reading, running tests, or diagnostic scripts. Returns a tracking ID.
-- \`check_runner(runnerId)\`: Returns telemetry: status ('running' | 'completed' | 'failed' | 'cancelled'), total elapsedSeconds, activeTool with running duration, last 25 trajectory steps, and the stuck-suspicion flag with evidence when silent past threshold.
+- \`dispatch_runner(task, [targetPaths])\`: Asynchronously dispatches a Gemini runner helper for research, deep investigation, code reading, running tests, or diagnostic scripts. Strictly non-blocking; returns a tracking ID.
+- \`check_runner(runnerId)\`: Returns telemetry: status ('running' | 'completed' | 'failed' | 'cancelled'), total elapsedSeconds, activeTool with running duration, last 25 trajectory steps, and the stuck-suspicion flag with evidence when silent past threshold. Inspect progress and monitor runner activity whenever you want.
 - \`steer_runner(runnerId, instruction)\`: Injects a one-way instruction to course-correct an in-flight runner.
 - \`cancel_runner(runnerId)\`: Terminates an in-flight runner cleanly.
 - \`await_runner(runnerId)\`: Returns status by 4:50 — terminal findings if finished, needs-decision with stall evidence if quiet past threshold, or running-fine heartbeat. Never fails for clocks; re-await while running.
-- \`read_ticket()\`: Reads the active session ticket (\`.architect/tickets/${SESSION_ID}.md\`).
-- \`update_ticket(content)\`: Updates the active session ticket (\`.architect/tickets/${SESSION_ID}.md\`).
-- \`dispatch_execution({ kind })\`: Runs the automated worktree implementation + review + auto-landing loop.
-- \`check_execution(id)\`: Tracks total elapsedSeconds, phase ('implementing' | 'reviewing' | 'retrying' | 'landing' | 'completed'), active tool duration, 25-step trajectory, and the stuck-suspicion flag with evidence when silent past threshold.
+- \`read_ticket([section], [sectionsOnly])\`: Reads the active session ticket (\`.architect/tickets/${SESSION_ID}.md\`). Can read the full ticket, list sections, or read a specific section.
+- \`update_ticket(content, [section])\`: Updates the active session ticket (\`.architect/tickets/${SESSION_ID}.md\`). Pass \`section\` to surgically update only that section, or omit to replace the full ticket.
+- \`dispatch_execution({ kind })\`: Strictly non-blocking dispatch of the automated worktree implementation + review + auto-landing pipeline.
+- \`check_execution(id)\`: Tracks total elapsedSeconds, phase ('implementing' | 'reviewing' | 'retrying' | 'landing' | 'completed'), active tool duration, 25-step trajectory, and the stuck-suspicion flag with evidence when silent past threshold. Inspect execution progress whenever you want.
 - \`await_execution(id)\`: Returns status by 4:50 — terminal story and landing outcome if finished, needs-decision with stall evidence if quiet past threshold, or running-fine heartbeat. Never fails for clocks; re-await while running.
 
 ## Guidelines
@@ -154,7 +159,7 @@ You operate with a high-leverage, bounded tool surface:
 If the user cannot give an informed opinion on a live question, ask whether the ticket can stay underspecified; the user decides. If the user wants to learn, or the ticket is too consequential to leave open, teach until the user is informed enough to decide. Put the decision in the ticket.
 
 ## Execution
-When the operator approves the ticket, call \`dispatch_execution(kind)\`. The managed execution pipeline automatically provisions the worktree, runs the implementer, runs the reviewer (for open tickets), retries on review failure, and automatically lands the verified change.
+When the operator approves the ticket, call \`dispatch_execution(kind)\`. The managed execution pipeline automatically provisions the worktree, runs the implementer, runs the reviewer (for open tickets), retries on review failure, and automatically lands the verified change. Then call \`await_execution(id)\` to wait for and report the final outcome to the operator.
 EOF
 
 PASSED_ARGS=()
@@ -185,6 +190,10 @@ done
 DEFAULT_ARGS=(
   -c features.plugins=false
   -c features.remote_plugin=false
+  -c features.apps=false
+  -c features.sleep_tool=false
+  -c 'disabled_tools=["wait","sleep"]'
+  -c code_mode.default_exec_yield_time_ms=7200000
   -c features.shell_tool=false
   -c features.unified_exec=false
   -c "model_instructions_file=\"${ARCHITECT_PROMPT_FILE}\""

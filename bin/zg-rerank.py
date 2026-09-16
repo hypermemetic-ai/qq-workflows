@@ -5,37 +5,55 @@ Stage 1: zvec-grep hybrid lexical (BM25) + dense vector (Qwen3-0.6B) candidate r
 Stage 2: jina-reranker-v3.5 listwise cross-attention reranking on GPU/CPU.
 """
 
+import os
+import sys
+
+VENV_PY = os.path.expanduser("~/.local/venvs/zg-rerank/bin/python3")
+if os.path.exists(VENV_PY) and sys.executable != VENV_PY:
+    os.execv(VENV_PY, [VENV_PY] + sys.argv)
+
 import argparse
 import json
-import os
 import re
 import subprocess
-import sys
 import time
 import torch
 from transformers import AutoModel
 
 MODEL_ID = "jinaai/jina-reranker-v3.5"
-_model = None
+_models = {}
+_last_device = None
 
 def get_device_and_dtype():
     if torch.cuda.is_available():
         return "cuda", torch.bfloat16
     return "cpu", torch.bfloat16
 
-def get_model():
-    global _model
-    if _model is None:
-        device, dtype = get_device_and_dtype()
-        _model = AutoModel.from_pretrained(
+def get_model(device=None):
+    global _models
+    if device is None:
+        device, _ = get_device_and_dtype()
+    if device not in _models:
+        _, dtype = get_device_and_dtype()
+        model = AutoModel.from_pretrained(
             MODEL_ID,
             trust_remote_code=True,
             local_files_only=True,
             dtype=dtype
         )
-        _model.to(device)
-        _model.eval()
-    return _model
+        model.to(device)
+        model.eval()
+        _models[device] = model
+    return _models[device]
+
+def drop_model(device):
+    global _models
+    if device in _models:
+        del _models[device]
+    if device == "cuda" and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    import gc
+    gc.collect()
 
 def query_zg(query, root, limit=20):
     """Run zg query with full preview to retrieve stage-1 candidates."""
@@ -100,25 +118,45 @@ def query_zg(query, root, limit=20):
 
     return candidates
 
-def rerank(query, candidates, top_n=5):
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+def rerank(query, candidates, top_n=5, batch_size=5):
     if not candidates:
         return [], 0.0
 
-    model = get_model()
     docs = [f"File: {c['path']}:{c['start']}-{c['end']}\n{c['text']}" for c in candidates]
 
     start = time.perf_counter()
-    results = model.rerank(query, docs, top_n=min(top_n, len(docs)))
+    try:
+        scored = _rerank_batches(query, docs, candidates, batch_size)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    except torch.OutOfMemoryError:
+        # 6GB card shared with transcription servers + zg embeddings: GPU
+        # attempt failed, free everything and redo on CPU. Slow but completes.
+        print("CUDA OOM during rerank; retrying on CPU.", flush=True)
+        drop_model("cuda")
+        scored = _rerank_batches(query, docs, candidates, batch_size, device="cpu")
+        device = "cpu"
     elapsed_ms = (time.perf_counter() - start) * 1000
 
-    reranked = []
-    for r in results:
-        idx = r["index"]
-        item = dict(candidates[idx])
-        item["score"] = float(r["relevance_score"])
-        reranked.append(item)
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    global _last_device
+    _last_device = device
+    return scored[:top_n], elapsed_ms
 
-    return reranked, elapsed_ms
+
+def _rerank_batches(query, docs, candidates, batch_size, device=None):
+    model = get_model(device)
+    all_scored = []
+    for i in range(0, len(docs), batch_size):
+        batch = docs[i:i + batch_size]
+        res = model.rerank(query, batch, top_n=len(batch))
+        for r in res:
+            idx = i + r["index"]
+            item = dict(candidates[idx])
+            item["score"] = float(r["relevance_score"])
+            all_scored.append(item)
+    return all_scored
 
 def main():
     parser = argparse.ArgumentParser(description="Two-stage code search using zg + Jina-Reranker-v3.5")
@@ -141,7 +179,7 @@ def main():
         print(json.dumps({"elapsed_ms": elapsed_ms, "query": args.query, "results": reranked}, indent=2))
         return
 
-    device, _ = get_device_and_dtype()
+    device = _last_device or get_device_and_dtype()[0]
     print(f"\n⚡ Jina-Reranker-v3.5 ({device.upper()}) reranked {len(candidates)} candidates in {elapsed_ms:.1f} ms for:")
     print(f"   \"{args.query}\"\n")
     print("=" * 80)

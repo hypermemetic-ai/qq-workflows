@@ -50,7 +50,8 @@ try {
 
   // Test 2: pre-invocation triggers `orca file open <path>` when orca IS present
   const mockOrcaLog = join(mockBinDir, "orca.log");
-  const mockOrcaScript = join(mockBinDir, "orca");
+  const binName = process.platform === "linux" ? "orca-ide" : "orca";
+  const mockOrcaScript = join(mockBinDir, binName);
   writeFileSync(mockOrcaScript, `#!/bin/sh\necho "$@" > "${mockOrcaLog}"\n`, { mode: 0o755 });
   chmodSync(mockOrcaScript, 0o755);
 

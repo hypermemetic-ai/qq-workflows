@@ -46,8 +46,13 @@ const savedXdg = process.env.XDG_CONFIG_HOME;
   const fresh = mergeCodexConfig(undefined, { mcpServerBin, zgBin: "zg", promptFile: "/p/prompt.md" });
   assert.ok(fresh.includes('model_instructions_file = "/p/prompt.md"'));
   assert.ok(fresh.includes("[features]"));
+  assert.ok(fresh.includes("apps = false"));
+  assert.ok(fresh.includes("sleep_tool = false"));
   assert.ok(fresh.includes("shell_tool = false"));
   assert.ok(fresh.includes("unified_exec = false"));
+  assert.ok(fresh.includes('disabled_tools = ["wait", "sleep"]'));
+  assert.ok(fresh.includes("[code_mode]"));
+  assert.ok(fresh.includes("default_exec_yield_time_ms = 7200000"));
   assert.ok(fresh.includes("[mcp_servers.qq-workflows]"));
   assert.ok(fresh.includes(`args = ["${mcpServerBin}"]`));
   assert.ok(fresh.includes("[mcp_servers.zvec_grep]"));
@@ -55,8 +60,13 @@ const savedXdg = process.env.XDG_CONFIG_HOME;
   const existing = `model = "custom"\n[features]\nshell_tool = true\n`;
   const merged = mergeCodexConfig(existing, { mcpServerBin, zgBin: "zg" });
   assert.ok(merged.includes('model = "custom"'));
+  assert.ok(merged.includes("apps = false"));
+  assert.ok(merged.includes("sleep_tool = false"));
   assert.ok(merged.includes("shell_tool = false"));
   assert.ok(merged.includes("unified_exec = false"));
+  assert.ok(merged.includes('disabled_tools = ["wait", "sleep"]'));
+  assert.ok(merged.includes("[code_mode]"));
+  assert.ok(merged.includes("default_exec_yield_time_ms = 7200000"));
 }
 
 // 1b. mergeMuseSettings is pure: missing presets become {}, everything else stays.
@@ -321,6 +331,9 @@ function writeFakeBin(fakeBin, recordDir) {
   const orcaRecord = join(recordDir, "orca-call.txt");
   writeFileSync(join(fakeBin, "orca"), `#!/usr/bin/env bash\necho "ORCA: $@" > ${orcaRecord}\n`);
   execFileSync("chmod", ["+x", join(fakeBin, "orca")]);
+  try {
+    symlinkSync("orca", join(fakeBin, "orca-ide"));
+  } catch {}
   return { museRecord, orcaRecord };
 }
 
@@ -481,7 +494,7 @@ function expectedPromptBody(sessionId) {
     assert.match(ticket, /bounded — straightforward work/);
     const prompt = readFileSync(join(fbHome, ".config", "muse", "architect", "prompt.md"), "utf8");
     assert.ok(prompt.includes("You are the architect. The ticket is `.architect/tickets/fb-1.md`."));
-    assert.ok(prompt.includes("Do not call prepare_worktree until the operator explicitly approves."));
+    assert.ok(prompt.includes("Do not call dispatch_execution until the operator explicitly approves."));
   } finally {
     rmSync(fbHome, { recursive: true, force: true });
     rmSync(fbRepo, { recursive: true, force: true });
@@ -554,6 +567,11 @@ accessSync(codexShimPath, constants.X_OK);
       `#!/usr/bin/env bash\necho "ARGS: $@" > ${codexRecord}\n`,
     );
     execFileSync("chmod", ["+x", join(fakeBin, "codex")]);
+    writeFileSync(join(fakeBin, "orca"), `#!/usr/bin/env bash\nexit 0\n`);
+    execFileSync("chmod", ["+x", join(fakeBin, "orca")]);
+    try {
+      symlinkSync("orca", join(fakeBin, "orca-ide"));
+    } catch {}
 
     const sessionId = "codex-sess-1234";
     const env = { ...process.env, HOME: launchHome, PATH: [fakeBin, "/usr/bin", "/bin"].join(":") };
@@ -592,6 +610,10 @@ accessSync(codexShimPath, constants.X_OK);
     // Req 1: codex-architect DEFAULT_ARGS must include plugin-disable flags
     assert.ok(call.includes("features.plugins=false"), "codex-architect must pass features.plugins=false");
     assert.ok(call.includes("features.remote_plugin=false"), "codex-architect must pass features.remote_plugin=false");
+    assert.ok(call.includes("features.apps=false"), "codex-architect must pass features.apps=false");
+    assert.ok(call.includes("features.sleep_tool=false"), "codex-architect must pass features.sleep_tool=false");
+    assert.ok(call.includes('disabled_tools=["wait","sleep"]'), "codex-architect must pass disabled_tools");
+    assert.ok(call.includes("code_mode.default_exec_yield_time_ms=7200000"), "codex-architect must pass default_exec_yield_time_ms");
 
     // Req 2: ticket content must be embedded in the rendered architect-instructions.md
     // (reuse `prompt` and `promptPath` already read above)
@@ -604,10 +626,10 @@ accessSync(codexShimPath, constants.X_OK);
       "architect-instructions.md must contain embedded ticket content or the pre-seed section",
     );
 
-    // Req 3: anti-polling floor instruction must appear in the rendered prompt
+    // Req 3: delegation and await instruction must appear in the rendered prompt
     assert.ok(
-      prompt.includes("120,000ms") || prompt.includes("2 minutes"),
-      "architect-instructions.md must include anti-polling floor instruction",
+      prompt.includes("await_runner") && prompt.includes("await_execution"),
+      "architect-instructions.md must include await_runner and await_execution delegation instructions",
     );
   } finally {
     rmSync(launchHome, { recursive: true, force: true });
@@ -717,6 +739,10 @@ accessSync(codexShimPath, constants.X_OK);
     const tomlContent = readFileSync(join(codexAccDir, "config.toml"), "utf8");
     assert.ok(tomlContent.includes("[features]"));
     assert.ok(tomlContent.includes("shell_tool = false"));
+    assert.ok(tomlContent.includes("sleep_tool = false"));
+    assert.ok(tomlContent.includes('disabled_tools = ["wait", "sleep"]'));
+    assert.ok(tomlContent.includes("[code_mode]"));
+    assert.ok(tomlContent.includes("default_exec_yield_time_ms = 7200000"));
     assert.ok(tomlContent.includes("[mcp_servers.qq-workflows]"));
     assert.ok(tomlContent.includes("[mcp_servers.zvec_grep]"));
   } finally {

@@ -107,7 +107,42 @@ export function mergeCodexConfig(existingTomlText, { mcpServerBin, zgBin = "zg",
     }
   }
 
+  if (/^disabled_tools\s*=/m.test(content)) {
+    content = content.replace(/^disabled_tools\s*=\s*\[(.*?)\]/m, (_match, inner) => {
+      const existing = inner
+        .split(",")
+        .map((s) => s.trim().replace(/^["']|["']$/g, ""))
+        .filter(Boolean);
+      const set = new Set(existing);
+      set.add("wait");
+      set.add("sleep");
+      return `disabled_tools = [${Array.from(set).map((s) => JSON.stringify(s)).join(", ")}]`;
+    });
+  } else {
+    content = `disabled_tools = ["wait", "sleep"]\n${content}`.trim();
+  }
+
+  if (/^\[code_mode\]/m.test(content)) {
+    if (/^default_exec_yield_time_ms\s*=/m.test(content)) {
+      content = content.replace(/^default_exec_yield_time_ms\s*=.*$/m, "default_exec_yield_time_ms = 7200000");
+    } else {
+      content = content.replace(/^\[code_mode\]/m, "[code_mode]\ndefault_exec_yield_time_ms = 7200000");
+    }
+  } else {
+    content += `\n\n[code_mode]\ndefault_exec_yield_time_ms = 7200000`;
+  }
+
   if (/^\[features\]/m.test(content)) {
+    if (/^apps\s*=/m.test(content)) {
+      content = content.replace(/^apps\s*=.*$/m, "apps = false");
+    } else {
+      content = content.replace(/^\[features\]/m, "[features]\napps = false");
+    }
+    if (/^sleep_tool\s*=/m.test(content)) {
+      content = content.replace(/^sleep_tool\s*=.*$/m, "sleep_tool = false");
+    } else {
+      content = content.replace(/^\[features\]/m, "[features]\nsleep_tool = false");
+    }
     if (/^shell_tool\s*=/m.test(content)) {
       content = content.replace(/^shell_tool\s*=.*$/m, "shell_tool = false");
     } else {
@@ -119,7 +154,7 @@ export function mergeCodexConfig(existingTomlText, { mcpServerBin, zgBin = "zg",
       content = content.replace(/^\[features\]/m, "[features]\nunified_exec = false");
     }
   } else {
-    content += `\n\n[features]\nshell_tool = false\nunified_exec = false`;
+    content += `\n\n[features]\napps = false\nsleep_tool = false\nshell_tool = false\nunified_exec = false`;
   }
 
   function removeSection(toml, sectionHeader) {
