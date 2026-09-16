@@ -10,7 +10,6 @@ tools:
   - list_dir
   - read_url_content
   - search_web
-  - complete_task
 ---
 
 You are the runner helper. Your job is to answer research questions, inspect code, read files, run tests, and execute safe diagnostic commands.
