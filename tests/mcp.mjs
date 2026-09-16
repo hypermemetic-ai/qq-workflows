@@ -36,6 +36,7 @@ import {
   updateTicket,
 } from "../bin/mcp-server.mjs";
 import { git } from "../workflow/git.mjs";
+import { resolveTicketSource } from "../workflow/ticket.mjs";
 
 const exec = promisify(execFile);
 
@@ -1038,6 +1039,126 @@ try {
     rmSync(join(dirname(repoDir), ".qq-worktrees", basename(repoDir)), { recursive: true, force: true });
   } catch {}
   rmSync(repoDir, { recursive: true, force: true });
+}
+
+// 10b. Dispatch integrity: unambiguous session resolution and echoed ticket identity
+{
+  async function initRepo(tag) {
+    const dir = mkdtempSync(join(tmpdir(), tag));
+    await git(dir, ["init", "-b", "main"]);
+    await git(dir, ["config", "user.name", "MCP Test"]);
+    await git(dir, ["config", "user.email", "mcp@example.invalid"]);
+    writeFileSync(join(dir, "README.md"), `# ${tag}\n`);
+    await git(dir, ["add", "README.md"]);
+    await git(dir, ["commit", "-m", "init"]);
+    mkdirSync(join(dir, ".architect", "tickets"), { recursive: true });
+    return dir;
+  }
+  function cleanupRepo(dir) {
+    try {
+      rmSync(join(dirname(dir), ".qq-worktrees", basename(dir)), { recursive: true, force: true });
+    } catch {}
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // A. Omitted sessionId resolves a lone ticket; two tickets throw ambiguous naming both.
+  const ambRepo = await initRepo("architect-mcp-ambiguous-");
+  try {
+    const ticketsDir = join(ambRepo, ".architect", "tickets");
+    const loneId = "a1a1a1a1-1111-2222-3333-444444444444";
+    writeFileSync(join(ticketsDir, `${loneId}.md`), "# Lone\n");
+    assert.equal(await resolveSessionId(ambRepo), loneId);
+    const secondId = "b2b2b2b2-1111-2222-3333-444444444444";
+    await new Promise((r) => setTimeout(r, 20));
+    writeFileSync(join(ticketsDir, `${secondId}.md`), "# Second\n");
+    let ambiguous = null;
+    try {
+      await resolveSessionId(ambRepo);
+    } catch (error) {
+      ambiguous = error;
+    }
+    assert.ok(ambiguous, "two tickets must throw instead of resolving by mtime");
+    assert.match(ambiguous.message, /ambiguous active ticket/);
+    assert.ok(ambiguous.message.includes(loneId), "error names the first candidate");
+    assert.ok(ambiguous.message.includes(secondId), "error names the second candidate");
+    await assert.rejects(
+      () => prepareWorktree({ kind: "bounded", cwd: ambRepo }),
+      /ambiguous active ticket/,
+    );
+  } finally {
+    cleanupRepo(ambRepo);
+  }
+
+  // B. *-sources.md backups are never selected as the active ticket.
+  const srcRepo = await initRepo("architect-mcp-sources-");
+  try {
+    const ticketsDir = join(srcRepo, ".architect", "tickets");
+    const realId = "c3c3c3c3-1111-2222-3333-444444444444";
+    writeFileSync(join(ticketsDir, `${realId}.md`), "# Real\n");
+    await new Promise((r) => setTimeout(r, 20));
+    writeFileSync(join(ticketsDir, `${realId}-sources.md`), "# Backup\n");
+    assert.equal(await resolveSessionId(srcRepo), realId);
+    rmSync(join(ticketsDir, `${realId}.md`));
+    await assert.rejects(
+      () => resolveSessionId(srcRepo),
+      /^Error: no active ticket: pass sessionId or create \.architect\/tickets\/<id>\.md$/,
+    );
+  } finally {
+    cleanupRepo(srcRepo);
+  }
+
+  // C. Colliding prefixes throw; exact match keeps precedence.
+  const prefixRepo = await initRepo("architect-mcp-prefix-");
+  try {
+    const ticketsDir = join(prefixRepo, ".architect", "tickets");
+    const idA = "ffffffff-1111-2222-3333-444444444444";
+    const idB = "ffffffff-1111-2222-3333-555555555555";
+    writeFileSync(join(ticketsDir, `${idA}.md`), "# A\n");
+    writeFileSync(join(ticketsDir, `${idB}.md`), "# B\n");
+    await assert.rejects(
+      () => resolveTicketSource(prefixRepo, "ffffffff"),
+      /ambiguous ticket prefix/,
+    );
+    await assert.rejects(
+      () => prepareWorktree({ kind: "bounded", sessionId: "ffffffff", cwd: prefixRepo }),
+      /ambiguous ticket prefix/,
+    );
+    await assert.rejects(() => git(prefixRepo, ["rev-parse", "--verify", "refs/heads/architect/bounded/ffffffff"]));
+    assert.equal(
+      await resolveTicketSource(prefixRepo, idA),
+      join(ticketsDir, `${idA}.md`),
+    );
+    const exactRes = await prepareWorktree({ kind: "bounded", sessionId: idA, cwd: prefixRepo });
+    assert.equal(
+      readFileSync(join(exactRes.worktree, ".architect", "ticket.md"), "utf8"),
+      "# A\n",
+    );
+    await retireTestWorktree(prefixRepo, exactRes);
+  } finally {
+    cleanupRepo(prefixRepo);
+  }
+
+  // D. prepare_worktree echoes the resolved sessionId + ticket path.
+  const echoRepo = await initRepo("architect-mcp-echo-");
+  try {
+    const echoId = "e5e5e5e5-1111-2222-3333-444444444444";
+    const echoTicket = join(echoRepo, ".architect", "tickets", `${echoId}.md`);
+    writeFileSync(echoTicket, "# Echo\n");
+    const explicit = await prepareWorktree({ kind: "bounded", sessionId: echoId, cwd: echoRepo });
+    assert.equal(explicit.sessionId, echoId);
+    assert.equal(explicit.ticketSource, echoTicket);
+    await retireTestWorktree(echoRepo, explicit);
+    const omitted = await prepareWorktree({ kind: "bounded", cwd: echoRepo });
+    assert.equal(omitted.sessionId, echoId);
+    assert.equal(omitted.ticketSource, echoTicket);
+    await retireTestWorktree(echoRepo, omitted);
+    const researchEcho = await prepareWorktree({ kind: "research", sessionId: echoId, cwd: echoRepo });
+    assert.equal(researchEcho.sessionId, echoId);
+    assert.equal(researchEcho.ticketSource, echoTicket);
+    await retireTestWorktree(echoRepo, researchEcho);
+  } finally {
+    cleanupRepo(echoRepo);
+  }
 }
 
 // 11. RPC & JSON-RPC stdio protocol tests

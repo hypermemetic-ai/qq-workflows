@@ -41,9 +41,10 @@ export async function ensureTicket(cwd, { readFileFn = readFile, writeFileFn = w
   return { path, text: template, created: true };
 }
 
-// Resolve the on-disk ticket for a session: exact match, then prefix match
-// (either direction), else throw. There is no fallback: a missing ticket
-// fails fast so a child can never execute a dead spec.
+// Resolve the on-disk ticket for a session: exact match first, then a unique
+// prefix match (either direction), else throw. There is no fallback: a
+// missing ticket fails fast so a child can never execute a dead spec.
+// Backup files (*-sources.md) never resolve via prefix.
 export async function resolveTicketSource(root, sessionId) {
   if (!sessionId) {
     throw new Error("no active ticket: pass sessionId or create .architect/tickets/<id>.md");
@@ -53,8 +54,15 @@ export async function resolveTicketSource(root, sessionId) {
   const ticketsDir = join(root, ".architect", "tickets");
   if (existsSync(ticketsDir)) {
     const files = await readdir(ticketsDir);
-    const match = files.find((f) => f.endsWith(".md") && (f.startsWith(sessionId) || sessionId.startsWith(basename(f, ".md"))));
-    if (match) return join(ticketsDir, match);
+    const matches = files
+      .filter((f) => f.endsWith(".md")
+        && !f.endsWith("-sources.md")
+        && (f.startsWith(sessionId) || sessionId.startsWith(basename(f, ".md"))))
+      .sort();
+    if (matches.length === 1) return join(ticketsDir, matches[0]);
+    if (matches.length > 1) {
+      throw new Error(`ambiguous ticket prefix '${sessionId}': matches ${matches.join(", ")}; use a longer prefix or the exact sessionId`);
+    }
   }
   throw new Error(`no ticket resolved for session '${sessionId}'`);
 }
