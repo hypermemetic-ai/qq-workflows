@@ -18,8 +18,13 @@ import {
   CANONICAL_PROVIDERS,
   PROVIDERS,
   assertKnownProvider,
+  extractSection,
+  listSections,
+  loadPackagedTemplate,
   normalizeProvider,
+  replaceSection,
   resolveTicketSource,
+  templatePath,
   ticketPath,
 } from "../workflow/ticket.mjs";
 
@@ -239,7 +244,7 @@ export const TOOLS = [
   },
   {
     name: "read_ticket",
-    description: "Read the active session ticket (.architect/tickets/<sessionId>.md).",
+    description: "Read the active session ticket (.architect/tickets/<sessionId>.md). Supports reading the full ticket, listing available sections, or reading a specific section.",
     inputSchema: {
       type: "object",
       properties: {
@@ -251,18 +256,30 @@ export const TOOLS = [
           type: "string",
           description: "Optional working directory",
         },
+        section: {
+          type: "string",
+          description: "Optional section heading to read (e.g. 'Problem', 'Testing plan', 'Kind', '[open]'). If omitted, returns the full ticket and a list of available sections.",
+        },
+        sectionsOnly: {
+          type: "boolean",
+          description: "Optional boolean. If true, returns only the list of section headings without the full content.",
+        },
       },
     },
   },
   {
     name: "update_ticket",
-    description: "Update the active session ticket (.architect/tickets/<sessionId>.md).",
+    description: "Update the active session ticket (.architect/tickets/<sessionId>.md). Supports full file replacement or surgical section-level updates.",
     inputSchema: {
       type: "object",
       properties: {
         content: {
           type: "string",
-          description: "Updated markdown content for the ticket",
+          description: "Markdown content to write. If 'section' is specified, this content replaces only that section; otherwise replaces the entire ticket.",
+        },
+        section: {
+          type: "string",
+          description: "Optional section heading to update (e.g. 'Problem', 'Testing plan', 'Kind', '[open]'). When provided, only this section is replaced (or appended if not found), leaving the rest of the ticket untouched.",
         },
         sessionId: {
           type: "string",
@@ -1628,28 +1645,80 @@ export async function readTicket(args = {}) {
   const sessionId = await resolveSessionId(root, args.sessionId || args.id);
   const path = await resolveTicketSource(root, sessionId);
   const content = await readFile(path, "utf8");
+  const sections = listSections(content);
+
+  if (args.sectionsOnly || args.listSections) {
+    return {
+      ok: true,
+      sessionId,
+      path,
+      sections,
+    };
+  }
+
+  if (args.section) {
+    const sectionContent = extractSection(content, args.section);
+    if (sectionContent === null) {
+      return {
+        ok: false,
+        sessionId,
+        path,
+        section: args.section,
+        error: `Section '${args.section}' not found in ticket. Available sections: ${sections.join(", ")}`,
+        sections,
+      };
+    }
+    return {
+      ok: true,
+      sessionId,
+      path,
+      section: args.section,
+      content: sectionContent,
+      sections,
+    };
+  }
+
   return {
     ok: true,
     sessionId,
     path,
     content,
+    sections,
   };
 }
 
 export async function updateTicket(args = {}) {
-  const { content, cwd = process.cwd() } = args;
+  const { content, section, cwd = process.cwd() } = args;
   if (content === undefined || typeof content !== "string") {
     throw new Error("content is required and must be a string");
   }
   const root = await mainRepoRoot(cwd);
   const sessionId = await resolveSessionId(root, args.sessionId || args.id);
   const path = ticketPath(root, sessionId);
+
+  let newFullContent = content;
+  if (section) {
+    let currentContent = "";
+    try {
+      currentContent = await readFile(path, "utf8");
+    } catch (err) {
+      if (err?.code !== "ENOENT") throw err;
+      try {
+        currentContent = await readFile(templatePath(root), "utf8");
+      } catch {
+        currentContent = await loadPackagedTemplate();
+      }
+    }
+    newFullContent = replaceSection(currentContent, section, content);
+  }
+
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, content, "utf8");
+  await writeFile(path, newFullContent, "utf8");
   return {
     ok: true,
     sessionId,
     path,
+    ...(section ? { section } : {}),
   };
 }
 

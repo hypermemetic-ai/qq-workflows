@@ -750,16 +750,56 @@ try {
   assert.equal(readTicketRes.ok, true);
   assert.equal(readTicketRes.sessionId, sessionId);
   assert.ok(readTicketRes.content.includes("# Ticket"));
+  assert.ok(Array.isArray(readTicketRes.sections));
+  assert.ok(readTicketRes.sections.includes("Kind"));
+  assert.ok(readTicketRes.sections.includes("Problem"));
 
+  // Sectional read: read specific section
+  const readKindRes = await callTool("read_ticket", { cwd: repoDir, sessionId, section: "Kind" });
+  assert.equal(readKindRes.ok, true);
+  assert.equal(readKindRes.section, "Kind");
+  assert.ok(readKindRes.content.includes("bounded"));
+
+  // Section listing only
+  const sectionsOnlyRes = await callTool("read_ticket", { cwd: repoDir, sessionId, sectionsOnly: true });
+  assert.equal(sectionsOnlyRes.ok, true);
+  assert.equal(sectionsOnlyRes.content, undefined);
+  assert.ok(sectionsOnlyRes.sections.includes("Problem"));
+
+  // Missing section returns error
+  const missingSectionRes = await callTool("read_ticket", { cwd: repoDir, sessionId, section: "NonExistent" });
+  assert.equal(missingSectionRes.ok, false);
+  assert.ok(missingSectionRes.error.includes("not found"));
+
+  // Full update
   const updateTicketRes = await callTool("update_ticket", {
     cwd: repoDir,
     sessionId,
-    content: "# Updated Ticket Content\n\n## Kind\nbounded\n",
+    content: "# Updated Ticket Content\n\n## Kind\nbounded\n\n## Problem\nInitial problem.\n",
   });
   assert.equal(updateTicketRes.ok, true);
 
   const readAgain = await callTool("read_ticket", { cwd: repoDir, sessionId });
-  assert.equal(readAgain.content, "# Updated Ticket Content\n\n## Kind\nbounded\n");
+  assert.equal(readAgain.content, "# Updated Ticket Content\n\n## Kind\nbounded\n\n## Problem\nInitial problem.\n");
+
+  // Sectional update: update only Problem section
+  const updateSectionRes = await callTool("update_ticket", {
+    cwd: repoDir,
+    sessionId,
+    section: "Problem",
+    content: "Surgically updated problem description.",
+  });
+  assert.equal(updateSectionRes.ok, true);
+  assert.equal(updateSectionRes.section, "Problem");
+
+  const readSectionRes = await callTool("read_ticket", { cwd: repoDir, sessionId, section: "Problem" });
+  assert.equal(readSectionRes.ok, true);
+  assert.equal(readSectionRes.content, "Surgically updated problem description.");
+
+  // Verify other sections were not harmed
+  const readKindAgain = await callTool("read_ticket", { cwd: repoDir, sessionId, section: "Kind" });
+  assert.equal(readKindAgain.ok, true);
+  assert.equal(readKindAgain.content, "bounded");
 
   await assert.rejects(
     () => updateTicket({ cwd: repoDir, sessionId, content: null }),

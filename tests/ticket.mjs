@@ -132,6 +132,25 @@ try {
   rmSync(empty, { recursive: true, force: true });
 }
 
+// Test listSections and replaceSection
+const sections = ticketModule.listSections(template);
+assert.deepEqual(sections, ["Kind", "Problem", "Testing plan", "[open]"]);
+
+// replaceSection: existing section
+const updatedProblem = ticketModule.replaceSection(template, "Problem", "Brand new problem statement.");
+assert.equal(ticketModule.extractSection(updatedProblem, "Problem"), "Brand new problem statement.");
+assert.equal(ticketModule.extractSection(updatedProblem, "Testing plan"), "Behavioral invariants that gate acceptance, and feasible real-world failures that must not happen.");
+assert.deepEqual(ticketModule.listSections(updatedProblem), ["Kind", "Problem", "Testing plan", "[open]"]);
+
+// replaceSection: section with brackets
+const updatedOpen = ticketModule.replaceSection(template, "open", "Custom open section content.");
+assert.equal(ticketModule.extractSection(updatedOpen, "[open]"), "Custom open section content.");
+
+// replaceSection: new section appended
+const appended = ticketModule.replaceSection(template, "Acceptance Criteria", "All tests pass.");
+assert.equal(ticketModule.extractSection(appended, "Acceptance Criteria"), "All tests pass.");
+assert.deepEqual(ticketModule.listSections(appended), ["Kind", "Problem", "Testing plan", "[open]", "Acceptance Criteria"]);
+
 // archiveAndClearTicket test
 const archiveDir = mkdtempSync(join(tmpdir(), "architect-ticket-archive-"));
 try {
@@ -149,6 +168,7 @@ try {
   // Active ticket was reset to template
   const readBack = await ticketModule.readTicket(archiveDir, sess);
   assert.ok(readBack.content.includes("# Ticket"));
+  assert.deepEqual(readBack.sections, ["Kind", "Problem", "Testing plan", "[open]"]);
 
   // Archiving when already template does nothing
   const archAgain = await ticketModule.archiveAndClearTicket(archiveDir, sess);

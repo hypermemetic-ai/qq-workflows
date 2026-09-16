@@ -89,20 +89,84 @@ export function assertKnownProvider(value) {
   return normalizeProvider(value);
 }
 
-export async function readTicket(cwd, sessionId) {
+export async function readTicket(cwd, sessionId, options = {}) {
   const path = sessionId ? await resolveTicketSource(cwd, sessionId) : ticketPath(cwd);
   const content = await readFile(path, "utf8");
-  return { path, content, text: content };
+  const sections = listSections(content);
+  if (typeof options === "string") {
+    options = { section: options };
+  }
+  const { section, sectionsOnly, listSections: shouldList } = options;
+  if (shouldList || sectionsOnly) {
+    return { path, sections };
+  }
+  if (section) {
+    const sectionContent = extractSection(content, section);
+    return { path, section, content: sectionContent, text: sectionContent, sections };
+  }
+  return { path, content, text: content, sections };
 }
 
-export async function updateTicket(cwd, content, sessionId) {
+export async function updateTicket(cwd, content, sessionId, options = {}) {
   if (typeof content !== "string") {
     throw new Error("content must be a string");
   }
+  if (typeof sessionId === "object" && sessionId !== null) {
+    options = sessionId;
+    sessionId = options.sessionId;
+  }
+  const { section } = options;
   const path = sessionId ? ticketPath(cwd, sessionId) : ticketPath(cwd);
+
+  let newContent = content;
+  if (section) {
+    let current = "";
+    try {
+      current = await readFile(path, "utf8");
+    } catch (err) {
+      if (err?.code !== "ENOENT") throw err;
+      try {
+        current = await readFile(templatePath(cwd), "utf8");
+      } catch {
+        current = await loadPackagedTemplate();
+      }
+    }
+    newContent = replaceSection(current, section, content);
+  }
+
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, content, "utf8");
-  return { path, content, text: content };
+  await writeFile(path, newContent, "utf8");
+  return { path, content: newContent, text: newContent };
+}
+
+export function listSections(markdown) {
+  const source = String(markdown ?? "");
+  const matches = source.matchAll(/^##[ \t]+([^\r\n]+)$/gm);
+  const sections = [];
+  for (const match of matches) {
+    sections.push(match[1].trim());
+  }
+  return sections;
+}
+
+export function replaceSection(markdown, heading, newContent) {
+  const source = String(markdown ?? "");
+  const name = String(heading ?? "").replace(/^\[/, "").replace(/\]$/, "");
+  const pattern = new RegExp(`^##[ \\t]+(?:\\[${escapeRegExp(name)}\\]|${escapeRegExp(name)})[ \\t]*$`, "im");
+  const match = pattern.exec(source);
+  const trimmed = String(newContent ?? "").trim();
+  if (match) {
+    const headerLine = match[0];
+    const start = match.index + headerLine.length;
+    const rest = source.slice(start);
+    const next = /^##[ \t]+/m.exec(rest);
+    const afterSection = next ? rest.slice(next.index) : "";
+    const replacement = `${headerLine}\n\n${trimmed}\n\n`;
+    return source.slice(0, match.index) + replacement + afterSection.replace(/^\r?\n+/, "");
+  }
+  // Heading not found: append to the end
+  const sep = source.endsWith("\n\n") ? "" : (source.endsWith("\n") ? "\n" : "\n\n");
+  return `${source}${sep}## ${heading}\n\n${trimmed}\n`;
 }
 
 export async function archiveAndClearTicket(root, sessionId, { prNumber } = {}) {
