@@ -105,6 +105,42 @@ export async function updateTicket(cwd, content, sessionId) {
   return { path, content, text: content };
 }
 
+export async function archiveAndClearTicket(root, sessionId, { prNumber } = {}) {
+  if (!sessionId) return null;
+  const srcPath = await resolveTicketSource(root, sessionId).catch(() => null);
+  if (!srcPath || !existsSync(srcPath)) return null;
+
+  const content = await readFile(srcPath, "utf8");
+  const template = await loadPackagedTemplate();
+  let baseTemplate = template;
+  try {
+    baseTemplate = await readFile(templatePath(root), "utf8");
+  } catch {}
+
+  // If already matches the template or is empty, no need to archive
+  if (!content.trim() || content.trim() === baseTemplate.trim() || content.trim() === template.trim()) {
+    return { archived: false, path: srcPath, cleared: false };
+  }
+
+  const archiveDir = join(root, ".architect", "tickets", "archive");
+  await mkdir(archiveDir, { recursive: true });
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const prTag = prNumber ? `-pr${prNumber}` : "";
+  const archiveName = `${basename(srcPath, ".md")}${prTag}-${timestamp}.md`;
+  const archivePath = join(archiveDir, archiveName);
+
+  await writeFile(archivePath, content, "utf8");
+  await writeFile(srcPath, baseTemplate, "utf8");
+
+  return {
+    archived: true,
+    archivePath,
+    path: srcPath,
+    cleared: true,
+  };
+}
+
 export function extractSection(markdown, heading) {
   const source = String(markdown ?? "");
   const name = String(heading ?? "").replace(/^\[/, "").replace(/\]$/, "");

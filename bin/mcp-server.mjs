@@ -525,6 +525,7 @@ export async function land(args = {}) {
     worktree,
     branch,
     message: args.message,
+    clearTicket: args.clearTicket !== false,
   });
 
   return {

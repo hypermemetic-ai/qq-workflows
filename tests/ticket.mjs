@@ -132,4 +132,29 @@ try {
   rmSync(empty, { recursive: true, force: true });
 }
 
+// archiveAndClearTicket test
+const archiveDir = mkdtempSync(join(tmpdir(), "architect-ticket-archive-"));
+try {
+  const sess = "sess-arch-1";
+  await ensureTicket(archiveDir, { sessionId: sess });
+  // Overwrite with non-template content
+  await ticketModule.updateTicket(archiveDir, "# Real ticket\n\n## Kind\nbounded\n\n## Problem\nReal bug\n", sess);
+
+  const archRes = await ticketModule.archiveAndClearTicket(archiveDir, sess, { prNumber: 42 });
+  assert.equal(archRes.archived, true);
+  assert.equal(archRes.cleared, true);
+  assert.ok(archRes.archivePath.includes("sess-arch-1-pr42-"));
+  assert.equal(readFileSync(archRes.archivePath, "utf8"), "# Real ticket\n\n## Kind\nbounded\n\n## Problem\nReal bug\n");
+
+  // Active ticket was reset to template
+  const readBack = await ticketModule.readTicket(archiveDir, sess);
+  assert.ok(readBack.content.includes("# Ticket"));
+
+  // Archiving when already template does nothing
+  const archAgain = await ticketModule.archiveAndClearTicket(archiveDir, sess);
+  assert.equal(archAgain.archived, false);
+} finally {
+  rmSync(archiveDir, { recursive: true, force: true });
+}
+
 console.log("Ticket tests passed cleanly.");

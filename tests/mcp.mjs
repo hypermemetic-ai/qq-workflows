@@ -564,6 +564,9 @@ try {
   assert.equal(landResult.landed, true);
   assert.equal(landResult.branch, "architect/bounded/12345678");
   assert.equal(landResult.method, "ff");
+  assert.equal(landResult.ticketArchived, true);
+  assert.ok(landResult.archivePath && existsSync(landResult.archivePath));
+  assert.ok(readFileSync(landResult.archivePath, "utf8").includes("Test Session Ticket"));
 
   // Verify file landed in main
   assert.equal(readFileSync(join(repoDir, "code.txt"), "utf8"), "console.log('hello');\n");
@@ -742,10 +745,11 @@ try {
   }
 
   // 8. Test dedicated ticket tools: read_ticket and update_ticket
+  // Ticket was cleared to template on landing above
   const readTicketRes = await callTool("read_ticket", { cwd: repoDir, sessionId });
   assert.equal(readTicketRes.ok, true);
   assert.equal(readTicketRes.sessionId, sessionId);
-  assert.ok(readTicketRes.content.includes("Test Session Ticket"));
+  assert.ok(readTicketRes.content.includes("# Ticket"));
 
   const updateTicketRes = await callTool("update_ticket", {
     cwd: repoDir,
