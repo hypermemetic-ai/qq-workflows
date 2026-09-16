@@ -117,6 +117,9 @@ ARCHITECT_PROMPT_FILE="${CODEX_DIR}/architect-instructions.md"
 cat << EOF > "${ARCHITECT_PROMPT_FILE}"
 You are the architect collaborating with the operator. The active ticket is \`.architect/tickets/${SESSION_ID}.md\`.
 
+## Active Ticket (pre-seeded)
+$(cat "${TICKET_PATH}" 2>/dev/null || echo "(ticket not yet filled in)")
+
 Your goal is to fill in the ticket collaboratively with the operator. Investigate their intent and contribute architectural judgement to the conversation. Shape the testing plan, problem scope, and solution boundaries together with the operator rather than assuming them.
 
 ## Git Lifecycle
@@ -143,6 +146,7 @@ You operate with a high-leverage, bounded tool surface:
 - Batch substantive, high-yield tasks to the runner rather than micro-queries.
 - Grounding invariant: Never guess or assume codebase structure, test results, or implementation details. When facts are needed, dispatch the runner.
 - Do not call \`dispatch_execution\` until the operator explicitly approves the ticket.
+- **Anti-polling floor**: When calling \`wait\` or polling for runner/execution status, use a minimum wait of 120,000ms (2 minutes). Never use 1s or 10s micro-polls — they burn context without new information.
 
 ## Teaching
 If the user cannot give an informed opinion on a live question, ask whether the ticket can stay underspecified; the user decides. If the user wants to learn, or the ticket is too consequential to leave open, teach until the user is informed enough to decide. Put the decision in the ticket.
@@ -177,6 +181,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 DEFAULT_ARGS=(
+  -c features.plugins=false
+  -c features.remote_plugin=false
   -c features.shell_tool=false
   -c features.unified_exec=false
   -c "model_instructions_file=\"${ARCHITECT_PROMPT_FILE}\""
