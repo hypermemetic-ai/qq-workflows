@@ -27,6 +27,7 @@ import {
   dispatchExecution,
   dispatchRunner,
   handleRpc,
+  handleRunnerEvent,
   land,
   prepareWorktree,
   readTicket,
@@ -1447,4 +1448,114 @@ assert.equal(ctRes.dataPointsCount, 2);
   assert.ok(custom.endsWith("A".repeat(30)));
 }
 
+// T7. handleRunnerEvent: complete_task DONE sets runner.status = "completed",
+//     captures runner.result from COMPLETE_TASK_REGISTRY, and calls kill() on runner.process
+{
+  // Set up a fake runner with a mock process to track kill() calls
+  let killCalled = false;
+  let killSignal = null;
+  const fakeProcess = {
+    kill(sig) {
+      killCalled = true;
+      killSignal = sig || "SIGTERM";
+    },
+  };
+
+  const fakeRunner = {
+    id: "test-runner-complete-task",
+    status: "running",
+    activeTool: null,
+    trajectory: [],
+    result: null,
+    error: null,
+    process: fakeProcess,
+  };
+
+  // Pre-seed the COMPLETE_TASK_REGISTRY with a result for the "default" key
+  const testResponse = "Task completed successfully.";
+  const testDataPoints = ["file.mjs:10", "bar.mjs:20"];
+  COMPLETE_TASK_REGISTRY.set("default", {
+    calledAt: Date.now(),
+    response: testResponse,
+    data_points: testDataPoints,
+  });
+
+  // Fire the complete_task DONE event
+  const completedEvent = {
+    event: "step_update",
+    step_update: {
+      step_type: "tool",
+      state: "DONE",
+      tool_name: "complete_task",
+      duration_seconds: 0.5,
+    },
+  };
+  handleRunnerEvent(fakeRunner, completedEvent);
+
+  // Assert runner.status was set to "completed"
+  assert.equal(fakeRunner.status, "completed", "handleRunnerEvent must set runner.status to 'completed' on complete_task DONE");
+
+  // Assert runner.result captures response and data_points
+  assert.ok(fakeRunner.result, "handleRunnerEvent must set runner.result on complete_task DONE");
+  assert.equal(fakeRunner.result.response, testResponse, "runner.result.response must match COMPLETE_TASK_REGISTRY entry");
+  assert.deepEqual(fakeRunner.result.data_points, testDataPoints, "runner.result.data_points must match COMPLETE_TASK_REGISTRY entry");
+
+  // Assert runner.process.kill() was called
+  assert.ok(killCalled, "handleRunnerEvent must call runner.process.kill() on complete_task DONE");
+  assert.equal(killSignal, "SIGTERM", "handleRunnerEvent must send SIGTERM when killing runner process");
+
+  // Clean up registry entry
+  COMPLETE_TASK_REGISTRY.delete("default");
+}
+
+// T7b. handleRunnerEvent: captures runner.result from su.tool_info.parameters if not in registry
+{
+  let killCalled = false;
+  let killSignal = null;
+  const fakeProcess = {
+    kill(sig) {
+      killCalled = true;
+      killSignal = sig || "SIGTERM";
+    },
+  };
+
+  const fakeRunner = {
+    id: "test-runner-complete-task-params",
+    status: "running",
+    activeTool: null,
+    trajectory: [],
+    result: null,
+    error: null,
+    process: fakeProcess,
+  };
+
+  const testResponse = "Task completed with parameters.";
+  const testDataPoints = ["param.mjs:1"];
+
+  const completedEvent = {
+    event: "step_update",
+    step_update: {
+      step_type: "tool",
+      state: "DONE",
+      tool_name: "complete_task",
+      duration_seconds: 0.2,
+      tool_info: {
+        parameters: {
+          response: testResponse,
+          data_points: testDataPoints,
+        },
+      },
+    },
+  };
+  handleRunnerEvent(fakeRunner, completedEvent);
+
+  assert.equal(fakeRunner.status, "completed");
+  assert.ok(fakeRunner.result);
+  assert.equal(fakeRunner.result.response, testResponse);
+  assert.deepEqual(fakeRunner.result.data_points, testDataPoints);
+  assert.ok(killCalled);
+  assert.equal(killSignal, "SIGTERM");
+}
+
 console.log("MCP server tests passed cleanly.");
+

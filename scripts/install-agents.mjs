@@ -309,6 +309,8 @@ export async function installAgents({ home = homedir(), xdgConfigHome = process.
   const hookCommand = `${nodeBin} ${hookScript}`;
   const stopHookScript = join(root, "hooks", "stop.mjs");
   const stopHookCommand = `${nodeBin} ${stopHookScript}`;
+  const postInvocationHookScript = join(root, "hooks", "post-invocation.mjs");
+  const postInvocationHookCommand = `${nodeBin} ${postInvocationHookScript}`;
 
   let hooks = {};
   if (existsSync(hooksConfigPath)) {
@@ -339,9 +341,20 @@ export async function installAgents({ home = homedir(), xdgConfigHome = process.
     ],
   };
 
+  hooks["task-completion-terminate"] = {
+    PostInvocation: [
+      {
+        type: "command",
+        command: postInvocationHookCommand,
+        timeout: 10,
+      },
+    ],
+  };
+
   writeFileSync(hooksConfigPath, `${JSON.stringify(hooks, null, 2)}\n`, "utf8");
   log("Registered architect-ticket PreInvocation hook in hooks.json");
   log("Registered task-completion Stop hook in hooks.json");
+  log("Registered task-completion-terminate PostInvocation hook in hooks.json");
 
   // 4. Install bin/architect CLI symlink into ~/.local/bin/architect
   const localBin = join(home, ".local", "bin");

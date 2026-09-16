@@ -60,7 +60,7 @@ async function main() {
         JSON.stringify({
           decision: "continue",
           reason:
-            "You cannot terminate without calling complete_task. You must report your outcome using the complete_task tool.",
+            "You cannot terminate via conversation. You must conclude and report your outcome using the complete_task tool.",
         }) + "\n",
       );
     }

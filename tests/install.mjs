@@ -138,6 +138,10 @@ try {
   assert.ok(hooks["task-completion"], "task-completion Stop hook must be registered in hooks.json");
   assert.ok(hooks["task-completion"].Stop, "task-completion must have Stop handlers");
   assert.ok(hooks["task-completion"].Stop[0].command.includes("stop.mjs"), "Stop hook command must reference stop.mjs");
+  // Req: task-completion-terminate PostInvocation hook must be registered
+  assert.ok(hooks["task-completion-terminate"], "task-completion-terminate PostInvocation hook must be registered in hooks.json");
+  assert.ok(hooks["task-completion-terminate"].PostInvocation, "task-completion-terminate must have PostInvocation handlers");
+  assert.ok(hooks["task-completion-terminate"].PostInvocation[0].command.includes("post-invocation.mjs"), "PostInvocation hook command must reference post-invocation.mjs");
   const architectLink = join(tempHome, ".local", "bin", "architect");
   assert.ok(lstatSync(architectLink).isSymbolicLink());
   assert.equal(readlinkSync(architectLink), join(repoRoot, "bin", "architect.mjs"));

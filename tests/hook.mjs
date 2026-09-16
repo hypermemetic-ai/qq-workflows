@@ -116,6 +116,10 @@ try {
     parsedStop.reason.includes("complete_task"),
     "Stop hook reason must mention complete_task",
   );
+  assert.ok(
+    parsedStop.reason.includes("via conversation"),
+    "Stop hook reason must mention 'via conversation'",
+  );
 }
 
 // Test 4: Stop hook allows termination when complete_task WAS called (marker file present)
@@ -167,3 +171,86 @@ try {
 }
 
 console.log("Stop hook tests passed successfully.");
+
+// PostInvocation hook tests: hooks/post-invocation.mjs
+// Test 7: PostInvocation hook returns terminationBehavior: "terminate" when complete_task marker IS present
+{
+  const piCallId = `post-invocation-test-${Date.now()}-called`;
+  const piCallInput = JSON.stringify({
+    conversationId: piCallId,
+    invocationNum: 1,
+  });
+
+  // Write the marker file that complete_task would create
+  const piMarkerPath = join(tmpdir(), `qq-complete-task-${piCallId}.json`);
+  writeFileSync(piMarkerPath, JSON.stringify({ calledAt: Date.now(), key: piCallId }));
+
+  try {
+    const rawPi = execFileSync(process.execPath, ["hooks/post-invocation.mjs"], {
+      input: piCallInput,
+      encoding: "utf8",
+    });
+    const parsedPi = JSON.parse(rawPi);
+    assert.equal(
+      parsedPi.terminationBehavior,
+      "terminate",
+      "PostInvocation hook must return terminationBehavior: terminate when complete_task was called",
+    );
+  } finally {
+    try { rmSync(piMarkerPath); } catch {}
+  }
+}
+
+// Test 8: PostInvocation hook returns {} when complete_task marker is NOT present
+{
+  const piNoCallId = `post-invocation-test-${Date.now()}-nocall`;
+  const piNoCallInput = JSON.stringify({
+    conversationId: piNoCallId,
+    invocationNum: 1,
+  });
+
+  // Ensure no marker file exists
+  const piNoMarkerPath = join(tmpdir(), `qq-complete-task-${piNoCallId}.json`);
+  try { rmSync(piNoMarkerPath); } catch {}
+
+  const rawPiNo = execFileSync(process.execPath, ["hooks/post-invocation.mjs"], {
+    input: piNoCallInput,
+    encoding: "utf8",
+  });
+  const parsedPiNo = JSON.parse(rawPiNo);
+  assert.deepEqual(parsedPiNo, {}, "PostInvocation hook must return {} when complete_task was not called");
+}
+
+// Test 9: PostInvocation hook returns {} with empty input
+{
+  const rawPiEmpty = execFileSync(process.execPath, ["hooks/post-invocation.mjs"], {
+    input: "",
+    encoding: "utf8",
+  });
+  const parsedPiEmpty = JSON.parse(rawPiEmpty);
+  assert.deepEqual(parsedPiEmpty, {}, "PostInvocation hook must return {} with empty input");
+}
+
+// Test 10: PostInvocation hook returns terminationBehavior: "terminate" when complete_task is in payload
+{
+  const piPayloadId = `post-invocation-test-${Date.now()}-payload`;
+  const piPayloadInput = JSON.stringify({
+    conversationId: piPayloadId,
+    invocationNum: 1,
+    tool: "complete_task",
+  });
+
+  const rawPiPayload = execFileSync(process.execPath, ["hooks/post-invocation.mjs"], {
+    input: piPayloadInput,
+    encoding: "utf8",
+  });
+  const parsedPiPayload = JSON.parse(rawPiPayload);
+  assert.equal(
+    parsedPiPayload.terminationBehavior,
+    "terminate",
+    "PostInvocation hook must return terminationBehavior: terminate when complete_task is in payload",
+  );
+}
+
+console.log("PostInvocation hook tests passed successfully.");
+
