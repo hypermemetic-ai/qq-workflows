@@ -297,4 +297,64 @@ try {
   rmSync(ticketRepo, { recursive: true, force: true });
 }
 
+// 5. Dispatch integrity: the worktree ticket is a cache refreshed on every path.
+const refreshRepo = mkdtempSync(join(tmpdir(), "architect-ticket-refresh-"));
+try {
+  await git(refreshRepo, ["init", "-b", "main"]);
+  await git(refreshRepo, ["config", "user.name", "Architect Test"]);
+  await git(refreshRepo, ["config", "user.email", "architect@example.invalid"]);
+  writeFileSync(join(refreshRepo, "init.txt"), "init\n");
+  await git(refreshRepo, ["add", "init.txt"]);
+  await git(refreshRepo, ["commit", "-m", "init"]);
+  mkdirSync(join(refreshRepo, ".architect", "tickets"), { recursive: true });
+  const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
+  const srcTicket = join(refreshRepo, ".architect", "tickets", `${sessionId}.md`);
+  writeFileSync(srcTicket, "# Ticket v1\n");
+
+  // Fresh create carries the resolved source ticket path.
+  const fresh = await createWorktree(refreshRepo, { kind: "bounded", sessionId });
+  assert.equal(fresh.reused, false);
+  assert.equal(fresh.sessionId, sessionId);
+  assert.equal(fresh.ticketSource, srcTicket);
+  assert.equal(
+    readFileSync(join(fresh.cwd, ".architect", "ticket.md"), "utf8"),
+    "# Ticket v1\n",
+  );
+
+  // Reuse after a session-file edit refreshes the cached ticket (byte-equal).
+  writeFileSync(srcTicket, "# Ticket v2 edited\n");
+  const reused = await createWorktree(refreshRepo, { kind: "bounded", sessionId });
+  assert.equal(reused.reused, true);
+  assert.equal(reused.cwd, fresh.cwd);
+  assert.equal(reused.ticketSource, srcTicket);
+  assert.equal(
+    readFileSync(join(reused.cwd, ".architect", "ticket.md"), "utf8"),
+    "# Ticket v2 edited\n",
+  );
+
+  // Copy failure throws with src, dest, and cause; no success is returned.
+  const destTicket = join(reused.cwd, ".architect", "ticket.md");
+  rmSync(destTicket);
+  mkdirSync(destTicket); // a directory at the dest path makes writeFile fail
+  writeFileSync(srcTicket, "# Ticket v3\n");
+  let copyError = null;
+  try {
+    await createWorktree(refreshRepo, { kind: "bounded", sessionId });
+  } catch (error) {
+    copyError = error;
+  }
+  assert.ok(copyError, "ticket copy failure must throw");
+  assert.match(copyError.message, /failed to copy ticket/);
+  assert.ok(copyError.message.includes(srcTicket), "error names the source ticket");
+  assert.ok(copyError.message.includes(destTicket), "error names the dest ticket");
+  assert.ok(copyError.cause, "error carries the IO cause");
+  rmSync(destTicket, { recursive: true, force: true });
+  await retireWorktree(refreshRepo, { worktree: fresh.cwd, branch: fresh.branch });
+} finally {
+  try {
+    rmSync(join(dirname(refreshRepo), ".qq-worktrees", basename(refreshRepo)), { recursive: true, force: true });
+  } catch {}
+  rmSync(refreshRepo, { recursive: true, force: true });
+}
+
 console.log("Git tests passed cleanly.");

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -286,23 +286,27 @@ export const TOOLS = [
   },
 ];
 
+// Only strict session-id filenames are candidates for omitted-sessionId
+// resolution. Backups (*-sources.md) and anything else never resolve.
+export const STRICT_TICKET_FILENAME = /^[0-9a-fA-F-]{36}\.md$/;
+
 export async function resolveActiveSessionId(root, explicitId) {
   if (explicitId) return explicitId;
   const ticketsDir = join(root, ".architect", "tickets");
   if (existsSync(ticketsDir)) {
     try {
       const entries = readdirSync(ticketsDir)
-        .filter((f) => f.endsWith(".md"))
-        .map((f) => {
-          const full = join(ticketsDir, f);
-          const stat = statSync(full);
-          return { name: f, mtime: stat.mtimeMs };
-        })
-        .sort((a, b) => b.mtime - a.mtime);
-      if (entries.length > 0) {
-        return basename(entries[0].name, ".md");
+        .filter((f) => STRICT_TICKET_FILENAME.test(f))
+        .sort();
+      if (entries.length === 1) {
+        return basename(entries[0], ".md");
       }
-    } catch {
+      if (entries.length > 1) {
+        const ids = entries.map((f) => basename(f, ".md"));
+        throw new Error(`ambiguous active ticket: ${entries.length} candidates (${ids.join(", ")}); pass sessionId explicitly`);
+      }
+    } catch (error) {
+      if (error?.message?.startsWith("ambiguous active ticket")) throw error;
       /* ignore */
     }
   }
@@ -427,6 +431,7 @@ export async function prepareWorktree(args = {}) {
   await resolveTicketSource(root, sessionId);
 
   const wt = await createWorktree(root, { kind, sessionId });
+  const ticketSource = wt.ticketSource ?? await resolveTicketSource(root, sessionId);
   const reviewRequired = kind === "open";
 
   if (kind === "research") {
@@ -440,6 +445,8 @@ export async function prepareWorktree(args = {}) {
       branch: wt.branch,
       worktree: wt.cwd,
       reviewRequired: false,
+      sessionId,
+      ticketSource,
       researcherPrompt,
       researcherProvider,
       instructions,
@@ -462,6 +469,8 @@ export async function prepareWorktree(args = {}) {
     branch: wt.branch,
     worktree: wt.cwd,
     reviewRequired,
+    sessionId,
+    ticketSource,
     childSessionId,
     implementerPrompt,
     implementerProvider,

@@ -241,6 +241,22 @@ export function worktreePathFor(mainRoot, branch, env = process.env) {
   return join(worktreesRootFor(mainRoot, env), branch.replaceAll("/", "-"));
 }
 
+// Copy the session ticket into the worktree as .architect/ticket.md. The
+// worktree copy is a cache of the session file (children never edit it), so
+// every dispatch refreshes it. Fatal on IO error: no success is returned
+// without the spec in place.
+async function copyTicketToWorktree(srcTicket, dest) {
+  const destTicket = join(dest, ".architect", "ticket.md");
+  try {
+    await mkdir(dirname(destTicket), { recursive: true });
+    const content = await readFile(srcTicket, "utf8");
+    await writeFile(destTicket, content, "utf8");
+  } catch (error) {
+    throw new Error(`failed to copy ticket from '${srcTicket}' to '${destTicket}': ${error?.message ?? error}`, { cause: error });
+  }
+  return destTicket;
+}
+
 export async function createWorktree(cwd, { kind = "bounded", sessionId, branch: customBranch, base = "HEAD" } = {}) {
   const root = await mainRepoRoot(cwd);
   // Fail fast on a missing ticket before any worktree or branch exists.
@@ -260,7 +276,8 @@ export async function createWorktree(cwd, { kind = "bounded", sessionId, branch:
 
   if (branchExists) {
     if (existsSync(dest)) {
-      return { cwd: dest, worktree: dest, branch, reused: true };
+      await copyTicketToWorktree(srcTicket, dest);
+      return { cwd: dest, worktree: dest, branch, reused: true, sessionId, ticketSource: srcTicket };
     }
     await git(root, ["worktree", "add", dest, branch]);
   } else {
@@ -281,18 +298,9 @@ export async function createWorktree(cwd, { kind = "bounded", sessionId, branch:
     /* best-effort exclude */
   }
 
-  // Copy ticket into the worktree as .architect/ticket.md
-  // (resolution already failed fast above; the copy itself stays best-effort)
-  try {
-    const destTicketDir = join(dest, ".architect");
-    await mkdir(destTicketDir, { recursive: true });
-    const content = await readFile(srcTicket, "utf8");
-    await writeFile(join(destTicketDir, "ticket.md"), content, "utf8");
-  } catch {
-    /* ticket copy best-effort on IO errors */
-  }
+  await copyTicketToWorktree(srcTicket, dest);
 
-  return { cwd: dest, worktree: dest, branch, reused: false };
+  return { cwd: dest, worktree: dest, branch, reused: false, sessionId, ticketSource: srcTicket };
 }
 
 export async function mainRepoRoot(cwd) {
