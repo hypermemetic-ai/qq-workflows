@@ -134,6 +134,10 @@ try {
   assert.deepEqual(mcpConfig.mcpServers["qq-workflows"], { command: "node", args: [mcpServerBin] });
   const hooks = JSON.parse(readFileSync(join(tempHome, ".gemini", "config", "hooks.json"), "utf8"));
   assert.ok(hooks["architect-ticket"].PreInvocation[0].command.includes("pre-invocation.mjs"));
+  // Req 5: task-completion Stop hook must be registered
+  assert.ok(hooks["task-completion"], "task-completion Stop hook must be registered in hooks.json");
+  assert.ok(hooks["task-completion"].Stop, "task-completion must have Stop handlers");
+  assert.ok(hooks["task-completion"].Stop[0].command.includes("stop.mjs"), "Stop hook command must reference stop.mjs");
   const architectLink = join(tempHome, ".local", "bin", "architect");
   assert.ok(lstatSync(architectLink).isSymbolicLink());
   assert.equal(readlinkSync(architectLink), join(repoRoot, "bin", "architect.mjs"));
@@ -581,6 +585,26 @@ accessSync(codexShimPath, constants.X_OK);
     assert.ok(call.includes("features.unified_exec=false"));
     assert.ok(call.includes("model_instructions_file"));
     assert.ok(call.includes("gpt-6-astra"));
+    // Req 1: codex-architect DEFAULT_ARGS must include plugin-disable flags
+    assert.ok(call.includes("features.plugins=false"), "codex-architect must pass features.plugins=false");
+    assert.ok(call.includes("features.remote_plugin=false"), "codex-architect must pass features.remote_plugin=false");
+
+    // Req 2: ticket content must be embedded in the rendered architect-instructions.md
+    // (reuse `prompt` and `promptPath` already read above)
+    assert.ok(prompt.includes("Active Ticket"), "architect-instructions.md must embed ticket content section");
+    // The session's ticket file was created from the repo template above.
+    const ticketContent = readFileSync(join(launchWork, ".architect", "tickets", `${sessionId}.md`), "utf8");
+    // At least the section header must appear in the prompt
+    assert.ok(
+      prompt.includes(ticketContent.slice(0, 20)) || prompt.includes("Active Ticket"),
+      "architect-instructions.md must contain embedded ticket content or the pre-seed section",
+    );
+
+    // Req 3: anti-polling floor instruction must appear in the rendered prompt
+    assert.ok(
+      prompt.includes("120,000ms") || prompt.includes("2 minutes"),
+      "architect-instructions.md must include anti-polling floor instruction",
+    );
   } finally {
     rmSync(launchHome, { recursive: true, force: true });
     rmSync(launchWork, { recursive: true, force: true });

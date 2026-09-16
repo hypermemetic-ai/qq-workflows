@@ -284,6 +284,25 @@ export const TOOLS = [
       required: ["content"],
     },
   },
+  {
+    name: "complete_task",
+    description: "Report task completion with a narrative summary and optional discrete data points. Must be called before terminating.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        response: {
+          type: "string",
+          description: "Narrative findings/outcome. Hard cap of 3,500 characters.",
+        },
+        data_points: {
+          type: "array",
+          items: { type: "string" },
+          description: "Discrete factual references (file:line, commit hash, error code). Max 20 items, max 100 chars each.",
+        },
+      },
+      required: ["response"],
+    },
+  },
 ];
 
 // Only strict session-id filenames are candidates for omitted-sessionId
@@ -522,8 +541,62 @@ export async function land(args = {}) {
   };
 }
 
+// Extract a deterministic, length-capped target string from known tool parameters.
+// Returns undefined if no meaningful target can be extracted.
+function extractTarget(toolName, parameters) {
+  if (!parameters || typeof parameters !== "object") return undefined;
+  const MAX = 80;
+  function cap(s) {
+    if (typeof s !== "string") return undefined;
+    return s.length <= MAX ? s : s.slice(0, MAX - 1) + "…";
+  }
+  switch (toolName) {
+    case "view_file":
+      return cap(parameters.AbsolutePath || parameters.path || parameters.file);
+    case "run_command":
+      return cap(parameters.CommandLine || parameters.command);
+    case "grep_search":
+      return cap(
+        parameters.Query
+          ? `${parameters.Query}${parameters.SearchPath ? ` in ${parameters.SearchPath}` : ""}`
+          : parameters.SearchPath,
+      );
+    case "find_by_name":
+      return cap(
+        parameters.Pattern
+          ? `${parameters.Pattern}${parameters.SearchDirectory ? ` in ${parameters.SearchDirectory}` : ""}`
+          : parameters.SearchDirectory,
+      );
+    case "list_dir":
+      return cap(parameters.DirectoryPath || parameters.path);
+    case "zvec_grep_search":
+      return cap(parameters.query || parameters.Query);
+    case "read_url_content":
+      return cap(parameters.Url || parameters.url);
+    case "search_web":
+      return cap(parameters.query || parameters.Query);
+    case "steer":
+      return cap(parameters.instruction || parameters.message);
+    case "complete_task":
+      return cap(parameters.response ? parameters.response.slice(0, MAX) : undefined);
+    default:
+      return undefined;
+  }
+}
+
 function addTrajectory(target, entry) {
-  target.trajectory.push(entry);
+  // Filter out agent_response thinking steps — they add no signal and bloat context.
+  if (entry.action === "agent_response") return;
+
+  // Replace raw parameters with a capped target string.
+  const { parameters, action, ...rest } = entry;
+  const toolTarget = parameters !== undefined ? extractTarget(action, parameters) : rest.target;
+  const clean = { action, ...rest };
+  if (toolTarget !== undefined) clean.target = toolTarget;
+  // Ensure parameters is never stored.
+  delete clean.parameters;
+
+  target.trajectory.push(clean);
   if (target.trajectory.length > 25) {
     target.trajectory.shift();
   }
@@ -644,7 +717,7 @@ function startRunnerProcess(runner) {
         runner.error = {
           message: `Runner process exited with code ${code}`,
           exitCode: code,
-          stderr: stderrBuf.trim(),
+          stderr: sanitizeHeadTail(stderrBuf.trim()),
         };
       }
     }
@@ -656,7 +729,7 @@ function startRunnerProcess(runner) {
     runner.status = "failed";
     runner.error = {
       message: err.message,
-      stderr: stderrBuf.trim(),
+      stderr: sanitizeHeadTail(stderrBuf.trim()),
     };
     runner.activeTool = null;
   });
@@ -729,7 +802,8 @@ export async function checkRunner(args = {}) {
     elapsedSeconds,
     activeTool,
     trajectory: [...runner.trajectory],
-    ...(runner.status === "completed" ? { result: runner.result } : {}),
+    // Note: result is intentionally omitted from checkRunner even when completed.
+    // Use await_runner to retrieve the final result.
     ...(runner.status === "failed" ? { error: runner.error } : {}),
   };
 }
@@ -1123,8 +1197,8 @@ async function runExecutionPipeline(execution) {
   execution.result = {
     verifiedStory: `Worktree ${wt.branch} successfully verified and landed.`,
     landingOutcome: landResult,
-    implementerSummary: implementerRes.output,
-    reviewerSummary,
+    implementerSummary: sanitizeHeadTail(implementerRes.output, { headLen: 2000, tailLen: 2000 }),
+    reviewerSummary: reviewerSummary !== null ? sanitizeHeadTail(reviewerSummary, { headLen: 2000, tailLen: 2000 }) : null,
   };
   addTrajectory(execution, {
     action: "execution_completed",
@@ -1245,7 +1319,6 @@ export async function readTicket(args = {}) {
     sessionId,
     path,
     content,
-    text: content,
   };
 }
 
@@ -1263,6 +1336,79 @@ export async function updateTicket(args = {}) {
     ok: true,
     sessionId,
     path,
+  };
+}
+
+// Head + tail sanitization: keep up to headLen chars from start and tailLen chars from end.
+// If the content fits within headLen + tailLen, it is returned as-is.
+export function sanitizeHeadTail(text, { headLen = 1000, tailLen = 1000 } = {}) {
+  if (typeof text !== "string") return String(text ?? "");
+  const total = headLen + tailLen;
+  if (text.length <= total) return text;
+  const omitted = text.length - total;
+  return `${text.slice(0, headLen)}\n… [${omitted} chars omitted] …\n${text.slice(text.length - tailLen)}`;
+}
+
+// Per-runner complete_task state: tracks whether each runner called complete_task.
+// Keyed by runnerId. Also used by the Stop hook for sub-agent tracking.
+export const COMPLETE_TASK_REGISTRY = new Map();
+
+const COMPLETE_TASK_RESPONSE_MAX = 3500;
+const COMPLETE_TASK_DATA_POINTS_MAX = 20;
+const COMPLETE_TASK_DATA_POINT_LEN_MAX = 100;
+
+export async function completeTask(args = {}) {
+  const { response, data_points } = args;
+  if (!response || typeof response !== "string") {
+    throw new Error("response is required and must be a string");
+  }
+  if (response.length > COMPLETE_TASK_RESPONSE_MAX) {
+    throw new Error(
+      `response exceeds the 3,500-character cap (got ${response.length} chars). Summarize before calling complete_task.`,
+    );
+  }
+  if (data_points !== undefined) {
+    if (!Array.isArray(data_points)) {
+      throw new Error("data_points must be an array of strings");
+    }
+    if (data_points.length > COMPLETE_TASK_DATA_POINTS_MAX) {
+      throw new Error(
+        `data_points exceeds the 20-item cap (got ${data_points.length} items). Trim the list before calling complete_task.`,
+      );
+    }
+    for (let i = 0; i < data_points.length; i++) {
+      if (typeof data_points[i] !== "string") {
+        throw new Error(`data_points[${i}] must be a string`);
+      }
+      if (data_points[i].length > COMPLETE_TASK_DATA_POINT_LEN_MAX) {
+        throw new Error(
+          `data_points[${i}] exceeds the 100-character cap (got ${data_points[i].length} chars).`,
+        );
+      }
+    }
+  }
+
+  // Mark that complete_task was called for this process/conversation.
+  // The Stop hook checks this registry to decide whether to allow termination.
+  const key = process.env.GEMINI_CONVERSATION_ID || process.env.ASTRA_CONVERSATION_ID || "default";
+  COMPLETE_TASK_REGISTRY.set(key, { calledAt: Date.now(), response, data_points });
+
+  // Write a marker file to tmpdir so the Stop hook subprocess can detect the call
+  // across process boundaries (hook runs as a separate Node.js process).
+  try {
+    const { tmpdir } = await import("node:os");
+    const { join: joinPath } = await import("node:path");
+    const markerPath = joinPath(tmpdir(), `qq-complete-task-${key}.json`);
+    await writeFile(markerPath, JSON.stringify({ calledAt: Date.now(), key }), "utf8");
+  } catch {
+    // Best-effort: marker file failure must never block the tool response.
+  }
+
+  return {
+    ok: true,
+    recorded: true,
+    responseLength: response.length,
+    dataPointsCount: data_points ? data_points.length : 0,
   };
 }
 
@@ -1302,6 +1448,9 @@ export async function callTool(name, args = {}) {
   }
   if (name === "update_ticket") {
     return updateTicket(args);
+  }
+  if (name === "complete_task") {
+    return completeTask(args);
   }
   throw new Error(`Unknown tool: ${name}`);
 }

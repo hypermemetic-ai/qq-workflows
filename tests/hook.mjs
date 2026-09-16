@@ -90,3 +90,80 @@ try {
   rmSync(emptyBinDir, { recursive: true, force: true });
   rmSync(mockBinDir, { recursive: true, force: true });
 }
+
+// Stop hook tests: hooks/stop.mjs
+// Test 3: Stop hook blocks termination with decision: "continue" when complete_task was NOT called
+{
+  // Use a unique conversationId that has no marker file
+  const noCallId = `stop-hook-test-${Date.now()}-nocall`;
+  const noCallInput = JSON.stringify({
+    terminationReason: "model_stop",
+    conversationId: noCallId,
+  });
+
+  // Make sure no marker file exists for this id
+  const markerPath = join(tmpdir(), `qq-complete-task-${noCallId}.json`);
+  try { rmSync(markerPath); } catch {}
+
+  const rawStop = execFileSync(process.execPath, ["hooks/stop.mjs"], {
+    input: noCallInput,
+    encoding: "utf8",
+  });
+  const parsedStop = JSON.parse(rawStop);
+  assert.equal(parsedStop.decision, "continue", "Stop hook must return decision: continue when complete_task not called");
+  assert.ok(parsedStop.reason, "Stop hook must include a reason when blocking termination");
+  assert.ok(
+    parsedStop.reason.includes("complete_task"),
+    "Stop hook reason must mention complete_task",
+  );
+}
+
+// Test 4: Stop hook allows termination when complete_task WAS called (marker file present)
+{
+  const callId = `stop-hook-test-${Date.now()}-called`;
+  const callInput = JSON.stringify({
+    terminationReason: "model_stop",
+    conversationId: callId,
+  });
+
+  // Write the marker file that complete_task would create
+  const markerPath2 = join(tmpdir(), `qq-complete-task-${callId}.json`);
+  writeFileSync(markerPath2, JSON.stringify({ calledAt: Date.now(), key: callId }));
+
+  try {
+    const rawStop2 = execFileSync(process.execPath, ["hooks/stop.mjs"], {
+      input: callInput,
+      encoding: "utf8",
+    });
+    const parsedStop2 = JSON.parse(rawStop2);
+    assert.equal(parsedStop2.decision, "proceed", "Stop hook must return decision: proceed when complete_task was called");
+  } finally {
+    try { rmSync(markerPath2); } catch {}
+  }
+}
+
+// Test 5: Stop hook allows termination for non-model_stop reasons (e.g., timeout)
+{
+  const timeoutInput = JSON.stringify({
+    terminationReason: "max_turns",
+    conversationId: "stop-hook-timeout-test",
+  });
+  const rawTimeout = execFileSync(process.execPath, ["hooks/stop.mjs"], {
+    input: timeoutInput,
+    encoding: "utf8",
+  });
+  const parsedTimeout = JSON.parse(rawTimeout);
+  assert.equal(parsedTimeout.decision, "proceed", "Stop hook must allow termination for non-model_stop reasons");
+}
+
+// Test 6: Stop hook allows termination with empty input
+{
+  const rawEmpty = execFileSync(process.execPath, ["hooks/stop.mjs"], {
+    input: "",
+    encoding: "utf8",
+  });
+  const parsedEmpty = JSON.parse(rawEmpty);
+  assert.equal(parsedEmpty.decision, "proceed", "Stop hook must allow termination with empty input");
+}
+
+console.log("Stop hook tests passed successfully.");
