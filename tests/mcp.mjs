@@ -13,16 +13,21 @@ import {
   EXECUTIONS,
   LONG_RUNNING_TOOLS,
   LONG_TOOL_SUSPICION_MS,
+  NOTIFY_SWEEP_INTERVAL_MS,
   PROVIDERS,
   RUNNERS,
   SEAT_PROVIDERS,
+  SUSPICION_RENOTIFY_MS,
   TOOLS,
   awaitExecution,
   awaitRunner,
   awaitWindowMs,
+  buildExecutionTerminalMessage,
   buildImplementerStep,
   buildResearcherStep,
   buildReviewerStep,
+  buildRunnerTerminalMessage,
+  buildSuspicionMessage,
   callTool,
   cancelRunner,
   checkExecution,
@@ -36,15 +41,24 @@ import {
   handleRunnerEvent,
   land,
   longToolSuspicionMs,
+  notifySession,
+  notifySuspicion,
+  notifyTerminal,
   prepareWorktree,
   readTicket,
   reconcileDeadRunner,
+  resolveCodexThreadId,
   resolveProvider,
   resolveSeatProvider,
   resolveSessionId,
   sanitizeHeadTail,
   startMcpServer,
+  startSuspicionSweeper,
   steerRunner,
+  stopSuspicionSweeper,
+  suspicionRearmMs,
+  sweepIntervalMs,
+  sweepNotifications,
   toolSilenceThresholdMs,
   updateTicket,
 } from "../bin/mcp-server.mjs";
@@ -2442,6 +2456,391 @@ function makeStreamTestExecution() {
     rmSync(pipeRepo, { recursive: true, force: true });
     rmSync(fakeBin, { recursive: true, force: true });
   }
+}
+
+// ============================================================================
+// Reactive Codex notifications: dispatch-and-yield wakeups (N1..N9)
+// ============================================================================
+// Muse keeps the 4:50 await contract (covered above); Codex architects yield
+// and are woken via `codex queue`. Kill any singleton sweeper first: the
+// startMcpServer test above armed one, and a 15s auto-sweep racing these
+// assertions would be flaky by design.
+
+// N0. dispatch_runner schema gains an optional sessionId for notification
+// routing; required stays ["task"] (backwards compatible).
+{
+  const dispatchTool = TOOLS.find((t) => t.name === "dispatch_runner");
+  assert.deepEqual(dispatchTool.inputSchema.required, ["task"]);
+  assert.equal(dispatchTool.inputSchema.properties.sessionId.type, "string");
+  assert.ok(TOOLS.some((t) => t.name === "await_runner"), "await_runner stays registered for Muse");
+  assert.ok(TOOLS.some((t) => t.name === "await_execution"), "await_execution stays registered for Muse");
+}
+
+stopSuspicionSweeper();
+
+const savedNotifyEnv = {};
+for (const key of ["CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_CONVERSATION_ID", "QQ_CODEX_BIN"]) {
+  savedNotifyEnv[key] = process.env[key];
+  delete process.env[key];
+}
+
+// N1. Sweep constants: 15s cadence, 30m suspicion re-arm, test overrides.
+assert.equal(NOTIFY_SWEEP_INTERVAL_MS, 15_000, "sweep cadence must be 15000ms");
+assert.equal(SUSPICION_RENOTIFY_MS, 1_800_000, "suspicion re-arm must be 1800000ms");
+assert.equal(sweepIntervalMs(), 15_000);
+assert.equal(suspicionRearmMs(), 1_800_000);
+globalThis.__QQ_TEST_WATCHDOG = { sweepMs: 500, suspicionRearmMs: 700 };
+assert.equal(sweepIntervalMs(), 500);
+assert.equal(suspicionRearmMs(), 700);
+delete globalThis.__QQ_TEST_WATCHDOG;
+assert.equal(sweepIntervalMs(), NOTIFY_SWEEP_INTERVAL_MS, "test overrides must not leak");
+
+// N2. resolveCodexThreadId: null outside Codex; test thread > map > env.
+assert.equal(resolveCodexThreadId("sess-1"), null);
+assert.equal(resolveCodexThreadId(null), null);
+process.env.CODEX_SESSION_ID = "env-session";
+process.env.CODEX_CONVERSATION_ID = "env-conv";
+assert.equal(resolveCodexThreadId("sess-1"), "env-session");
+process.env.CODEX_THREAD_ID = "env-thread";
+assert.equal(resolveCodexThreadId("sess-1"), "env-thread");
+globalThis.__QQ_CODEX_THREAD_MAP = new Map([["sess-1", "mapped-thread"]]);
+assert.equal(resolveCodexThreadId("sess-1"), "mapped-thread");
+assert.equal(resolveCodexThreadId("other"), "env-thread");
+globalThis.__QQ_CODEX_THREAD_MAP = { "sess-2": "plain-mapped" };
+assert.equal(resolveCodexThreadId("sess-2"), "plain-mapped");
+globalThis.__QQ_TEST_CODEX_THREAD = "explicit-test-thread";
+assert.equal(resolveCodexThreadId("sess-1"), "explicit-test-thread");
+delete globalThis.__QQ_TEST_CODEX_THREAD;
+delete globalThis.__QQ_CODEX_THREAD_MAP;
+delete process.env.CODEX_THREAD_ID;
+delete process.env.CODEX_SESSION_ID;
+delete process.env.CODEX_CONVERSATION_ID;
+assert.equal(resolveCodexThreadId("sess-1"), null);
+
+// N3. notifySession without a Codex thread is a quiet no-op; never throws.
+{
+  const res = await notifySession("sess-1", "hello");
+  assert.equal(res.notified, false);
+  assert.equal(res.reason, "no-codex-context");
+  assert.equal((await notifySession("sess-1", "")).reason, "empty-message");
+  assert.equal((await notifySession(null, "x")).reason, "no-codex-context");
+}
+
+// N4. notifySession delivers via test hook, and via `codex queue` argv with
+// shell-hostile payloads arriving byte-identical (no shell corruption).
+{
+  const calls = [];
+  globalThis.__QQ_TEST_NOTIFY_HANDLER = async (call) => { calls.push(call); };
+  try {
+    const res = await notifySession("sess-9", "terminal story", { kind: "execution.terminal", trackerId: "exec-1" });
+    assert.equal(res.notified, true);
+    assert.equal(res.via, "test-hook");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].sessionId, "sess-9");
+    assert.equal(calls[0].message, "terminal story");
+    assert.equal(calls[0].kind, "execution.terminal");
+    assert.equal(calls[0].trackerId, "exec-1");
+  } finally {
+    delete globalThis.__QQ_TEST_NOTIFY_HANDLER;
+  }
+
+  // A throwing hook must not break the notify call itself.
+  globalThis.__QQ_TEST_NOTIFY_HANDLER = () => { throw new Error("hook boom"); };
+  try {
+    assert.equal((await notifySession("s", "m")).notified, true);
+  } finally {
+    delete globalThis.__QQ_TEST_NOTIFY_HANDLER;
+  }
+
+  // Fake `codex` binary: argv must carry the message verbatim.
+  const fakeDir = mkdtempSync(join(tmpdir(), "test-codex-queue-"));
+  try {
+    const argLog = join(fakeDir, "queue-args.txt");
+    writeFileSync(fakeDir + "/codex", `#!/usr/bin/env bash\nfor a in "$@"; do echo "ARG:$a"; done > "${argLog}"\n`);
+    execFileSync("chmod", ["+x", join(fakeDir, "codex")]);
+    process.env.CODEX_SESSION_ID = "thread-abc";
+    process.env.QQ_CODEX_BIN = join(fakeDir, "codex");
+    const tricky = 'done $HOME `id` "quoted" \'sq\' * $(x) & | ;\nsecond line ✓';
+    const res = await notifySession("sess-1", tricky);
+    assert.equal(res.notified, true);
+    assert.equal(res.via, "codex-queue");
+    assert.equal(res.threadId, "thread-abc");
+    const lines = readFileSync(argLog, "utf8").split("\n").filter((l) => l.length > 0);
+    assert.deepEqual(lines.slice(0, 4), ["ARG:queue", "ARG:--thread", "ARG:thread-abc", "ARG:--message"]);
+    // The message is one argv element: only its first physical line carries
+    // the ARG: prefix; embedded newlines continue bare.
+    const msgLines = lines.slice(4);
+    const rejoined = [msgLines[0].slice("ARG:".length), ...msgLines.slice(1)].join("\n");
+    assert.equal(rejoined, tricky, "queue message argv must survive shell-hostile content verbatim");
+  } finally {
+    delete process.env.CODEX_SESSION_ID;
+    delete process.env.QQ_CODEX_BIN;
+    rmSync(fakeDir, { recursive: true, force: true });
+  }
+
+  // Missing binary degrades to notified:false, never throws.
+  process.env.CODEX_SESSION_ID = "thread-abc";
+  process.env.QQ_CODEX_BIN = join(tmpdir(), "no-such-codex-binary-xyz");
+  try {
+    const res = await notifySession("sess-1", "hello");
+    assert.equal(res.notified, false);
+  } finally {
+    delete process.env.CODEX_SESSION_ID;
+    delete process.env.QQ_CODEX_BIN;
+  }
+}
+
+// N5. Terminal/suspicion message builders carry landing status, summaries,
+// stall evidence, and bounded tails.
+{
+  const doneExec = {
+    id: "n5-done", kind: "open", status: "completed", phase: "completed",
+    startedAt: Date.now() - 61_000, branch: "architect/open/abcd",
+    result: {
+      verifiedStory: "Worktree verified and landed.",
+      landingOutcome: { landed: true, branch: "architect/open/abcd", method: "pr", pr: "https://x/pull/7", mergeSha: "abc123def456789" },
+      implementerSummary: "Implemented the thing.",
+      reviewerSummary: "No defects found.",
+    },
+  };
+  const doneMsg = buildExecutionTerminalMessage(doneExec);
+  assert.ok(doneMsg.includes("n5-done"));
+  assert.ok(doneMsg.includes("verified and landed"));
+  assert.ok(doneMsg.includes("architect/open/abcd"));
+  assert.ok(doneMsg.includes("method=pr"));
+  assert.ok(doneMsg.includes("https://x/pull/7"));
+  assert.ok(doneMsg.includes("Implemented the thing."));
+  assert.ok(doneMsg.includes("No defects found."));
+
+  const failExec = {
+    id: "n5-fail", kind: "bounded", status: "failed", phase: "implementing",
+    startedAt: Date.now() - 61_000, branch: "architect/bounded/efgh", worktree: "/tmp/wt",
+    error: { phase: "implementing", message: "impl blew up", exitCode: 3, stderr: "kaboom" },
+  };
+  const failMsg = buildExecutionTerminalMessage(failExec);
+  assert.ok(failMsg.includes("failed in phase 'implementing'"));
+  assert.ok(failMsg.includes("impl blew up"));
+  assert.ok(failMsg.includes("exitCode=3"));
+  assert.ok(failMsg.includes("kaboom"));
+
+  const doneRunner = {
+    runnerId: "n5-r", status: "completed", startedAt: Date.now() - 61_000,
+    result: { response: "found the bug", data_points: ["a.mjs:10"] },
+  };
+  const runMsg = buildRunnerTerminalMessage(doneRunner);
+  assert.ok(runMsg.includes("n5-r"));
+  assert.ok(runMsg.includes("found the bug"));
+  assert.ok(runMsg.includes("a.mjs:10"));
+  const failRunner = {
+    runnerId: "n5-rf", status: "failed", startedAt: Date.now() - 61_000,
+    error: { message: "Runner process exited with code 1", exitCode: 1, stderr: "trace" },
+    outputTail: "last lines",
+  };
+  const runFailMsg = buildRunnerTerminalMessage(failRunner);
+  assert.ok(runFailMsg.includes("exited with code 1"));
+  assert.ok(runFailMsg.includes("trace"));
+
+  // Huge summaries are head+tail capped, not dropped.
+  const big = "z".repeat(10_000);
+  assert.ok(buildRunnerTerminalMessage({ runnerId: "big", status: "completed", startedAt: Date.now(), result: big }).includes("chars omitted"));
+
+  const susMsg = buildSuspicionMessage("runner", { runnerId: "n5-s" }, {
+    suspect: true,
+    reason: "No output or tool transitions for 300s (threshold 290s for tool 'view_file'). Quiet long enough to take a look — not a verdict of stuck.",
+    activeTool: { name: "view_file", durationSeconds: 300 },
+    elapsedSeconds: 300, silenceSeconds: 300, thresholdSeconds: 290,
+    trajectory: [{ action: "view_file", target: "a.mjs", timestamp: Date.now() }],
+  });
+  assert.ok(susMsg.includes("[needs-decision]"));
+  assert.ok(susMsg.includes("n5-s"));
+  assert.ok(susMsg.includes("view_file"));
+  assert.ok(susMsg.includes("process left alive, nothing was killed"));
+  assert.ok(susMsg.includes("a.mjs"));
+  assert.ok(susMsg.includes("check_runner"));
+  const execSus = buildSuspicionMessage("execution", { id: "n5-e", phase: "reviewing" }, {
+    suspect: true, reason: "quiet", activeTool: null,
+    elapsedSeconds: 1, silenceSeconds: 1, thresholdSeconds: 1, trajectory: [],
+  });
+  assert.ok(execSus.includes("phase 'reviewing'"));
+  assert.ok(execSus.includes("check_execution"));
+}
+
+// N6. notifyTerminal: once per tracker, completed/failed only, never throws.
+{
+  const calls = [];
+  globalThis.__QQ_TEST_NOTIFY_HANDLER = async (call) => { calls.push(call); };
+  try {
+    const done = { id: "n6-done", kind: "bounded", status: "completed", phase: "completed", startedAt: Date.now(), result: { verifiedStory: "ok" } };
+    assert.equal((await notifyTerminal(done, "execution")).notified, true);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].kind, "execution.terminal");
+    assert.equal((await notifyTerminal(done, "execution")).reason, "already-notified");
+    assert.equal(calls.length, 1, "terminal wakeup must fire exactly once");
+
+    const running = { id: "n6-run", status: "running" };
+    assert.equal((await notifyTerminal(running, "execution")).reason, "not-terminal");
+    const cancelled = { runnerId: "n6-can", status: "cancelled" };
+    assert.equal((await notifyTerminal(cancelled, "runner")).reason, "not-terminal");
+    assert.equal(calls.length, 1, "running/cancelled trackers must never wake");
+    assert.equal((await notifyTerminal(null, "runner")).reason, "already-notified");
+  } finally {
+    delete globalThis.__QQ_TEST_NOTIFY_HANDLER;
+  }
+}
+
+// N7. Runner transition hooks wake on completed/failed with findings.
+{
+  async function waitForNotify(calls, predicate, timeoutMs = 2000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const hit = calls.find(predicate);
+      if (hit) return hit;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return calls.find(predicate);
+  }
+
+  const calls = [];
+  globalThis.__QQ_TEST_NOTIFY_HANDLER = async (call) => { calls.push(call); };
+  globalThis.__QQ_TEST_RUNNER_HANDLER = () => {};
+  try {
+    const disp = await dispatchRunner({ task: "hook probe", cwd: tmpdir(), sessionId: "sess-hook" });
+    assert.equal(RUNNERS.get(disp.runnerId).sessionId, "sess-hook");
+    handleRunnerEvent(RUNNERS.get(disp.runnerId), {
+      event: "result",
+      result: { status: "SUCCESS", response: "hook findings here" },
+    });
+    const hit = await waitForNotify(calls, (c) => c.trackerId === disp.runnerId);
+    assert.ok(hit, "completed runner must wake via notify hook");
+    assert.equal(hit.kind, "runner.terminal");
+    assert.equal(hit.sessionId, "sess-hook");
+    assert.ok(hit.message.includes("hook findings here"));
+
+    const dispFail = await dispatchRunner({ task: "hook fail probe", cwd: tmpdir() });
+    handleRunnerEvent(RUNNERS.get(dispFail.runnerId), {
+      event: "result",
+      result: { status: "FAILURE", error: "hook crash" },
+    });
+    const hitFail = await waitForNotify(calls, (c) => c.trackerId === dispFail.runnerId);
+    assert.ok(hitFail, "failed runner must wake via notify hook");
+    assert.ok(hitFail.message.includes("hook crash"));
+  } finally {
+    delete globalThis.__QQ_TEST_NOTIFY_HANDLER;
+    delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+  }
+}
+
+// N8. Sweeper: single suspicion wakeup per stall episode, terminal backstop,
+// dead-process reconcile, recovery re-arm — and never a kill.
+{
+  const calls = [];
+  globalThis.__QQ_TEST_NOTIFY_HANDLER = async (call) => { calls.push(call); };
+  globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => {
+    runner.activeTool = { name: "view_file", startedAt: Date.now() - 300_000 };
+    runner.trajectory.push({ action: "view_file", target: "stall.mjs", timestamp: Date.now() - 300_000 });
+  };
+  try {
+    const disp = await dispatchRunner({ task: "sweeper stall", cwd: tmpdir() });
+    const runner = RUNNERS.get(disp.runnerId);
+    runner.startedAt = Date.now() - 300_000;
+    runner.lastActivityAt = Date.now() - 300_000;
+    let killed = false;
+    runner.process = { exitCode: null, signalCode: null, kill: () => { killed = true; } };
+    const mine = () => calls.filter((c) => c.trackerId === disp.runnerId);
+
+    const summary = await sweepNotifications();
+    assert.ok(summary.runners >= 1 && summary.executions >= 0);
+    assert.equal(mine().length, 1, "first sweep must queue exactly one suspicion wakeup");
+    assert.equal(mine()[0].kind, "runner.suspicion");
+    assert.ok(mine()[0].message.includes("[needs-decision]"));
+    assert.ok(mine()[0].message.includes("view_file"));
+    assert.ok(mine()[0].message.includes("stall.mjs"));
+    assert.ok(mine()[0].message.includes("nothing was killed"));
+    assert.equal(runner.status, "running", "sweeper suspicion must leave the work untouched");
+    assert.equal(killed, false, "sweeper must never kill the child process");
+
+    await sweepNotifications();
+    assert.equal(mine().length, 1, "second sweep must not duplicate the suspicion wakeup");
+
+    // Re-arm after the escalation window of continued silence.
+    globalThis.__QQ_TEST_WATCHDOG = { suspicionRearmMs: 50 };
+    try {
+      await new Promise((r) => setTimeout(r, 60));
+      await sweepNotifications();
+      assert.equal(mine().length, 2, "persistent stall past the re-arm window must re-notify once");
+    } finally {
+      delete globalThis.__QQ_TEST_WATCHDOG;
+    }
+
+    // Recovery clears the marker; a genuinely new stall notifies promptly.
+    runner.lastActivityAt = Date.now();
+    await sweepNotifications();
+    assert.equal(mine().length, 2, "recovered work must not notify");
+    assert.equal(runner.notifiedSuspicionAt, undefined, "recovery must clear the suspicion marker");
+    runner.lastActivityAt = Date.now() - 300_000;
+    await sweepNotifications();
+    assert.equal(mine().length, 3, "new stall after recovery must notify promptly");
+
+    // Terminal backstop: a completed execution the hooks missed still wakes, once.
+    const missedExec = {
+      id: "n8-missed", kind: "bounded", status: "completed", phase: "completed",
+      startedAt: Date.now() - 60_000, lastActivityAt: Date.now(),
+      activeTool: null, trajectory: [], result: { verifiedStory: "landed ok" }, error: null, activeChild: null,
+    };
+    EXECUTIONS.set(missedExec.id, missedExec);
+    try {
+      await sweepNotifications();
+      const term = calls.filter((c) => c.trackerId === "n8-missed");
+      assert.equal(term.length, 1, "missed terminal must wake via sweeper backstop");
+      assert.equal(term[0].kind, "execution.terminal");
+      assert.ok(term[0].message.includes("landed ok"));
+      await sweepNotifications();
+      assert.equal(calls.filter((c) => c.trackerId === "n8-missed").length, 1, "terminal backstop must not duplicate");
+    } finally {
+      EXECUTIONS.delete(missedExec.id);
+    }
+
+    // Dead-process backstop: reconcile flips the books, then wakes terminal.
+    const dispDead = await dispatchRunner({ task: "sweeper dead", cwd: tmpdir() });
+    const dead = RUNNERS.get(dispDead.runnerId);
+    dead.process = { exitCode: 1, signalCode: null };
+    dead.outputTail = "last helper lines\n";
+    dead.stderrTail = "boom\n";
+    await sweepNotifications();
+    assert.equal(dead.status, "failed");
+    const deadTerm = calls.filter((c) => c.trackerId === dispDead.runnerId);
+    assert.equal(deadTerm.length, 1, "reconciled dead runner must wake terminal via sweeper");
+    assert.ok(deadTerm[0].message.includes("exited with code 1"));
+
+    // Healthy running work is silent.
+    const dispOk = await dispatchRunner({ task: "sweeper healthy", cwd: tmpdir() });
+    const ok = RUNNERS.get(dispOk.runnerId);
+    ok.lastActivityAt = Date.now();
+    ok.activeTool = { name: "grep_search", startedAt: Date.now() };
+    await sweepNotifications();
+    assert.equal(calls.filter((c) => c.trackerId === dispOk.runnerId).length, 0, "healthy work must not notify");
+  } finally {
+    delete globalThis.__QQ_TEST_NOTIFY_HANDLER;
+    delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+  }
+}
+
+// N9. Sweeper timer is unref'd (never keeps the process alive) and stoppable.
+{
+  const timer = startSuspicionSweeper({ intervalMs: 50 });
+  try {
+    assert.equal(typeof timer.unref, "function");
+    assert.equal(timer.hasRef(), false, "sweeper interval must be unref'd");
+  } finally {
+    clearInterval(timer);
+  }
+  stopSuspicionSweeper(); // safe with no singleton armed
+}
+
+// Restore any pre-existing notify env (tests above delete-then-restore).
+for (const [key, value] of Object.entries(savedNotifyEnv)) {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
 }
 
 console.log("MCP server tests passed cleanly.");

@@ -626,10 +626,38 @@ accessSync(codexShimPath, constants.X_OK);
       "architect-instructions.md must contain embedded ticket content or the pre-seed section",
     );
 
-    // Req 3: delegation and await instruction must appear in the rendered prompt
+    // Req 3: Codex uses dispatch-and-yield — no await tools in the rendered
+    // prompt; reactive-notification instructions instead. Muse keeps awaits.
     assert.ok(
-      prompt.includes("await_runner") && prompt.includes("await_execution"),
-      "architect-instructions.md must include await_runner and await_execution delegation instructions",
+      !prompt.includes("await_runner") && !prompt.includes("await_execution"),
+      "codex architect-instructions.md must NOT include await_runner/await_execution (dispatch-and-yield model)",
+    );
+    assert.ok(
+      /yield your turn/i.test(prompt),
+      "codex architect-instructions.md must instruct Astra to yield its turn after dispatch",
+    );
+    assert.ok(
+      /reactively notified/i.test(prompt),
+      "codex architect-instructions.md must promise reactive notification on completion/decision",
+    );
+    assert.ok(
+      prompt.includes("dispatch_execution") && prompt.includes("dispatch_runner"),
+      "codex architect-instructions.md must still document dispatch_execution and dispatch_runner",
+    );
+    assert.ok(
+      !/re-await/i.test(prompt),
+      "codex architect-instructions.md must not instruct a re-await polling loop",
+    );
+    // Muse separation: the Muse architect prompt retains its await contract.
+    const musePrompt = readFileSync(join(repoRoot, "agents", "architect", "agent.md"), "utf8");
+    assert.ok(
+      musePrompt.includes("await_runner") && musePrompt.includes("await_execution"),
+      "muse agents/architect/agent.md must retain await_runner and await_execution",
+    );
+    const museShim = readFileSync(shimPath, "utf8");
+    assert.ok(
+      museShim.includes("await_execution"),
+      "bin/muse-architect.sh must retain its await_execution instruction",
     );
   } finally {
     rmSync(launchHome, { recursive: true, force: true });

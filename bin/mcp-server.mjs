@@ -114,6 +114,10 @@ export const TOOLS = [
           type: "string",
           description: "Optional working directory (defaults to process.cwd())",
         },
+        sessionId: {
+          type: "string",
+          description: "Optional architect session ID used to route reactive Codex notifications",
+        },
       },
       required: ["task"],
     },
@@ -712,6 +716,347 @@ export function evaluateSuspicion(tracker, now = Date.now()) {
   };
 }
 
+// ============================================================================
+// Reactive Codex notifications: dispatch-and-yield wakeups
+// ============================================================================
+//
+// Muse has no session queueing, so it keeps the 4:50 await contract above
+// (await_runner / await_execution with heartbeat + suspicion envelopes).
+// Codex (Astra) architects instead dispatch and yield their turn immediately;
+// this section wakes the idle session only when something needs it:
+//
+// 1. Terminal wakeup: an execution or runner reaches completed/failed.
+//    Per-transition hooks call notifyTerminal exactly once (deduped by a
+//    tracker flag); the sweeper below backstops any transition the hooks
+//    missed (e.g. a dead process reconciled off the hot path).
+// 2. Suspicion wakeup: the background sweeper re-evaluates running work with
+//    the same evaluateSuspicion evidence contract. A trip queues a single
+//    needs-decision notification; the child is never touched. Re-arming only
+//    happens after SUSPICION_RENOTIFY_MS of continued silence, or immediately
+//    on recovery-then-new-stall (recovery clears the marker).
+//
+// Delivery is `codex queue --thread <threadId> --message <text>` via argv
+// (never a shell string, so JSON/markdown cannot corrupt). Outside a Codex
+// session there is no thread to wake, so every entry point resolves the
+// thread id first and quietly skips when none exists. Nothing here ever
+// throws into the pipeline: failures degrade to a { notified: false } result.
+//
+// Note on the watchdog header above ("no background timer, no sticky flag"):
+// that still describes the check_*/await_* contract — every read recomputes
+// suspicion from last-activity and the notifiedSuspicionAt marker gates only
+// queue delivery, never what check/await report.
+
+export const NOTIFY_SWEEP_INTERVAL_MS = 15_000; // background suspicion sweep cadence
+export const SUSPICION_RENOTIFY_MS = 1_800_000; // 30m re-arm while a stall persists
+
+export function sweepIntervalMs() {
+  const o = watchdogOverrides();
+  if (typeof o.sweepMs === "number" && o.sweepMs > 0) return o.sweepMs;
+  return NOTIFY_SWEEP_INTERVAL_MS;
+}
+
+export function suspicionRearmMs() {
+  const o = watchdogOverrides();
+  if (typeof o.suspicionRearmMs === "number" && o.suspicionRearmMs > 0) return o.suspicionRearmMs;
+  return SUSPICION_RENOTIFY_MS;
+}
+
+// Resolve the Codex thread to wake for a tracker session. Precedence:
+// explicit test thread > session map > Codex-provided env. Returns null
+// outside a Codex session (Muse path, plain CLI runs, most tests).
+export function resolveCodexThreadId(sessionId) {
+  const testThread = globalThis.__QQ_TEST_CODEX_THREAD;
+  if (typeof testThread === "string" && testThread) return testThread;
+  const map = globalThis.__QQ_CODEX_THREAD_MAP;
+  if (sessionId != null && map) {
+    if (map instanceof Map && map.has(sessionId)) return map.get(sessionId);
+    if (!(map instanceof Map) && typeof map === "object" && map[sessionId]) return map[sessionId];
+  }
+  const env = process.env;
+  return env.CODEX_THREAD_ID || env.CODEX_SESSION_ID || env.CODEX_CONVERSATION_ID || null;
+}
+
+function runCodexQueue(bin, args) {
+  return new Promise((resolvePromise) => {
+    let child;
+    try {
+      child = spawn(bin, args, { stdio: "ignore" });
+    } catch (err) {
+      resolvePromise({ ok: false, error: err });
+      return;
+    }
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* already gone */
+      }
+    }, 15_000);
+    if (typeof timer.unref === "function") timer.unref();
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolvePromise({ ok: false, error: err });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolvePromise({ ok: true });
+      else resolvePromise({ ok: false, error: new Error(`codex queue exited with code ${code}`) });
+    });
+  });
+}
+
+// Queue one message to the architect session. Never throws: without a Codex
+// thread (or with an empty message) it reports notified:false instead.
+// Tests capture deliveries via globalThis.__QQ_TEST_NOTIFY_HANDLER.
+export async function notifySession(sessionId, message, opts = {}) {
+  const text = String(message ?? "");
+  if (!text) return { notified: false, reason: "empty-message" };
+  const threadId = opts.threadId || resolveCodexThreadId(sessionId);
+  const testHandler = globalThis.__QQ_TEST_NOTIFY_HANDLER;
+  if (typeof testHandler === "function") {
+    try {
+      await testHandler({
+        sessionId: sessionId || null,
+        threadId: threadId || sessionId || "test-thread",
+        message: text,
+        kind: opts.kind || null,
+        trackerId: opts.trackerId || null,
+      });
+    } catch {
+      /* test hooks must never break the pipeline */
+    }
+    return { notified: true, via: "test-hook", threadId: threadId || sessionId || "test-thread" };
+  }
+  if (!threadId) return { notified: false, reason: "no-codex-context" };
+  const bin = process.env.QQ_CODEX_BIN || "codex";
+  const res = await runCodexQueue(bin, ["queue", "--thread", threadId, "--message", text]);
+  if (res.ok) return { notified: true, via: "codex-queue", threadId };
+  return { notified: false, reason: res.error?.message || "queue-failed", threadId };
+}
+
+function trackerSessionId(tracker) {
+  return tracker?.sessionId || tracker?.architectSessionId || null;
+}
+
+function trackerRef(tracker) {
+  return tracker?.id || tracker?.runnerId || null;
+}
+
+function trackerElapsedSeconds(tracker) {
+  return Math.max(0, Math.round((Date.now() - (tracker?.startedAt || Date.now())) / 1000));
+}
+
+function trajectoryLines(trajectory, limit = 8) {
+  const steps = Array.isArray(trajectory) ? trajectory.slice(-limit) : [];
+  return steps.map((s) => {
+    const action = s?.action || "step";
+    const extra = s?.target
+      ? ` ${s.target}`
+      : s?.message
+        ? ` ${String(s.message).slice(0, 80)}`
+        : "";
+    return `- ${action}${extra}`.slice(0, 160);
+  });
+}
+
+export function buildExecutionTerminalMessage(execution) {
+  const id = execution?.id || "unknown";
+  const kind = execution?.kind || "unknown";
+  const elapsed = trackerElapsedSeconds(execution);
+  const branch = execution?.branch ? `\nBranch: ${execution.branch}` : "";
+  if (execution?.status === "completed") {
+    const result = execution.result || {};
+    const landing = result.landingOutcome || {};
+    const landingBits = [];
+    if (landing.method) landingBits.push(`method=${landing.method}`);
+    if (landing.pr) landingBits.push(`pr=${landing.pr}`);
+    if (landing.mergeSha) landingBits.push(`sha=${String(landing.mergeSha).slice(0, 12)}`);
+    const landingLine = landingBits.length ? `\nLanding: ${landingBits.join(" ")}` : "";
+    const story = result.verifiedStory ? `\n\n${result.verifiedStory}` : "";
+    const impl = result.implementerSummary
+      ? `\n\nImplementer summary:\n${sanitizeHeadTail(String(result.implementerSummary), { headLen: 2000, tailLen: 2000 })}`
+      : "";
+    const review = result.reviewerSummary
+      ? `\n\nReviewer summary:\n${sanitizeHeadTail(String(result.reviewerSummary), { headLen: 2000, tailLen: 2000 })}`
+      : "";
+    return `Execution ${id} (${kind}) completed in ${elapsed}s — verified and landed.${branch}${landingLine}${story}${impl}${review}`;
+  }
+  const err = execution?.error || {};
+  const phase = execution?.phase || err.phase || "unknown";
+  const message = err.message || "unknown error";
+  const extras = [];
+  if (err.exitCode !== undefined && err.exitCode !== null) extras.push(`exitCode=${err.exitCode}`);
+  if (err.stderr) extras.push(`stderr:\n${sanitizeHeadTail(String(err.stderr), { headLen: 500, tailLen: 500 })}`);
+  if (err.findings) extras.push(`findings:\n${sanitizeHeadTail(String(err.findings), { headLen: 1000, tailLen: 1000 })}`);
+  const extra = extras.length ? `\n\n${extras.join("\n\n")}` : "";
+  const wt = execution?.worktree ? `\nWorktree: ${execution.worktree}` : "";
+  return `Execution ${id} (${kind}) failed in phase '${phase}' after ${elapsed}s: ${message}${branch}${wt}${extra}`;
+}
+
+export function buildRunnerTerminalMessage(runner) {
+  const id = runner?.runnerId || runner?.id || "unknown";
+  const elapsed = trackerElapsedSeconds(runner);
+  if (runner?.status === "completed") {
+    const result = runner.result;
+    let findings;
+    let dataPoints = [];
+    if (typeof result === "string") {
+      findings = result;
+    } else if (result && typeof result === "object") {
+      findings = result.response ?? JSON.stringify(result);
+      if (Array.isArray(result.data_points)) dataPoints = result.data_points;
+    } else {
+      findings = String(result ?? "(no output)");
+    }
+    const dp = dataPoints.length ? `\n\ndata_points:\n${dataPoints.map((d) => `- ${d}`).join("\n")}` : "";
+    return `Runner ${id} completed in ${elapsed}s.\n\nFindings:\n${sanitizeHeadTail(String(findings), { headLen: 2000, tailLen: 2000 })}${dp}`;
+  }
+  const err = runner?.error || {};
+  const message = err.message || "unknown error";
+  const extras = [];
+  if (err.exitCode !== undefined && err.exitCode !== null) extras.push(`exitCode=${err.exitCode}`);
+  if (err.stderr) extras.push(`stderr:\n${sanitizeHeadTail(String(err.stderr), { headLen: 500, tailLen: 500 })}`);
+  const extra = extras.length ? `\n\n${extras.join("\n\n")}` : "";
+  const tail = runner?.outputTail && String(runner.outputTail).trim()
+    ? `\n\nLast output:\n${sanitizeHeadTail(String(runner.outputTail).trim(), { headLen: 500, tailLen: 500 })}`
+    : "";
+  return `Runner ${id} failed after ${elapsed}s: ${message}${extra}${tail}`;
+}
+
+export function buildSuspicionMessage(kind, tracker, suspicion) {
+  const label = kind === "execution" ? "Execution" : "Runner";
+  const id = trackerRef(tracker) || "unknown";
+  const phase = kind === "execution" && tracker?.phase ? ` (phase '${tracker.phase}')` : "";
+  const reason = suspicion?.reason || "quiet past threshold";
+  const elapsed = suspicion?.elapsedSeconds ?? trackerElapsedSeconds(tracker);
+  const silence = suspicion?.silenceSeconds ?? elapsed;
+  const threshold = suspicion?.thresholdSeconds ?? "?";
+  const tool = suspicion?.activeTool
+    ? `${suspicion.activeTool.name} (${suspicion.activeTool.durationSeconds}s)`
+    : "none";
+  const traj = trajectoryLines(suspicion?.trajectory);
+  const trajBlock = traj.length ? `\n\nRecent trajectory:\n${traj.join("\n")}` : "";
+  const inspect = kind === "execution" ? "check_execution" : "check_runner";
+  const steer = kind === "execution" ? "" : " For runners you can steer_runner or cancel_runner.";
+  return `[needs-decision] ${label} ${id}${phase} may be stalled: ${reason}\n\nStatus: running — process left alive, nothing was killed.\nElapsed: ${elapsed}s, silence: ${silence}s (threshold ${threshold}s).\nActive tool: ${tool}${trajBlock}\n\nInspect with ${inspect}.${steer} No action needed if the work is healthy.`;
+}
+
+// Notify once when a tracker reaches a terminal state. Completed/failed only:
+// cancelled is architect-initiated (no wakeup needed) and running is never
+// terminal. The flag is set synchronously so concurrent transition paths
+// (event handler + sweeper backstop) cannot double-notify. Never throws.
+export async function notifyTerminal(tracker, kind) {
+  try {
+    if (!tracker || tracker.notifiedTerminal) return { notified: false, reason: "already-notified" };
+    if (tracker.status !== "completed" && tracker.status !== "failed") {
+      return { notified: false, reason: "not-terminal" };
+    }
+    tracker.notifiedTerminal = true;
+    const message = kind === "execution"
+      ? buildExecutionTerminalMessage(tracker)
+      : buildRunnerTerminalMessage(tracker);
+    return await notifySession(trackerSessionId(tracker), message, {
+      kind: `${kind}.terminal`,
+      trackerId: trackerRef(tracker),
+    });
+  } catch (err) {
+    return { notified: false, reason: err?.message || String(err) };
+  }
+}
+
+// Notify once per stall episode. The marker is set synchronously (same
+// single-flight rationale as notifyTerminal); the sweeper clears it on
+// recovery and re-arms it after SUSPICION_RENOTIFY_MS. Never throws.
+export async function notifySuspicion(tracker, kind, suspicion, now = Date.now()) {
+  try {
+    if (!tracker || tracker.status !== "running" || !suspicion) {
+      return { notified: false, reason: "not-suspicious" };
+    }
+    tracker.notifiedSuspicionAt = now;
+    const message = buildSuspicionMessage(kind, tracker, suspicion);
+    return await notifySession(trackerSessionId(tracker), message, {
+      kind: `${kind}.suspicion`,
+      trackerId: trackerRef(tracker),
+    });
+  } catch (err) {
+    return { notified: false, reason: err?.message || String(err) };
+  }
+}
+
+async function sweepTracker(tracker, kind, now, summary) {
+  if (tracker.status === "completed" || tracker.status === "failed") {
+    const res = await notifyTerminal(tracker, kind);
+    if (res?.notified) summary.terminalNotified += 1;
+    return;
+  }
+  if (tracker.status !== "running") return;
+  const suspicion = evaluateSuspicion(tracker, now);
+  if (!suspicion) {
+    // Recovery clears the marker so a genuinely new stall notifies promptly.
+    if (tracker.notifiedSuspicionAt !== undefined) delete tracker.notifiedSuspicionAt;
+    return;
+  }
+  if (
+    typeof tracker.notifiedSuspicionAt === "number" &&
+    now - tracker.notifiedSuspicionAt < suspicionRearmMs()
+  ) {
+    return;
+  }
+  const res = await notifySuspicion(tracker, kind, suspicion, now);
+  if (res?.notified) summary.suspicionNotified += 1;
+}
+
+// One sweep over all live trackers: backstop terminal wakeups the transition
+// hooks missed, reconcile dead runner processes, and queue a single
+// needs-decision notification per stall episode. Read-only toward the work
+// itself — no process is ever signalled here. Never throws.
+export async function sweepNotifications(now = Date.now()) {
+  const summary = { executions: 0, runners: 0, suspicionNotified: 0, terminalNotified: 0 };
+  for (const execution of EXECUTIONS.values()) {
+    try {
+      summary.executions += 1;
+      await sweepTracker(execution, "execution", now, summary);
+    } catch {
+      /* one bad tracker must never wedge the sweep */
+    }
+  }
+  for (const runner of RUNNERS.values()) {
+    try {
+      summary.runners += 1;
+      reconcileDeadRunner(runner);
+      await sweepTracker(runner, "runner", now, summary);
+    } catch {
+      /* one bad tracker must never wedge the sweep */
+    }
+  }
+  return summary;
+}
+
+let suspicionSweeperTimer = null;
+
+// Start the background suspicion sweeper. The interval is unref'd so it never
+// keeps the process alive on SIGTERM or stdin EOF. Returns the timer handle.
+export function startSuspicionSweeper({ intervalMs } = {}) {
+  const ms = typeof intervalMs === "number" && intervalMs > 0 ? intervalMs : sweepIntervalMs();
+  const timer = setInterval(() => {
+    void sweepNotifications().catch(() => {});
+  }, ms);
+  if (typeof timer.unref === "function") timer.unref();
+  return timer;
+}
+
+export function ensureSuspicionSweeperStarted(opts) {
+  if (!suspicionSweeperTimer) suspicionSweeperTimer = startSuspicionSweeper(opts);
+  return suspicionSweeperTimer;
+}
+
+export function stopSuspicionSweeper() {
+  if (suspicionSweeperTimer) {
+    clearInterval(suspicionSweeperTimer);
+    suspicionSweeperTimer = null;
+  }
+}
+
 // 99%+ auto-case set: cases where diagnosing plus reporting without asking
 // is 99%+ accurate. When in doubt, notify (needs-decision) instead.
 //
@@ -784,6 +1129,7 @@ export async function dispatchRunner(args = {}) {
     task,
     targetPaths: Array.isArray(targetPaths) ? targetPaths : [],
     cwd,
+    sessionId: args.sessionId ?? args.architectSessionId ?? null,
     status: "running",
     startedAt,
     lastActivityAt: startedAt,
@@ -809,6 +1155,7 @@ function startRunnerProcess(runner) {
     } catch (err) {
       runner.status = "failed";
       runner.error = { message: err.message };
+      void notifyTerminal(runner, "runner");
     }
     return;
   }
@@ -839,6 +1186,7 @@ function startRunnerProcess(runner) {
   } catch (err) {
     runner.status = "failed";
     runner.error = { message: err.message };
+    void notifyTerminal(runner, "runner");
     return;
   }
   runner.process = child;
@@ -897,6 +1245,7 @@ function startRunnerProcess(runner) {
       };
     }
     runner.activeTool = null;
+    void notifyTerminal(runner, "runner");
   });
 
   child.on("error", (err) => {
@@ -907,6 +1256,7 @@ function startRunnerProcess(runner) {
       stderr: sanitizeHeadTail(stderrBuf.trim()),
     };
     runner.activeTool = null;
+    void notifyTerminal(runner, "runner");
   });
 }
 
@@ -943,6 +1293,7 @@ export function handleRunnerEvent(runner, event) {
           if (runner.process) {
             try { runner.process.kill("SIGTERM"); } catch {}
           }
+          void notifyTerminal(runner, "runner");
         }
       }
     } else if (su.step_type === "agent_response") {
@@ -979,6 +1330,7 @@ export function handleRunnerEvent(runner, event) {
       };
     }
     runner.activeTool = null;
+    void notifyTerminal(runner, "runner");
   }
 }
 
@@ -1514,6 +1866,7 @@ async function runExecutionPipeline(execution) {
       exitCode: implementerRes.error.exitCode,
       stderr: implementerRes.error.stderr,
     };
+    await notifyTerminal(execution, "execution");
     return;
   }
 
@@ -1550,6 +1903,7 @@ async function runExecutionPipeline(execution) {
         exitCode: reviewRes.error.exitCode,
         stderr: reviewRes.error.stderr,
       };
+      await notifyTerminal(execution, "execution");
       return;
     }
 
@@ -1581,6 +1935,7 @@ async function runExecutionPipeline(execution) {
           exitCode: retryImplRes.error.exitCode,
           stderr: retryImplRes.error.stderr,
         };
+        await notifyTerminal(execution, "execution");
         return;
       }
 
@@ -1606,6 +1961,7 @@ async function runExecutionPipeline(execution) {
           exitCode: reviewRes.error.exitCode,
           stderr: reviewRes.error.stderr,
         };
+        await notifyTerminal(execution, "execution");
         return;
       }
 
@@ -1619,6 +1975,7 @@ async function runExecutionPipeline(execution) {
           message: `Review failed after retry: ${reviewRes.output}`,
           findings: reviewRes.output,
         };
+        await notifyTerminal(execution, "execution");
         return;
       }
     }
@@ -1652,6 +2009,7 @@ async function runExecutionPipeline(execution) {
     landResult,
     timestamp: Date.now(),
   });
+  await notifyTerminal(execution, "execution");
 }
 
 export async function dispatchExecution(args = {}) {
@@ -1685,7 +2043,7 @@ export async function dispatchExecution(args = {}) {
   };
   EXECUTIONS.set(id, execution);
 
-  runExecutionPipeline(execution).catch((err) => {
+  runExecutionPipeline(execution).catch(async (err) => {
     if (execution.status === "running") {
       execution.status = "failed";
       execution.error = {
@@ -1694,6 +2052,7 @@ export async function dispatchExecution(args = {}) {
         stack: err.stack,
       };
     }
+    await notifyTerminal(execution, "execution");
   });
 
   return { ok: true, id, status: "running", phase: "implementing" };
@@ -2076,6 +2435,9 @@ export function writeMessage(message, stdout = process.stdout) {
 }
 
 export function startMcpServer({ stdin = process.stdin, stdout = process.stdout } = {}) {
+  // Reactive Codex wakeups: the sweeper is unref'd, so stdio servers still
+  // exit cleanly on SIGTERM or stdin EOF.
+  ensureSuspicionSweeperStarted();
   const rl = createInterface({ input: stdin });
 
   rl.on("line", async (line) => {
