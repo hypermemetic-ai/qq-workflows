@@ -34,10 +34,12 @@ import {
   checkExecution,
   checkRunner,
   completeTask,
+  DETECTED_CODEX_HOMES,
   DETECTED_CODEX_THREADS,
   dispatchExecution,
   dispatchRunner,
   evaluateSuspicion,
+  findCodexHomeFromProc,
   findCodexThreadFromProc,
   getDisabledTools,
   handleExecutionStreamEvent,
@@ -2520,6 +2522,7 @@ delete globalThis.__QQ_CODEX_THREAD_MAP;
 delete process.env.CODEX_THREAD_ID;
 delete process.env.CODEX_SESSION_ID;
 delete process.env.CODEX_CONVERSATION_ID;
+delete process.env.CODEX_HOME;
 assert.equal(resolveCodexThreadId("sess-1"), null);
 
 // N2b. resolveCodexThreadId uses DETECTED_CODEX_THREADS mapping.
@@ -2529,6 +2532,11 @@ DETECTED_CODEX_THREADS.delete("sess-detected");
 assert.equal(resolveCodexThreadId("sess-detected"), null);
 assert.equal(findCodexThreadFromProc(null), null);
 assert.equal(findCodexThreadFromProc(0), null);
+assert.equal(findCodexHomeFromProc(null), null);
+assert.equal(findCodexHomeFromProc(0), null);
+DETECTED_CODEX_HOMES.set("sess-detected", "/tmp/fake-home");
+assert.equal(DETECTED_CODEX_HOMES.get("sess-detected"), "/tmp/fake-home");
+DETECTED_CODEX_HOMES.delete("sess-detected");
 
 // N3. notifySession without a Codex thread is a quiet no-op; never throws.
 {

@@ -763,6 +763,56 @@ export function suspicionRearmMs() {
 
 // Map of ticket sessionId (or caller session ID) -> resolved Codex threadId
 export const DETECTED_CODEX_THREADS = new Map();
+// Map of ticket sessionId (or caller session ID) -> resolved CODEX_HOME directory
+export const DETECTED_CODEX_HOMES = new Map();
+
+// Discover the active CODEX_HOME by inspecting ancestor process environments
+// or open rollout file paths.
+export function findCodexHomeFromProc(startPid = process.ppid) {
+  if (!startPid) return null;
+  if (process.env.CODEX_HOME) return process.env.CODEX_HOME;
+  let currPid = startPid;
+  for (let depth = 0; depth < 4; depth++) {
+    try {
+      try {
+        const environ = readFileSync(`/proc/${currPid}/environ`, "utf8");
+        for (const entry of environ.split("\0")) {
+          if (entry.startsWith("CODEX_HOME=")) {
+            const val = entry.slice("CODEX_HOME=".length);
+            if (val) return val;
+          }
+        }
+      } catch {}
+
+      const fdDir = `/proc/${currPid}/fd`;
+      if (existsSync(fdDir)) {
+        const fds = readdirSync(fdDir);
+        for (const fd of fds) {
+          try {
+            const target = readlinkSync(`${fdDir}/${fd}`);
+            const m = target.match(/^(.*?)\/sessions(?:\/.*)?\/rollout-.*\.jsonl$/);
+            if (m && m[1]) return m[1];
+          } catch {}
+        }
+      }
+
+      const stat = readFileSync(`/proc/${currPid}/stat`, "utf8");
+      const lastParen = stat.lastIndexOf(")");
+      if (lastParen !== -1) {
+        const rest = stat.slice(lastParen + 2);
+        const fields = rest.split(" ");
+        const ppid = parseInt(fields[1], 10);
+        if (ppid > 1 && ppid !== currPid) currPid = ppid;
+        else break;
+      } else {
+        break;
+      }
+    } catch {
+      break;
+    }
+  }
+  return null;
+}
 
 // Discover the active Codex thread ID by walking ancestor process descriptors
 // for an open rollout JSONL file (standard Linux procfs environment).
@@ -778,7 +828,13 @@ export function findCodexThreadFromProc(startPid = process.ppid) {
           try {
             const target = readlinkSync(`${fdDir}/${fd}`);
             const m = target.match(/rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/);
-            if (m) return m[1];
+            if (m) {
+              const homeMatch = target.match(/^(.*?)\/sessions(?:\/.*)?\/rollout-/);
+              if (homeMatch && homeMatch[1] && !process.env.CODEX_HOME) {
+                process.env.CODEX_HOME = homeMatch[1];
+              }
+              return m[1];
+            }
           } catch {}
         }
       }
@@ -883,8 +939,18 @@ export async function notifySession(sessionId, message, opts = {}) {
   }
   if (!threadId) return { notified: false, reason: "no-codex-context" };
   const bin = process.env.QQ_CODEX_BIN || "codex";
-  const res = await runCodexQueue(bin, ["queue", "--thread", threadId, "--message", text]);
+  const queueEnv = { ...process.env };
+  const codexHome = opts.codexHome
+    || (sessionId ? DETECTED_CODEX_HOMES.get(sessionId) : null)
+    || process.env.CODEX_HOME
+    || findCodexHomeFromProc();
+  if (codexHome) {
+    queueEnv.CODEX_HOME = codexHome;
+    if (!process.env.CODEX_HOME) process.env.CODEX_HOME = codexHome;
+  }
+  const res = await runCodexQueue(bin, ["queue", "--thread", threadId, "--message", text], queueEnv);
   if (res.ok) return { notified: true, via: "codex-queue", threadId };
+  console.error(`[qq-workflows] failed to queue message to codex thread ${threadId}:`, res.error?.message);
   return { notified: false, reason: res.error?.message || "queue-failed", threadId };
 }
 
@@ -1198,6 +1264,11 @@ export async function dispatchRunner(args = {}) {
   if (runner.sessionId) {
     const procThread = findCodexThreadFromProc();
     if (procThread) DETECTED_CODEX_THREADS.set(runner.sessionId, procThread);
+    const procHome = findCodexHomeFromProc();
+    if (procHome) {
+      DETECTED_CODEX_HOMES.set(runner.sessionId, procHome);
+      if (!process.env.CODEX_HOME) process.env.CODEX_HOME = procHome;
+    }
   }
   RUNNERS.set(runnerId, runner);
 
@@ -2082,6 +2153,11 @@ export async function dispatchExecution(args = {}) {
   if (sessionId) {
     const procThread = findCodexThreadFromProc();
     if (procThread) DETECTED_CODEX_THREADS.set(sessionId, procThread);
+    const procHome = findCodexHomeFromProc();
+    if (procHome) {
+      DETECTED_CODEX_HOMES.set(sessionId, procHome);
+      if (!process.env.CODEX_HOME) process.env.CODEX_HOME = procHome;
+    }
   }
 
   const id = randomUUID();
