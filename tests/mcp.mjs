@@ -1631,6 +1631,61 @@ assert.equal(ctRes.dataPointsCount, 2);
   assert.equal(killSignal, "SIGTERM");
 }
 
+// T7c. handleRunnerEvent: captures runner.result from call_mcp_tool with ToolName: complete_task
+{
+  let killCalled = false;
+  let killSignal = null;
+  const fakeProcess = {
+    kill(sig) {
+      killCalled = true;
+      killSignal = sig || "SIGTERM";
+    },
+  };
+
+  const fakeRunner = {
+    id: "fake-runner-mcp-call",
+    status: "running",
+    activeTool: null,
+    trajectory: [],
+    result: null,
+    error: null,
+    process: fakeProcess,
+    startedAt: Date.now(),
+    lastActivityAt: Date.now(),
+  };
+
+  const testResponse = "Findings via call_mcp_tool";
+  const testDataPoints = ["point-1", "point-2"];
+
+  const completedEvent = {
+    event: "step_update",
+    step_update: {
+      step_type: "tool",
+      state: "DONE",
+      tool_name: "call_mcp_tool",
+      duration_seconds: 0.3,
+      tool_info: {
+        parameters: {
+          ServerName: "qq-workflows",
+          ToolName: "complete_task",
+          Arguments: {
+            response: testResponse,
+            data_points: testDataPoints,
+          },
+        },
+      },
+    },
+  };
+  handleRunnerEvent(fakeRunner, completedEvent);
+
+  assert.equal(fakeRunner.status, "completed");
+  assert.ok(fakeRunner.result);
+  assert.equal(fakeRunner.result.response, testResponse);
+  assert.deepEqual(fakeRunner.result.data_points, testDataPoints);
+  assert.ok(killCalled);
+  assert.equal(killSignal, "SIGTERM");
+}
+
 // ============================================================================
 // Watchdog: bounded awaits, suspicion-with-evidence, dead-process reconcile
 // ============================================================================

@@ -1410,10 +1410,20 @@ export function handleRunnerEvent(runner, event) {
         });
         // Immediate termination on complete_task: mark completed and kill child process.
         // Terminal-overwrite guard: only out of "running".
-        if (su.tool_name === "complete_task" && runner.status === "running") {
+        const isCompleteTask = su.tool_name === "complete_task" ||
+          (su.tool_name === "call_mcp_tool" && (
+            su.tool_info?.parameters?.ToolName === "complete_task" ||
+            su.tool_info?.parameters?.toolName === "complete_task"
+          ));
+        if (isCompleteTask && runner.status === "running") {
           const key = process.env.GEMINI_CONVERSATION_ID || process.env.ASTRA_CONVERSATION_ID || "default";
           const recorded = COMPLETE_TASK_REGISTRY.get(key);
-          const params = su.tool_info?.parameters;
+          let params = su.tool_info?.parameters;
+          if (params?.Arguments && typeof params.Arguments === "string") {
+            try { params = JSON.parse(params.Arguments); } catch {}
+          } else if (params?.Arguments && typeof params.Arguments === "object") {
+            params = params.Arguments;
+          }
           const response = recorded?.response ?? params?.response ?? null;
           const data_points = recorded?.data_points ?? params?.data_points ?? [];
           runner.status = "completed";
