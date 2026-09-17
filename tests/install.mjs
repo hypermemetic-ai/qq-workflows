@@ -41,7 +41,8 @@ const mcpServerBin = join(repoRoot, "bin", "mcp-server.mjs");
 // home root, and every shim launch overrides HOME in its subprocess env.
 const savedXdg = process.env.XDG_CONFIG_HOME;
 
-// 1. mergeCodexConfig is pure: disables shell tools, configures MCP servers
+// 1. mergeCodexConfig is pure: disables shell tools, configures MCP servers,
+// and hides the await tools from Astra's schema.
 {
   const fresh = mergeCodexConfig(undefined, { mcpServerBin, zgBin: "zg", promptFile: "/p/prompt.md" });
   assert.ok(fresh.includes('model_instructions_file = "/p/prompt.md"'));
@@ -54,7 +55,7 @@ const savedXdg = process.env.XDG_CONFIG_HOME;
   assert.ok(fresh.includes("[code_mode]"));
   assert.ok(fresh.includes("default_exec_yield_time_ms = 7200000"));
   assert.ok(fresh.includes("[mcp_servers.qq-workflows]"));
-  assert.ok(fresh.includes(`args = ["${mcpServerBin}"]`));
+  assert.ok(fresh.includes(`args = ["${mcpServerBin}", "--disabled-tools", "await_runner,await_execution"]`));
   assert.ok(fresh.includes("[mcp_servers.zvec_grep]"));
 
   const existing = `model = "custom"\n[features]\nshell_tool = true\n`;
@@ -67,13 +68,22 @@ const savedXdg = process.env.XDG_CONFIG_HOME;
   assert.ok(merged.includes('disabled_tools = ["wait", "sleep"]'));
   assert.ok(merged.includes("[code_mode]"));
   assert.ok(merged.includes("default_exec_yield_time_ms = 7200000"));
+  assert.ok(merged.includes(`args = ["${mcpServerBin}", "--disabled-tools", "await_runner,await_execution"]`));
+
+  // A stale plain-args section is rewritten with the await-tool exclusion.
+  const staleSection = `[mcp_servers.qq-workflows]\ncommand = "node"\nargs = ["${mcpServerBin}"]\n`;
+  const repaired = mergeCodexConfig(staleSection, { mcpServerBin, zgBin: "zg" });
+  assert.ok(repaired.includes(`args = ["${mcpServerBin}", "--disabled-tools", "await_runner,await_execution"]`));
+  assert.ok(!repaired.includes(`args = ["${mcpServerBin}"]`));
 }
 
 // 1b. mergeMuseSettings is pure: missing presets become {}, everything else stays.
+// Muse keeps all tools: no --disabled-tools in its server args.
 {
   const fresh = mergeMuseSettings(undefined, mcpServerBin);
   assert.deepEqual(fresh.presets, { architect: {}, implementer: {}, reviewer: {}, researcher: {} });
   assert.deepEqual(fresh.mcpServers["qq-workflows"], { command: "node", args: [mcpServerBin] });
+  assert.ok(!fresh.mcpServers["qq-workflows"].args.includes("--disabled-tools"));
 
   const existing = {
     schema_version: 1,
@@ -101,6 +111,7 @@ const savedXdg = process.env.XDG_CONFIG_HOME;
   assert.deepEqual(merged.tui, { foreign_context_notice_shown: true });
   assert.deepEqual(merged.mcpServers.other, { command: "other-bin", args: ["--stdio"] });
   assert.deepEqual(merged.mcpServers["qq-workflows"], { command: "node", args: [mcpServerBin] });
+  assert.ok(!merged.mcpServers["qq-workflows"].args.includes("--disabled-tools"));
 
   for (const junk of [null, "junk", 42, ["x"]]) {
     const reset = mergeMuseSettings(junk, mcpServerBin);
@@ -160,6 +171,7 @@ try {
   const settings = JSON.parse(readFileSync(join(tempHome, ".config", "muse", "settings.json"), "utf8"));
   assert.deepEqual(settings.presets, { architect: {}, implementer: {}, reviewer: {}, researcher: {} });
   assert.deepEqual(settings.mcpServers["qq-workflows"], { command: "node", args: [mcpServerBin] });
+  assert.ok(!settings.mcpServers["qq-workflows"].args.includes("--disabled-tools"));
   const shimLink = join(tempHome, ".local", "bin", "muse-architect");
   assert.ok(lstatSync(shimLink).isSymbolicLink());
   assert.equal(readlinkSync(shimLink), shimPath);
@@ -170,6 +182,7 @@ try {
   assert.ok(codexConf.includes("shell_tool = false"));
   assert.ok(codexConf.includes("unified_exec = false"));
   assert.ok(codexConf.includes("[mcp_servers.qq-workflows]"));
+  assert.ok(codexConf.includes(`args = ["${mcpServerBin}", "--disabled-tools", "await_runner,await_execution"]`));
   assert.ok(codexConf.includes("[mcp_servers.zvec_grep]"));
   const opencodeLink = join(tempHome, ".local", "bin", "opencode");
   assert.ok(lstatSync(opencodeLink).isSymbolicLink());
@@ -772,6 +785,7 @@ accessSync(codexShimPath, constants.X_OK);
     assert.ok(tomlContent.includes("[code_mode]"));
     assert.ok(tomlContent.includes("default_exec_yield_time_ms = 7200000"));
     assert.ok(tomlContent.includes("[mcp_servers.qq-workflows]"));
+    assert.ok(tomlContent.includes('"--disabled-tools", "await_runner,await_execution"'));
     assert.ok(tomlContent.includes("[mcp_servers.zvec_grep]"));
   } finally {
     rmSync(testHome, { recursive: true, force: true });
@@ -977,6 +991,16 @@ accessSync(codexShimPath, constants.X_OK);
     rmSync(optHome, { recursive: true, force: true });
     rmSync(optOut, { recursive: true, force: true });
   }
+}
+
+// 19. Astra never sees await tools: codex-architect.sh exports the
+// defense-in-depth env var; muse-architect.sh leaves tools untouched.
+{
+  const codexShimSrc = readFileSync(codexShimPath, "utf8");
+  assert.ok(codexShimSrc.includes('export QQ_DISABLED_TOOLS="await_runner,await_execution"'));
+  const museShimSrc = readFileSync(shimPath, "utf8");
+  assert.ok(!museShimSrc.includes("QQ_DISABLED_TOOLS"));
+  assert.ok(!museShimSrc.includes("--disabled-tools"));
 }
 
 console.log("Install tests passed cleanly.");

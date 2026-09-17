@@ -165,7 +165,8 @@ export function mergeCodexConfig(existingTomlText, { mcpServerBin, zgBin = "zg",
   if (mcpServerBin) {
     content = removeSection(content, 'mcp_servers."qq-workflows"');
     content = removeSection(content, "mcp_servers.qq-workflows");
-    content += `\n\n[mcp_servers.qq-workflows]\ncommand = "node"\nargs = ["${mcpServerBin}"]`;
+    // Astra runs dispatch-and-yield: hide the await tools from its schema.
+    content += `\n\n[mcp_servers.qq-workflows]\ncommand = "node"\nargs = ["${mcpServerBin}", "--disabled-tools", "await_runner,await_execution"]`;
   }
 
   if (zgBin) {
