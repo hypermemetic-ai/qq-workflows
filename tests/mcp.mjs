@@ -895,8 +895,8 @@ try {
   const checkCompletedRes = await checkRunner({ runnerId: dispatchRes.runnerId });
   assert.equal(checkCompletedRes.status, "completed");
   assert.equal(checkCompletedRes.activeTool, null);
-  // checkRunner must NOT return result when completed — result is exclusive to await_runner.
-  assert.equal(checkCompletedRes.result, undefined);
+  // checkRunner returns the full unabridged result on completion.
+  assert.deepEqual(checkCompletedRes.result, mockRunner.result);
 
   const awaitRes = await awaitRunner({ runnerId: dispatchRes.runnerId });
   assert.equal(awaitRes.ok, true);
@@ -1306,9 +1306,9 @@ rl.close();
 
 // T1. complete_task: enforces hard caps
 await assert.rejects(
-  () => completeTask({ response: "x".repeat(3501) }),
-  /response exceeds the 3,500-character cap/,
-  "complete_task must reject response > 3500 chars",
+  () => completeTask({ response: "x".repeat(64_001) }),
+  /response exceeds the 64,000-character cap/,
+  "complete_task must reject response > 64000 chars",
 );
 await assert.rejects(
   () => completeTask({ response: "ok", data_points: Array.from({ length: 21 }, (_, i) => `point-${i}`) }),
@@ -1330,6 +1330,12 @@ assert.equal(ctRes.ok, true);
 assert.equal(ctRes.recorded, true);
 assert.equal(ctRes.responseLength, "Found the issue in foo.mjs line 42.".length);
 assert.equal(ctRes.dataPointsCount, 2);
+
+// T1c. complete_task: accepts responses up to 64,000 characters
+const ctLarge = await completeTask({ response: "y".repeat(64_000) });
+assert.equal(ctLarge.ok, true);
+assert.equal(ctLarge.recorded, true);
+assert.equal(ctLarge.responseLength, 64_000);
 
 // T2. readTicket: returns single content field without duplicate text key
 {
@@ -1412,7 +1418,7 @@ assert.equal(ctRes.dataPointsCount, 2);
   }
 }
 
-// T4. checkRunner does not return result when status is completed (tested earlier in T2 section)
+// T4. checkRunner returns result when status is completed (tested earlier in T2 section)
 // Additional verification: the trajectory item format from handleRunnerEvent (with tool params)
 // goes through addTrajectory which strips parameters and adds target.
 {
@@ -1437,7 +1443,7 @@ assert.equal(ctRes.dataPointsCount, 2);
     nrRunnerObj.result = "done";
     const nrCheck = await checkRunner({ runnerId: nrDispatch.runnerId });
     assert.equal(nrCheck.status, "completed");
-    assert.equal(nrCheck.result, undefined, "checkRunner must not include result on completion");
+    assert.equal(nrCheck.result, "done", "checkRunner must include result on completion");
   } finally {
     delete globalThis.__QQ_TEST_RUNNER_HANDLER;
     rmSync(testRepo4, { recursive: true, force: true });
@@ -2716,9 +2722,22 @@ DETECTED_CODEX_HOMES.delete("sess-detected");
   assert.ok(runFailMsg.includes("exited with code 1"));
   assert.ok(runFailMsg.includes("trace"));
 
-  // Huge summaries are head+tail capped, not dropped.
-  const big = "z".repeat(10_000);
-  assert.ok(buildRunnerTerminalMessage({ runnerId: "big", status: "completed", startedAt: Date.now(), result: big }).includes("chars omitted"));
+  // Findings up to 64,000 chars are preserved completely without truncation.
+  const medium = "z".repeat(17_622);
+  const mediumMsg = buildRunnerTerminalMessage({ runnerId: "medium", status: "completed", startedAt: Date.now(), result: medium });
+  assert.ok(!mediumMsg.includes("chars omitted"), "17,622-char findings must not be truncated");
+  assert.ok(mediumMsg.includes(medium), "17,622-char findings must be preserved intact");
+  const atCap = "z".repeat(64_000);
+  const atCapMsg = buildRunnerTerminalMessage({ runnerId: "atcap", status: "completed", startedAt: Date.now(), result: atCap });
+  assert.ok(!atCapMsg.includes("chars omitted"), "64,000-char findings must not be truncated");
+  assert.ok(atCapMsg.includes(atCap), "64,000-char findings must be preserved intact");
+
+  // Beyond 64,000 chars, head+tail capped at 30,000+30,000 with a check_runner pointer.
+  const big = "z".repeat(70_000);
+  const bigMsg = buildRunnerTerminalMessage({ runnerId: "big", status: "completed", startedAt: Date.now(), result: big });
+  assert.ok(bigMsg.includes("chars omitted"), "70,000-char findings must be head+tail capped");
+  assert.ok(bigMsg.includes("10000 chars omitted"), "70,000-char findings must omit 70,000 - 60,000 chars");
+  assert.ok(bigMsg.includes("check_runner"), "truncated findings must point to check_runner");
 
   const susMsg = buildSuspicionMessage("runner", { runnerId: "n5-s" }, {
     suspect: true,

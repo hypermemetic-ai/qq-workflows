@@ -305,7 +305,7 @@ export const TOOLS = [
       properties: {
         response: {
           type: "string",
-          description: "Narrative findings/outcome. Hard cap of 3,500 characters.",
+          description: "Narrative findings/outcome. Hard cap of 64,000 characters.",
         },
         data_points: {
           type: "array",
@@ -1029,7 +1029,14 @@ export function buildRunnerTerminalMessage(runner) {
       findings = String(result ?? "(no output)");
     }
     const dp = dataPoints.length ? `\n\ndata_points:\n${dataPoints.map((d) => `- ${d}`).join("\n")}` : "";
-    return `Runner ${id} completed in ${elapsed}s.\n\nFindings:\n${sanitizeHeadTail(String(findings), { headLen: 2000, tailLen: 2000 })}${dp}`;
+    const findingsStr = String(findings);
+    let findingsBlock;
+    if (findingsStr.length <= 64_000) {
+      findingsBlock = findingsStr;
+    } else {
+      findingsBlock = `${sanitizeHeadTail(findingsStr, { headLen: 30_000, tailLen: 30_000 })}\n\nFull findings available via check_runner for runner '${id}'.`;
+    }
+    return `Runner ${id} completed in ${elapsed}s.\n\nFindings:\n${findingsBlock}${dp}`;
   }
   const err = runner?.error || {};
   const message = err.message || "unknown error";
@@ -1495,8 +1502,9 @@ export async function checkRunner(args = {}) {
       trajectory: [...runner.trajectory],
       suspicion: null,
       stuckSuspect: false,
-      // Note: result is intentionally omitted from checkRunner even when completed.
-      // Use await_runner to retrieve the final result.
+      // Completed runners include the full unabridged result so clients
+      // without await_runner (e.g. Codex dispatch-and-yield) can inspect it.
+      ...(runner.status === "completed" ? { result: runner.result } : {}),
       ...(runner.status === "failed" ? { error: runner.error } : {}),
     };
   }
@@ -2419,7 +2427,7 @@ export function sanitizeHeadTail(text, { headLen = 1000, tailLen = 1000 } = {}) 
 // Keyed by runnerId. Also used by the Stop hook for sub-agent tracking.
 export const COMPLETE_TASK_REGISTRY = new Map();
 
-const COMPLETE_TASK_RESPONSE_MAX = 3500;
+const COMPLETE_TASK_RESPONSE_MAX = 64_000;
 const COMPLETE_TASK_DATA_POINTS_MAX = 20;
 const COMPLETE_TASK_DATA_POINT_LEN_MAX = 100;
 
@@ -2430,7 +2438,7 @@ export async function completeTask(args = {}) {
   }
   if (response.length > COMPLETE_TASK_RESPONSE_MAX) {
     throw new Error(
-      `response exceeds the 3,500-character cap (got ${response.length} chars). Summarize before calling complete_task.`,
+      `response exceeds the 64,000-character cap (got ${response.length} chars). Summarize before calling complete_task.`,
     );
   }
   if (data_points !== undefined) {
