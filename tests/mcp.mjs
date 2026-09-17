@@ -34,9 +34,11 @@ import {
   checkExecution,
   checkRunner,
   completeTask,
+  DETECTED_CODEX_THREADS,
   dispatchExecution,
   dispatchRunner,
   evaluateSuspicion,
+  findCodexThreadFromProc,
   getDisabledTools,
   handleExecutionStreamEvent,
   handleRpc,
@@ -2519,6 +2521,14 @@ delete process.env.CODEX_THREAD_ID;
 delete process.env.CODEX_SESSION_ID;
 delete process.env.CODEX_CONVERSATION_ID;
 assert.equal(resolveCodexThreadId("sess-1"), null);
+
+// N2b. resolveCodexThreadId uses DETECTED_CODEX_THREADS mapping.
+DETECTED_CODEX_THREADS.set("sess-detected", "01a0ad31-c1fa-7b23-a0cf-84739b490071");
+assert.equal(resolveCodexThreadId("sess-detected"), "01a0ad31-c1fa-7b23-a0cf-84739b490071");
+DETECTED_CODEX_THREADS.delete("sess-detected");
+assert.equal(resolveCodexThreadId("sess-detected"), null);
+assert.equal(findCodexThreadFromProc(null), null);
+assert.equal(findCodexThreadFromProc(0), null);
 
 // N3. notifySession without a Codex thread is a quiet no-op; never throws.
 {

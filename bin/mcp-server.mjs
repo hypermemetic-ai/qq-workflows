@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -761,9 +761,48 @@ export function suspicionRearmMs() {
   return SUSPICION_RENOTIFY_MS;
 }
 
+// Map of ticket sessionId (or caller session ID) -> resolved Codex threadId
+export const DETECTED_CODEX_THREADS = new Map();
+
+// Discover the active Codex thread ID by walking ancestor process descriptors
+// for an open rollout JSONL file (standard Linux procfs environment).
+export function findCodexThreadFromProc(startPid = process.ppid) {
+  if (!startPid) return null;
+  let currPid = startPid;
+  for (let depth = 0; depth < 4; depth++) {
+    try {
+      const fdDir = `/proc/${currPid}/fd`;
+      if (existsSync(fdDir)) {
+        const fds = readdirSync(fdDir);
+        for (const fd of fds) {
+          try {
+            const target = readlinkSync(`${fdDir}/${fd}`);
+            const m = target.match(/rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/);
+            if (m) return m[1];
+          } catch {}
+        }
+      }
+      const stat = readFileSync(`/proc/${currPid}/stat`, "utf8");
+      const lastParen = stat.lastIndexOf(")");
+      if (lastParen !== -1) {
+        const rest = stat.slice(lastParen + 2);
+        const fields = rest.split(" ");
+        const ppid = parseInt(fields[1], 10);
+        if (ppid > 1 && ppid !== currPid) currPid = ppid;
+        else break;
+      } else {
+        break;
+      }
+    } catch {
+      break;
+    }
+  }
+  return null;
+}
+
 // Resolve the Codex thread to wake for a tracker session. Precedence:
-// explicit test thread > session map > Codex-provided env. Returns null
-// outside a Codex session (Muse path, plain CLI runs, most tests).
+// explicit test thread > session map > Codex-provided env > recorded proc thread.
+// Returns null outside a Codex session (Muse path, plain CLI runs, most tests).
 export function resolveCodexThreadId(sessionId) {
   const testThread = globalThis.__QQ_TEST_CODEX_THREAD;
   if (typeof testThread === "string" && testThread) return testThread;
@@ -773,18 +812,33 @@ export function resolveCodexThreadId(sessionId) {
     if (!(map instanceof Map) && typeof map === "object" && map[sessionId]) return map[sessionId];
   }
   const env = process.env;
-  return env.CODEX_THREAD_ID || env.CODEX_SESSION_ID || env.CODEX_CONVERSATION_ID || null;
+  if (env.CODEX_THREAD_ID || env.CODEX_SESSION_ID || env.CODEX_CONVERSATION_ID) {
+    return env.CODEX_THREAD_ID || env.CODEX_SESSION_ID || env.CODEX_CONVERSATION_ID;
+  }
+  if (sessionId != null && DETECTED_CODEX_THREADS.has(sessionId)) {
+    return DETECTED_CODEX_THREADS.get(sessionId);
+  }
+  const procThread = findCodexThreadFromProc();
+  if (procThread) {
+    if (sessionId != null) DETECTED_CODEX_THREADS.set(sessionId, procThread);
+    return procThread;
+  }
+  return null;
 }
 
-function runCodexQueue(bin, args) {
+function runCodexQueue(bin, args, env = process.env) {
   return new Promise((resolvePromise) => {
     let child;
+    let stderr = "";
     try {
-      child = spawn(bin, args, { stdio: "ignore" });
+      child = spawn(bin, args, { stdio: ["ignore", "ignore", "pipe"], env });
     } catch (err) {
       resolvePromise({ ok: false, error: err });
       return;
     }
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
     const timer = setTimeout(() => {
       try {
         child.kill("SIGTERM");
@@ -800,7 +854,7 @@ function runCodexQueue(bin, args) {
     child.on("close", (code) => {
       clearTimeout(timer);
       if (code === 0) resolvePromise({ ok: true });
-      else resolvePromise({ ok: false, error: new Error(`codex queue exited with code ${code}`) });
+      else resolvePromise({ ok: false, error: new Error(`codex queue exited with code ${code}${stderr.trim() ? `: ${stderr.trim()}` : ""}`) });
     });
   });
 }
@@ -1141,6 +1195,10 @@ export async function dispatchRunner(args = {}) {
     outputTail: "",
     stderrTail: "",
   };
+  if (runner.sessionId) {
+    const procThread = findCodexThreadFromProc();
+    if (procThread) DETECTED_CODEX_THREADS.set(runner.sessionId, procThread);
+  }
   RUNNERS.set(runnerId, runner);
 
   startRunnerProcess(runner);
@@ -2021,6 +2079,10 @@ export async function dispatchExecution(args = {}) {
   const root = await mainRepoRoot(cwd);
   const sessionId = await resolveSessionId(root, args.sessionId || args.id);
   await resolveTicketSource(root, sessionId);
+  if (sessionId) {
+    const procThread = findCodexThreadFromProc();
+    if (procThread) DETECTED_CODEX_THREADS.set(sessionId, procThread);
+  }
 
   const id = randomUUID();
   const startedAt = Date.now();

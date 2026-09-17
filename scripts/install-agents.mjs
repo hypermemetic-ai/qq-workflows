@@ -116,10 +116,13 @@ export function mergeCodexConfig(existingTomlText, { mcpServerBin, zgBin = "zg",
       const set = new Set(existing);
       set.add("wait");
       set.add("sleep");
+      set.add("web__run");
+      set.add("web");
+      set.add("web_search");
       return `disabled_tools = [${Array.from(set).map((s) => JSON.stringify(s)).join(", ")}]`;
     });
   } else {
-    content = `disabled_tools = ["wait", "sleep"]\n${content}`.trim();
+    content = `disabled_tools = ["wait", "sleep", "web__run", "web", "web_search"]\n${content}`.trim();
   }
 
   if (/^\[code_mode\]/m.test(content)) {
@@ -153,8 +156,13 @@ export function mergeCodexConfig(existingTomlText, { mcpServerBin, zgBin = "zg",
     } else {
       content = content.replace(/^\[features\]/m, "[features]\nunified_exec = false");
     }
+    if (/^web_search\s*=/m.test(content)) {
+      content = content.replace(/^web_search\s*=.*$/m, "web_search = false");
+    } else {
+      content = content.replace(/^\[features\]/m, "[features]\nweb_search = false");
+    }
   } else {
-    content += `\n\n[features]\napps = false\nsleep_tool = false\nshell_tool = false\nunified_exec = false`;
+    content += `\n\n[features]\napps = false\nsleep_tool = false\nshell_tool = false\nunified_exec = false\nweb_search = false`;
   }
 
   function removeSection(toml, sectionHeader) {
