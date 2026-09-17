@@ -125,6 +125,21 @@ export function mergeCodexConfig(existingTomlText, { mcpServerBin, zgBin = "zg",
     content = `disabled_tools = ["wait", "sleep", "web__run", "web", "web_search"]\n${content}`.trim();
   }
 
+  // Strip deprecated web_search from [features] section if present
+  content = content.replace(/\[features\]([\s\S]*?)(?=\r?\n\[|$)/, (_match, body) => {
+    const cleanedBody = body.replace(/^\s*web_search\s*=.*$/gm, "").replace(/\n{3,}/g, "\n\n");
+    return `[features]${cleanedBody}`;
+  });
+
+  // Ensure top-level web_search = "disabled"
+  const firstSectionIdx = content.indexOf("[");
+  const topLevel = firstSectionIdx === -1 ? content : content.slice(0, firstSectionIdx);
+  if (/^web_search\s*=/m.test(topLevel)) {
+    content = content.replace(/^web_search\s*=.*$/m, 'web_search = "disabled"');
+  } else {
+    content = `web_search = "disabled"\n${content}`.trim();
+  }
+
   if (/^\[code_mode\]/m.test(content)) {
     if (/^default_exec_yield_time_ms\s*=/m.test(content)) {
       content = content.replace(/^default_exec_yield_time_ms\s*=.*$/m, "default_exec_yield_time_ms = 7200000");
@@ -156,13 +171,8 @@ export function mergeCodexConfig(existingTomlText, { mcpServerBin, zgBin = "zg",
     } else {
       content = content.replace(/^\[features\]/m, "[features]\nunified_exec = false");
     }
-    if (/^web_search\s*=/m.test(content)) {
-      content = content.replace(/^web_search\s*=.*$/m, "web_search = false");
-    } else {
-      content = content.replace(/^\[features\]/m, "[features]\nweb_search = false");
-    }
   } else {
-    content += `\n\n[features]\napps = false\nsleep_tool = false\nshell_tool = false\nunified_exec = false\nweb_search = false`;
+    content += `\n\n[features]\napps = false\nsleep_tool = false\nshell_tool = false\nunified_exec = false`;
   }
 
   function removeSection(toml, sectionHeader) {
