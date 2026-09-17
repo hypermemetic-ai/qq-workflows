@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
   AWAIT_CALL_WINDOW_MS,
@@ -36,6 +37,7 @@ import {
   dispatchExecution,
   dispatchRunner,
   evaluateSuspicion,
+  getDisabledTools,
   handleExecutionStreamEvent,
   handleRpc,
   handleRunnerEvent,
@@ -44,6 +46,7 @@ import {
   notifySession,
   notifySuspicion,
   notifyTerminal,
+  parseDisabledTools,
   prepareWorktree,
   readTicket,
   reconcileDeadRunner,
@@ -2835,6 +2838,162 @@ assert.equal(resolveCodexThreadId("sess-1"), null);
     clearInterval(timer);
   }
   stopSuspicionSweeper(); // safe with no singleton armed
+}
+
+// ============================================================================
+// Disabled tools: Astra dispatch-and-yield hides the await tools from its
+// callable schema via --disabled-tools / QQ_DISABLED_TOOLS.
+// ============================================================================
+
+// D1. parseDisabledTools: CLI forms, env form, union + trim + dedupe.
+assert.deepEqual(parseDisabledTools([], {}), []);
+assert.deepEqual(parseDisabledTools(["--disabled-tools", "await_runner,await_execution"], {}), [
+  "await_runner",
+  "await_execution",
+]);
+assert.deepEqual(parseDisabledTools(["--disabled-tools=await_runner, await_execution"], {}), [
+  "await_runner",
+  "await_execution",
+]);
+assert.deepEqual(parseDisabledTools([], { QQ_DISABLED_TOOLS: "await_runner,await_execution" }), [
+  "await_runner",
+  "await_execution",
+]);
+assert.deepEqual(
+  parseDisabledTools(["--disabled-tools", "await_runner,, await_runner"], {
+    QQ_DISABLED_TOOLS: " await_execution ,await_runner",
+  }),
+  ["await_runner", "await_execution"],
+);
+assert.deepEqual(parseDisabledTools(["--disabled-tools"], {}), []);
+assert.deepEqual(parseDisabledTools([], { QQ_DISABLED_TOOLS: "  " }), []);
+assert.ok(getDisabledTools(["--disabled-tools", "a"], {}) instanceof Set);
+assert.ok(getDisabledTools(["--disabled-tools", "a"], {}).has("a"));
+assert.equal(getDisabledTools([], {}).size, 0);
+
+// D2. tools/list filtering + tools/call rejection via explicit option.
+{
+  const disabled = ["await_runner", "await_execution"];
+  const list = await handleRpc("tools/list", {}, { disabledTools: disabled });
+  assert.equal(list.tools.length, 11);
+  const names = list.tools.map((t) => t.name);
+  assert.ok(!names.includes("await_runner"));
+  assert.ok(!names.includes("await_execution"));
+
+  const full = await handleRpc("tools/list", {}, { disabledTools: [] });
+  assert.equal(full.tools.length, 13);
+
+  await assert.rejects(
+    () => callTool("await_runner", { runnerId: "x" }, { disabledTools: disabled }),
+    /^Error: Tool 'await_runner' is disabled$/,
+  );
+  await assert.rejects(
+    () => callTool("await_execution", { id: "x" }, { disabledTools: disabled }),
+    /^Error: Tool 'await_execution' is disabled$/,
+  );
+
+  const rpcErr = await handleRpc(
+    "tools/call",
+    { name: "await_runner", arguments: { runnerId: "x" } },
+    { disabledTools: disabled },
+  );
+  assert.equal(rpcErr.isError, true);
+  assert.equal(rpcErr.content[0].text, "Tool 'await_runner' is disabled");
+
+  // Non-disabled tools still dispatch (validation error, not a disabled error).
+  const stillOk = await handleRpc(
+    "tools/call",
+    { name: "prepare_worktree", arguments: {} },
+    { disabledTools: disabled },
+  );
+  assert.equal(stillOk.isError, true);
+  assert.match(stillOk.content[0].text, /kind is required/);
+}
+
+// D3. QQ_DISABLED_TOOLS env default resolution (hermetic: saved + restored).
+{
+  const savedDisabledEnv = process.env.QQ_DISABLED_TOOLS;
+  delete process.env.QQ_DISABLED_TOOLS;
+  try {
+    const full = await handleRpc("tools/list", {});
+    assert.equal(full.tools.length, 13);
+  } finally {
+    if (savedDisabledEnv === undefined) delete process.env.QQ_DISABLED_TOOLS;
+    else process.env.QQ_DISABLED_TOOLS = savedDisabledEnv;
+  }
+
+  process.env.QQ_DISABLED_TOOLS = "await_runner,await_execution";
+  try {
+    const list = await handleRpc("tools/list", {});
+    assert.equal(list.tools.length, 11);
+    assert.ok(!list.tools.some((t) => t.name === "await_runner" || t.name === "await_execution"));
+    await assert.rejects(() => callTool("await_execution", { id: "x" }), /Tool 'await_execution' is disabled/);
+    const rpcErr = await handleRpc("tools/call", { name: "await_execution", arguments: { id: "x" } });
+    assert.equal(rpcErr.isError, true);
+    assert.equal(rpcErr.content[0].text, "Tool 'await_execution' is disabled");
+  } finally {
+    if (savedDisabledEnv === undefined) delete process.env.QQ_DISABLED_TOOLS;
+    else process.env.QQ_DISABLED_TOOLS = savedDisabledEnv;
+  }
+}
+
+// D4. End to end: a spawned server honors the CLI arg and the env var.
+{
+  const serverBin = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "mcp-server.mjs");
+  function queryServer({ args = [], env = {}, stripDisabledEnv = false }) {
+    const childEnv = { ...process.env, ...env };
+    if (stripDisabledEnv) delete childEnv.QQ_DISABLED_TOOLS;
+    const requests =
+      [
+        { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} },
+        {
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: { name: "await_runner", arguments: { runnerId: "nope" } },
+        },
+      ]
+        .map((message) => JSON.stringify(message))
+        .join("\n") + "\n";
+    const res = spawnSync(process.execPath, [serverBin, ...args], {
+      input: requests,
+      encoding: "utf8",
+      env: childEnv,
+      timeout: 15000,
+    });
+    assert.equal(res.error, undefined, `spawned server failed: ${res.error}`);
+    assert.equal(res.status, 0, `spawned server exited ${res.status}: ${res.stderr}`);
+    const lines = res.stdout.split("\n").filter((line) => line.trim().length > 0);
+    assert.equal(lines.length, 2);
+    return lines.map((line) => JSON.parse(line));
+  }
+
+  // CLI arg alone filters the list and rejects the call.
+  {
+    const [listResp, callResp] = queryServer({
+      args: ["--disabled-tools", "await_runner,await_execution"],
+      stripDisabledEnv: true,
+    });
+    assert.equal(listResp.result.tools.length, 11);
+    assert.ok(!listResp.result.tools.some((t) => t.name === "await_runner" || t.name === "await_execution"));
+    assert.equal(callResp.result.isError, true);
+    assert.equal(callResp.result.content[0].text, "Tool 'await_runner' is disabled");
+  }
+
+  // Env var alone filters the list and rejects the call.
+  {
+    const [listResp, callResp] = queryServer({ env: { QQ_DISABLED_TOOLS: "await_runner,await_execution" } });
+    assert.equal(listResp.result.tools.length, 11);
+    assert.ok(!listResp.result.tools.some((t) => t.name === "await_runner" || t.name === "await_execution"));
+    assert.equal(callResp.result.isError, true);
+    assert.equal(callResp.result.content[0].text, "Tool 'await_runner' is disabled");
+  }
+
+  // Neither: full Muse parity.
+  {
+    const [listResp] = queryServer({ stripDisabledEnv: true });
+    assert.equal(listResp.result.tools.length, 13);
+  }
 }
 
 // Restore any pre-existing notify env (tests above delete-then-restore).

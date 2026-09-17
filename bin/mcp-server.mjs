@@ -2330,7 +2330,54 @@ export async function completeTask(args = {}) {
   };
 }
 
-export async function callTool(name, args = {}) {
+// Tool exclusion for clients that must not see certain tools: Codex/Astra
+// runs dispatch-and-yield, so its MCP server hides await_runner and
+// await_execution from the callable schema. Configured via the
+// `--disabled-tools <comma-separated-names>` CLI arg and/or the
+// QQ_DISABLED_TOOLS env var (comma-separated); both sources union.
+export function parseDisabledTools(argv = process.argv.slice(2), env = process.env) {
+  const names = [];
+  const args = Array.isArray(argv) ? argv : [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--disabled-tools") {
+      const value = args[i + 1];
+      i += 1;
+      if (value !== undefined) names.push(...String(value).split(","));
+    } else if (typeof arg === "string" && arg.startsWith("--disabled-tools=")) {
+      names.push(...arg.slice("--disabled-tools=".length).split(","));
+    }
+  }
+  const fromEnv = env?.QQ_DISABLED_TOOLS;
+  if (fromEnv !== undefined && fromEnv !== null && String(fromEnv).trim() !== "") {
+    names.push(...String(fromEnv).split(","));
+  }
+  const seen = new Set();
+  const out = [];
+  for (const raw of names) {
+    const name = String(raw).trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
+export function getDisabledTools(argv = process.argv.slice(2), env = process.env) {
+  return new Set(parseDisabledTools(argv, env));
+}
+
+function resolveDisabledTools(disabledTools) {
+  if (disabledTools === undefined || disabledTools === null) return getDisabledTools();
+  if (disabledTools instanceof Set) return disabledTools;
+  return new Set(disabledTools);
+}
+
+export async function callTool(name, args = {}, options = {}) {
+  const disabled = resolveDisabledTools(options.disabledTools);
+  if (disabled.has(name)) {
+    throw new Error(`Tool '${name}' is disabled`);
+  }
   if (name === "prepare_worktree") {
     return prepareWorktree(args);
   }
@@ -2373,7 +2420,7 @@ export async function callTool(name, args = {}) {
   throw new Error(`Unknown tool: ${name}`);
 }
 
-export async function handleRpc(method, params = {}) {
+export async function handleRpc(method, params = {}, options = {}) {
   if (method === "initialize") {
     return {
       protocolVersion: params?.protocolVersion || "2024-11-05",
@@ -2396,14 +2443,16 @@ export async function handleRpc(method, params = {}) {
   }
 
   if (method === "tools/list") {
-    return { tools: TOOLS };
+    const disabled = resolveDisabledTools(options.disabledTools);
+    if (disabled.size === 0) return { tools: TOOLS };
+    return { tools: TOOLS.filter((tool) => !disabled.has(tool.name)) };
   }
 
   if (method === "tools/call") {
     const toolName = params?.name;
     const toolArgs = params?.arguments ?? {};
     try {
-      const result = await callTool(toolName, toolArgs);
+      const result = await callTool(toolName, toolArgs, options);
       return {
         content: [
           {
@@ -2434,10 +2483,12 @@ export function writeMessage(message, stdout = process.stdout) {
   stdout.write(`${JSON.stringify(message)}\n`);
 }
 
-export function startMcpServer({ stdin = process.stdin, stdout = process.stdout } = {}) {
+export function startMcpServer({ stdin = process.stdin, stdout = process.stdout, disabledTools } = {}) {
   // Reactive Codex wakeups: the sweeper is unref'd, so stdio servers still
   // exit cleanly on SIGTERM or stdin EOF.
   ensureSuspicionSweeperStarted();
+  // Snapshot the exclusion set once: CLI arg + env at server start.
+  const disabled = resolveDisabledTools(disabledTools);
   const rl = createInterface({ input: stdin });
 
   rl.on("line", async (line) => {
@@ -2455,7 +2506,7 @@ export function startMcpServer({ stdin = process.stdin, stdout = process.stdout 
     const isNotification = id === undefined || id === null;
 
     try {
-      const result = await handleRpc(method, params);
+      const result = await handleRpc(method, params, { disabledTools: disabled });
       if (!isNotification && result !== undefined) {
         writeMessage({ jsonrpc: "2.0", id, result }, stdout);
       }

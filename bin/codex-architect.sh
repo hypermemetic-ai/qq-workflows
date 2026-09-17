@@ -30,6 +30,7 @@ Environment:
   CODEX_BIN             codex binary (default: codex on PATH).
   CODEX_MODEL           Default model (default: gpt-6-astra).
   CODEX_HOME            Config base (default: $HOME/.codex).
+  QQ_DISABLED_TOOLS     Exported as await_runner,await_execution (Astra never sees await tools).
 EOF
       exit 0
       ;;
@@ -48,6 +49,11 @@ EOF
 done
 
 export PATH="$HOME/.local/bin:$PATH"
+
+# Astra runs dispatch-and-yield and must never see the await tools.
+# config.toml passes --disabled-tools to the MCP server; this env var is
+# defense in depth (the server also honors QQ_DISABLED_TOOLS).
+export QQ_DISABLED_TOOLS="await_runner,await_execution"
 
 SHIM_FILE="$(readlink -f "${BASH_SOURCE[0]}")"
 SHIM_REPO="$(dirname "$(dirname "$SHIM_FILE")")"
