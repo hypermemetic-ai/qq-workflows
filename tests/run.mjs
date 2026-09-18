@@ -7,6 +7,10 @@ const directory = dirname(fileURLToPath(import.meta.url));
 const env = { ...process.env };
 delete env.GIT_DIR;
 delete env.GIT_WORK_TREE;
+delete env.QQ_IMPLEMENTER_PROVIDER;
+delete env.QQ_REVIEWER_PROVIDER;
+delete env.QQ_RESEARCHER_PROVIDER;
+delete env.QQ_WORKFLOW_PROVIDER;
 
 const tests = readdirSync(directory)
   .filter(name => name.endsWith('.mjs') && !['run.mjs', 'live.mjs'].includes(name))
