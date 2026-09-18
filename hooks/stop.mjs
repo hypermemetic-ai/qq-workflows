@@ -5,12 +5,62 @@
 // and expects a JSON response to stdout:
 //   { "decision": "continue" | "proceed", "reason": "..." }
 
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
 async function readStdin() {
   const chunks = [];
   for await (const chunk of process.stdin) {
     chunks.push(chunk);
   }
   return Buffer.concat(chunks).toString("utf8");
+}
+
+function hasValidCompletionMarker(conversationId) {
+  const runnerId = process.env.QQ_RUNNER_ID;
+
+  if (runnerId) {
+    // Dispatched runner: marker MUST be runner-bound to this specific runner.
+    // Wrong runner markers or ambient markers MUST NOT be accepted.
+    const runnerMarkerPath = join(tmpdir(), `qq-complete-task-${runnerId}.json`);
+    if (!existsSync(runnerMarkerPath)) {
+      return false;
+    }
+    try {
+      const raw = readFileSync(runnerMarkerPath, "utf8");
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || !parsed.calledAt) {
+        return false;
+      }
+      if (parsed.runnerId && parsed.runnerId !== runnerId) {
+        return false;
+      }
+      if (parsed.key && parsed.key !== runnerId) {
+        return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // Standalone completion: preserve existing conversation/ambient identity
+  const markerKey = conversationId || process.env.GEMINI_CONVERSATION_ID || process.env.ASTRA_CONVERSATION_ID || "default";
+  const markerPath = join(tmpdir(), `qq-complete-task-${markerKey}.json`);
+  if (!existsSync(markerPath)) {
+    return false;
+  }
+  try {
+    const raw = readFileSync(markerPath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || !parsed.calledAt) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function main() {
@@ -38,18 +88,9 @@ async function main() {
       return;
     }
 
-    // Check if complete_task was called for this conversation.
-    // The registry is maintained by the MCP server process via the COMPLETE_TASK_REGISTRY Map.
-    // Since the hook runs as a subprocess, we read the state from the marker file that the
-    // MCP server writes when complete_task is invoked.
-    const markerKey = conversationId || "default";
-    const { existsSync, readFileSync } = await import("node:fs");
-    const { join } = await import("node:path");
-    const { tmpdir } = await import("node:os");
-
-    // Marker file written by mcp-server.mjs when complete_task is called.
-    const markerPath = join(tmpdir(), `qq-complete-task-${markerKey}.json`);
-    const called = existsSync(markerPath);
+    // Check if complete_task was called for this conversation/runner via authoritative marker.
+    // Dispatched runner is strictly runner-bound; standalone completion uses conversation identity.
+    const called = hasValidCompletionMarker(conversationId);
 
     if (called) {
       // complete_task was called: allow termination

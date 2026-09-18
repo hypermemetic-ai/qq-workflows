@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+delete process.env.QQ_IMPLEMENTER_PROVIDER;
+delete process.env.QQ_REVIEWER_PROVIDER;
+delete process.env.QQ_RESEARCHER_PROVIDER;
+delete process.env.QQ_WORKFLOW_PROVIDER;
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -59,6 +63,9 @@ import {
   resolveSeatProvider,
   resolveSessionId,
   sanitizeHeadTail,
+  validateRunnerResultPayload,
+  readAuthoritativeRunnerResult,
+  cleanupRunnerFiles,
   startMcpServer,
   startSuspicionSweeper,
   steerRunner,
@@ -68,6 +75,13 @@ import {
   sweepNotifications,
   toolSilenceThresholdMs,
   updateTicket,
+  evaluateReviewPassed,
+  parseReviewVerdict,
+  buildImplementerPrompt,
+  buildReviewerPrompt,
+  buildRetryPrompt,
+  buildResearcherPrompt,
+  hasImplementationChanges,
 } from "../bin/mcp-server.mjs";
 import { git } from "../workflow/git.mjs";
 import { resolveTicketSource } from "../workflow/ticket.mjs";
@@ -304,7 +318,7 @@ try {
   assert.ok(boundedResult.instructions.includes("call 'land'"));
   assert.ok(boundedResult.instructions.includes(`Cwd: ${boundedResult.worktree}`));
   assert.ok(boundedResult.instructions.includes("run_command"));
-  assert.equal(boundedResult.implementerPrompt, "Implement .architect/ticket.md in the checkout. When finished, report your answer.");
+  assert.equal(boundedResult.implementerPrompt, `Implement '${join(boundedResult.worktree, ".architect", "ticket.md")}' in working directory '${boundedResult.worktree}'. When finished, report your answer.`);
   assert.equal(boundedResult.reviewerPrompt, undefined);
 
   // Verify ticket was copied into the worktree as .architect/ticket.md
@@ -387,10 +401,13 @@ try {
   assert.ok(openResult.instructions.includes(REVIEWER_OWNERSHIP));
   assert.ok(openResult.instructions.includes(`Cwd: ${openResult.worktree}`));
   assert.ok(openResult.instructions.includes("run_command"));
-  assert.equal(openResult.implementerPrompt, "Implement .architect/ticket.md in the checkout. When finished, report your answer.");
+  assert.equal(
+    openResult.implementerPrompt,
+    `Implement '${join(openResult.worktree, ".architect", "ticket.md")}' in working directory '${openResult.worktree}'. When finished, report your answer.`,
+  );
   assert.equal(
     openResult.reviewerPrompt,
-    "Follow .architect/ticket.md in the checkout. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.",
+    `Follow '${join(openResult.worktree, ".architect", "ticket.md")}' in working directory '${openResult.worktree}'. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.`,
   );
 
   // 5b. Verify prepare_worktree with provider: "gemini" outputs agy commands
@@ -608,7 +625,10 @@ try {
   assert.equal(researchResult.branch, "architect/research/abcdef99");
   assert.equal(researchResult.reviewRequired, false);
   assert.equal(researchResult.researcherProvider, "muse");
-  assert.equal(researchResult.researcherPrompt, "Investigate .architect/ticket.md in the checkout. Report findings.");
+  assert.equal(
+    researchResult.researcherPrompt,
+    `Investigate '${join(researchResult.worktree, ".architect", "ticket.md")}' in working directory '${researchResult.worktree}'. Report findings.`,
+  );
   assert.equal(researchResult.implementerPrompt, undefined);
   assert.equal(researchResult.reviewerPrompt, undefined);
   assert.ok(researchResult.instructions.includes(`Cwd: ${researchResult.worktree}`));
@@ -617,7 +637,7 @@ try {
   assert.ok(researchResult.instructions.includes(RESEARCHER_OWNERSHIP));
   assert.equal(
     researchResult.instructions,
-    `Worktree ready at ${researchResult.worktree}.\nBranch: ${researchResult.branch}\nReview required: false\n\nNext steps:\n1. Delegate via run_command (with Cwd: ${researchResult.worktree}): 'muse exec --preset researcher --yolo "Investigate .architect/ticket.md in the checkout. Report findings. ${RESEARCHER_OWNERSHIP}"'\n2. When finished, call 'land'.`,
+    `Worktree ready at ${researchResult.worktree}.\nBranch: ${researchResult.branch}\nReview required: false\n\nNext steps:\n1. Delegate via run_command (with Cwd: ${researchResult.worktree}): 'muse exec --preset researcher --yolo "Investigate '${join(researchResult.worktree, ".architect", "ticket.md")}' in working directory '${researchResult.worktree}'. Report findings. ${RESEARCHER_OWNERSHIP}"'\n2. When finished, call 'land'.`,
   );
   assert.equal(
     readFileSync(join(researchResult.worktree, ".architect", "ticket.md"), "utf8"),
@@ -1306,9 +1326,9 @@ rl.close();
 
 // T1. complete_task: enforces hard caps
 await assert.rejects(
-  () => completeTask({ response: "x".repeat(64_001) }),
-  /response exceeds the 64,000-character cap/,
-  "complete_task must reject response > 64000 chars",
+  () => completeTask({ response: "x".repeat(32_769) }),
+  /response exceeds the 32,768-character cap/,
+  "complete_task must reject response > 32768 chars",
 );
 await assert.rejects(
   () => completeTask({ response: "ok", data_points: Array.from({ length: 21 }, (_, i) => `point-${i}`) }),
@@ -1331,11 +1351,11 @@ assert.equal(ctRes.recorded, true);
 assert.equal(ctRes.responseLength, "Found the issue in foo.mjs line 42.".length);
 assert.equal(ctRes.dataPointsCount, 2);
 
-// T1c. complete_task: accepts responses up to 64,000 characters
-const ctLarge = await completeTask({ response: "y".repeat(64_000) });
+// T1c. complete_task: accepts responses up to 32,768 characters
+const ctLarge = await completeTask({ response: "y".repeat(32_768) });
 assert.equal(ctLarge.ok, true);
 assert.equal(ctLarge.recorded, true);
-assert.equal(ctLarge.responseLength, 64_000);
+assert.equal(ctLarge.responseLength, 32_768);
 
 // T2. readTicket: returns single content field without duplicate text key
 {
@@ -1588,7 +1608,7 @@ assert.equal(ctLarge.responseLength, 64_000);
   COMPLETE_TASK_REGISTRY.delete("default");
 }
 
-// T7b. handleRunnerEvent: captures runner.result from su.tool_info.parameters if not in registry
+// T7b. handleRunnerEvent: rejects telemetry parameters when authoritative transport is missing
 {
   let killCalled = false;
   let killSignal = null;
@@ -1629,15 +1649,15 @@ assert.equal(ctLarge.responseLength, 64_000);
   };
   handleRunnerEvent(fakeRunner, completedEvent);
 
-  assert.equal(fakeRunner.status, "completed");
-  assert.ok(fakeRunner.result);
-  assert.equal(fakeRunner.result.response, testResponse);
-  assert.deepEqual(fakeRunner.result.data_points, testDataPoints);
+  // Missing transport result must surface actionable failure; never accept clipped telemetry
+  assert.equal(fakeRunner.status, "failed");
+  assert.equal(fakeRunner.result, null, "runner.result must remain null on missing transport");
+  assert.match(fakeRunner.error.message, /Runner complete_task failed/);
   assert.ok(killCalled);
   assert.equal(killSignal, "SIGTERM");
 }
 
-// T7c. handleRunnerEvent: captures runner.result from call_mcp_tool with ToolName: complete_task
+// T7c. handleRunnerEvent: captures runner.result from call_mcp_tool with ToolName: complete_task via transport
 {
   let killCalled = false;
   let killSignal = null;
@@ -1663,6 +1683,16 @@ assert.equal(ctLarge.responseLength, 64_000);
   const testResponse = "Findings via call_mcp_tool";
   const testDataPoints = ["point-1", "point-2"];
 
+  // Pre-seed resultFile for this runner
+  const resFile = join(tmpdir(), `qq-runner-result-${fakeRunner.id}.json`);
+  fakeRunner.resultFile = resFile;
+  writeFileSync(resFile, JSON.stringify({
+    runnerId: fakeRunner.id,
+    response: testResponse,
+    data_points: testDataPoints,
+    calledAt: Date.now(),
+  }), "utf8");
+
   const completedEvent = {
     event: "step_update",
     step_update: {
@@ -1675,21 +1705,25 @@ assert.equal(ctLarge.responseLength, 64_000);
           ServerName: "qq-workflows",
           ToolName: "complete_task",
           Arguments: {
-            response: testResponse,
-            data_points: testDataPoints,
+            response: "clipped telemetry parameters",
+            data_points: [],
           },
         },
       },
     },
   };
-  handleRunnerEvent(fakeRunner, completedEvent);
+  try {
+    handleRunnerEvent(fakeRunner, completedEvent);
 
-  assert.equal(fakeRunner.status, "completed");
-  assert.ok(fakeRunner.result);
-  assert.equal(fakeRunner.result.response, testResponse);
-  assert.deepEqual(fakeRunner.result.data_points, testDataPoints);
-  assert.ok(killCalled);
-  assert.equal(killSignal, "SIGTERM");
+    assert.equal(fakeRunner.status, "completed");
+    assert.ok(fakeRunner.result);
+    assert.equal(fakeRunner.result.response, testResponse);
+    assert.deepEqual(fakeRunner.result.data_points, testDataPoints);
+    assert.ok(killCalled);
+    assert.equal(killSignal, "SIGTERM");
+  } finally {
+    try { rmSync(resFile, { force: true }); } catch {}
+  }
 }
 
 // ============================================================================
@@ -2432,13 +2466,13 @@ function makeStreamTestExecution() {
     const argsLog = join(fakeBin, "codex-args.txt");
     writeFileSync(
       join(fakeBin, "codex"),
-      `#!/usr/bin/env bash\necho "$@" > "${argsLog}"\necho probe > codex-probe.txt\n` +
+      `#!/usr/bin/env bash\nif [ "$1" = "exec" ]; then\necho "$@" >> "${argsLog}"\necho "codex implementation" > codex-impl.txt\n` +
         `printf '%s\\n' '{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":["cat","package.json"],"status":"in_progress"}}'\n` +
         `printf '%s\\n' '{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":["cat","package.json"],"status":"completed"}}'\n` +
         `printf '%s\\n' '{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","tool":"list_files","status":"in_progress"}}'\n` +
         `printf '%s\\n' '{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","tool":"list_files","status":"completed"}}'\n` +
         `printf '%s\\n' '{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Codex finished the task."}}'\n` +
-        `printf '%s\\n' '{"type":"turn.completed","usage":{}}'\n`,
+        `printf '%s\\n' '{"type":"turn.completed","usage":{}}'\nfi\n`,
     );
     execFileSync("chmod", ["+x", join(fakeBin, "codex")]);
     process.env.PATH = `${fakeBin}:${prevPath}`;
@@ -2551,6 +2585,7 @@ for (const key of ["CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_CONVERSATION_ID
   savedNotifyEnv[key] = process.env[key];
   delete process.env[key];
 }
+globalThis.__QQ_TEST_DISABLE_PROC_THREAD = true;
 
 // N1. Sweep constants: 15s cadence, 30m suspicion re-arm, test overrides.
 assert.equal(NOTIFY_SWEEP_INTERVAL_MS, 15_000, "sweep cadence must be 15000ms");
@@ -2727,16 +2762,16 @@ DETECTED_CODEX_HOMES.delete("sess-detected");
   const mediumMsg = buildRunnerTerminalMessage({ runnerId: "medium", status: "completed", startedAt: Date.now(), result: medium });
   assert.ok(!mediumMsg.includes("chars omitted"), "17,622-char findings must not be truncated");
   assert.ok(mediumMsg.includes(medium), "17,622-char findings must be preserved intact");
-  const atCap = "z".repeat(64_000);
+  const atCap = "z".repeat(32_768);
   const atCapMsg = buildRunnerTerminalMessage({ runnerId: "atcap", status: "completed", startedAt: Date.now(), result: atCap });
-  assert.ok(!atCapMsg.includes("chars omitted"), "64,000-char findings must not be truncated");
-  assert.ok(atCapMsg.includes(atCap), "64,000-char findings must be preserved intact");
+  assert.ok(!atCapMsg.includes("chars omitted"), "32,768-char findings must not be truncated");
+  assert.ok(atCapMsg.includes(atCap), "32,768-char findings must be preserved intact");
 
-  // Beyond 64,000 chars, head+tail capped at 30,000+30,000 with a check_runner pointer.
-  const big = "z".repeat(70_000);
+  // Beyond 32,768 chars, head+tail capped at 16,000+16,000 with a check_runner pointer.
+  const big = "z".repeat(40_000);
   const bigMsg = buildRunnerTerminalMessage({ runnerId: "big", status: "completed", startedAt: Date.now(), result: big });
-  assert.ok(bigMsg.includes("chars omitted"), "70,000-char findings must be head+tail capped");
-  assert.ok(bigMsg.includes("10000 chars omitted"), "70,000-char findings must omit 70,000 - 60,000 chars");
+  assert.ok(bigMsg.includes("chars omitted"), "40,000-char findings must be head+tail capped");
+  assert.ok(bigMsg.includes("8000 chars omitted"), "40,000-char findings must omit 40,000 - 32,000 chars");
   assert.ok(bigMsg.includes("check_runner"), "truncated findings must point to check_runner");
 
   const susMsg = buildSuspicionMessage("runner", { runnerId: "n5-s" }, {
@@ -3093,6 +3128,811 @@ for (const [key, value] of Object.entries(savedNotifyEnv)) {
   if (value === undefined) delete process.env[key];
   else process.env[key] = value;
 }
+delete globalThis.__QQ_TEST_DISABLE_PROC_THREAD;
 
 console.log("MCP server tests passed cleanly.");
 
+
+// ============================================================================
+// Reliable Runner Completion Result Transport & 32,768-Character Contract Tests
+// ============================================================================
+
+console.log("Running reliable runner completion transport regression tests...");
+
+// R1. Real child-process separation: reproduces >512-char telemetry abbreviation
+// and verifies exact full report (>5,000 chars with Unicode & data_points) reaches parent.
+{
+  const fakeBinDir = mkdtempSync(join(tmpdir(), "qq-test-runner-bin-"));
+  const fakeAgyScript = join(fakeBinDir, "fake-agy.mjs");
+  const fakeAgySh = join(fakeBinDir, "fake-agy.sh");
+
+  // Multi-byte Unicode string of ~5,200 characters
+  const unicodeReport =
+    "🔍 Deep Research Findings & Architecture Audit:\n" +
+    "• CJK Analysis: 全面代码检查完成，未发现死锁风险。\n" +
+    "• Accented & Symbols: Élévation de privilèges vérifiée: OK. §4.2.1 ✓\n" +
+    "• Math & Emoji: ∑(i=0..n) λ_i = 1.0 🚀 🔥 💡 🛡️\n" +
+    "• Payload Section:\n" +
+    "A".repeat(5000) + "\n" +
+    "• Conclusion: Authorized transport verification successful.\n";
+
+  const testDataPoints = [
+    "bin/mcp-server.mjs:1425",
+    "tests/mcp.mjs:3120",
+    "🚀 unicode-data-point-pass ✓",
+  ];
+
+  // Child process script: calls completeTask (isolated in child process),
+  // writes transport file, and outputs abbreviated telemetry (>512 chars clipped) on stdout.
+  const childCode = `import { completeTask } from "${join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "mcp-server.mjs")}";
+
+const report = ${JSON.stringify(unicodeReport)};
+const dps = ${JSON.stringify(testDataPoints)};
+
+// 1. Child executes completeTask in its own process
+await completeTask({ response: report, data_points: dps });
+
+// 2. Child emits stream-json telemetry with tool parameters truncated to 512 chars + ellipsis
+const clippedTelemetry = report.slice(0, 512) + "…";
+const telemetryEvent = {
+  event: "step_update",
+  step_update: {
+    step_type: "tool",
+    state: "DONE",
+    tool_name: "complete_task",
+    tool_info: {
+      parameters: {
+        response: clippedTelemetry,
+        data_points: ["clipped-telemetry"],
+      },
+    },
+  },
+};
+console.log(JSON.stringify(telemetryEvent));
+
+// 3. Keep child alive briefly so parent process can inspect / kill
+await new Promise((r) => setTimeout(r, 2000));
+`;
+  writeFileSync(fakeAgyScript, childCode, "utf8");
+  writeFileSync(fakeAgySh, `#!/usr/bin/env bash\nexec node "${fakeAgyScript}" "$@"\n`, "utf8");
+  execFileSync("chmod", ["+x", fakeAgySh]);
+
+  const prevRunnerBin = process.env.QQ_RUNNER_BIN;
+  process.env.QQ_RUNNER_BIN = fakeAgySh;
+
+  try {
+    const disp = await dispatchRunner({ task: "deep research", cwd: tmpdir() });
+    assert.ok(disp.runnerId);
+
+    const runner = RUNNERS.get(disp.runnerId);
+    assert.ok(runner);
+    assert.ok(runner.resultFile, "runner must have a dedicated resultFile configured");
+    assert.equal(existsSync(runner.resultFile), false, "runner resultFile must not exist before complete_task");
+
+    const awaitRes = await awaitRunner({ runnerId: disp.runnerId });
+    assert.equal(awaitRes.status, "completed");
+    assert.ok(awaitRes.result);
+
+    // Parent must receive the EXACT unabridged report from transport, NOT the 512-char clipped telemetry!
+    assert.equal(awaitRes.result.response, unicodeReport, "parent must receive exact unabridged report");
+    assert.equal(awaitRes.result.response.length, unicodeReport.length);
+    assert.notEqual(awaitRes.result.response, unicodeReport.slice(0, 512) + "…", "parent must NOT fall back to clipped telemetry");
+    assert.deepEqual(awaitRes.result.data_points, testDataPoints, "parent must receive exact data_points");
+
+    // check_runner returns the exact full result
+    const checkRes = await checkRunner({ runnerId: disp.runnerId });
+    assert.equal(checkRes.status, "completed");
+    assert.equal(checkRes.result.response, unicodeReport);
+    assert.deepEqual(checkRes.result.data_points, testDataPoints);
+
+    // Wait for child process to finish close and verify transport file was cleaned up
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(existsSync(runner.resultFile), false, "transport file must be cleaned up on process close");
+  } finally {
+    if (prevRunnerBin !== undefined) process.env.QQ_RUNNER_BIN = prevRunnerBin;
+    else delete process.env.QQ_RUNNER_BIN;
+    rmSync(fakeBinDir, { recursive: true, force: true });
+  }
+}
+
+// R2. Cap enforcement: exactly 32,768 characters accepted, 32,769 rejected.
+{
+  // Exactly 32,768 chars accepted
+  const exactlyCap = "C".repeat(32_768);
+  const okResult = await completeTask({ response: exactlyCap });
+  assert.equal(okResult.ok, true);
+  assert.equal(okResult.responseLength, 32_768);
+
+  // 32,769 chars rejected with clear summarization guidance
+  const overCap = "C".repeat(32_769);
+  await assert.rejects(
+    () => completeTask({ response: overCap }),
+    (err) => {
+      assert.match(err.message, /response exceeds the 32,768-character cap \(got 32769 chars\)/);
+      assert.match(err.message, /Summarize before calling complete_task/);
+      return true;
+    },
+    "completeTask must reject 32,769 chars with summarization message",
+  );
+}
+
+// R3. Concurrent isolated runners with real child-process separation: zero cross-talk.
+{
+  const fakeBinDir = mkdtempSync(join(tmpdir(), "qq-test-concurrent-bin-"));
+  const fakeScript = join(fakeBinDir, "runner.mjs");
+  const fakeSh = join(fakeBinDir, "runner.sh");
+
+  const childCode = `import { completeTask } from "${join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "mcp-server.mjs")}";
+
+const runnerId = process.env.QQ_RUNNER_ID;
+const response = "Report for runner " + runnerId + ": " + "X".repeat(1200);
+const dps = ["dp-" + runnerId];
+
+await completeTask({ response, data_points: dps });
+
+// Emit stream-json telemetry
+const telemetryEvent = {
+  event: "step_update",
+  step_update: {
+    step_type: "tool",
+    state: "DONE",
+    tool_name: "complete_task",
+    tool_info: {
+      parameters: { response: "clipped", data_points: [] },
+    },
+  },
+};
+console.log(JSON.stringify(telemetryEvent));
+await new Promise((r) => setTimeout(r, 1000));
+`;
+  writeFileSync(fakeScript, childCode, "utf8");
+  writeFileSync(fakeSh, `#!/usr/bin/env bash\nexec node "${fakeScript}" "$@"\n`, "utf8");
+  execFileSync("chmod", ["+x", fakeSh]);
+
+  const prevRunnerBin = process.env.QQ_RUNNER_BIN;
+  process.env.QQ_RUNNER_BIN = fakeSh;
+
+  try {
+    const disp1 = await dispatchRunner({ task: "concurrent task 1", cwd: tmpdir() });
+    const disp2 = await dispatchRunner({ task: "concurrent task 2", cwd: tmpdir() });
+
+    assert.notEqual(disp1.runnerId, disp2.runnerId);
+    assert.notEqual(RUNNERS.get(disp1.runnerId).resultFile, RUNNERS.get(disp2.runnerId).resultFile);
+
+    const [res1, res2] = await Promise.all([
+      awaitRunner({ runnerId: disp1.runnerId }),
+      awaitRunner({ runnerId: disp2.runnerId }),
+    ]);
+
+    assert.equal(res1.status, "completed");
+    assert.equal(res2.status, "completed");
+
+    assert.equal(res1.result.response, "Report for runner " + disp1.runnerId + ": " + "X".repeat(1200));
+    assert.deepEqual(res1.result.data_points, ["dp-" + disp1.runnerId]);
+
+    assert.equal(res2.result.response, "Report for runner " + disp2.runnerId + ": " + "X".repeat(1200));
+    assert.deepEqual(res2.result.data_points, ["dp-" + disp2.runnerId]);
+  } finally {
+    if (prevRunnerBin !== undefined) process.env.QQ_RUNNER_BIN = prevRunnerBin;
+    else delete process.env.QQ_RUNNER_BIN;
+    rmSync(fakeBinDir, { recursive: true, force: true });
+  }
+}
+
+// R4. Missing result file explicit failure: parent never accepts clipped telemetry.
+{
+  globalThis.__QQ_TEST_RUNNER_HANDLER = () => {};
+  const disp = await dispatchRunner({ task: "missing result file probe", cwd: tmpdir() });
+  const runner = RUNNERS.get(disp.runnerId);
+
+  // Ensure resultFile does not exist
+  if (existsSync(runner.resultFile)) rmSync(runner.resultFile);
+
+  // Simulate telemetry event arriving without a transport file
+  const event = {
+    event: "step_update",
+    step_update: {
+      step_type: "tool",
+      state: "DONE",
+      tool_name: "complete_task",
+      tool_info: {
+        parameters: { response: "telemetry fallback attempt" },
+      },
+    },
+  };
+  handleRunnerEvent(runner, event);
+
+  assert.equal(runner.status, "failed");
+  assert.equal(runner.result, null, "runner.result must remain null on missing transport file");
+  assert.match(runner.error.message, /Runner complete_task failed/);
+  assert.match(runner.error.message, /Missing runner result transport file/);
+
+  delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+}
+
+// R5. Corrupt / malformed result file explicit failure.
+{
+  globalThis.__QQ_TEST_RUNNER_HANDLER = () => {};
+  const disp = await dispatchRunner({ task: "corrupt file probe", cwd: tmpdir() });
+  const runner = RUNNERS.get(disp.runnerId);
+
+  // Write malformed JSON
+  writeFileSync(runner.resultFile, "{\"incomplete_json\": true, ");
+
+  const event = {
+    event: "step_update",
+    step_update: {
+      step_type: "tool",
+      state: "DONE",
+      tool_name: "complete_task",
+      tool_info: { parameters: { response: "some telemetry" } },
+    },
+  };
+  handleRunnerEvent(runner, event);
+
+  assert.equal(runner.status, "failed");
+  assert.equal(runner.result, null);
+  assert.match(runner.error.message, /Runner complete_task failed/);
+  assert.match(runner.error.message, /malformed JSON/);
+
+  delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+}
+
+// R6. Mismatched runnerId explicit failure.
+{
+  globalThis.__QQ_TEST_RUNNER_HANDLER = () => {};
+  const disp = await dispatchRunner({ task: "mismatched runnerId probe", cwd: tmpdir() });
+  const runner = RUNNERS.get(disp.runnerId);
+
+  // Write payload with a DIFFERENT runnerId
+  writeFileSync(
+    runner.resultFile,
+    JSON.stringify({
+      runnerId: "other-mismatched-runner-id",
+      response: "good response",
+      data_points: [],
+      calledAt: Date.now(),
+    }),
+    "utf8",
+  );
+
+  const event = {
+    event: "step_update",
+    step_update: {
+      step_type: "tool",
+      state: "DONE",
+      tool_name: "complete_task",
+      tool_info: { parameters: { response: "some telemetry" } },
+    },
+  };
+  handleRunnerEvent(runner, event);
+
+  assert.equal(runner.status, "failed");
+  assert.equal(runner.result, null);
+  assert.match(runner.error.message, /Runner complete_task failed/);
+  assert.match(runner.error.message, /Runner result ID mismatch/);
+
+  delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+}
+
+// R7. Transport payload exceeding 32,768 chars fails validation.
+{
+  const fakeRunner = { id: "test-overcap-runner" };
+  const overcapPayload = {
+    runnerId: "test-overcap-runner",
+    response: "Z".repeat(32_769),
+    data_points: [],
+  };
+  const val = validateRunnerResultPayload(overcapPayload, fakeRunner);
+  assert.equal(val.ok, false);
+  assert.match(val.error, /exceeds 32768-character cap/);
+}
+
+// R8. Write failure cannot signal successful completion or authorize Stop hook exit.
+{
+  const prevRunnerId = process.env.QQ_RUNNER_ID;
+  const prevResultFile = process.env.QQ_RUNNER_RESULT_FILE;
+
+  const testId = "fail-write-" + Date.now();
+  process.env.QQ_RUNNER_ID = testId;
+  // Non-existent unwritable directory
+  process.env.QQ_RUNNER_RESULT_FILE = "/nonexistent-dir-cannot-write-here/result.json";
+
+  const markerPath = join(tmpdir(), `qq-complete-task-${testId}.json`);
+  try { rmSync(markerPath, { force: true }); } catch {}
+
+  // completeTask must throw
+  await assert.rejects(
+    () => completeTask({ response: "Will fail write" }),
+    /Failed to write runner result transport file/,
+  );
+
+  // Marker file must NOT exist
+  assert.equal(existsSync(markerPath), false, "marker file must not be written when transport write fails");
+
+  // Registry must NOT contain the entry
+  assert.equal(COMPLETE_TASK_REGISTRY.has(testId), false, "registry must not contain entry when write fails");
+
+  // Stop hook must block termination
+  const stopInput = JSON.stringify({
+    terminationReason: "model_stop",
+    conversationId: testId,
+  });
+  const rawStop = execFileSync(process.execPath, ["hooks/stop.mjs"], {
+    input: stopInput,
+    encoding: "utf8",
+    env: { ...process.env, QQ_RUNNER_ID: testId },
+  });
+  const parsedStop = JSON.parse(rawStop);
+  assert.equal(parsedStop.decision, "continue", "Stop hook must block exit when transport write failed");
+
+  // Clean up env
+  if (prevRunnerId !== undefined) process.env.QQ_RUNNER_ID = prevRunnerId;
+  else delete process.env.QQ_RUNNER_ID;
+  if (prevResultFile !== undefined) process.env.QQ_RUNNER_RESULT_FILE = prevResultFile;
+  else delete process.env.QQ_RUNNER_RESULT_FILE;
+}
+
+// R9. Terminal close races & dead-process reconciliation.
+{
+  // Scenario A: Child process writes transport file and exits code 0 before step_update event
+  const fakeBinDir = mkdtempSync(join(tmpdir(), "qq-test-close-race-bin-"));
+  const fakeScript = join(fakeBinDir, "runner-fast-exit.mjs");
+  const fakeSh = join(fakeBinDir, "runner-fast-exit.sh");
+
+  const childCode = `import { completeTask } from "${join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "mcp-server.mjs")}";
+
+await completeTask({ response: "Early exit response", data_points: ["dp-early"] });
+// Exits immediately code 0 without step_update telemetry
+process.exit(0);
+`;
+  writeFileSync(fakeScript, childCode, "utf8");
+  writeFileSync(fakeSh, `#!/usr/bin/env bash\nexec node "${fakeScript}" "$@"\n`, "utf8");
+  execFileSync("chmod", ["+x", fakeSh]);
+
+  const prevRunnerBin = process.env.QQ_RUNNER_BIN;
+  process.env.QQ_RUNNER_BIN = fakeSh;
+
+  try {
+    const disp = await dispatchRunner({ task: "fast exit task", cwd: tmpdir() });
+    const awaitRes = await awaitRunner({ runnerId: disp.runnerId });
+    assert.equal(awaitRes.status, "completed");
+    assert.equal(awaitRes.result.response, "Early exit response");
+    assert.deepEqual(awaitRes.result.data_points, ["dp-early"]);
+  } finally {
+    if (prevRunnerBin !== undefined) process.env.QQ_RUNNER_BIN = prevRunnerBin;
+    else delete process.env.QQ_RUNNER_BIN;
+    rmSync(fakeBinDir, { recursive: true, force: true });
+  }
+
+  // Scenario B: reconcileDeadRunner recovers result from transport file on dead process
+  globalThis.__QQ_TEST_RUNNER_HANDLER = () => {};
+  const dispReconcile = await dispatchRunner({ task: "reconcile transport task", cwd: tmpdir() });
+  const runner = RUNNERS.get(dispReconcile.runnerId);
+  runner.process = { exitCode: 0, signalCode: null };
+
+  // Write valid transport file
+  writeFileSync(
+    runner.resultFile,
+    JSON.stringify({
+      runnerId: runner.id,
+      response: "Reconciled transport findings",
+      data_points: ["dp-reconciled"],
+      calledAt: Date.now(),
+    }),
+    "utf8",
+  );
+
+  const rec = reconcileDeadRunner(runner);
+  assert.equal(rec.status, "completed");
+  assert.equal(runner.status, "completed");
+  assert.equal(runner.result.response, "Reconciled transport findings");
+  assert.deepEqual(runner.result.data_points, ["dp-reconciled"]);
+
+  // Transport file was cleaned up on reconcile
+  assert.equal(existsSync(runner.resultFile), false, "reconcile must clean up transport file");
+
+  delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+
+  // Scenario C: cancelRunner cleans up resultFile
+  const dispCancel = await dispatchRunner({ task: "cancel cleanup task", cwd: tmpdir() });
+  const cancelRunnerObj = RUNNERS.get(dispCancel.runnerId);
+  writeFileSync(cancelRunnerObj.resultFile, "{}");
+  assert.equal(existsSync(cancelRunnerObj.resultFile), true);
+
+  await cancelRunner({ runnerId: dispCancel.runnerId });
+  assert.equal(cancelRunnerObj.status, "cancelled");
+  // If no process or after process kill, cleanup ensures no leak
+  cleanupRunnerFiles(cancelRunnerObj);
+  assert.equal(existsSync(cancelRunnerObj.resultFile), false, "cancelRunner must clean up transport file");
+}
+
+console.log("Reliable runner completion transport regression tests passed cleanly.");
+
+
+// ============================================================================
+// Review Gate Robustness & Task Routing Regression Tests
+// ============================================================================
+console.log("Running review gate & task routing regression tests...");
+
+// T1. Exact Markdown FAIL + passed testcounts (ISO90c0f799 reproduction).
+{
+  // Variant A: ISO90c0f799 reproduction with bold format and Vitest test count
+  const isoOutput = `## Test Results
+Tests: 22 passed (23), 1 failed
+Duration: 4.5s
+
+- Invariant broken: transport payload truncated at 512 characters.
+- **Verdict**: **FAIL**
+`;
+  assert.equal(evaluateReviewPassed(isoOutput), false, "Markdown bold **Verdict**: **FAIL** must fail despite '22 passed'");
+  const parsedA = parseReviewVerdict(isoOutput);
+  assert.equal(parsedA.verdict, "FAIL");
+
+  // Variant B: bulleted bold with 'all tests passed' text
+  const bulletFail = `- **Verdict**: FAIL\nAll baseline tests passed, but acceptance criterion 3 was violated.`;
+  assert.equal(evaluateReviewPassed(bulletFail), false);
+  assert.equal(parseReviewVerdict(bulletFail).verdict, "FAIL");
+
+  // Variant C: bold colon format
+  const colonFail = `**Verdict:** **FAIL**\n100 passed`;
+  assert.equal(evaluateReviewPassed(colonFail), false);
+
+  // Variant D: Header format
+  const headerFail = `### Verdict: FAIL\npassed 10/11`;
+  assert.equal(evaluateReviewPassed(headerFail), false);
+}
+
+// T2. Markdown PASS formats.
+{
+  const passA = `All 15 tests green.\n- **Verdict**: **PASS**`;
+  assert.equal(evaluateReviewPassed(passA), true);
+  assert.equal(parseReviewVerdict(passA).verdict, "PASS");
+
+  const passB = `**Verdict:** PASS\nVerification complete.`;
+  assert.equal(evaluateReviewPassed(passB), true);
+
+  const passC = `- **Verdict**: PASS`;
+  assert.equal(evaluateReviewPassed(passC), true);
+
+  const passD = `### Verdict: PASS`;
+  assert.equal(evaluateReviewPassed(passD), true);
+
+  const passE = `Verdict: [PASS]`;
+  assert.equal(evaluateReviewPassed(passE), true);
+}
+
+// T3. Absent and conflicting verdicts fail-closed.
+{
+  // Absent: empty or non-verdict text
+  assert.equal(evaluateReviewPassed(""), false, "empty output must fail closed");
+  assert.equal(evaluateReviewPassed(null), false, "null output must fail closed");
+  assert.equal(evaluateReviewPassed(undefined), false, "undefined output must fail closed");
+  assert.equal(evaluateReviewPassed("Tests: 22 passed (22)"), false, "output without verdict must fail closed");
+  assert.equal(evaluateReviewPassed("Overall summary: good progress but no verdict given"), false);
+  assert.equal(parseReviewVerdict("just text").verdict, null);
+
+  // Conflicting: both PASS and FAIL
+  const conflictOutput = `Initial review:\n**Verdict**: PASS\nWait, re-running test failed:\n**Verdict**: FAIL`;
+  assert.equal(evaluateReviewPassed(conflictOutput), false, "conflicting verdicts must fail closed");
+  const parsedConflict = parseReviewVerdict(conflictOutput);
+  assert.equal(parsedConflict.verdict, "FAIL");
+  assert.equal(parsedConflict.conflicting, true);
+
+  const conflictReverse = `Verdict: FAIL\nVerdict: PASS`;
+  assert.equal(evaluateReviewPassed(conflictReverse), false, "explicit FAIL overrides PASS in conflicting verdicts");
+}
+
+// T4. Nonzero reviewer exit must reject regardless of output.
+{
+  // Output says PASS, but exitCode is 1
+  const passText = `**Verdict**: **PASS**\nEverything looks great.`;
+  assert.equal(evaluateReviewPassed(passText, 1), false, "nonzero exit code must reject even with Verdict: PASS");
+  assert.equal(evaluateReviewPassed(passText, 2), false);
+  assert.equal(evaluateReviewPassed({ output: passText, exitCode: 1 }), false);
+  assert.equal(evaluateReviewPassed({ output: passText, error: { exitCode: 1 } }), false);
+  assert.equal(evaluateReviewPassed({ output: passText, ok: false }), false);
+
+  // In pipeline: reviewer nonzero exit triggers failure / preserves evidence
+  const testRepo = mkdtempSync(join(tmpdir(), "qq-test-exitcode-repo-"));
+  await git(testRepo, ["init", "-b", "main"]);
+  await git(testRepo, ["config", "user.name", "Test"]);
+  await git(testRepo, ["config", "user.email", "test@example.com"]);
+  writeFileSync(join(testRepo, "init.txt"), "init\n");
+  await git(testRepo, ["add", "init.txt"]);
+  await git(testRepo, ["commit", "-m", "initial"]);
+
+  const tDir = join(testRepo, ".architect", "tickets");
+  mkdirSync(tDir, { recursive: true });
+  const sId = "test-nonzero-exit-" + Date.now();
+  writeFileSync(join(tDir, `${sId}.md`), "# Nonzero Exit Ticket\n\n## Kind\nopen\n");
+
+  try {
+    globalThis.__QQ_TEST_SUBAGENT_HANDLER = async ({ role, cwd }) => {
+      if (role === "implementer") {
+        writeFileSync(join(cwd, "change.txt"), "some change");
+        return { ok: true, output: "impl done" };
+      }
+      if (role === "reviewer") {
+        return {
+          ok: false,
+          output: "**Verdict**: **PASS**",
+          error: { message: "Reviewer crashed with SIGSEGV", exitCode: 139, stderr: "Segmentation fault" },
+        };
+      }
+    };
+
+    const disp = await dispatchExecution({ kind: "open", sessionId: sId, cwd: testRepo });
+    await assert.rejects(
+      () => awaitExecution({ id: disp.id }),
+      /Reviewer crashed with SIGSEGV/,
+    );
+    const check = await checkExecution({ id: disp.id });
+    assert.equal(check.status, "failed");
+    assert.equal(check.phase, "reviewing");
+    assert.equal(check.error.exitCode, 139);
+    assert.equal(check.error.stderr, "Segmentation fault");
+    assert.equal(check.error.findings, "**Verdict**: **PASS**");
+  } finally {
+    delete globalThis.__QQ_TEST_SUBAGENT_HANDLER;
+    rmSync(testRepo, { recursive: true, force: true });
+  }
+}
+
+// T5. No-change execution preserves worktree and ticket, no false landing.
+{
+  const noChangeRepo = mkdtempSync(join(tmpdir(), "qq-test-nochange-repo-"));
+  await git(noChangeRepo, ["init", "-b", "main"]);
+  await git(noChangeRepo, ["config", "user.name", "Test"]);
+  await git(noChangeRepo, ["config", "user.email", "test@example.com"]);
+  writeFileSync(join(noChangeRepo, "app.txt"), "original content\n");
+  await git(noChangeRepo, ["add", "app.txt"]);
+  await git(noChangeRepo, ["commit", "-m", "commit main"]);
+
+  const tDir = join(noChangeRepo, ".architect", "tickets");
+  mkdirSync(tDir, { recursive: true });
+
+  // Scenario A: Bounded execution with 0 changes
+  const boundedSessId = "nochange-bounded-" + Date.now();
+  const boundedTicketPath = join(tDir, `${boundedSessId}.md`);
+  writeFileSync(boundedTicketPath, "# Bounded No Change Ticket\n\n## Kind\nbounded\n");
+
+  try {
+    globalThis.__QQ_TEST_SUBAGENT_HANDLER = async ({ role }) => {
+      // Implementer finishes but makes NO changes to disk
+      return { ok: true, output: "Looked at code, made no changes" };
+    };
+
+    const disp = await dispatchExecution({ kind: "bounded", sessionId: boundedSessId, cwd: noChangeRepo });
+    await assert.rejects(
+      () => awaitExecution({ id: disp.id }),
+      /Implementation produced no code changes or commits \(incomplete\)/,
+    );
+
+    const check = await checkExecution({ id: disp.id });
+    assert.equal(check.status, "failed");
+    assert.equal(check.phase, "implementing");
+    assert.equal(check.error.status, "incomplete");
+    assert.equal(check.error.noChange, true);
+    assert.ok(check.trajectory.some((t) => t.action === "implementation_empty"));
+    assert.equal(check.trajectory.some((t) => t.action === "landing_started"), false);
+    assert.equal(check.trajectory.some((t) => t.action === "execution_completed"), false);
+
+    // Worktree preserved!
+    const execObj = EXECUTIONS.get(disp.id);
+    assert.ok(existsSync(execObj.worktree), "worktree must be preserved on no-change");
+
+    // Ticket preserved!
+    assert.ok(existsSync(boundedTicketPath), "ticket must NOT be archived or cleared on no-change");
+
+    // Main has no merge commit
+    const log = await git(noChangeRepo, ["log", "--oneline"]);
+    assert.equal(log.split("\n").length, 1, "main branch must have no landing commit");
+
+    // Clean up worktree
+    await git(noChangeRepo, ["worktree", "remove", "--force", execObj.worktree]).catch(() => {});
+    await git(noChangeRepo, ["branch", "-D", execObj.branch]).catch(() => {});
+  } finally {
+    delete globalThis.__QQ_TEST_SUBAGENT_HANDLER;
+  }
+
+  // Scenario B: Open execution where reviewer outputs PASS but 0 code changes were made
+  const openSessId = "nochange-open-" + Date.now();
+  const openTicketPath = join(tDir, `${openSessId}.md`);
+  writeFileSync(openTicketPath, "# Open No Change Ticket\n\n## Kind\nopen\n");
+
+  try {
+    globalThis.__QQ_TEST_SUBAGENT_HANDLER = async ({ role }) => {
+      if (role === "implementer") {
+        return { ok: true, output: "No changes implemented" };
+      }
+      if (role === "reviewer") {
+        return { ok: true, output: "**Verdict**: **PASS**\nBaseline tests were passing" };
+      }
+    };
+
+    const disp = await dispatchExecution({ kind: "open", sessionId: openSessId, cwd: noChangeRepo });
+    await assert.rejects(
+      () => awaitExecution({ id: disp.id }),
+      /Implementation produced no code changes or commits \(incomplete\)/,
+    );
+
+    const check = await checkExecution({ id: disp.id });
+    assert.equal(check.status, "failed");
+    assert.equal(check.error.status, "incomplete");
+    assert.equal(check.error.noChange, true);
+
+    const execObj = EXECUTIONS.get(disp.id);
+    assert.ok(existsSync(execObj.worktree), "worktree must be preserved");
+    assert.ok(existsSync(openTicketPath), "ticket must be preserved");
+
+    // Clean up worktree
+    await git(noChangeRepo, ["worktree", "remove", "--force", execObj.worktree]).catch(() => {});
+    await git(noChangeRepo, ["branch", "-D", execObj.branch]).catch(() => {});
+  } finally {
+    delete globalThis.__QQ_TEST_SUBAGENT_HANDLER;
+    rmSync(noChangeRepo, { recursive: true, force: true });
+  }
+}
+
+// T6. Every prompt generation path with worktree different from ambient cwd.
+{
+  const ambientRepo = mkdtempSync(join(tmpdir(), "qq-test-ambient-repo-"));
+  await git(ambientRepo, ["init", "-b", "main"]);
+  await git(ambientRepo, ["config", "user.name", "Ambient Test"]);
+  await git(ambientRepo, ["config", "user.email", "ambient@example.com"]);
+  writeFileSync(join(ambientRepo, "main.txt"), "main content\n");
+  await git(ambientRepo, ["add", "main.txt"]);
+  await git(ambientRepo, ["commit", "-m", "init"]);
+
+  const ambientTicketsDir = join(ambientRepo, ".architect", "tickets");
+  mkdirSync(ambientTicketsDir, { recursive: true });
+
+  const customWtDir = "/tmp/different/worktree/custom-path-" + Date.now();
+  const expectedTicket = join(customWtDir, ".architect", "ticket.md");
+
+  // Path 1: buildImplementerPrompt specifies absolute worktree ticket path and working directory with proper quoting
+  const implPrompt = buildImplementerPrompt(customWtDir);
+  assert.equal(
+    implPrompt,
+    `Implement '${expectedTicket}' in working directory '${customWtDir}'. When finished, report your answer.`,
+  );
+  assert.ok(implPrompt.includes(`'${expectedTicket}'`));
+  assert.ok(implPrompt.includes(`'${customWtDir}'`));
+  assert.equal(implPrompt.includes(".architect/ticket.md in the checkout"), false);
+
+  // Path 2: buildReviewerPrompt specifies absolute worktree ticket path and working directory with proper quoting
+  const revPrompt = buildReviewerPrompt(customWtDir);
+  assert.equal(
+    revPrompt,
+    `Follow '${expectedTicket}' in working directory '${customWtDir}'. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.`,
+  );
+  assert.ok(revPrompt.includes(`'${expectedTicket}'`));
+  assert.ok(revPrompt.includes(`'${customWtDir}'`));
+  assert.equal(revPrompt.includes(".architect/ticket.md in the checkout"), false);
+
+  // Path 3: buildRetryPrompt specifies absolute worktree ticket path and working directory with proper quoting
+  const retryPrompt = buildRetryPrompt(customWtDir, "Test defect report");
+  assert.ok(retryPrompt.startsWith(`Implement '${expectedTicket}' in working directory '${customWtDir}'. The reviewer found defects:\nTest defect report`));
+  assert.ok(retryPrompt.includes(`'${expectedTicket}'`));
+  assert.ok(retryPrompt.includes(`'${customWtDir}'`));
+
+  // Path 4: buildResearcherPrompt specifies absolute worktree ticket path and working directory with proper quoting
+  const resPrompt = buildResearcherPrompt(customWtDir);
+  assert.equal(
+    resPrompt,
+    `Investigate '${expectedTicket}' in working directory '${customWtDir}'. Report findings.`,
+  );
+  assert.ok(resPrompt.includes(`'${expectedTicket}'`));
+  assert.ok(resPrompt.includes(`'${customWtDir}'`));
+  assert.equal(resPrompt.includes(".architect/ticket.md in the checkout"), false);
+
+  // Path 5: prepareWorktree for bounded when ambient cwd differs from worktree
+  const boundedSess = "routing-bounded-" + Date.now();
+  writeFileSync(join(ambientTicketsDir, `${boundedSess}.md`), "# Bounded Routing\n\n## Kind\nbounded\n");
+  const prepBounded = await prepareWorktree({ kind: "bounded", sessionId: boundedSess, cwd: ambientRepo });
+  assert.ok(prepBounded.worktree !== ambientRepo, "worktree must differ from ambient cwd");
+  assert.equal(
+    prepBounded.implementerPrompt,
+    `Implement '${join(prepBounded.worktree, ".architect", "ticket.md")}' in working directory '${prepBounded.worktree}'. When finished, report your answer.`,
+  );
+  assert.ok(prepBounded.instructions.includes(prepBounded.implementerPrompt));
+  await retireTestWorktree(ambientRepo, prepBounded);
+
+  // Path 6: prepareWorktree for open when ambient cwd differs from worktree
+  const openSess = "routing-open-" + Date.now();
+  writeFileSync(join(ambientTicketsDir, `${openSess}.md`), "# Open Routing\n\n## Kind\nopen\n");
+  const prepOpen = await prepareWorktree({ kind: "open", sessionId: openSess, cwd: ambientRepo });
+  assert.ok(prepOpen.worktree !== ambientRepo);
+  assert.equal(
+    prepOpen.implementerPrompt,
+    `Implement '${join(prepOpen.worktree, ".architect", "ticket.md")}' in working directory '${prepOpen.worktree}'. When finished, report your answer.`,
+  );
+  assert.equal(
+    prepOpen.reviewerPrompt,
+    `Follow '${join(prepOpen.worktree, ".architect", "ticket.md")}' in working directory '${prepOpen.worktree}'. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.`,
+  );
+  assert.ok(prepOpen.instructions.includes(prepOpen.implementerPrompt));
+  assert.ok(prepOpen.instructions.includes(prepOpen.reviewerPrompt));
+  await retireTestWorktree(ambientRepo, prepOpen);
+
+  // Path 7: prepareWorktree for research when ambient cwd differs from worktree
+  const resSess = "routing-res-" + Date.now();
+  writeFileSync(join(ambientTicketsDir, `${resSess}.md`), "# Research Routing\n\n## Kind\nresearch\n");
+  const prepRes = await prepareWorktree({ kind: "research", sessionId: resSess, cwd: ambientRepo });
+  assert.ok(prepRes.worktree !== ambientRepo);
+  assert.equal(
+    prepRes.researcherPrompt,
+    `Investigate '${join(prepRes.worktree, ".architect", "ticket.md")}' in working directory '${prepRes.worktree}'. Report findings.`,
+  );
+  assert.ok(prepRes.instructions.includes(prepRes.researcherPrompt));
+  await retireTestWorktree(ambientRepo, prepRes);
+
+  // Path 8: Execution pipeline actual invocation delivers absolute ticket and worktree cwd to subagent
+  const execSess = "routing-exec-" + Date.now();
+  writeFileSync(join(ambientTicketsDir, `${execSess}.md`), "# Exec Routing\n\n## Kind\nopen\n");
+
+  const capturedSubagentCalls = [];
+  globalThis.__QQ_TEST_SUBAGENT_HANDLER = async ({ role, cwd, prompt }) => {
+    capturedSubagentCalls.push({ role, cwd, prompt });
+    if (role === "implementer" && capturedSubagentCalls.length === 1) {
+      writeFileSync(join(cwd, "fixed.txt"), "fixed");
+      return { ok: true, output: "Implemented changes" };
+    }
+    if (role === "reviewer" && capturedSubagentCalls.length === 2) {
+      return { ok: true, output: "- **Verdict**: FAIL\nRetry required" };
+    }
+    if (role === "implementer" && capturedSubagentCalls.length === 3) {
+      return { ok: true, output: "Defects resolved" };
+    }
+    if (role === "reviewer" && capturedSubagentCalls.length === 4) {
+      return { ok: true, output: "**Verdict**: **PASS**\nVerified" };
+    }
+  };
+
+  try {
+    const disp = await dispatchExecution({ kind: "open", sessionId: execSess, cwd: ambientRepo });
+    const done = await awaitExecution({ id: disp.id });
+    assert.equal(done.status, "completed");
+
+    const execObj = EXECUTIONS.get(disp.id);
+    const wtCwd = execObj.worktree;
+    const wtTicket = join(wtCwd, ".architect", "ticket.md");
+
+    assert.equal(capturedSubagentCalls.length, 4);
+
+    // Call 1: implementer
+    assert.equal(capturedSubagentCalls[0].role, "implementer");
+    assert.equal(capturedSubagentCalls[0].cwd, wtCwd);
+    assert.equal(
+      capturedSubagentCalls[0].prompt,
+      `Implement '${wtTicket}' in working directory '${wtCwd}'. When finished, report your answer.`,
+    );
+
+    // Call 2: reviewer
+    assert.equal(capturedSubagentCalls[1].role, "reviewer");
+    assert.equal(capturedSubagentCalls[1].cwd, wtCwd);
+    assert.equal(
+      capturedSubagentCalls[1].prompt,
+      `Follow '${wtTicket}' in working directory '${wtCwd}'. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.`,
+    );
+
+    // Call 3: retry implementer
+    assert.equal(capturedSubagentCalls[2].role, "implementer");
+    assert.equal(capturedSubagentCalls[2].cwd, wtCwd);
+    assert.ok(capturedSubagentCalls[2].prompt.includes(`Implement '${wtTicket}' in working directory '${wtCwd}'. The reviewer found defects:`));
+
+    // Call 4: second reviewer
+    assert.equal(capturedSubagentCalls[3].role, "reviewer");
+    assert.equal(capturedSubagentCalls[3].cwd, wtCwd);
+    assert.equal(
+      capturedSubagentCalls[3].prompt,
+      `Follow '${wtTicket}' in working directory '${wtCwd}'. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.`,
+    );
+  } finally {
+    delete globalThis.__QQ_TEST_SUBAGENT_HANDLER;
+    rmSync(ambientRepo, { recursive: true, force: true });
+  }
+}
+
+console.log("Review gate & task routing regression tests passed cleanly.");

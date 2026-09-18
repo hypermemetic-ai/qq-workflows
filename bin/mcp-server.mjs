@@ -1,15 +1,20 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync, readdirSync, readFileSync, readlinkSync, rmSync } from "node:fs";
+import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import {
   createWorktree,
   currentBranch,
+  defaultBaseRef,
+  defaultLocalBranch,
   git,
+  hasImplementationChanges,
+  isDirty,
   landWorktree,
   mainRepoRoot,
   parseWorktreePorcelain,
@@ -28,7 +33,7 @@ import {
   ticketPath,
 } from "../workflow/ticket.mjs";
 
-export { CANONICAL_PROVIDERS, PROVIDERS, assertKnownProvider, normalizeProvider };
+export { CANONICAL_PROVIDERS, PROVIDERS, assertKnownProvider, normalizeProvider, hasImplementationChanges };
 
 export const TOOLS = [
   {
@@ -305,7 +310,7 @@ export const TOOLS = [
       properties: {
         response: {
           type: "string",
-          description: "Narrative findings/outcome. Hard cap of 64,000 characters.",
+          description: "Narrative findings/outcome. Hard cap of 32,768 characters.",
         },
         data_points: {
           type: "array",
@@ -404,7 +409,8 @@ export function resolveSeatProvider(seat, args = {}, env = process.env) {
 const IMPLEMENTER_TEMPLATES = {
   muse: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'muse exec --preset implementer --yolo "${prompt} Leave changes uncommitted. Do not commit, push, review, or land."'`,
   gemini: (cwd, prompt, conversationId) =>
-    `Delegate via run_command (with Cwd: ${cwd}) using a fresh conversation: 'agy --agent implementer --conversation ${conversationId} --print-timeout 60m --print "${prompt} Leave changes uncommitted. Do not commit, push, review, or land."'\nDo NOT pass '--new-project'.`,
+    `Delegate via run_command (with Cwd: ${cwd}) using a fresh conversation: 'agy --agent implementer --conversation ${conversationId} --print-timeout 60m --print "${prompt} Leave changes uncommitted. Do not commit, push, review, or land."'
+Do NOT pass '--new-project'.`,
   deepseek: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'dsh --profile implementer "${prompt} Leave changes uncommitted. Do not commit, push, review, or land."'`,
   codex: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'codex exec --profile implementer "${prompt} Leave changes uncommitted. Do not commit, push, review, or land."'`,
 };
@@ -413,7 +419,8 @@ IMPLEMENTER_TEMPLATES.astra = IMPLEMENTER_TEMPLATES.codex;
 const REVIEWER_TEMPLATES = {
   muse: (cwd, prompt) => `invoke reviewer via run_command (with Cwd: ${cwd}): 'muse exec --preset reviewer --yolo "${prompt} Do not commit, push, or land."'`,
   gemini: (cwd, prompt, conversationId) =>
-    `invoke reviewer via run_command (with Cwd: ${cwd}) using a fresh conversation: 'agy --agent reviewer --conversation ${conversationId} --print-timeout 60m --print "${prompt} Do not commit, push, or land."'\nDo NOT pass '--new-project'.`,
+    `invoke reviewer via run_command (with Cwd: ${cwd}) using a fresh conversation: 'agy --agent reviewer --conversation ${conversationId} --print-timeout 60m --print "${prompt} Do not commit, push, or land."'
+Do NOT pass '--new-project'.`,
   codex: (cwd, prompt) => `invoke reviewer via run_command (with Cwd: ${cwd}): 'codex exec --profile reviewer "${prompt} Do not commit, push, or land."'`,
 };
 REVIEWER_TEMPLATES.astra = REVIEWER_TEMPLATES.codex;
@@ -424,6 +431,28 @@ const RESEARCHER_TEMPLATES = {
   codex: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'codex exec --profile researcher "${prompt} Leave files uncommitted. Do not commit, push, or land."'`,
 };
 RESEARCHER_TEMPLATES.astra = RESEARCHER_TEMPLATES.codex;
+
+export function buildImplementerPrompt(worktreeCwd) {
+  const ticketPath = join(worktreeCwd, ".architect", "ticket.md");
+  return `Implement '${ticketPath}' in working directory '${worktreeCwd}'. When finished, report your answer.`;
+}
+
+export function buildReviewerPrompt(worktreeCwd) {
+  const ticketPath = join(worktreeCwd, ".architect", "ticket.md");
+  return `Follow '${ticketPath}' in working directory '${worktreeCwd}'. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.`;
+}
+
+export function buildRetryPrompt(worktreeCwd, reviewerOutput) {
+  const ticketPath = join(worktreeCwd, ".architect", "ticket.md");
+  return `Implement '${ticketPath}' in working directory '${worktreeCwd}'. The reviewer found defects:
+${reviewerOutput}
+Please resolve these defects. When finished, report your answer.`;
+}
+
+export function buildResearcherPrompt(worktreeCwd) {
+  const ticketPath = join(worktreeCwd, ".architect", "ticket.md");
+  return `Investigate '${ticketPath}' in working directory '${worktreeCwd}'. Report findings.`;
+}
 
 export function buildImplementerStep(cwd, prompt, provider, conversationId) {
   const p = normalizeProvider(provider);
@@ -467,9 +496,15 @@ export async function prepareWorktree(args = {}) {
   const reviewRequired = kind === "open";
 
   if (kind === "research") {
-    const researcherPrompt = "Investigate .architect/ticket.md in the checkout. Report findings.";
+    const researcherPrompt = buildResearcherPrompt(wt.cwd);
     const step = buildResearcherStep(wt.cwd, researcherPrompt, researcherProvider);
-    const instructions = `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. ${step}\n2. When finished, call 'land'.`;
+    const instructions = `Worktree ready at ${wt.cwd}.
+Branch: ${wt.branch}
+Review required: false
+
+Next steps:
+1. ${step}
+2. When finished, call 'land'.`;
 
     return {
       ok: true,
@@ -486,8 +521,8 @@ export async function prepareWorktree(args = {}) {
   }
 
   const childSessionId = randomUUID();
-  const implementerPrompt = `Implement .architect/ticket.md in the checkout. When finished, report your answer.`;
-  const reviewerPrompt = `Follow .architect/ticket.md in the checkout. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.`;
+  const implementerPrompt = buildImplementerPrompt(wt.cwd);
+  const reviewerPrompt = buildReviewerPrompt(wt.cwd);
   const reviewerSessionId = randomUUID();
 
   const implementerStep = buildImplementerStep(wt.cwd, implementerPrompt, implementerProvider, childSessionId);
@@ -817,6 +852,7 @@ export function findCodexHomeFromProc(startPid = process.ppid) {
 // Discover the active Codex thread ID by walking ancestor process descriptors
 // for an open rollout JSONL file (standard Linux procfs environment).
 export function findCodexThreadFromProc(startPid = process.ppid) {
+  if (globalThis.__QQ_TEST_DISABLE_PROC_THREAD) return null;
   if (!startPid) return null;
   let currPid = startPid;
   for (let depth = 0; depth < 4; depth++) {
@@ -1031,10 +1067,10 @@ export function buildRunnerTerminalMessage(runner) {
     const dp = dataPoints.length ? `\n\ndata_points:\n${dataPoints.map((d) => `- ${d}`).join("\n")}` : "";
     const findingsStr = String(findings);
     let findingsBlock;
-    if (findingsStr.length <= 64_000) {
+    if (findingsStr.length <= 32_768) {
       findingsBlock = findingsStr;
     } else {
-      findingsBlock = `${sanitizeHeadTail(findingsStr, { headLen: 30_000, tailLen: 30_000 })}\n\nFull findings available via check_runner for runner '${id}'.`;
+      findingsBlock = `${sanitizeHeadTail(findingsStr, { headLen: 16_000, tailLen: 16_000 })}\n\n[Findings shortened to 32,000 chars. Full findings available via check_runner for runner '${id}'.]`;
     }
     return `Runner ${id} completed in ${elapsed}s.\n\nFindings:\n${findingsBlock}${dp}`;
   }
@@ -1214,15 +1250,38 @@ export function reconcileDeadRunner(runner) {
   if (signalCode === "SIGTERM" || signalCode === "SIGINT") {
     runner.status = "cancelled";
     runner.activeTool = null;
+    cleanupRunnerFiles(runner);
     return { reconciled: true, status: "cancelled", signalCode };
   }
   if (exitCode === 0) {
+    if (runner.resultFile && existsSync(runner.resultFile)) {
+      const loaded = readAuthoritativeRunnerResult(runner);
+      if (loaded.ok) {
+        runner.status = "completed";
+        runner.result = loaded.result;
+        runner.activeTool = null;
+        cleanupRunnerFiles(runner);
+        return { reconciled: true, status: "completed", exitCode };
+      } else {
+        runner.status = "failed";
+        runner.error = {
+          message: `Runner completed with transport error: ${loaded.error}`,
+          exitCode,
+          stderr: sanitizeHeadTail((runner.stderrTail || "").trim()),
+          outputTail: sanitizeHeadTail((runner.outputTail || "").trim()),
+        };
+        runner.activeTool = null;
+        cleanupRunnerFiles(runner);
+        return { reconciled: true, status: "failed", exitCode };
+      }
+    }
     runner.status = "completed";
     if (runner.result == null) {
       const tail = (runner.outputTail || "").trim();
       runner.result = tail || "";
     }
     runner.activeTool = null;
+    cleanupRunnerFiles(runner);
     return { reconciled: true, status: "completed", exitCode };
   }
   runner.status = "failed";
@@ -1233,6 +1292,7 @@ export function reconcileDeadRunner(runner) {
     outputTail: sanitizeHeadTail((runner.outputTail || "").trim()),
   };
   runner.activeTool = null;
+  cleanupRunnerFiles(runner);
   return { reconciled: true, status: "failed", exitCode };
 }
 
@@ -1242,6 +1302,145 @@ export function reconcileDeadRunner(runner) {
 
 export const RUNNERS = new Map();
 
+// Per-runner complete_task state: tracks whether each runner called complete_task.
+// Keyed by runnerId. Also used by the Stop hook for sub-agent tracking.
+export const COMPLETE_TASK_REGISTRY = new Map();
+
+export const COMPLETE_TASK_RESPONSE_MAX = 32_768;
+export const COMPLETE_TASK_DATA_POINTS_MAX = 20;
+export const COMPLETE_TASK_DATA_POINT_LEN_MAX = 100;
+
+export function cleanupRunnerFiles(runner) {
+  if (!runner) return;
+  if (runner.resultFile) {
+    try { rmSync(runner.resultFile, { force: true }); } catch {}
+  }
+  if (runner.id) {
+    try { rmSync(join(tmpdir(), `qq-complete-task-${runner.id}.json`), { force: true }); } catch {}
+  }
+}
+
+export function validateRunnerResultPayload(payload, runner) {
+  if (!payload || typeof payload !== "object") {
+    return { ok: false, error: "Runner result payload is not an object" };
+  }
+
+  // Check runner binding
+  if (payload.runnerId !== undefined && payload.runnerId !== null) {
+    if (runner?.id && payload.runnerId !== runner.id) {
+      return {
+        ok: false,
+        error: `Runner result ID mismatch: expected '${runner.id}', got '${payload.runnerId}'`,
+      };
+    }
+  }
+
+  // Validate response
+  if (payload.response === undefined || payload.response === null) {
+    return { ok: false, error: "Runner result is missing 'response' field" };
+  }
+  if (typeof payload.response !== "string") {
+    return { ok: false, error: "Runner result 'response' must be a string" };
+  }
+  if (payload.response.length > COMPLETE_TASK_RESPONSE_MAX) {
+    return {
+      ok: false,
+      error: `Runner result response exceeds ${COMPLETE_TASK_RESPONSE_MAX}-character cap (got ${payload.response.length} chars)`,
+    };
+  }
+
+  // Validate data_points
+  let dataPoints = [];
+  if (payload.data_points !== undefined && payload.data_points !== null) {
+    if (!Array.isArray(payload.data_points)) {
+      return { ok: false, error: "Runner result 'data_points' must be an array of strings" };
+    }
+    if (payload.data_points.length > COMPLETE_TASK_DATA_POINTS_MAX) {
+      return {
+        ok: false,
+        error: `Runner result 'data_points' exceeds ${COMPLETE_TASK_DATA_POINTS_MAX}-item cap (got ${payload.data_points.length} items)`,
+      };
+    }
+    for (let i = 0; i < payload.data_points.length; i++) {
+      if (typeof payload.data_points[i] !== "string") {
+        return { ok: false, error: `Runner result data_points[${i}] must be a string` };
+      }
+      if (payload.data_points[i].length > COMPLETE_TASK_DATA_POINT_LEN_MAX) {
+        return {
+          ok: false,
+          error: `Runner result data_points[${i}] exceeds ${COMPLETE_TASK_DATA_POINT_LEN_MAX}-character cap (got ${payload.data_points[i].length} chars)`,
+        };
+      }
+    }
+    dataPoints = payload.data_points;
+  }
+
+  return {
+    ok: true,
+    result: {
+      response: payload.response,
+      data_points: dataPoints,
+    },
+  };
+}
+
+function getInMemoryRunnerResult(runner) {
+  if (runner?.id && COMPLETE_TASK_REGISTRY.has(runner.id)) {
+    return COMPLETE_TASK_REGISTRY.get(runner.id);
+  }
+  if (runner?.sessionId && COMPLETE_TASK_REGISTRY.has(runner.sessionId)) {
+    return COMPLETE_TASK_REGISTRY.get(runner.sessionId);
+  }
+  if (COMPLETE_TASK_REGISTRY.has("default")) {
+    return COMPLETE_TASK_REGISTRY.get("default");
+  }
+  return null;
+}
+
+export function readAuthoritativeRunnerResult(runner) {
+  if (!runner) return { ok: false, error: "No runner provided" };
+
+  if (runner.resultFile) {
+    if (!existsSync(runner.resultFile)) {
+      // Check in-memory registry ONLY if explicitly keyed by this runner ID or session ID
+      const inMem = (runner.id && COMPLETE_TASK_REGISTRY.get(runner.id)) ||
+                    (runner.sessionId && COMPLETE_TASK_REGISTRY.get(runner.sessionId));
+      if (inMem) return validateRunnerResultPayload(inMem, runner);
+      return {
+        ok: false,
+        error: `Missing runner result transport file at '${runner.resultFile}'`,
+      };
+    }
+
+    let raw;
+    try {
+      raw = readFileSync(runner.resultFile, "utf8");
+    } catch (err) {
+      return { ok: false, error: `Failed to read runner result transport file: ${err.message}` };
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      return { ok: false, error: `Runner result transport file is malformed JSON: ${err.message}` };
+    }
+
+    return validateRunnerResultPayload(parsed, runner);
+  }
+
+  // Fallback for test doubles without resultFile (e.g. T7a)
+  const inMem = (runner.id && COMPLETE_TASK_REGISTRY.get(runner.id)) ||
+                (runner.sessionId && COMPLETE_TASK_REGISTRY.get(runner.sessionId)) ||
+                COMPLETE_TASK_REGISTRY.get("default");
+  if (inMem) return validateRunnerResultPayload(inMem, runner);
+
+  return {
+    ok: false,
+    error: `No authoritative complete_task result available for runner '${runner.id}' (no transport file or registry entry)`,
+  };
+}
+
 export async function dispatchRunner(args = {}) {
   const { task, targetPaths, cwd = process.cwd() } = args;
   if (!task || typeof task !== "string" || !task.trim()) {
@@ -1250,6 +1449,8 @@ export async function dispatchRunner(args = {}) {
 
   const runnerId = randomUUID();
   const startedAt = Date.now();
+  const resultFile = join(tmpdir(), `qq-runner-result-${runnerId}.json`);
+  try { rmSync(resultFile, { force: true }); } catch {}
   const runner = {
     id: runnerId,
     runnerId,
@@ -1267,6 +1468,7 @@ export async function dispatchRunner(args = {}) {
     process: null,
     outputTail: "",
     stderrTail: "",
+    resultFile,
   };
   if (runner.sessionId) {
     const procThread = findCodexThreadFromProc();
@@ -1291,6 +1493,7 @@ function startRunnerProcess(runner) {
     } catch (err) {
       runner.status = "failed";
       runner.error = { message: err.message };
+      cleanupRunnerFiles(runner);
       void notifyTerminal(runner, "runner");
     }
     return;
@@ -1317,11 +1520,16 @@ function startRunnerProcess(runner) {
     child = spawn(bin, childArgs, {
       cwd: runner.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env },
+      env: {
+        ...process.env,
+        QQ_RUNNER_ID: runner.runnerId,
+        QQ_RUNNER_RESULT_FILE: runner.resultFile,
+      },
     });
   } catch (err) {
     runner.status = "failed";
     runner.error = { message: err.message };
+    cleanupRunnerFiles(runner);
     void notifyTerminal(runner, "runner");
     return;
   }
@@ -1359,15 +1567,30 @@ function startRunnerProcess(runner) {
     // "running" only.
     if (runner.status !== "running") {
       runner.activeTool = null;
+      cleanupRunnerFiles(runner);
       return;
     }
     touchActivity(runner);
     if (signal === "SIGTERM" || signal === "SIGINT") {
       runner.status = "cancelled";
       runner.activeTool = null;
+      cleanupRunnerFiles(runner);
       return;
     }
-    if (code === 0) {
+    if (runner.resultFile && existsSync(runner.resultFile)) {
+      const loaded = readAuthoritativeRunnerResult(runner);
+      if (loaded.ok) {
+        runner.status = "completed";
+        runner.result = loaded.result;
+      } else {
+        runner.status = "failed";
+        runner.error = {
+          message: `Runner completed with transport error: ${loaded.error}`,
+          exitCode: code,
+          stderr: sanitizeHeadTail(stderrBuf.trim()),
+        };
+      }
+    } else if (code === 0) {
       runner.status = "completed";
       if (runner.result == null) {
         runner.result = rawOutput.trim();
@@ -1381,6 +1604,7 @@ function startRunnerProcess(runner) {
       };
     }
     runner.activeTool = null;
+    cleanupRunnerFiles(runner);
     void notifyTerminal(runner, "runner");
   });
 
@@ -1392,6 +1616,7 @@ function startRunnerProcess(runner) {
       stderr: sanitizeHeadTail(stderrBuf.trim()),
     };
     runner.activeTool = null;
+    cleanupRunnerFiles(runner);
     void notifyTerminal(runner, "runner");
   });
 }
@@ -1423,18 +1648,16 @@ export function handleRunnerEvent(runner, event) {
             su.tool_info?.parameters?.toolName === "complete_task"
           ));
         if (isCompleteTask && runner.status === "running") {
-          const key = process.env.GEMINI_CONVERSATION_ID || process.env.ASTRA_CONVERSATION_ID || "default";
-          const recorded = COMPLETE_TASK_REGISTRY.get(key);
-          let params = su.tool_info?.parameters;
-          if (params?.Arguments && typeof params.Arguments === "string") {
-            try { params = JSON.parse(params.Arguments); } catch {}
-          } else if (params?.Arguments && typeof params.Arguments === "object") {
-            params = params.Arguments;
+          const loaded = readAuthoritativeRunnerResult(runner);
+          if (loaded.ok) {
+            runner.status = "completed";
+            runner.result = loaded.result;
+          } else {
+            runner.status = "failed";
+            runner.error = {
+              message: `Runner complete_task failed: ${loaded.error}`,
+            };
           }
-          const response = recorded?.response ?? params?.response ?? null;
-          const data_points = recorded?.data_points ?? params?.data_points ?? [];
-          runner.status = "completed";
-          runner.result = { response, data_points };
           runner.activeTool = null;
           if (runner.process) {
             try { runner.process.kill("SIGTERM"); } catch {}
@@ -1572,6 +1795,8 @@ export async function cancelRunner(args = {}) {
       } catch {
         /* ignore */
       }
+    } else {
+      cleanupRunnerFiles(runner);
     }
   }
 
@@ -1661,15 +1886,62 @@ export async function awaitRunner(args = {}) {
 
 export const EXECUTIONS = new Map();
 
-export function evaluateReviewPassed(output) {
-  if (!output || !output.trim()) return true;
+export function parseReviewVerdict(output) {
+  if (!output || typeof output !== "string" || !output.trim()) {
+    return { verdict: null, reason: "missing_output" };
+  }
   const text = output.trim();
-  if (/verdict:\s*pass\b/i.test(text)) return true;
-  if (/verdict:\s*fail\b/i.test(text)) return false;
-  if (/defect|failed|error|regression/i.test(text) && !/no defects|all tests pass|0 defects|passed/i.test(text)) {
+  const verdictRegex = /(?:^|[\r\n])[^\r\n:]*\bverdict\b[\s*#_]*[:=]?(?:\s*[\r\n][\s\-*#_>]*)?[\s*#_`"'\[\]]*\b(PASS|FAIL)\b/gi;
+  const matches = [...text.matchAll(verdictRegex)];
+
+  if (matches.length === 0) {
+    return { verdict: null, reason: "missing_verdict" };
+  }
+
+  const verdicts = new Set(matches.map((m) => m[1].toUpperCase()));
+
+  if (verdicts.has("FAIL") && verdicts.has("PASS")) {
+    return { verdict: "FAIL", conflicting: true, reason: "conflicting_verdict" };
+  }
+
+  if (verdicts.has("FAIL")) {
+    return { verdict: "FAIL" };
+  }
+
+  if (verdicts.has("PASS")) {
+    return { verdict: "PASS" };
+  }
+
+  return { verdict: null, reason: "ambiguous_verdict" };
+}
+
+export function evaluateReviewPassed(outputOrResult, explicitExitCode) {
+  let output = outputOrResult;
+  let exitCode = explicitExitCode ?? 0;
+
+  if (outputOrResult && typeof outputOrResult === "object") {
+    output = outputOrResult.output;
+    if (explicitExitCode === undefined) {
+      if (outputOrResult.exitCode !== undefined) {
+        exitCode = outputOrResult.exitCode;
+      } else if (outputOrResult.error?.exitCode !== undefined) {
+        exitCode = outputOrResult.error.exitCode;
+      } else if (outputOrResult.ok === false) {
+        exitCode = 1;
+      }
+    }
+  }
+
+  if (typeof exitCode === "number" && exitCode !== 0) {
     return false;
   }
-  return true;
+
+  if (!output || typeof output !== "string" || !output.trim()) {
+    return false;
+  }
+
+  const parsed = parseReviewVerdict(output);
+  return parsed.verdict === "PASS" && !parsed.conflicting;
 }
 
 async function runChildSubagent(execution, { role, cwd, prompt, provider }) {
@@ -1693,6 +1965,7 @@ async function runChildSubagent(execution, { role, cwd, prompt, provider }) {
       "--dangerously-skip-permissions",
       "--output-format", "stream-json",
       "--print-timeout", "60m",
+      "--add-dir", cwd,
       "--print", prompt,
     ];
   } else if (p === "deepseek") {
@@ -1996,7 +2269,7 @@ async function runExecutionPipeline(execution) {
     timestamp: Date.now(),
   });
 
-  const implementerPrompt = "Implement .architect/ticket.md in the checkout. When finished, report your answer.";
+  const implementerPrompt = buildImplementerPrompt(wt.cwd);
   const implementerRes = await runChildSubagent(execution, {
     role: "implementer",
     cwd: wt.cwd,
@@ -2033,7 +2306,7 @@ async function runExecutionPipeline(execution) {
       timestamp: Date.now(),
     });
 
-    const reviewerPrompt = "Follow .architect/ticket.md in the checkout. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.";
+    const reviewerPrompt = buildReviewerPrompt(wt.cwd);
     let reviewRes = await runChildSubagent(execution, {
       role: "reviewer",
       cwd: wt.cwd,
@@ -2049,12 +2322,13 @@ async function runExecutionPipeline(execution) {
         message: reviewRes.error.message || "Reviewer failed",
         exitCode: reviewRes.error.exitCode,
         stderr: reviewRes.error.stderr,
+        findings: reviewRes.output,
       };
       await notifyTerminal(execution, "execution");
       return;
     }
 
-    let reviewPassed = evaluateReviewPassed(reviewRes.output);
+    let reviewPassed = evaluateReviewPassed(reviewRes);
     reviewerSummary = reviewRes.output;
 
     if (!reviewPassed) {
@@ -2065,7 +2339,7 @@ async function runExecutionPipeline(execution) {
         timestamp: Date.now(),
       });
 
-      const retryPrompt = `Implement .architect/ticket.md in the checkout. The reviewer found defects:\n${reviewRes.output}\nPlease resolve these defects. When finished, report your answer.`;
+      const retryPrompt = buildRetryPrompt(wt.cwd, reviewRes.output);
       const retryImplRes = await runChildSubagent(execution, {
         role: "implementer",
         cwd: wt.cwd,
@@ -2107,25 +2381,46 @@ async function runExecutionPipeline(execution) {
           message: reviewRes.error.message || "Second reviewer invocation failed",
           exitCode: reviewRes.error.exitCode,
           stderr: reviewRes.error.stderr,
+          findings: reviewRes.output,
         };
         await notifyTerminal(execution, "execution");
         return;
       }
 
-      reviewPassed = evaluateReviewPassed(reviewRes.output);
+      reviewPassed = evaluateReviewPassed(reviewRes);
       reviewerSummary = reviewRes.output;
 
       if (!reviewPassed) {
         execution.status = "failed";
         execution.error = {
           phase: "reviewing",
-          message: `Review failed after retry: ${reviewRes.output}`,
+          message: `Review failed after retry: ${reviewRes.output || "no output"}`,
           findings: reviewRes.output,
+          exitCode: reviewRes.exitCode,
         };
         await notifyTerminal(execution, "execution");
         return;
       }
     }
+  }
+
+  const hasChanges = await hasImplementationChanges(wt.cwd, wt.branch);
+  if (!hasChanges) {
+    execution.status = "failed";
+    execution.error = {
+      phase: "implementing",
+      message: "Implementation produced no code changes or commits (incomplete)",
+      status: "incomplete",
+      noChange: true,
+    };
+    addTrajectory(execution, {
+      action: "implementation_empty",
+      worktree: wt.cwd,
+      branch: wt.branch,
+      timestamp: Date.now(),
+    });
+    await notifyTerminal(execution, "execution");
+    return;
   }
 
   execution.phase = "landing";
@@ -2423,14 +2718,6 @@ export function sanitizeHeadTail(text, { headLen = 1000, tailLen = 1000 } = {}) 
   return `${text.slice(0, headLen)}\n… [${omitted} chars omitted] …\n${text.slice(text.length - tailLen)}`;
 }
 
-// Per-runner complete_task state: tracks whether each runner called complete_task.
-// Keyed by runnerId. Also used by the Stop hook for sub-agent tracking.
-export const COMPLETE_TASK_REGISTRY = new Map();
-
-const COMPLETE_TASK_RESPONSE_MAX = 64_000;
-const COMPLETE_TASK_DATA_POINTS_MAX = 20;
-const COMPLETE_TASK_DATA_POINT_LEN_MAX = 100;
-
 export async function completeTask(args = {}) {
   const { response, data_points } = args;
   if (!response || typeof response !== "string") {
@@ -2438,7 +2725,7 @@ export async function completeTask(args = {}) {
   }
   if (response.length > COMPLETE_TASK_RESPONSE_MAX) {
     throw new Error(
-      `response exceeds the 64,000-character cap (got ${response.length} chars). Summarize before calling complete_task.`,
+      `response exceeds the 32,768-character cap (got ${response.length} chars). Summarize before calling complete_task.`,
     );
   }
   if (data_points !== undefined) {
@@ -2462,20 +2749,49 @@ export async function completeTask(args = {}) {
     }
   }
 
-  // Mark that complete_task was called for this process/conversation.
-  // The Stop hook checks this registry to decide whether to allow termination.
-  const key = process.env.GEMINI_CONVERSATION_ID || process.env.ASTRA_CONVERSATION_ID || "default";
-  COMPLETE_TASK_REGISTRY.set(key, { calledAt: Date.now(), response, data_points });
+  const runnerId = process.env.QQ_RUNNER_ID || null;
+  const resultFile = process.env.QQ_RUNNER_RESULT_FILE || (runnerId ? join(tmpdir(), `qq-runner-result-${runnerId}.json`) : null);
 
-  // Write a marker file to tmpdir so the Stop hook subprocess can detect the call
-  // across process boundaries (hook runs as a separate Node.js process).
+  // If in runner context, atomically write to the dedicated result transport file first.
+  // CRITICAL: Failed writes must throw and MUST NOT authorize termination via registry or marker file!
+  if (resultFile) {
+    const payload = JSON.stringify({
+      runnerId,
+      response,
+      data_points: data_points ?? [],
+      calledAt: Date.now(),
+    });
+    const tmpPath = `${resultFile}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
+    try {
+      await writeFile(tmpPath, payload, "utf8");
+      await rename(tmpPath, resultFile);
+    } catch (err) {
+      try { await rm(tmpPath, { force: true }); } catch {}
+      throw new Error(`Failed to write runner result transport file: ${err.message}`);
+    }
+  }
+
+  // Record in memory registry for this process/conversation.
+  // Avoid default conversation ID cross-talk: bind explicitly to runnerId when present.
+  const markerKeys = new Set();
+  if (runnerId) markerKeys.add(runnerId);
+  if (process.env.GEMINI_CONVERSATION_ID) markerKeys.add(process.env.GEMINI_CONVERSATION_ID);
+  if (process.env.ASTRA_CONVERSATION_ID) markerKeys.add(process.env.ASTRA_CONVERSATION_ID);
+  if (markerKeys.size === 0) markerKeys.add("default");
+
+  const record = { calledAt: Date.now(), response, data_points: data_points ?? [] };
+  for (const k of markerKeys) {
+    COMPLETE_TASK_REGISTRY.set(k, record);
+  }
+
+  // Write marker file(s) for hooks across process boundaries.
   try {
-    const { tmpdir } = await import("node:os");
-    const { join: joinPath } = await import("node:path");
-    const markerPath = joinPath(tmpdir(), `qq-complete-task-${key}.json`);
-    await writeFile(markerPath, JSON.stringify({ calledAt: Date.now(), key }), "utf8");
+    for (const k of markerKeys) {
+      const markerPath = join(tmpdir(), `qq-complete-task-${k}.json`);
+      await writeFile(markerPath, JSON.stringify({ calledAt: Date.now(), key: k, runnerId }), "utf8");
+    }
   } catch {
-    // Best-effort: marker file failure must never block the tool response.
+    // Best-effort: marker file failure must never block tool response if transport file already succeeded
   }
 
   return {

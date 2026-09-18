@@ -74,6 +74,26 @@ export async function defaultLocalBranch(cwd) {
   throw new Error("no local main or master branch");
 }
 
+export async function hasImplementationChanges(cwd, branch) {
+  if (await isDirty(cwd)) return true;
+  let base = null;
+  try {
+    base = await defaultLocalBranch(cwd);
+  } catch {
+    try {
+      base = await defaultBaseRef(cwd);
+    } catch {}
+  }
+  if (!base) return false;
+  try {
+    const targetBranch = branch || await currentBranch(cwd);
+    const count = await git(cwd, ["rev-list", "--count", `${base}..${targetBranch}`]);
+    return parseInt(count.trim(), 10) > 0;
+  } catch {
+    return false;
+  }
+}
+
 export function parseWorktreePorcelain(text) {
   const trees = [];
   let current = {};

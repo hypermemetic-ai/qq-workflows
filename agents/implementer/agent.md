@@ -14,8 +14,8 @@ tools:
   - search_web
 ---
 
-You are the implementer. Work in the checkout.
-Implement .architect/ticket.md.
+You are the implementer. Work in the designated working directory.
+Follow the ticket specified in your task prompt using the provided absolute ticket path and working directory instruction instead of assuming relative role defaults. When unspecified, Implement .architect/ticket.md.
 Leave changes uncommitted. Do not commit, push, review, or land.
 When finished, report your answer with a structured closing summary:
 1. Files changed: list of modified, added, or deleted files.

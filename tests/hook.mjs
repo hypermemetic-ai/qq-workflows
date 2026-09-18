@@ -232,26 +232,291 @@ console.log("Stop hook tests passed successfully.");
   assert.deepEqual(parsedPiEmpty, {}, "PostInvocation hook must return {} with empty input");
 }
 
-// Test 10: PostInvocation hook returns terminationBehavior: "terminate" when complete_task is in payload
+// Test 10: Failed tool call named complete_task without marker must continue
+// (failed publication / oversized complete_task / tool exception cannot authorize stopping)
 {
-  const piPayloadId = `post-invocation-test-${Date.now()}-payload`;
-  const piPayloadInput = JSON.stringify({
-    conversationId: piPayloadId,
-    invocationNum: 1,
+  const testId = `hook-test-failed-call-${Date.now()}`;
+  const noMarkerPath = join(tmpdir(), `qq-complete-task-${testId}.json`);
+  try { rmSync(noMarkerPath, { force: true }); } catch {}
+
+  // Scenario 10a: PostInvocation hook receives real hook input with tool: "complete_task" but no marker
+  for (const inputPayload of [
+    { conversationId: testId, invocationNum: 1, tool: "complete_task" },
+    { conversationId: testId, invocationNum: 1, toolName: "complete_task", error: "response exceeds 32,768-character cap" },
+    { conversationId: testId, invocationNum: 1, toolCalls: [{ name: "complete_task", status: "error" }] },
+    { conversationId: testId, invocationNum: 1, steps: [{ tool_name: "complete_task" }] },
+  ]) {
+    const rawPi = execFileSync(process.execPath, ["hooks/post-invocation.mjs"], {
+      input: JSON.stringify(inputPayload),
+      encoding: "utf8",
+    });
+    assert.deepEqual(
+      JSON.parse(rawPi),
+      {},
+      "PostInvocation hook must return {} when complete_task was attempted in payload but failed (no marker)",
+    );
+
+    // Also with QQ_RUNNER_ID in dispatched runner context
+    const rawPiRunner = execFileSync(process.execPath, ["hooks/post-invocation.mjs"], {
+      input: JSON.stringify(inputPayload),
+      encoding: "utf8",
+      env: { ...process.env, QQ_RUNNER_ID: testId },
+    });
+    assert.deepEqual(
+      JSON.parse(rawPiRunner),
+      {},
+      "PostInvocation hook must return {} for dispatched runner when complete_task failed (no marker)",
+    );
+  }
+
+  // Scenario 10b: Stop hook receives model_stop with complete_task tool call in payload but no marker
+  const stopInput = JSON.stringify({
+    terminationReason: "model_stop",
+    conversationId: testId,
     tool: "complete_task",
   });
-
-  const rawPiPayload = execFileSync(process.execPath, ["hooks/post-invocation.mjs"], {
-    input: piPayloadInput,
+  const rawStop = execFileSync(process.execPath, ["hooks/stop.mjs"], {
+    input: stopInput,
     encoding: "utf8",
   });
-  const parsedPiPayload = JSON.parse(rawPiPayload);
   assert.equal(
-    parsedPiPayload.terminationBehavior,
-    "terminate",
-    "PostInvocation hook must return terminationBehavior: terminate when complete_task is in payload",
+    JSON.parse(rawStop).decision,
+    "continue",
+    "Stop hook must return continue when complete_task failed without marker",
+  );
+
+  const rawStopRunner = execFileSync(process.execPath, ["hooks/stop.mjs"], {
+    input: stopInput,
+    encoding: "utf8",
+    env: { ...process.env, QQ_RUNNER_ID: testId },
+  });
+  assert.equal(
+    JSON.parse(rawStopRunner).decision,
+    "continue",
+    "Stop hook must return continue for dispatched runner when complete_task failed without marker",
   );
 }
 
-console.log("PostInvocation hook tests passed successfully.");
+// Test 11: Valid marker success may terminate (PostInvocation terminates, Stop hook proceeds)
+{
+  const runnerId = `hook-test-valid-success-${Date.now()}`;
+  const markerPath = join(tmpdir(), `qq-complete-task-${runnerId}.json`);
+  writeFileSync(
+    markerPath,
+    JSON.stringify({ calledAt: Date.now(), key: runnerId, runnerId }),
+    "utf8",
+  );
 
+  try {
+    // PostInvocation hook authorizes termination when authoritative runner marker is present
+    const rawPi = execFileSync(process.execPath, ["hooks/post-invocation.mjs"], {
+      input: JSON.stringify({ conversationId: runnerId, invocationNum: 1 }),
+      encoding: "utf8",
+      env: { ...process.env, QQ_RUNNER_ID: runnerId },
+    });
+    assert.equal(
+      JSON.parse(rawPi).terminationBehavior,
+      "terminate",
+      "PostInvocation hook must return terminate when valid runner marker exists",
+    );
+
+    // Stop hook allows proceeding when authoritative runner marker is present
+    const rawStop = execFileSync(process.execPath, ["hooks/stop.mjs"], {
+      input: JSON.stringify({ terminationReason: "model_stop", conversationId: runnerId }),
+      encoding: "utf8",
+      env: { ...process.env, QQ_RUNNER_ID: runnerId },
+    });
+    assert.equal(
+      JSON.parse(rawStop).decision,
+      "proceed",
+      "Stop hook must return proceed when valid runner marker exists",
+    );
+  } finally {
+    try { rmSync(markerPath, { force: true }); } catch {}
+  }
+}
+
+// Test 12: Wrong runner marker not accepted
+{
+  const runnerA = `hook-test-runner-A-${Date.now()}`;
+  const runnerB = `hook-test-runner-B-${Date.now()}`;
+  const markerBPath = join(tmpdir(), `qq-complete-task-${runnerB}.json`);
+  const markerAPath = join(tmpdir(), `qq-complete-task-${runnerA}.json`);
+
+  // Only runner B has written a completion marker; runner A has NOT completed
+  writeFileSync(
+    markerBPath,
+    JSON.stringify({ calledAt: Date.now(), key: runnerB, runnerId: runnerB }),
+    "utf8",
+  );
+  try { rmSync(markerAPath, { force: true }); } catch {}
+
+  try {
+    // Runner A running hook with runner B's conversationId or payload must NOT accept runner B's marker
+    const wrongRunnerInput = JSON.stringify({
+      conversationId: runnerB,
+      invocationNum: 1,
+      tool: "complete_task",
+    });
+
+    const rawPi = execFileSync(process.execPath, ["hooks/post-invocation.mjs"], {
+      input: wrongRunnerInput,
+      encoding: "utf8",
+      env: { ...process.env, QQ_RUNNER_ID: runnerA },
+    });
+    assert.deepEqual(
+      JSON.parse(rawPi),
+      {},
+      "PostInvocation hook must reject wrong runner marker and continue",
+    );
+
+    const wrongStopInput = JSON.stringify({
+      terminationReason: "model_stop",
+      conversationId: runnerB,
+      tool: "complete_task",
+    });
+    const rawStop = execFileSync(process.execPath, ["hooks/stop.mjs"], {
+      input: wrongStopInput,
+      encoding: "utf8",
+      env: { ...process.env, QQ_RUNNER_ID: runnerA },
+    });
+    assert.equal(
+      JSON.parse(rawStop).decision,
+      "continue",
+      "Stop hook must reject wrong runner marker and continue",
+    );
+  } finally {
+    try { rmSync(markerBPath, { force: true }); } catch {}
+  }
+}
+
+// Test 13: Concurrent identity isolation
+{
+  // 13a: Dispatched runners concurrent identity
+  const concRunner1 = `hook-test-conc-1-${Date.now()}`;
+  const concRunner2 = `hook-test-conc-2-${Date.now()}`;
+  const marker1Path = join(tmpdir(), `qq-complete-task-${concRunner1}.json`);
+  const marker2Path = join(tmpdir(), `qq-complete-task-${concRunner2}.json`);
+
+  try { rmSync(marker1Path, { force: true }); } catch {}
+  try { rmSync(marker2Path, { force: true }); } catch {}
+
+  // Runner 1 completes first
+  writeFileSync(
+    marker1Path,
+    JSON.stringify({ calledAt: Date.now(), key: concRunner1, runnerId: concRunner1 }),
+    "utf8",
+  );
+
+  try {
+    // Runner 2 still running: must not be authorized by runner 1's marker
+    const pi2 = execFileSync(process.execPath, ["hooks/post-invocation.mjs"], {
+      input: JSON.stringify({ conversationId: concRunner2, invocationNum: 1 }),
+      encoding: "utf8",
+      env: { ...process.env, QQ_RUNNER_ID: concRunner2 },
+    });
+    assert.deepEqual(JSON.parse(pi2), {}, "Concurrent runner 2 must continue while runner 1 is done");
+
+    const stop2 = execFileSync(process.execPath, ["hooks/stop.mjs"], {
+      input: JSON.stringify({ terminationReason: "model_stop", conversationId: concRunner2 }),
+      encoding: "utf8",
+      env: { ...process.env, QQ_RUNNER_ID: concRunner2 },
+    });
+    assert.equal(JSON.parse(stop2).decision, "continue", "Concurrent runner 2 must be blocked by Stop hook");
+
+    // Runner 1 is authorized
+    const pi1 = execFileSync(process.execPath, ["hooks/post-invocation.mjs"], {
+      input: JSON.stringify({ conversationId: concRunner1, invocationNum: 1 }),
+      encoding: "utf8",
+      env: { ...process.env, QQ_RUNNER_ID: concRunner1 },
+    });
+    assert.equal(JSON.parse(pi1).terminationBehavior, "terminate");
+
+    const stop1 = execFileSync(process.execPath, ["hooks/stop.mjs"], {
+      input: JSON.stringify({ terminationReason: "model_stop", conversationId: concRunner1 }),
+      encoding: "utf8",
+      env: { ...process.env, QQ_RUNNER_ID: concRunner1 },
+    });
+    assert.equal(JSON.parse(stop1).decision, "proceed");
+
+    // Now runner 2 completes
+    writeFileSync(
+      marker2Path,
+      JSON.stringify({ calledAt: Date.now(), key: concRunner2, runnerId: concRunner2 }),
+      "utf8",
+    );
+
+    const pi2Done = execFileSync(process.execPath, ["hooks/post-invocation.mjs"], {
+      input: JSON.stringify({ conversationId: concRunner2, invocationNum: 2 }),
+      encoding: "utf8",
+      env: { ...process.env, QQ_RUNNER_ID: concRunner2 },
+    });
+    assert.equal(JSON.parse(pi2Done).terminationBehavior, "terminate");
+
+    const stop2Done = execFileSync(process.execPath, ["hooks/stop.mjs"], {
+      input: JSON.stringify({ terminationReason: "model_stop", conversationId: concRunner2 }),
+      encoding: "utf8",
+      env: { ...process.env, QQ_RUNNER_ID: concRunner2 },
+    });
+    assert.equal(JSON.parse(stop2Done).decision, "proceed");
+  } finally {
+    try { rmSync(marker1Path, { force: true }); } catch {}
+    try { rmSync(marker2Path, { force: true }); } catch {}
+  }
+
+  // 13b: Standalone sessions concurrent identity
+  const concSess1 = `hook-test-concsess-1-${Date.now()}`;
+  const concSess2 = `hook-test-concsess-2-${Date.now()}`;
+  const markerSess1Path = join(tmpdir(), `qq-complete-task-${concSess1}.json`);
+  const markerSess2Path = join(tmpdir(), `qq-complete-task-${concSess2}.json`);
+
+  try { rmSync(markerSess1Path, { force: true }); } catch {}
+  try { rmSync(markerSess2Path, { force: true }); } catch {}
+
+  // Standalone session 1 completes
+  writeFileSync(
+    markerSess1Path,
+    JSON.stringify({ calledAt: Date.now(), key: concSess1 }),
+    "utf8",
+  );
+
+  try {
+    // Standalone session 2 still running (no QQ_RUNNER_ID in env)
+    const envClean = { ...process.env };
+    delete envClean.QQ_RUNNER_ID;
+
+    const piSess2 = execFileSync(process.execPath, ["hooks/post-invocation.mjs"], {
+      input: JSON.stringify({ conversationId: concSess2, invocationNum: 1 }),
+      encoding: "utf8",
+      env: envClean,
+    });
+    assert.deepEqual(JSON.parse(piSess2), {}, "Standalone session 2 must continue");
+
+    const stopSess2 = execFileSync(process.execPath, ["hooks/stop.mjs"], {
+      input: JSON.stringify({ terminationReason: "model_stop", conversationId: concSess2 }),
+      encoding: "utf8",
+      env: envClean,
+    });
+    assert.equal(JSON.parse(stopSess2).decision, "continue", "Standalone session 2 must be blocked");
+
+    // Standalone session 1 is authorized
+    const piSess1 = execFileSync(process.execPath, ["hooks/post-invocation.mjs"], {
+      input: JSON.stringify({ conversationId: concSess1, invocationNum: 1 }),
+      encoding: "utf8",
+      env: envClean,
+    });
+    assert.equal(JSON.parse(piSess1).terminationBehavior, "terminate");
+
+    const stopSess1 = execFileSync(process.execPath, ["hooks/stop.mjs"], {
+      input: JSON.stringify({ terminationReason: "model_stop", conversationId: concSess1 }),
+      encoding: "utf8",
+      env: envClean,
+    });
+    assert.equal(JSON.parse(stopSess1).decision, "proceed");
+  } finally {
+    try { rmSync(markerSess1Path, { force: true }); } catch {}
+    try { rmSync(markerSess2Path, { force: true }); } catch {}
+  }
+}
+
+console.log("PostInvocation hook tests passed successfully.");
