@@ -4,6 +4,16 @@ delete process.env.QQ_IMPLEMENTER_PROVIDER;
 delete process.env.QQ_REVIEWER_PROVIDER;
 delete process.env.QQ_RESEARCHER_PROVIDER;
 delete process.env.QQ_WORKFLOW_PROVIDER;
+
+// Disable proc thread autodiscovery for entire test lifecycle.
+globalThis.__QQ_TEST_DISABLE_PROC_THREAD = true;
+
+// Scrub live notification routing/thread env for direct test execution.
+// Targeted actual live routing values (preserve needed config: CODEX_HOME, CODEX_MODEL, CODEX_BIN).
+delete process.env.CODEX_THREAD_ID;
+delete process.env.CODEX_SESSION_ID;
+delete process.env.CODEX_CONVERSATION_ID;
+process.env.QQ_CODEX_BIN = "/usr/bin/true";
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -2691,7 +2701,7 @@ DETECTED_CODEX_HOMES.delete("sess-detected");
     assert.equal(rejoined, tricky, "queue message argv must survive shell-hostile content verbatim");
   } finally {
     delete process.env.CODEX_SESSION_ID;
-    delete process.env.QQ_CODEX_BIN;
+    process.env.QQ_CODEX_BIN = "/usr/bin/true";
     rmSync(fakeDir, { recursive: true, force: true });
   }
 
@@ -2703,7 +2713,7 @@ DETECTED_CODEX_HOMES.delete("sess-detected");
     assert.equal(res.notified, false);
   } finally {
     delete process.env.CODEX_SESSION_ID;
-    delete process.env.QQ_CODEX_BIN;
+    process.env.QQ_CODEX_BIN = "/usr/bin/true";
   }
 }
 
@@ -2967,6 +2977,178 @@ DETECTED_CODEX_HOMES.delete("sess-detected");
   stopSuspicionSweeper(); // safe with no singleton armed
 }
 
+// N10. Regression: Inherited live-looking thread environment + no proc discovery
+// guarantees notification isolation across test lifecycle. Real notification transport
+// is never invoked; fake transport spies verify zero real sends. Mocked notification
+// seams continue to work as expected.
+{
+  const fakeBinDir = mkdtempSync(join(tmpdir(), "qq-test-notify-spy-"));
+  const spyLog = join(fakeBinDir, "spy-calls.log");
+  const fakeCodexSpy = join(fakeBinDir, "codex");
+  // Spy binary that logs all invocations and arguments
+  writeFileSync(
+    fakeCodexSpy,
+    `#!/usr/bin/env bash\nfor a in "$@"; do echo "ARG:$a" >> "${spyLog}"; done\nexit 0\n`,
+    "utf8",
+  );
+  execFileSync("chmod", ["+x", fakeCodexSpy]);
+
+  const origProcThread = globalThis.__QQ_TEST_DISABLE_PROC_THREAD;
+  const origCodexBin = process.env.QQ_CODEX_BIN;
+  const origThreadId = process.env.CODEX_THREAD_ID;
+  const origSessionId = process.env.CODEX_SESSION_ID;
+  const origConvId = process.env.CODEX_CONVERSATION_ID;
+
+  try {
+    // 1. Verify baseline disabled flag is active
+    assert.equal(globalThis.__QQ_TEST_DISABLE_PROC_THREAD, true, "baseline proc thread discovery must be disabled");
+
+    // 2. Even with an ancestor or active process tree, findCodexThreadFromProc returns null
+    assert.equal(findCodexThreadFromProc(), null, "proc discovery must return null when disabled");
+    assert.equal(findCodexThreadFromProc(process.pid), null);
+
+    // 3. Inherited live-looking thread environment simulation
+    const liveThread = "11112222-3333-4444-5555-666677778888";
+    process.env.CODEX_THREAD_ID = liveThread;
+    process.env.CODEX_SESSION_ID = liveThread;
+    process.env.CODEX_CONVERSATION_ID = liveThread;
+    process.env.QQ_CODEX_BIN = fakeCodexSpy;
+
+    // Direct resolution would find inherited thread if not scrubbed
+    assert.equal(resolveCodexThreadId("sess-live"), liveThread);
+
+    // Now verify test isolation scrubbing:
+    // When live routing keys are scrubbed (as done by harness / direct test startup):
+    delete process.env.CODEX_THREAD_ID;
+    delete process.env.CODEX_SESSION_ID;
+    delete process.env.CODEX_CONVERSATION_ID;
+
+    // With keys scrubbed and proc discovery disabled, resolveCodexThreadId must be null
+    assert.equal(resolveCodexThreadId("sess-live"), null);
+    assert.equal(resolveCodexThreadId(null), null);
+
+    // 4. Completed runner/execution under test isolation:
+    // notifyTerminal must result in no-codex-context and NEVER invoke the transport spy
+    const testRunner = {
+      runnerId: "iso-runner-1",
+      status: "completed",
+      startedAt: Date.now() - 5000,
+      result: "Done isolation test",
+    };
+    const termRes = await notifyTerminal(testRunner, "runner");
+    assert.equal(termRes.notified, false);
+    assert.equal(termRes.reason, "no-codex-context");
+
+    const testExec = {
+      id: "iso-exec-1",
+      kind: "bounded",
+      status: "completed",
+      phase: "completed",
+      startedAt: Date.now() - 5000,
+      result: { verifiedStory: "Isolation verified", landingOutcome: { landed: true } },
+    };
+    const execTermRes = await notifyTerminal(testExec, "execution");
+    assert.equal(execTermRes.notified, false);
+    assert.equal(execTermRes.reason, "no-codex-context");
+
+    // Zero real sends: spy binary was never invoked
+    assert.equal(existsSync(spyLog), false, "fake transport spy must not have been executed");
+
+    // 5. Explicit safe notification transport via existing seams (mocked handler) still works
+    const hookCalls = [];
+    globalThis.__QQ_TEST_NOTIFY_HANDLER = async (call) => { hookCalls.push(call); };
+    try {
+      const hookedRunner = {
+        runnerId: "iso-runner-2",
+        status: "completed",
+        startedAt: Date.now() - 5000,
+        result: "Hooked test",
+      };
+      const hookRes = await notifyTerminal(hookedRunner, "runner");
+      assert.equal(hookRes.notified, true);
+      assert.equal(hookRes.via, "test-hook");
+      assert.equal(hookCalls.length, 1);
+      assert.equal(hookCalls[0].trackerId, "iso-runner-2");
+      // Transport spy was STILL never executed
+      assert.equal(existsSync(spyLog), false, "transport spy must not be called when test hook is active");
+    } finally {
+      delete globalThis.__QQ_TEST_NOTIFY_HANDLER;
+    }
+
+    // 6. Scoped tests restore baseline disabled flag rather than delete/enable
+    // Simulate a scoped block that temporarily modifies the flag:
+    (() => {
+      try {
+        globalThis.__QQ_TEST_DISABLE_PROC_THREAD = false;
+        assert.equal(globalThis.__QQ_TEST_DISABLE_PROC_THREAD, false);
+      } finally {
+        // Scoped test must restore baseline disabled flag rather than delete
+        globalThis.__QQ_TEST_DISABLE_PROC_THREAD = true;
+      }
+    })();
+    assert.equal(globalThis.__QQ_TEST_DISABLE_PROC_THREAD, true, "scoped block must restore baseline disabled flag");
+    assert.equal(findCodexThreadFromProc(), null);
+
+    // 7. Dispatching runner does not populate DETECTED_CODEX_THREADS when proc discovery is disabled
+    globalThis.__QQ_TEST_RUNNER_HANDLER = () => {};
+    try {
+      const disp = await dispatchRunner({ task: "isolation check", cwd: tmpdir(), sessionId: "sess-iso-proc" });
+      assert.equal(DETECTED_CODEX_THREADS.has("sess-iso-proc"), false, "dispatchRunner must not record proc thread when disabled");
+      RUNNERS.delete(disp.runnerId);
+    } finally {
+      delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+    }
+
+    // 8. Test harness environment scrubbing: targeted actual live routing values (preserve needed config)
+    const fakeInherited = {
+      PATH: process.env.PATH,
+      CODEX_HOME: "/home/user/.codex",
+      CODEX_MODEL: "gpt-6-astra",
+      CODEX_BIN: "/usr/local/bin/codex",
+      CODEX_THREAD_ID: "0000-thread",
+      CODEX_SESSION_ID: "0000-session",
+      CODEX_CONVERSATION_ID: "0000-conv",
+      QQ_IMPLEMENTER_PROVIDER: "fake",
+    };
+    const scrubbed = { ...fakeInherited };
+    delete scrubbed.GIT_DIR;
+    delete scrubbed.GIT_WORK_TREE;
+    delete scrubbed.QQ_IMPLEMENTER_PROVIDER;
+    delete scrubbed.QQ_REVIEWER_PROVIDER;
+    delete scrubbed.QQ_RESEARCHER_PROVIDER;
+    delete scrubbed.QQ_WORKFLOW_PROVIDER;
+    delete scrubbed.CODEX_THREAD_ID;
+    delete scrubbed.CODEX_SESSION_ID;
+    delete scrubbed.CODEX_CONVERSATION_ID;
+    scrubbed.QQ_CODEX_BIN = "/usr/bin/true";
+
+    assert.equal(scrubbed.CODEX_THREAD_ID, undefined, "CODEX_THREAD_ID must be scrubbed");
+    assert.equal(scrubbed.CODEX_SESSION_ID, undefined, "CODEX_SESSION_ID must be scrubbed");
+    assert.equal(scrubbed.CODEX_CONVERSATION_ID, undefined, "CODEX_CONVERSATION_ID must be scrubbed");
+    assert.equal(scrubbed.CODEX_HOME, "/home/user/.codex", "CODEX_HOME needed config must be preserved");
+    assert.equal(scrubbed.CODEX_MODEL, "gpt-6-astra", "CODEX_MODEL needed config must be preserved");
+    assert.equal(scrubbed.CODEX_BIN, "/usr/local/bin/codex", "CODEX_BIN needed config must be preserved");
+    assert.equal(scrubbed.QQ_CODEX_BIN, "/usr/bin/true", "safe notification transport backstop must be set");
+  } finally {
+    if (origProcThread !== undefined) globalThis.__QQ_TEST_DISABLE_PROC_THREAD = origProcThread;
+    else globalThis.__QQ_TEST_DISABLE_PROC_THREAD = true;
+
+    if (origCodexBin !== undefined) process.env.QQ_CODEX_BIN = origCodexBin;
+    else process.env.QQ_CODEX_BIN = "/usr/bin/true";
+
+    if (origThreadId !== undefined) process.env.CODEX_THREAD_ID = origThreadId;
+    else delete process.env.CODEX_THREAD_ID;
+
+    if (origSessionId !== undefined) process.env.CODEX_SESSION_ID = origSessionId;
+    else delete process.env.CODEX_SESSION_ID;
+
+    if (origConvId !== undefined) process.env.CODEX_CONVERSATION_ID = origConvId;
+    else delete process.env.CODEX_CONVERSATION_ID;
+
+    rmSync(fakeBinDir, { recursive: true, force: true });
+  }
+}
+
 // ============================================================================
 // Disabled tools: Astra dispatch-and-yield hides the await tools from its
 // callable schema via --disabled-tools / QQ_DISABLED_TOOLS.
@@ -3123,12 +3305,13 @@ assert.equal(getDisabledTools([], {}).size, 0);
   }
 }
 
-// Restore any pre-existing notify env (tests above delete-then-restore).
-for (const [key, value] of Object.entries(savedNotifyEnv)) {
-  if (value === undefined) delete process.env[key];
-  else process.env[key] = value;
-}
-delete globalThis.__QQ_TEST_DISABLE_PROC_THREAD;
+// Restore baseline notification isolation: ensure live routing keys remain scrubbed,
+// safe transport is restored, and proc thread autodiscovery remains disabled.
+delete process.env.CODEX_THREAD_ID;
+delete process.env.CODEX_SESSION_ID;
+delete process.env.CODEX_CONVERSATION_ID;
+process.env.QQ_CODEX_BIN = "/usr/bin/true";
+globalThis.__QQ_TEST_DISABLE_PROC_THREAD = true;
 
 console.log("MCP server tests passed cleanly.");
 
