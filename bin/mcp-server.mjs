@@ -439,7 +439,7 @@ export function buildImplementerPrompt(worktreeCwd) {
 
 export function buildReviewerPrompt(worktreeCwd) {
   const ticketPath = join(worktreeCwd, ".architect", "ticket.md");
-  return `Follow '${ticketPath}' in working directory '${worktreeCwd}'. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.`;
+  return `Follow '${ticketPath}' in working directory '${worktreeCwd}'. Follow its testing plan. Do not change project code. Run tests to completion and report Verdict: PASS/FAIL with evidence; incomplete verification must not emit a fake FAIL. In non-interactive execution, ending your turn while background tasks run cancels them; actively await all background verification tasks until finished. Incomplete tests are not code defects.`;
 }
 
 export function buildRetryPrompt(worktreeCwd, reviewerOutput) {
@@ -1915,24 +1915,67 @@ export function parseReviewVerdict(output) {
   return { verdict: null, reason: "ambiguous_verdict" };
 }
 
-export function evaluateReviewPassed(outputOrResult, explicitExitCode) {
+export function isTrustworthyReviewFail(outputOrResult, explicitExitCode) {
   let output = outputOrResult;
   let exitCode = explicitExitCode ?? 0;
+  let hasProcessError = false;
 
   if (outputOrResult && typeof outputOrResult === "object") {
     output = outputOrResult.output;
+    hasProcessError = Boolean(
+      outputOrResult.error ||
+      outputOrResult.ok === false ||
+      (typeof outputOrResult.exitCode === "number" && outputOrResult.exitCode !== 0) ||
+      (typeof outputOrResult.error?.exitCode === "number" && outputOrResult.error.exitCode !== 0)
+    );
     if (explicitExitCode === undefined) {
-      if (outputOrResult.exitCode !== undefined) {
+      if (typeof outputOrResult.exitCode === "number") {
         exitCode = outputOrResult.exitCode;
-      } else if (outputOrResult.error?.exitCode !== undefined) {
+      } else if (typeof outputOrResult.error?.exitCode === "number") {
         exitCode = outputOrResult.error.exitCode;
-      } else if (outputOrResult.ok === false) {
+      } else if (hasProcessError) {
         exitCode = 1;
       }
     }
   }
 
-  if (typeof exitCode === "number" && exitCode !== 0) {
+  if (hasProcessError || (typeof exitCode === "number" && exitCode !== 0)) {
+    return false;
+  }
+
+  if (!output || typeof output !== "string" || !output.trim()) {
+    return false;
+  }
+
+  const parsed = parseReviewVerdict(output);
+  return parsed.verdict === "FAIL" && !parsed.conflicting;
+}
+
+export function evaluateReviewPassed(outputOrResult, explicitExitCode) {
+  let output = outputOrResult;
+  let exitCode = explicitExitCode ?? 0;
+  let hasProcessError = false;
+
+  if (outputOrResult && typeof outputOrResult === "object") {
+    output = outputOrResult.output;
+    hasProcessError = Boolean(
+      outputOrResult.error ||
+      outputOrResult.ok === false ||
+      (typeof outputOrResult.exitCode === "number" && outputOrResult.exitCode !== 0) ||
+      (typeof outputOrResult.error?.exitCode === "number" && outputOrResult.error.exitCode !== 0)
+    );
+    if (explicitExitCode === undefined) {
+      if (typeof outputOrResult.exitCode === "number") {
+        exitCode = outputOrResult.exitCode;
+      } else if (typeof outputOrResult.error?.exitCode === "number") {
+        exitCode = outputOrResult.error.exitCode;
+      } else if (hasProcessError) {
+        exitCode = 1;
+      }
+    }
+  }
+
+  if (hasProcessError || (typeof exitCode === "number" && exitCode !== 0)) {
     return false;
   }
 
@@ -2315,23 +2358,29 @@ async function runExecutionPipeline(execution) {
     });
     touchActivity(execution);
 
-    if (reviewRes.error) {
+    const hasProcessError = Boolean(
+      reviewRes.error ||
+      reviewRes.ok === false ||
+      (typeof reviewRes.exitCode === "number" && reviewRes.exitCode !== 0) ||
+      (typeof reviewRes.error?.exitCode === "number" && reviewRes.error.exitCode !== 0)
+    );
+
+    if (hasProcessError) {
       execution.status = "failed";
       execution.error = {
         phase: "reviewing",
-        message: reviewRes.error.message || "Reviewer failed",
-        exitCode: reviewRes.error.exitCode,
-        stderr: reviewRes.error.stderr,
+        message: reviewRes.error?.message || "Reviewer process failed",
+        exitCode: reviewRes.error?.exitCode ?? reviewRes.exitCode,
+        stderr: reviewRes.error?.stderr,
         findings: reviewRes.output,
       };
       await notifyTerminal(execution, "execution");
       return;
     }
 
-    let reviewPassed = evaluateReviewPassed(reviewRes);
-    reviewerSummary = reviewRes.output;
-
-    if (!reviewPassed) {
+    if (evaluateReviewPassed(reviewRes)) {
+      reviewerSummary = reviewRes.output;
+    } else if (isTrustworthyReviewFail(reviewRes)) {
       execution.phase = "retrying";
       addTrajectory(execution, {
         action: "review_failed_retrying",
@@ -2374,23 +2423,29 @@ async function runExecutionPipeline(execution) {
       });
       touchActivity(execution);
 
-      if (reviewRes.error) {
+      const hasProcessError2 = Boolean(
+        reviewRes.error ||
+        reviewRes.ok === false ||
+        (typeof reviewRes.exitCode === "number" && reviewRes.exitCode !== 0) ||
+        (typeof reviewRes.error?.exitCode === "number" && reviewRes.error.exitCode !== 0)
+      );
+
+      if (hasProcessError2) {
         execution.status = "failed";
         execution.error = {
           phase: "reviewing",
-          message: reviewRes.error.message || "Second reviewer invocation failed",
-          exitCode: reviewRes.error.exitCode,
-          stderr: reviewRes.error.stderr,
+          message: reviewRes.error?.message || "Second reviewer process failed",
+          exitCode: reviewRes.error?.exitCode ?? reviewRes.exitCode,
+          stderr: reviewRes.error?.stderr,
           findings: reviewRes.output,
         };
         await notifyTerminal(execution, "execution");
         return;
       }
 
-      reviewPassed = evaluateReviewPassed(reviewRes);
-      reviewerSummary = reviewRes.output;
-
-      if (!reviewPassed) {
+      if (evaluateReviewPassed(reviewRes)) {
+        reviewerSummary = reviewRes.output;
+      } else if (isTrustworthyReviewFail(reviewRes)) {
         execution.status = "failed";
         execution.error = {
           phase: "reviewing",
@@ -2400,7 +2455,43 @@ async function runExecutionPipeline(execution) {
         };
         await notifyTerminal(execution, "execution");
         return;
+      } else {
+        const parsed2 = parseReviewVerdict(reviewRes.output);
+        execution.status = "failed";
+        execution.error = {
+          phase: "reviewing",
+          status: "incomplete",
+          message: `Verification incomplete: second reviewer exited without completed verdict (${parsed2.reason || "uncompleted"})`,
+          findings: reviewRes.output,
+          reason: parsed2.reason,
+        };
+        addTrajectory(execution, {
+          action: "review_incomplete",
+          reason: parsed2.reason,
+          findings: reviewRes.output,
+          timestamp: Date.now(),
+        });
+        await notifyTerminal(execution, "execution");
+        return;
       }
+    } else {
+      const parsed = parseReviewVerdict(reviewRes.output);
+      execution.status = "failed";
+      execution.error = {
+        phase: "reviewing",
+        status: "incomplete",
+        message: `Verification incomplete: reviewer exited without completed verdict (${parsed.reason || "uncompleted"})`,
+        findings: reviewRes.output,
+        reason: parsed.reason,
+      };
+      addTrajectory(execution, {
+        action: "review_incomplete",
+        reason: parsed.reason,
+        findings: reviewRes.output,
+        timestamp: Date.now(),
+      });
+      await notifyTerminal(execution, "execution");
+      return;
     }
   }
 
