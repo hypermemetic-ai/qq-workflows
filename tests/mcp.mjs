@@ -86,6 +86,7 @@ import {
   toolSilenceThresholdMs,
   updateTicket,
   evaluateReviewPassed,
+  isTrustworthyReviewFail,
   parseReviewVerdict,
   buildImplementerPrompt,
   buildReviewerPrompt,
@@ -417,7 +418,7 @@ try {
   );
   assert.equal(
     openResult.reviewerPrompt,
-    `Follow '${join(openResult.worktree, ".architect", "ticket.md")}' in working directory '${openResult.worktree}'. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.`,
+    `Follow '${join(openResult.worktree, ".architect", "ticket.md")}' in working directory '${openResult.worktree}'. Follow its testing plan. Do not change project code. Run tests to completion and report Verdict: PASS/FAIL with evidence; incomplete verification must not emit a fake FAIL. In non-interactive execution, ending your turn while background tasks run cancels them; actively await all background verification tasks until finished. Incomplete tests are not code defects.`,
   );
 
   // 5b. Verify prepare_worktree with provider: "gemini" outputs agy commands
@@ -3749,27 +3750,32 @@ Duration: 4.5s
 - **Verdict**: **FAIL**
 `;
   assert.equal(evaluateReviewPassed(isoOutput), false, "Markdown bold **Verdict**: **FAIL** must fail despite '22 passed'");
+  assert.equal(isTrustworthyReviewFail(isoOutput), true, "Explicit FAIL with incidental passed text is trustworthy FAIL");
   const parsedA = parseReviewVerdict(isoOutput);
   assert.equal(parsedA.verdict, "FAIL");
 
   // Variant B: bulleted bold with 'all tests passed' text
   const bulletFail = `- **Verdict**: FAIL\nAll baseline tests passed, but acceptance criterion 3 was violated.`;
   assert.equal(evaluateReviewPassed(bulletFail), false);
+  assert.equal(isTrustworthyReviewFail(bulletFail), true);
   assert.equal(parseReviewVerdict(bulletFail).verdict, "FAIL");
 
   // Variant C: bold colon format
   const colonFail = `**Verdict:** **FAIL**\n100 passed`;
   assert.equal(evaluateReviewPassed(colonFail), false);
+  assert.equal(isTrustworthyReviewFail(colonFail), true);
 
   // Variant D: Header format
   const headerFail = `### Verdict: FAIL\npassed 10/11`;
   assert.equal(evaluateReviewPassed(headerFail), false);
+  assert.equal(isTrustworthyReviewFail(headerFail), true);
 }
 
 // T2. Markdown PASS formats.
 {
   const passA = `All 15 tests green.\n- **Verdict**: **PASS**`;
   assert.equal(evaluateReviewPassed(passA), true);
+  assert.equal(isTrustworthyReviewFail(passA), false, "Genuine PASS is not a defect fail");
   assert.equal(parseReviewVerdict(passA).verdict, "PASS");
 
   const passB = `**Verdict:** PASS\nVerification complete.`;
@@ -3804,6 +3810,16 @@ Duration: 4.5s
 
   const conflictReverse = `Verdict: FAIL\nVerdict: PASS`;
   assert.equal(evaluateReviewPassed(conflictReverse), false, "explicit FAIL overrides PASS in conflicting verdicts");
+  assert.equal(isTrustworthyReviewFail(conflictOutput), false, "conflicting verdicts are not trustworthy FAIL");
+  assert.equal(isTrustworthyReviewFail(conflictReverse), false, "conflicting verdicts are not trustworthy FAIL");
+
+  // Waiting / incomplete response from incident a0964663
+  const waitingOutput = "I have started running `npm test` to verify the test suite. I will review the results as soon as the execution finishes.\nI will wait for `npm test` to complete.\nWaiting for background task to complete.";
+  assert.equal(evaluateReviewPassed(waitingOutput), false, "waiting output is not PASS");
+  assert.equal(isTrustworthyReviewFail(waitingOutput), false, "waiting output is not trustworthy FAIL");
+  assert.equal(parseReviewVerdict(waitingOutput).verdict, null);
+  assert.equal(isTrustworthyReviewFail(""), false);
+  assert.equal(isTrustworthyReviewFail(null), false);
 }
 
 // T4. Nonzero reviewer exit must reject regardless of output.
@@ -3815,6 +3831,14 @@ Duration: 4.5s
   assert.equal(evaluateReviewPassed({ output: passText, exitCode: 1 }), false);
   assert.equal(evaluateReviewPassed({ output: passText, error: { exitCode: 1 } }), false);
   assert.equal(evaluateReviewPassed({ output: passText, ok: false }), false);
+  assert.equal(isTrustworthyReviewFail(passText, 1), false);
+  assert.equal(isTrustworthyReviewFail("- **Verdict**: FAIL\nDefect", 1), false, "exitCode != 0 is process error, not trustworthy FAIL");
+  assert.equal(isTrustworthyReviewFail({ output: "- **Verdict**: FAIL", exitCode: 1 }), false);
+  assert.equal(isTrustworthyReviewFail({ output: "- **Verdict**: FAIL", error: { exitCode: 1 } }), false);
+  assert.equal(isTrustworthyReviewFail({ output: "- **Verdict**: FAIL", error: { message: "crashed" } }), false, "error object without exitCode must not be trustworthy FAIL");
+  assert.equal(isTrustworthyReviewFail({ output: "- **Verdict**: FAIL", ok: false, exitCode: 0 }), false, "ok: false with exitCode 0 must not be trustworthy FAIL");
+  assert.equal(evaluateReviewPassed({ output: passText, error: { message: "crashed" } }), false, "error object without exitCode must not pass");
+  assert.equal(evaluateReviewPassed({ output: passText, ok: false, exitCode: 0 }), false, "ok: false with exitCode 0 must not pass");
 
   // In pipeline: reviewer nonzero exit triggers failure / preserves evidence
   const testRepo = mkdtempSync(join(tmpdir(), "qq-test-exitcode-repo-"));
@@ -3988,7 +4012,7 @@ Duration: 4.5s
   const revPrompt = buildReviewerPrompt(customWtDir);
   assert.equal(
     revPrompt,
-    `Follow '${expectedTicket}' in working directory '${customWtDir}'. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.`,
+    `Follow '${expectedTicket}' in working directory '${customWtDir}'. Follow its testing plan. Do not change project code. Run tests to completion and report Verdict: PASS/FAIL with evidence; incomplete verification must not emit a fake FAIL. In non-interactive execution, ending your turn while background tasks run cancels them; actively await all background verification tasks until finished. Incomplete tests are not code defects.`,
   );
   assert.ok(revPrompt.includes(`'${expectedTicket}'`));
   assert.ok(revPrompt.includes(`'${customWtDir}'`));
@@ -4033,7 +4057,7 @@ Duration: 4.5s
   );
   assert.equal(
     prepOpen.reviewerPrompt,
-    `Follow '${join(prepOpen.worktree, ".architect", "ticket.md")}' in working directory '${prepOpen.worktree}'. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.`,
+    `Follow '${join(prepOpen.worktree, ".architect", "ticket.md")}' in working directory '${prepOpen.worktree}'. Follow its testing plan. Do not change project code. Run tests to completion and report Verdict: PASS/FAIL with evidence; incomplete verification must not emit a fake FAIL. In non-interactive execution, ending your turn while background tasks run cancels them; actively await all background verification tasks until finished. Incomplete tests are not code defects.`,
   );
   assert.ok(prepOpen.instructions.includes(prepOpen.implementerPrompt));
   assert.ok(prepOpen.instructions.includes(prepOpen.reviewerPrompt));
@@ -4097,7 +4121,7 @@ Duration: 4.5s
     assert.equal(capturedSubagentCalls[1].cwd, wtCwd);
     assert.equal(
       capturedSubagentCalls[1].prompt,
-      `Follow '${wtTicket}' in working directory '${wtCwd}'. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.`,
+      `Follow '${wtTicket}' in working directory '${wtCwd}'. Follow its testing plan. Do not change project code. Run tests to completion and report Verdict: PASS/FAIL with evidence; incomplete verification must not emit a fake FAIL. In non-interactive execution, ending your turn while background tasks run cancels them; actively await all background verification tasks until finished. Incomplete tests are not code defects.`,
     );
 
     // Call 3: retry implementer
@@ -4110,11 +4134,331 @@ Duration: 4.5s
     assert.equal(capturedSubagentCalls[3].cwd, wtCwd);
     assert.equal(
       capturedSubagentCalls[3].prompt,
-      `Follow '${wtTicket}' in working directory '${wtCwd}'. Follow its testing plan. Do not change project code. Report findings. Empty findings means it passed.`,
+      `Follow '${wtTicket}' in working directory '${wtCwd}'. Follow its testing plan. Do not change project code. Run tests to completion and report Verdict: PASS/FAIL with evidence; incomplete verification must not emit a fake FAIL. In non-interactive execution, ending your turn while background tasks run cancels them; actively await all background verification tasks until finished. Incomplete tests are not code defects.`,
     );
   } finally {
     delete globalThis.__QQ_TEST_SUBAGENT_HANDLER;
     rmSync(ambientRepo, { recursive: true, force: true });
+  }
+}
+
+// T7. Incident a0964663 reproduction: reviewer waiting response causes verification incomplete,
+// NO implementer retry, NO landing, preserves ticket and worktree.
+{
+  const waitRepo = mkdtempSync(join(tmpdir(), "qq-test-waiting-repo-"));
+  await git(waitRepo, ["init", "-b", "main"]);
+  await git(waitRepo, ["config", "user.name", "Waiting Test"]);
+  await git(waitRepo, ["config", "user.email", "waiting@example.com"]);
+  writeFileSync(join(waitRepo, "app.txt"), "v1\n");
+  await git(waitRepo, ["add", "app.txt"]);
+  await git(waitRepo, ["commit", "-m", "init"]);
+
+  const tDir = join(waitRepo, ".architect", "tickets");
+  mkdirSync(tDir, { recursive: true });
+  const sessId = "waiting-review-" + Date.now();
+  const ticketPath = join(tDir, `${sessId}.md`);
+  writeFileSync(ticketPath, "# Waiting Review Ticket\n\n## Kind\nopen\n");
+
+  const capturedSubagentCalls = [];
+  globalThis.__QQ_TEST_SUBAGENT_HANDLER = async ({ role, cwd, prompt }) => {
+    capturedSubagentCalls.push({ role, cwd, prompt });
+    if (role === "implementer") {
+      writeFileSync(join(cwd, "app.txt"), "v2\n");
+      return { ok: true, output: "Implementation complete" };
+    }
+    if (role === "reviewer") {
+      // Reviewer outputs waiting response without completed verdict (incident a0964663)
+      return {
+        ok: true,
+        output: "I have started running `npm test` to verify the test suite. I will review the results as soon as the execution finishes.\nI will wait for `npm test` to complete.\nWaiting for background task to complete.\nThe test suite is running in the background. I will await its completion before continuing with the review.",
+      };
+    }
+  };
+
+  try {
+    const disp = await dispatchExecution({ kind: "open", sessionId: sessId, cwd: waitRepo });
+    await assert.rejects(
+      () => awaitExecution({ id: disp.id }),
+      /Verification incomplete: reviewer exited without completed verdict \(missing_verdict\)/,
+      "waiting response must reject with verification incomplete error"
+    );
+
+    const check = await checkExecution({ id: disp.id });
+    assert.equal(check.status, "failed");
+    assert.equal(check.phase, "reviewing");
+    assert.equal(check.error.status, "incomplete", "status must be incomplete");
+    assert.equal(check.error.reason, "missing_verdict");
+    assert.ok(check.error.message.includes("Verification incomplete"));
+    assert.ok(check.error.findings.includes("Waiting for background task to complete"));
+
+    // Trajectory must reflect review_incomplete
+    assert.ok(
+      check.trajectory.some((t) => t.action === "review_incomplete"),
+      "trajectory must record review_incomplete"
+    );
+    // CRITICAL: Reviewer failure MUST NOT trigger retrying phase or retry implementer
+    assert.equal(
+      check.trajectory.some((t) => t.action === "review_failed_retrying"),
+      false,
+      "incomplete review MUST NOT trigger implementer retry"
+    );
+    assert.equal(
+      capturedSubagentCalls.length,
+      2,
+      "Implementer must be called exactly once; NO implementer retry on incomplete review"
+    );
+
+    // No landing commit on main
+    const log = await git(waitRepo, ["log", "--oneline"]);
+    assert.equal(log.trim().split("\n").length, 1, "main branch must have no landing commit");
+
+    // Preserves worktree on disk
+    const execObj = EXECUTIONS.get(disp.id);
+    assert.ok(existsSync(execObj.worktree), "worktree must be preserved on disk");
+
+    // Preserves ticket on disk
+    assert.ok(existsSync(ticketPath), "ticket must be preserved on disk");
+
+    // Clean up worktree
+    await git(waitRepo, ["worktree", "remove", "--force", execObj.worktree]).catch(() => {});
+    await git(waitRepo, ["branch", "-D", execObj.branch]).catch(() => {});
+  } finally {
+    delete globalThis.__QQ_TEST_SUBAGENT_HANDLER;
+    rmSync(waitRepo, { recursive: true, force: true });
+  }
+}
+
+// T8. Reviewer conflicting verdict: no implementer retry, verification incomplete, preserves ticket and worktree.
+{
+  const conflictRepo = mkdtempSync(join(tmpdir(), "qq-test-conflict-repo-"));
+  await git(conflictRepo, ["init", "-b", "main"]);
+  await git(conflictRepo, ["config", "user.name", "Conflict Test"]);
+  await git(conflictRepo, ["config", "user.email", "conflict@example.com"]);
+  writeFileSync(join(conflictRepo, "app.txt"), "v1\n");
+  await git(conflictRepo, ["add", "app.txt"]);
+  await git(conflictRepo, ["commit", "-m", "init"]);
+
+  const tDir = join(conflictRepo, ".architect", "tickets");
+  mkdirSync(tDir, { recursive: true });
+  const sessId = "conflict-review-" + Date.now();
+  const ticketPath = join(tDir, `${sessId}.md`);
+  writeFileSync(ticketPath, "# Conflict Review Ticket\n\n## Kind\nopen\n");
+
+  const capturedSubagentCalls = [];
+  globalThis.__QQ_TEST_SUBAGENT_HANDLER = async ({ role, cwd, prompt }) => {
+    capturedSubagentCalls.push({ role, cwd, prompt });
+    if (role === "implementer") {
+      writeFileSync(join(cwd, "app.txt"), "v2\n");
+      return { ok: true, output: "Implementation complete" };
+    }
+    if (role === "reviewer") {
+      return {
+        ok: true,
+        output: "Initial review:\n**Verdict**: PASS\nWait, unexpected edge case failed:\n**Verdict**: FAIL",
+      };
+    }
+  };
+
+  try {
+    const disp = await dispatchExecution({ kind: "open", sessionId: sessId, cwd: conflictRepo });
+    await assert.rejects(
+      () => awaitExecution({ id: disp.id }),
+      /Verification incomplete: reviewer exited without completed verdict \(conflicting_verdict\)/,
+    );
+
+    const check = await checkExecution({ id: disp.id });
+    assert.equal(check.status, "failed");
+    assert.equal(check.phase, "reviewing");
+    assert.equal(check.error.status, "incomplete");
+    assert.equal(check.error.reason, "conflicting_verdict");
+    assert.equal(capturedSubagentCalls.length, 2, "conflicting verdict must not retry implementer");
+
+    const execObj = EXECUTIONS.get(disp.id);
+    assert.ok(existsSync(execObj.worktree), "worktree preserved");
+    assert.ok(existsSync(ticketPath), "ticket preserved");
+
+    await git(conflictRepo, ["worktree", "remove", "--force", execObj.worktree]).catch(() => {});
+    await git(conflictRepo, ["branch", "-D", execObj.branch]).catch(() => {});
+  } finally {
+    delete globalThis.__QQ_TEST_SUBAGENT_HANDLER;
+    rmSync(conflictRepo, { recursive: true, force: true });
+  }
+}
+
+// T9. Genuine PASS after terminal verification lands successfully on first review.
+{
+  const passRepo = mkdtempSync(join(tmpdir(), "qq-test-pass-repo-"));
+  await git(passRepo, ["init", "-b", "main"]);
+  await git(passRepo, ["config", "user.name", "Pass Test"]);
+  await git(passRepo, ["config", "user.email", "pass@example.com"]);
+  writeFileSync(join(passRepo, "app.txt"), "v1\n");
+  await git(passRepo, ["add", "app.txt"]);
+  await git(passRepo, ["commit", "-m", "init"]);
+
+  const tDir = join(passRepo, ".architect", "tickets");
+  mkdirSync(tDir, { recursive: true });
+  const sessId = "pass-review-" + Date.now();
+  const ticketPath = join(tDir, `${sessId}.md`);
+  writeFileSync(ticketPath, "# Pass Review Ticket\n\n## Kind\nopen\n");
+
+  const capturedSubagentCalls = [];
+  globalThis.__QQ_TEST_SUBAGENT_HANDLER = async ({ role, cwd, prompt }) => {
+    capturedSubagentCalls.push({ role, cwd, prompt });
+    if (role === "implementer") {
+      writeFileSync(join(cwd, "app.txt"), "v2\n");
+      return { ok: true, output: "Implementation complete" };
+    }
+    if (role === "reviewer") {
+      return {
+        ok: true,
+        output: "Executed npm test: all 663 tests passed across 45 test files in 51.9s.\n- **Verdict**: **PASS**\nAcceptance criteria satisfied.",
+      };
+    }
+  };
+
+  try {
+    const disp = await dispatchExecution({ kind: "open", sessionId: sessId, cwd: passRepo });
+    const done = await awaitExecution({ id: disp.id });
+    assert.equal(done.status, "completed");
+    assert.equal(capturedSubagentCalls.length, 2);
+
+    const check = await checkExecution({ id: disp.id });
+    assert.equal(check.status, "completed");
+    assert.ok(check.result.landingOutcome?.mergeSha, "landing merge commit must exist");
+
+    const log = await git(passRepo, ["log", "--oneline"]);
+    assert.ok(log.trim().split("\n").length >= 2, "main branch must have landing commit");
+  } finally {
+    delete globalThis.__QQ_TEST_SUBAGENT_HANDLER;
+    rmSync(passRepo, { recursive: true, force: true });
+  }
+}
+
+// T10. Second review returns waiting response after implementer retry: fails with verification incomplete,
+// no landing, ticket and worktree preserved.
+{
+  const retryWaitRepo = mkdtempSync(join(tmpdir(), "qq-test-retry-wait-repo-"));
+  await git(retryWaitRepo, ["init", "-b", "main"]);
+  await git(retryWaitRepo, ["config", "user.name", "Retry Wait Test"]);
+  await git(retryWaitRepo, ["config", "user.email", "retrywait@example.com"]);
+  writeFileSync(join(retryWaitRepo, "app.txt"), "v1\n");
+  await git(retryWaitRepo, ["add", "app.txt"]);
+  await git(retryWaitRepo, ["commit", "-m", "init"]);
+
+  const tDir = join(retryWaitRepo, ".architect", "tickets");
+  mkdirSync(tDir, { recursive: true });
+  const sessId = "retry-wait-review-" + Date.now();
+  const ticketPath = join(tDir, `${sessId}.md`);
+  writeFileSync(ticketPath, "# Retry Wait Review Ticket\n\n## Kind\nopen\n");
+
+  const capturedSubagentCalls = [];
+  globalThis.__QQ_TEST_SUBAGENT_HANDLER = async ({ role, cwd, prompt }) => {
+    capturedSubagentCalls.push({ role, cwd, prompt });
+    if (role === "implementer" && capturedSubagentCalls.length === 1) {
+      writeFileSync(join(cwd, "app.txt"), "v2\n");
+      return { ok: true, output: "Implementation pass 1" };
+    }
+    if (role === "reviewer" && capturedSubagentCalls.length === 2) {
+      // Review 1 is explicit FAIL defect -> triggers retry
+      return { ok: true, output: "- **Verdict**: FAIL\nTest case 3 broke invariant" };
+    }
+    if (role === "implementer" && capturedSubagentCalls.length === 3) {
+      writeFileSync(join(cwd, "app.txt"), "v3\n");
+      return { ok: true, output: "Implementation retry done" };
+    }
+    if (role === "reviewer" && capturedSubagentCalls.length === 4) {
+      // Review 2 exits with waiting message
+      return {
+        ok: true,
+        output: "The test suite is running in the background. I will await its completion before continuing with the review.",
+      };
+    }
+  };
+
+  try {
+    const disp = await dispatchExecution({ kind: "open", sessionId: sessId, cwd: retryWaitRepo });
+    await assert.rejects(
+      () => awaitExecution({ id: disp.id }),
+      /Verification incomplete: second reviewer exited without completed verdict \(missing_verdict\)/,
+    );
+
+    const check = await checkExecution({ id: disp.id });
+    assert.equal(check.status, "failed");
+    assert.equal(check.phase, "reviewing");
+    assert.equal(check.error.status, "incomplete");
+    assert.equal(check.error.reason, "missing_verdict");
+    assert.equal(capturedSubagentCalls.length, 4);
+
+    // No landing on main
+    const log = await git(retryWaitRepo, ["log", "--oneline"]);
+    assert.equal(log.trim().split("\n").length, 1, "main branch must have no landing commit");
+
+    const execObj = EXECUTIONS.get(disp.id);
+    assert.ok(existsSync(execObj.worktree), "worktree must be preserved");
+    assert.ok(existsSync(ticketPath), "ticket must be preserved");
+
+    await git(retryWaitRepo, ["worktree", "remove", "--force", execObj.worktree]).catch(() => {});
+    await git(retryWaitRepo, ["branch", "-D", execObj.branch]).catch(() => {});
+  } finally {
+    delete globalThis.__QQ_TEST_SUBAGENT_HANDLER;
+    rmSync(retryWaitRepo, { recursive: true, force: true });
+  }
+}
+
+// T11. Process error with explicit PASS fails closed without implementer retry.
+{
+  const procErrRepo = mkdtempSync(join(tmpdir(), "qq-test-procerr-repo-"));
+  await git(procErrRepo, ["init", "-b", "main"]);
+  await git(procErrRepo, ["config", "user.name", "ProcErr Test"]);
+  await git(procErrRepo, ["config", "user.email", "procerr@example.com"]);
+  writeFileSync(join(procErrRepo, "app.txt"), "v1\n");
+  await git(procErrRepo, ["add", "app.txt"]);
+  await git(procErrRepo, ["commit", "-m", "init"]);
+
+  const tDir = join(procErrRepo, ".architect", "tickets");
+  mkdirSync(tDir, { recursive: true });
+  const sessId = "procerr-review-" + Date.now();
+  const ticketPath = join(tDir, `${sessId}.md`);
+  writeFileSync(ticketPath, "# ProcErr Review Ticket\n\n## Kind\nopen\n");
+
+  const capturedSubagentCalls = [];
+  globalThis.__QQ_TEST_SUBAGENT_HANDLER = async ({ role, cwd, prompt }) => {
+    capturedSubagentCalls.push({ role, cwd, prompt });
+    if (role === "implementer") {
+      writeFileSync(join(cwd, "app.txt"), "v2\n");
+      return { ok: true, output: "Implementation done" };
+    }
+    if (role === "reviewer") {
+      return {
+        ok: false,
+        output: "**Verdict**: **PASS**\nTests were passing before crash",
+        error: { message: "Reviewer crashed with exit code 1", exitCode: 1, stderr: "fatal error" },
+      };
+    }
+  };
+
+  try {
+    const disp = await dispatchExecution({ kind: "open", sessionId: sessId, cwd: procErrRepo });
+    await assert.rejects(
+      () => awaitExecution({ id: disp.id }),
+      /Reviewer crashed with exit code 1/,
+    );
+
+    const check = await checkExecution({ id: disp.id });
+    assert.equal(check.status, "failed");
+    assert.equal(check.phase, "reviewing");
+    assert.equal(check.error.exitCode, 1);
+    assert.equal(capturedSubagentCalls.length, 2, "process failure must not trigger retry");
+
+    const execObj = EXECUTIONS.get(disp.id);
+    assert.ok(existsSync(execObj.worktree), "worktree must be preserved");
+    assert.ok(existsSync(ticketPath), "ticket must be preserved");
+
+    await git(procErrRepo, ["worktree", "remove", "--force", execObj.worktree]).catch(() => {});
+    await git(procErrRepo, ["branch", "-D", execObj.branch]).catch(() => {});
+  } finally {
+    delete globalThis.__QQ_TEST_SUBAGENT_HANDLER;
+    rmSync(procErrRepo, { recursive: true, force: true });
   }
 }
 

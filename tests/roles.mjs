@@ -98,7 +98,11 @@ assert.match(reviewerContent, /run_command/);
 assert.doesNotMatch(reviewerContent, /write_to_file/);
 assert.doesNotMatch(reviewerContent, /replace_file_content/);
 assert.match(reviewerContent, /Do not commit, push, or land\./);
-assert.match(reviewerContent, /Report findings\. Empty findings means it passed\./);
+assert.doesNotMatch(reviewerContent, /Empty findings means it passed/);
+assert.match(reviewerContent, /Execute the testing plan to completion/);
+assert.match(reviewerContent, /Actively await background verification tasks/);
+assert.match(reviewerContent, /Incomplete tests are not code defects/);
+assert.match(reviewerContent, /Verdict: PASS or FAIL/);
 assert.doesNotMatch(reviewerContent, /call done/);
 
 console.log("roles tests passed successfully.");
