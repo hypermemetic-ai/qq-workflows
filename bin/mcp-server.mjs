@@ -1,4 +1,17 @@
 #!/usr/bin/env node
+import {
+  OPERATOR_ACTION_TOOLS,
+  stageOperatorAction,
+  checkOperatorAction,
+  cancelOperatorAction,
+  cleanupOperatorAction,
+} from "../workflow/operator-action.mjs";
+
+const OPERATOR_ACTION_TOOL_NAMES = new Set(OPERATOR_ACTION_TOOLS.map((t) => t.name));
+
+function isOperatorActionEnabled(options = {}) {
+  return Boolean(options.enableOperatorAction || process.env.QQ_ENABLE_OPERATOR_ACTION === "1");
+}
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, readlinkSync, rmSync } from "node:fs";
@@ -33,7 +46,7 @@ import {
   ticketPath,
 } from "../workflow/ticket.mjs";
 
-export { CANONICAL_PROVIDERS, PROVIDERS, assertKnownProvider, normalizeProvider, hasImplementationChanges };
+export { CANONICAL_PROVIDERS, PROVIDERS, assertKnownProvider, normalizeProvider, hasImplementationChanges, OPERATOR_ACTION_TOOLS };
 
 export const TOOLS = [
   {
@@ -626,6 +639,12 @@ function extractTarget(toolName, parameters) {
       return cap(parameters.query || parameters.Query);
     case "steer":
       return cap(parameters.instruction || parameters.message);
+    case "stage_operator_action":
+      return cap(parameters.title || parameters.targetMachine);
+    case "check_operator_action":
+    case "cancel_operator_action":
+    case "cleanup_operator_action":
+      return cap(parameters.actionId);
     case "complete_task":
       return cap(parameters.response ? parameters.response.slice(0, MAX) : undefined);
     default:
@@ -2941,6 +2960,9 @@ export async function callTool(name, args = {}, options = {}) {
   if (disabled.has(name)) {
     throw new Error(`Tool '${name}' is disabled`);
   }
+  if (OPERATOR_ACTION_TOOL_NAMES.has(name) && !isOperatorActionEnabled(options)) {
+    throw new Error(`Tool '${name}' is disabled`);
+  }
   if (name === "prepare_worktree") {
     return prepareWorktree(args);
   }
@@ -2977,6 +2999,18 @@ export async function callTool(name, args = {}, options = {}) {
   if (name === "update_ticket") {
     return updateTicket(args);
   }
+  if (name === "stage_operator_action") {
+    return stageOperatorAction(args);
+  }
+  if (name === "check_operator_action") {
+    return checkOperatorAction(args);
+  }
+  if (name === "cancel_operator_action") {
+    return cancelOperatorAction(args);
+  }
+  if (name === "cleanup_operator_action") {
+    return cleanupOperatorAction(args);
+  }
   if (name === "complete_task") {
     return completeTask(args);
   }
@@ -3007,14 +3041,31 @@ export async function handleRpc(method, params = {}, options = {}) {
 
   if (method === "tools/list") {
     const disabled = resolveDisabledTools(options.disabledTools);
-    if (disabled.size === 0) return { tools: TOOLS };
-    return { tools: TOOLS.filter((tool) => !disabled.has(tool.name)) };
+    const available = isOperatorActionEnabled(options)
+      ? [...TOOLS, ...OPERATOR_ACTION_TOOLS]
+      : TOOLS;
+    if (disabled.size === 0) return { tools: available };
+    return { tools: available.filter((tool) => !disabled.has(tool.name)) };
   }
 
   if (method === "tools/call") {
     const toolName = params?.name;
     const toolArgs = params?.arguments ?? {};
     try {
+      const disabled = resolveDisabledTools(options.disabledTools);
+      if (disabled.has(toolName)) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: `Tool '${toolName}' is disabled` }],
+        };
+      }
+      if (OPERATOR_ACTION_TOOL_NAMES.has(toolName) && !isOperatorActionEnabled(options)) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: `Tool '${toolName}' is disabled` }],
+        };
+      }
+
       const result = await callTool(toolName, toolArgs, options);
       return {
         content: [
