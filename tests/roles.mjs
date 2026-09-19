@@ -105,4 +105,14 @@ assert.match(reviewerContent, /Incomplete tests are not code defects/);
 assert.match(reviewerContent, /Verdict: PASS or FAIL/);
 assert.doesNotMatch(reviewerContent, /call done/);
 
+// 6. Runner role checks: the completion contract names the exact qualified
+// client spelling (no "discover your namespaced spelling" deferral), while the
+// registered MCP tool name stays `complete_task`.
+const runnerContent = readFileSync(join(repoRoot, "agents", "runner", "agent.md"), "utf8");
+assert.match(runnerContent, /mcp__qq_workflows__complete_task/, "runner role must name the exact qualified complete_task tool");
+assert.match(runnerContent, /call `complete_task`/, "runner role must still reference the registered tool name");
+assert.doesNotMatch(runnerContent, /whatever qualified\/namespaced spelling/, "the discover-your-spelling deferral must be gone");
+assert.doesNotMatch(runnerContent, /your harness registers/, "no harness-specific spelling deferral");
+assert.match(runnerContent, /correct the call, and retry/, "runner role must tell the worker to correct and retry a rejected call");
+
 console.log("roles tests passed successfully.");
