@@ -14,6 +14,12 @@ delete process.env.CODEX_THREAD_ID;
 delete process.env.CODEX_SESSION_ID;
 delete process.env.CODEX_CONVERSATION_ID;
 process.env.QQ_CODEX_BIN = "/usr/bin/true";
+// Durable retention of terminal findings must never touch the operator's real
+// state dir during tests: point it at a unique temp dir (imports are hoisted,
+// so mkdtempSync/join/tmpdir are available here).
+if (!process.env.QQ_RUNNER_FINDINGS_DIR) {
+  process.env.QQ_RUNNER_FINDINGS_DIR = mkdtempSync(join(tmpdir(), "qq-test-findings-"));
+}
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,7 +53,20 @@ import {
   cancelRunner,
   checkExecution,
   checkRunner,
+  boundedTerminalDiagnostic,
   completeTask,
+  workerFailureTag,
+  retainRunnerFindings,
+  loadRetainedFindings,
+  pruneRetainedFindings,
+  replayRetainedRunnerFindings,
+  listRetainedFindings,
+  runnerFindingsDir,
+  retainedFindingsPath,
+  hasRetainedFindings,
+  isValidRunnerId,
+  currentRuntimeIdentity,
+  recordRunnerStdoutLine,
   DETECTED_CODEX_HOMES,
   DETECTED_CODEX_THREADS,
   dispatchExecution,
@@ -109,7 +128,7 @@ async function retireTestWorktree(repo, result) {
 }
 
 // 1. Tool schema checks
-assert.equal(TOOLS.length, 13);
+assert.equal(TOOLS.length, 14);
 const toolNames = TOOLS.map((t) => t.name).sort();
 assert.deepEqual(toolNames, [
   "await_execution",
@@ -123,6 +142,7 @@ assert.deepEqual(toolNames, [
   "land",
   "prepare_worktree",
   "read_ticket",
+  "retry_runner_notification",
   "steer_runner",
   "update_ticket",
 ]);
@@ -922,12 +942,22 @@ try {
   mockRunner.activeTool = null;
   mockRunner.status = "completed";
   mockRunner.result = { summary: "Found 2 call sites", filesChecked: ["foo.mjs", "baz.mjs"] };
+  // Mirror the production terminal transition (every terminal path calls
+  // cleanupRunnerFiles, which is what makes the outcome durable).
+  cleanupRunnerFiles(mockRunner);
 
   const checkCompletedRes = await checkRunner({ runnerId: dispatchRes.runnerId });
   assert.equal(checkCompletedRes.status, "completed");
   assert.equal(checkCompletedRes.activeTool, null);
-  // checkRunner returns the full unabridged result on completion.
-  assert.deepEqual(checkCompletedRes.result, mockRunner.result);
+  // checkRunner reports health/trajectory/delivery state, NOT findings: the
+  // authoritative result stays on the tracker for the terminal notification.
+  assert.equal(checkCompletedRes.result, undefined, "check_runner must NOT return findings");
+  assert.equal(checkCompletedRes.findingsRetained, true, "findings must remain retained for notification");
+  assert.deepEqual(
+    checkCompletedRes.notification,
+    { terminal: true, delivered: false, pendingRetry: true, inFlight: false },
+    "undelivered terminal wakeup must report pendingRetry",
+  );
 
   const awaitRes = await awaitRunner({ runnerId: dispatchRes.runnerId });
   assert.equal(awaitRes.ok, true);
@@ -957,7 +987,12 @@ try {
   const failDispatch = await dispatchRunner({ task: "failing task", cwd: repoDir });
   const checkFailed = await checkRunner({ runnerId: failDispatch.runnerId });
   assert.equal(checkFailed.status, "failed");
-  assert.equal(checkFailed.error.message, "Simulated runner crash");
+  // check_runner returns a bounded, payload-free diagnostic (type/reason), not
+  // the raw tracker error object.
+  assert.equal(checkFailed.error.status, "failed");
+  assert.equal(checkFailed.error.reason, "exit_nonzero");
+  assert.equal(checkFailed.error.exitCode, 1);
+  assert.equal(checkFailed.error.message, undefined, "check_runner must not dump the raw error message");
 
   await assert.rejects(
     () => awaitRunner({ runnerId: failDispatch.runnerId }),
@@ -1281,7 +1316,7 @@ const pingResp = await handleRpc("ping", {});
 assert.deepEqual(pingResp, {});
 
 const listResp = await handleRpc("tools/list", {});
-assert.equal(listResp.tools.length, 13);
+assert.equal(listResp.tools.length, 14);
 
 // tools/call with missing kind should return isError: true
 const errCallResp = await handleRpc("tools/call", {
@@ -1321,7 +1356,7 @@ assert.equal(responses[0].id, 1);
 assert.equal(responses[0].result.serverInfo.name, "qq-workflows");
 
 assert.equal(responses[1].id, 2);
-assert.equal(responses[1].result.tools.length, 13);
+assert.equal(responses[1].result.tools.length, 14);
 
 assert.equal(responses[2].id, 3);
 assert.deepEqual(responses[2].result, {});
@@ -1472,9 +1507,16 @@ assert.equal(ctLarge.responseLength, 32_768);
     // Mark as completed
     nrRunnerObj.status = "completed";
     nrRunnerObj.result = "done";
+    cleanupRunnerFiles(nrRunnerObj); // the terminal transition retains durably
     const nrCheck = await checkRunner({ runnerId: nrDispatch.runnerId });
     assert.equal(nrCheck.status, "completed");
-    assert.equal(nrCheck.result, "done", "checkRunner must include result on completion");
+    assert.equal(nrCheck.result, undefined, "check_runner must NOT include findings on completion");
+    assert.equal(nrCheck.findingsRetained, true, "authoritative findings stay retained");
+    assert.equal(nrCheck.notification.terminal, true);
+    assert.equal(nrCheck.notification.pendingRetry, true);
+    // The authoritative result is still retrievable via await_runner.
+    const nrAwait = await awaitRunner({ runnerId: nrDispatch.runnerId });
+    assert.equal(nrAwait.result, "done", "await_runner must still return the authoritative result");
   } finally {
     delete globalThis.__QQ_TEST_RUNNER_HANDLER;
     rmSync(testRepo4, { recursive: true, force: true });
@@ -1534,6 +1576,580 @@ assert.equal(ctLarge.responseLength, 32_768);
   } finally {
     delete globalThis.__QQ_TEST_RUNNER_HANDLER;
     rmSync(testRepo5, { recursive: true, force: true });
+  }
+}
+
+// CT. check_runner semantics for this change: health/trajectory/delivery
+// state, NOT findings. Completion findings must stay out of check_runner (the
+// trajectory included), while the authoritative notification and await_runner
+// still carry the full result, and a pending (undelivered) terminal wakeup
+// stays recoverable via the sweeper's retry.
+{
+  const testRepoCT = mkdtempSync(join(tmpdir(), "architect-checkrunner-test-"));
+  const priorThreadCT = Object.prototype.hasOwnProperty.call(globalThis, "__QQ_TEST_CODEX_THREAD");
+  const savedThreadCT = globalThis.__QQ_TEST_CODEX_THREAD;
+  try {
+    await git(testRepoCT, ["init", "-b", "main"]);
+    await git(testRepoCT, ["config", "user.name", "MCP Test"]);
+    await git(testRepoCT, ["config", "user.email", "mcp@example.invalid"]);
+    writeFileSync(join(testRepoCT, "README.md"), "# CT\n");
+    await git(testRepoCT, ["add", "README.md"]);
+    await git(testRepoCT, ["commit", "-m", "init"]);
+
+    delete globalThis.__QQ_TEST_NOTIFY_HANDLER;
+    delete globalThis.__QQ_TEST_CODEX_THREAD;
+
+    globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => { runner.status = "running"; };
+    const ctDispatch = await dispatchRunner({ task: "check_runner semantics", cwd: testRepoCT });
+    const ctRunner = RUNNERS.get(ctDispatch.runnerId);
+
+    // Running: health/trajectory only, delivery state non-terminal.
+    const runningCheck = await checkRunner({ runnerId: ctDispatch.runnerId });
+    assert.equal(runningCheck.status, "running");
+    assert.equal(runningCheck.result, undefined);
+    assert.deepEqual(runningCheck.notification, { terminal: false, delivered: false, pendingRetry: false });
+
+    // Record a normal tool step so the trajectory has a real (payload-free) entry.
+    handleRunnerEvent(ctRunner, {
+      event: "step_update",
+      step_update: { step_type: "tool", state: "DONE", tool_name: "view_file", tool_info: { parameters: { AbsolutePath: "/a.mjs" } }, duration_seconds: 1 },
+    });
+
+    // Land the authoritative transport result, then complete via a complete_task
+    // step whose parameters carry the full findings payload (the leak channel).
+    const findings = "FULL-FINDINGS-" + "x".repeat(300);
+    const dataPoints = ["dp-1"];
+    writeFileSync(ctRunner.resultFile, JSON.stringify({ runnerId: ctDispatch.runnerId, response: findings, data_points: dataPoints }), "utf8");
+    handleRunnerEvent(ctRunner, {
+      event: "step_update",
+      step_update: { step_type: "tool", state: "DONE", tool_name: "complete_task", tool_info: { parameters: { response: findings, data_points: dataPoints } }, duration_seconds: 2 },
+    });
+    assert.equal(ctRunner.status, "completed", "authoritative transport must complete the runner");
+
+    const check = await checkRunner({ runnerId: ctDispatch.runnerId });
+    assert.equal(check.status, "completed");
+    assert.equal(check.result, undefined, "check_runner must NOT return findings");
+    assert.equal(check.findingsRetained, true, "authoritative findings stay retained for notification");
+    assert.equal(check.notification.terminal, true);
+    assert.equal(check.notification.pendingRetry, true, "no delivery attempted yet -> pendingRetry");
+    // The payload must not appear anywhere in the check response, trajectory
+    // included (this is the covert re-surface this change prevents).
+    assert.ok(!JSON.stringify(check).includes("FULL-FINDINGS"), "check_runner payload (incl. trajectory) must not carry findings");
+    const ctEntry = check.trajectory.find((t) => t.action === "complete_task");
+    assert.ok(ctEntry, "complete_task step must still appear by name");
+    assert.equal(ctEntry.target, undefined, "complete_task payload must not become a trajectory target");
+
+    // The completion-time fire-and-forget wakeup has no Codex context here, so
+    // it settles undelivered and must NOT prune the retained artifact.
+    if (ctRunner.notifiedTerminalInFlight) await ctRunner.notifiedTerminalInFlight;
+    assert.equal(ctRunner.notifiedTerminal, undefined, "undelivered terminal wakeup stays retryable");
+    assert.ok(loadRetainedFindings(ctDispatch.runnerId), "undelivered completion keeps the retained artifact");
+
+    // Authoritative delivery still carries the full findings; delivery state flips.
+    const calls = [];
+    globalThis.__QQ_TEST_NOTIFY_HANDLER = async (call) => { calls.push(call); };
+    const delivered = await notifyTerminal(ctRunner, "runner");
+    assert.equal(delivered.notified, true);
+    assert.ok(calls[0].message.includes(findings), "terminal notification must carry the full findings");
+    const check2 = await checkRunner({ runnerId: ctDispatch.runnerId });
+    assert.equal(check2.notification.delivered, true);
+    assert.equal(check2.notification.pendingRetry, false);
+    assert.equal(check2.findingsRetained, false, "a confirmed delivery prunes the redundant durable copy");
+    delete globalThis.__QQ_TEST_NOTIFY_HANDLER;
+
+    // await_runner remains the authoritative findings path.
+    const ctAwait = await awaitRunner({ runnerId: ctDispatch.runnerId });
+    assert.deepEqual(ctAwait.result, { response: findings, data_points: dataPoints });
+  } finally {
+    delete globalThis.__QQ_TEST_NOTIFY_HANDLER;
+    delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+    if (priorThreadCT) globalThis.__QQ_TEST_CODEX_THREAD = savedThreadCT; else delete globalThis.__QQ_TEST_CODEX_THREAD;
+    rmSync(testRepoCT, { recursive: true, force: true });
+  }
+}
+
+// CT2. Residual result-bearing shapes never surface through check_runner: a raw
+// stdout log line, a complete_task payload, and a failed runner's error all
+// carry the findings text, yet the check response (trajectory + error included)
+// must not. Bounded diagnostics replace the raw payload.
+{
+  const testRepoCT2 = mkdtempSync(join(tmpdir(), "architect-checkrunner2-"));
+  try {
+    await git(testRepoCT2, ["init", "-b", "main"]);
+    await git(testRepoCT2, ["config", "user.name", "MCP Test"]);
+    await git(testRepoCT2, ["config", "user.email", "mcp@example.invalid"]);
+    writeFileSync(join(testRepoCT2, "README.md"), "# CT2\n");
+    await git(testRepoCT2, ["add", "README.md"]);
+    await git(testRepoCT2, ["commit", "-m", "init"]);
+
+    const SECRET = "CT2-RESULT-SENTINEL";
+    const payload = `${SECRET} ${"q".repeat(300)}`;
+
+    globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => { runner.status = "running"; };
+    const d1 = await dispatchRunner({ task: "residual payload", cwd: testRepoCT2 });
+    const r1 = RUNNERS.get(d1.runnerId);
+    // Raw stdout line (the plain-log channel).
+    recordRunnerStdoutLine(r1, `plain stdout ${payload}`);
+    const check1 = await checkRunner({ runnerId: d1.runnerId });
+    assert.equal(check1.status, "running");
+    assert.ok(!JSON.stringify(check1).includes(SECRET), "running check must not carry payload from the stdout log");
+    const logEntry = check1.trajectory.find((t) => t.action === "log");
+    assert.ok(logEntry, "log step still recorded");
+    assert.equal(logEntry.message, undefined, "log step must not store raw stdout text");
+    assert.equal(typeof logEntry.bytes, "number", "log step keeps only a byte count");
+
+    // A complete_task step whose parameters carry the payload must appear by
+    // name only, with no target and no payload anywhere in the response.
+    const findings = `${SECRET}-COMPLETION ${"w".repeat(200)}`;
+    writeFileSync(r1.resultFile, JSON.stringify({ runnerId: d1.runnerId, response: findings, data_points: [] }), "utf8");
+    handleRunnerEvent(r1, {
+      event: "step_update",
+      step_update: { step_type: "tool", state: "DONE", tool_name: "complete_task", tool_info: { parameters: { response: findings, data_points: [] } }, duration_seconds: 3 },
+    });
+    const checkDone = await checkRunner({ runnerId: d1.runnerId });
+    assert.equal(checkDone.status, "completed");
+    assert.ok(!JSON.stringify(checkDone).includes(SECRET), "completed check must not carry the completion payload");
+    const ctStep = checkDone.trajectory.find((t) => t.action === "complete_task");
+    assert.ok(ctStep, "complete_task step must still be recorded by name");
+    assert.equal(ctStep.target, undefined, "complete_task payload must not become a trajectory target");
+    assert.equal(checkDone.result, undefined, "completed check must not return findings");
+    delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+
+    globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => {
+      runner.status = "failed";
+      runner.error = { message: payload, exitCode: 1, stderr: payload, outputTail: payload };
+    };
+    const d2 = await dispatchRunner({ task: "failed payload", cwd: testRepoCT2 });
+    const check2 = await checkRunner({ runnerId: d2.runnerId });
+    assert.equal(check2.status, "failed");
+    assert.ok(!JSON.stringify(check2).includes(SECRET), "failed check must not carry raw stderr/outputTail/message");
+    assert.equal(check2.error.message, undefined, "no raw error message in check_runner");
+    assert.equal(check2.error.exitCode, 1);
+    assert.equal(typeof check2.error.reason, "string");
+  } finally {
+    delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+    rmSync(testRepoCT2, { recursive: true, force: true });
+  }
+}
+
+// CT3. A validated COMPLETED outcome is retained durably BEFORE the transport
+// file is cleaned up, so a failed notification + server restart does not
+// destroy it; recovery replays through the SAME terminal notification and
+// routes ONLY to the originating session/thread.
+{
+  const testRepoCT3 = mkdtempSync(join(tmpdir(), "architect-checkrunner3-"));
+  const priorBin3 = process.env.QQ_CODEX_BIN;
+  const priorThreadCT3 = Object.prototype.hasOwnProperty.call(globalThis, "__QQ_TEST_CODEX_THREAD");
+  const savedThreadCT3 = globalThis.__QQ_TEST_CODEX_THREAD;
+  try {
+    await git(testRepoCT3, ["init", "-b", "main"]);
+    await git(testRepoCT3, ["config", "user.name", "MCP Test"]);
+    await git(testRepoCT3, ["config", "user.email", "mcp@example.invalid"]);
+    writeFileSync(join(testRepoCT3, "README.md"), "# CT3\n");
+    await git(testRepoCT3, ["add", "README.md"]);
+    await git(testRepoCT3, ["commit", "-m", "init"]);
+
+    // Scrub transport: make the completion-time wakeup undeliverable so the
+    // retained copy is exercised (a real restart loses the in-memory tracker).
+    process.env.QQ_CODEX_BIN = "/nonexistent/qq-test-no-transport";
+    delete globalThis.__QQ_TEST_NOTIFY_HANDLER;
+    // Trusted runtime identity of the originating session (proc discovery is
+    // disabled for the whole suite).
+    globalThis.__QQ_TEST_CODEX_THREAD = "ct3-thread";
+
+    const findings = "RETAINED-FINDINGS-" + "r".repeat(400);
+    globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => { runner.status = "running"; };
+    const disp = await dispatchRunner({ task: "retain + replay", cwd: testRepoCT3 });
+    const runner = RUNNERS.get(disp.runnerId);
+    writeFileSync(runner.resultFile, JSON.stringify({ runnerId: disp.runnerId, response: findings, data_points: ["ct3-dp"] }), "utf8");
+    handleRunnerEvent(runner, {
+      event: "step_update",
+      step_update: { step_type: "tool", state: "DONE", tool_name: "complete_task", tool_info: { parameters: { response: findings } }, duration_seconds: 3 },
+    });
+    assert.equal(runner.status, "completed", "authoritative transport must complete the runner");
+    assert.equal(existsSync(runner.resultFile), false, "transient transport file is cleaned up");
+    const rec = loadRetainedFindings(disp.runnerId);
+    assert.ok(rec, "validated findings retained before transport cleanup");
+    assert.equal(rec.status, "completed");
+    assert.equal(rec.threadId, "ct3-thread", "originating thread recorded for ownership+routing");
+    assert.equal(rec.result.response, findings);
+    assert.deepEqual(rec.result.data_points, ["ct3-dp"]);
+
+    // The completion-time fire-and-forget wakeup must settle as undelivered and
+    // must NOT prune the artifact.
+    if (runner.notifiedTerminalInFlight) await runner.notifiedTerminalInFlight;
+    assert.equal(runner.notifiedTerminal, undefined, "undeliverable wakeup must not claim delivery");
+    assert.ok(loadRetainedFindings(disp.runnerId), "undelivered completion keeps the retained artifact");
+
+    // Simulate an MCP-server restart: the in-memory tracker is gone.
+    RUNNERS.delete(disp.runnerId);
+
+    // Replay through the SAME notification mechanism carries the full findings
+    // and routes to the recorded thread.
+    const calls = [];
+    globalThis.__QQ_TEST_NOTIFY_HANDLER = async (call) => { calls.push(call); };
+    const ok = await replayRetainedRunnerFindings(disp.runnerId);
+    assert.equal(ok.ok, true, "replay delivers");
+    assert.equal(ok.taskStatus, "completed");
+    assert.ok(!JSON.stringify(ok).includes(findings), "replay response must not return findings");
+    assert.equal(calls[0].threadId, "ct3-thread", "replay must route to the originating thread");
+    assert.ok(calls[0].message.includes(findings), "replay message carries the authoritative findings");
+    assert.equal(loadRetainedFindings(disp.runnerId), null, "confirmed delivery prunes the durable copy");
+
+    // A later cleanup pass (the child's close event after a delivered runner)
+    // must not resurrect the pruned artifact as a stale copy.
+    runner.notifiedTerminal = true;
+    cleanupRunnerFiles(runner);
+    assert.equal(loadRetainedFindings(disp.runnerId), null, "a delivered runner must not be re-retained by a later cleanup");
+  } finally {
+    delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+    delete globalThis.__QQ_TEST_NOTIFY_HANDLER;
+    if (priorThreadCT3) globalThis.__QQ_TEST_CODEX_THREAD = savedThreadCT3; else delete globalThis.__QQ_TEST_CODEX_THREAD;
+    if (priorBin3 === undefined) delete process.env.QQ_CODEX_BIN; else process.env.QQ_CODEX_BIN = priorBin3;
+    rmSync(testRepoCT3, { recursive: true, force: true });
+  }
+}
+
+// CT5. A FAILED terminal outcome is retained with its bounded diagnostic and is
+// replayed with the correct (failed) status through the same notification
+// builder — a failed NOTIFICATION is not a failed TASK and vice versa.
+{
+  const testRepoCT5 = mkdtempSync(join(tmpdir(), "architect-checkrunner5-"));
+  const priorBin5 = process.env.QQ_CODEX_BIN;
+  const priorThreadCT5 = Object.prototype.hasOwnProperty.call(globalThis, "__QQ_TEST_CODEX_THREAD");
+  const savedThreadCT5 = globalThis.__QQ_TEST_CODEX_THREAD;
+  try {
+    await git(testRepoCT5, ["init", "-b", "main"]);
+    await git(testRepoCT5, ["config", "user.name", "MCP Test"]);
+    await git(testRepoCT5, ["config", "user.email", "mcp@example.invalid"]);
+    writeFileSync(join(testRepoCT5, "README.md"), "# CT5\n");
+    await git(testRepoCT5, ["add", "README.md"]);
+    await git(testRepoCT5, ["commit", "-m", "init"]);
+
+    process.env.QQ_CODEX_BIN = "/nonexistent/qq-test-no-transport";
+    delete globalThis.__QQ_TEST_NOTIFY_HANDLER;
+    globalThis.__QQ_TEST_CODEX_THREAD = "ct5-thread";
+
+    globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => { runner.status = "running"; };
+    const disp = await dispatchRunner({ task: "failed runner diagnostic", cwd: testRepoCT5 });
+    const runner = RUNNERS.get(disp.runnerId);
+    // Simulate the child dying without a completion transport.
+    runner.process = { exitCode: 7, signalCode: null };
+    runner.stderrTail = "FAIL-STDERR-SENTINEL";
+    runner.outputTail = "FAIL-TAIL-SENTINEL";
+    const rec = reconcileDeadRunner(runner);
+    assert.equal(rec.status, "failed");
+
+    const stored = loadRetainedFindings(disp.runnerId);
+    assert.ok(stored, "a FAILED terminal outcome must be retained too");
+    assert.equal(stored.status, "failed");
+    assert.equal(stored.result, null);
+    assert.equal(stored.error.exitCode, 7);
+    assert.ok(String(stored.error.message).includes("exited with code 7"), "failure reason retained");
+    assert.ok(String(stored.error.stderr).includes("FAIL-STDERR-SENTINEL"), "failure stderr evidence retained");
+    assert.ok(String(stored.outputTail).includes("FAIL-TAIL-SENTINEL"), "failure output tail retained");
+
+    // check_runner reports the durable status truthfully and keeps the bounded
+    // (payload-free) diagnostic.
+    const check = await checkRunner({ runnerId: disp.runnerId });
+    assert.equal(check.status, "failed");
+    assert.equal(check.findingsRetained, true, "failed-notification recovery state is durable");
+    assert.equal(check.error.reason, "exit_nonzero");
+    assert.ok(!JSON.stringify(check).includes("FAIL-STDERR-SENTINEL"), "check_runner must not echo failure stderr");
+    assert.ok(!JSON.stringify(check).includes("FAIL-TAIL-SENTINEL"), "check_runner must not echo the output tail");
+
+    // Restart: tracker gone. Replay must deliver the FAILED notification.
+    RUNNERS.delete(disp.runnerId);
+    const calls = [];
+    globalThis.__QQ_TEST_NOTIFY_HANDLER = async (call) => { calls.push(call); };
+    const replay = await replayRetainedRunnerFindings(disp.runnerId);
+    assert.equal(replay.ok, true, "failed-notification recovery delivers");
+    assert.equal(replay.taskStatus, "failed", "replay reports task outcome separately from delivery");
+    assert.equal(calls[0].threadId, "ct5-thread");
+    assert.ok(calls[0].message.includes("failed"), "replayed notification states the failure");
+    assert.ok(calls[0].message.includes("exitCode=7"), "replayed notification carries the diagnostic");
+    assert.ok(calls[0].message.includes("FAIL-STDERR-SENTINEL"), "replayed notification carries stderr evidence");
+    assert.ok(!JSON.stringify(replay).includes("FAIL-STDERR-SENTINEL"), "replay response must not return the diagnostic");
+    assert.equal(loadRetainedFindings(disp.runnerId), null, "confirmed failed-notification delivery prunes the copy");
+  } finally {
+    delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+    delete globalThis.__QQ_TEST_NOTIFY_HANDLER;
+    if (priorThreadCT5) globalThis.__QQ_TEST_CODEX_THREAD = savedThreadCT5; else delete globalThis.__QQ_TEST_CODEX_THREAD;
+    if (priorBin5 === undefined) delete process.env.QQ_CODEX_BIN; else process.env.QQ_CODEX_BIN = priorBin5;
+    rmSync(testRepoCT5, { recursive: true, force: true });
+  }
+}
+
+// CT6. A retention (persistence) failure must not delete the sole durable
+// artifact for EITHER outcome, claim retention, or hide the primary error.
+{
+  const testRepoCT6 = mkdtempSync(join(tmpdir(), "architect-checkrunner6-"));
+  const badBase = mkdtempSync(join(tmpdir(), "architect-checkrunner6-bad-"));
+  const priorDir6 = process.env.QQ_RUNNER_FINDINGS_DIR;
+  try {
+    await git(testRepoCT6, ["init", "-b", "main"]);
+    await git(testRepoCT6, ["config", "user.name", "MCP Test"]);
+    await git(testRepoCT6, ["config", "user.email", "mcp@example.invalid"]);
+    writeFileSync(join(testRepoCT6, "README.md"), "# CT6\n");
+    await git(testRepoCT6, ["add", "README.md"]);
+    await git(testRepoCT6, ["commit", "-m", "init"]);
+
+    // A regular file where the findings directory must be: creating the dir fails.
+    const blocker = join(badBase, "blocker");
+    writeFileSync(blocker, "not a directory");
+    process.env.QQ_RUNNER_FINDINGS_DIR = join(blocker, "runner-findings");
+    delete globalThis.__QQ_TEST_NOTIFY_HANDLER;
+    delete globalThis.__QQ_TEST_CODEX_THREAD;
+
+    const findings = "SOLE-RESULT-" + "s".repeat(200);
+    globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => { runner.status = "running"; };
+    const disp = await dispatchRunner({ task: "retention failure", cwd: testRepoCT6 });
+    const runner = RUNNERS.get(disp.runnerId);
+    writeFileSync(runner.resultFile, JSON.stringify({ runnerId: disp.runnerId, response: findings, data_points: [] }), "utf8");
+    // Model the production terminal transition for a validated completion.
+    runner.status = "completed";
+    runner.result = { response: findings, data_points: [] };
+    cleanupRunnerFiles(runner);
+    // Primary outcome intact and findings still deliverable ...
+    assert.equal(runner.status, "completed");
+    assert.equal(runner.result.response, findings);
+    assert.ok(buildRunnerTerminalMessage(runner).includes(findings), "primary findings still delivered");
+    // ... but the sole durable copy was NOT deleted by the failed retention.
+    assert.equal(existsSync(runner.resultFile), true, "retention failure must not delete the sole completed result");
+    const check = await checkRunner({ runnerId: disp.runnerId });
+    assert.equal(check.findingsRetained, false, "must not claim retention when persistence failed");
+
+    // Failed-runner variant: the transport file is the ONLY durable copy of the
+    // failure payload (check_runner is bounded, and the tracker dies with the
+    // process), so a persistence failure must not delete it either.
+    const disp2 = await dispatchRunner({ task: "failed retention failure", cwd: testRepoCT6 });
+    const runner2 = RUNNERS.get(disp2.runnerId);
+    // A transport file that exists but is malformed: the authoritative read
+    // fails, so the outcome is a transport-error failure.
+    writeFileSync(runner2.resultFile, "{ this is not valid json", "utf8");
+    runner2.process = { exitCode: 0, signalCode: null };
+    runner2.stderrTail = "failed-retention-stderr";
+    const rec2 = reconcileDeadRunner(runner2);
+    assert.equal(rec2.status, "failed");
+    assert.equal(existsSync(runner2.resultFile), true, "retention failure must not delete the sole failed diagnostic");
+    const check2 = await checkRunner({ runnerId: disp2.runnerId });
+    assert.equal(check2.status, "failed");
+    assert.equal(check2.error.reason, "transport_error", "primary failure diagnostic must not be hidden");
+    assert.equal(check2.findingsRetained, false, "failed retention is reported truthfully");
+
+    // The same failed transition with a WRITABLE findings dir retains durably
+    // and only then removes the transient transport file.
+    process.env.QQ_RUNNER_FINDINGS_DIR = priorDir6;
+    const disp3 = await dispatchRunner({ task: "failed retention success", cwd: testRepoCT6 });
+    const runner3 = RUNNERS.get(disp3.runnerId);
+    writeFileSync(runner3.resultFile, "{ also malformed", "utf8");
+    runner3.process = { exitCode: 0, signalCode: null };
+    assert.equal(reconcileDeadRunner(runner3).status, "failed");
+    assert.ok(loadRetainedFindings(disp3.runnerId), "failed outcome retained when persistence works");
+    assert.equal(existsSync(runner3.resultFile), false, "transport file cleaned up once retention succeeded");
+  } finally {
+    delete globalThis.__QQ_TEST_RUNNER_HANDLER;
+    if (priorDir6 === undefined) delete process.env.QQ_RUNNER_FINDINGS_DIR; else process.env.QQ_RUNNER_FINDINGS_DIR = priorDir6;
+    rmSync(testRepoCT6, { recursive: true, force: true });
+    rmSync(badBase, { recursive: true, force: true });
+  }
+}
+
+// CT7. runnerId is validated BEFORE any filesystem access: traversal and
+// malformed ids are rejected without touching a path.
+{
+  const dir = mkdtempSync(join(tmpdir(), "architect-checkrunner7-"));
+  const env7 = { ...process.env, QQ_RUNNER_FINDINGS_DIR: dir };
+  try {
+    const evil = "../../../../tmp/qq-pwned-sentinel";
+    assert.equal(isValidRunnerId(evil), false);
+    assert.equal(retainedFindingsPath(evil, env7), null, "traversal id must not resolve a path");
+    assert.equal(retainedFindingsPath("not-a-uuid", env7), null);
+    assert.equal(loadRetainedFindings(evil, { env: env7 }), null);
+    assert.equal(pruneRetainedFindings(evil, { env: env7 }), false);
+    assert.equal(retainRunnerFindings({ runnerId: evil, status: "completed", result: "x" }, { env: env7 }), null);
+    assert.equal(hasRetainedFindings(evil, { env: env7 }), false);
+    const r = await replayRetainedRunnerFindings(evil, { env: env7 });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, "invalid-runner-id");
+    assert.deepEqual(listRetainedFindings({ env: env7 }), []);
+    assert.equal(existsSync("/tmp/qq-pwned-sentinel.json"), false, "no file created outside the findings dir");
+    // containment: a valid id resolves strictly inside the findings dir
+    const inside = retainedFindingsPath("11111111-1111-4111-8111-111111111111", env7);
+    assert.equal(dirname(inside), runnerFindingsDir(env7));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// CT8. Replay cannot be redirected and cannot cross sessions: routing comes
+// only from the retained record, and the caller must prove ownership via
+// trusted runtime identity (never a caller-supplied arg).
+{
+  const dir = mkdtempSync(join(tmpdir(), "architect-checkrunner8-"));
+  const env8 = { ...process.env, QQ_RUNNER_FINDINGS_DIR: dir };
+  const victimId = "11111111-1111-4111-8111-111111111111";
+  const priorThreadCT8 = Object.prototype.hasOwnProperty.call(globalThis, "__QQ_TEST_CODEX_THREAD");
+  const savedThreadCT8 = globalThis.__QQ_TEST_CODEX_THREAD;
+  try {
+    writeFileSync(
+      join(dir, `${victimId}.json`),
+      JSON.stringify({
+        version: 1,
+        runnerId: victimId,
+        sessionId: "origin-sess",
+        threadId: "origin-thread",
+        startedAt: Date.now(),
+        retainedAt: Date.now(),
+        status: "completed",
+        result: { response: "VICTIM-SECRET", data_points: [] },
+        error: null,
+        outputTail: null,
+      }),
+      "utf8",
+    );
+    const calls = [];
+    globalThis.__QQ_TEST_NOTIFY_HANDLER = async (call) => { calls.push(call); };
+
+    // A caller from another session must be rejected, with no delivery.
+    globalThis.__QQ_TEST_CODEX_THREAD = "attacker-thread";
+    const rejected = await replayRetainedRunnerFindings(victimId, { env: env8 });
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.reason, "not-originating-session");
+    assert.equal(calls.length, 0, "must not deliver a victim's findings to another session");
+    assert.ok(!JSON.stringify(rejected).includes("VICTIM-SECRET"), "rejection must not leak findings");
+    assert.ok(loadRetainedFindings(victimId, { env: env8 }), "rejected replay keeps the artifact");
+
+    // A caller-supplied routing override is ignored outright (the tool dispatch
+    // takes only runnerId), so it can never redirect the replay.
+    const overridden = await replayRetainedRunnerFindings(victimId, { env: env8, threadId: "attacker-thread", sessionId: "attacker-sess" });
+    assert.equal(overridden.ok, false, "a routing override must not bypass ownership");
+    assert.equal(calls.length, 0);
+
+    // Absent caller identity fails closed too.
+    delete globalThis.__QQ_TEST_CODEX_THREAD;
+    const noId = await replayRetainedRunnerFindings(victimId, { env: env8 });
+    assert.equal(noId.ok, false);
+    assert.equal(noId.reason, "no-caller-identity");
+
+    // Absent RECORD identity (a record without an originating thread) also
+    // fails closed, even for an apparently valid caller: there is no
+    // cross-session fallback.
+    const orphanId = "22222222-2222-4222-8222-222222222222";
+    writeFileSync(
+      join(dir, `${orphanId}.json`),
+      JSON.stringify({
+        version: 1, runnerId: orphanId, sessionId: "orphan-sess", threadId: null,
+        startedAt: Date.now(), retainedAt: Date.now(), status: "completed",
+        result: { response: "ORPHAN-SECRET", data_points: [] }, error: null, outputTail: null,
+      }),
+      "utf8",
+    );
+    globalThis.__QQ_TEST_CODEX_THREAD = "origin-thread";
+    const orphan = await replayRetainedRunnerFindings(orphanId, { env: env8 });
+    assert.equal(orphan.ok, false);
+    assert.equal(orphan.reason, "no-record-identity");
+    assert.equal(calls.length, 0, "an identity-less record must never be delivered");
+    assert.ok(loadRetainedFindings(orphanId, { env: env8 }), "rejected replay keeps the artifact");
+
+    // The originating session replays; routing is the record's, not the caller's.
+    globalThis.__QQ_TEST_CODEX_THREAD = "origin-thread";
+    const delivered = await replayRetainedRunnerFindings(victimId, { env: env8 });
+    assert.equal(delivered.ok, true);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].threadId, "origin-thread", "delivered to the originating thread only");
+    assert.equal(calls[0].sessionId, "origin-sess");
+    assert.ok(calls[0].message.includes("VICTIM-SECRET"));
+    assert.ok(!JSON.stringify(delivered).includes("VICTIM-SECRET"), "replay response must not return findings");
+    assert.equal(loadRetainedFindings(victimId, { env: env8 }), null);
+  } finally {
+    delete globalThis.__QQ_TEST_NOTIFY_HANDLER;
+    if (priorThreadCT8) globalThis.__QQ_TEST_CODEX_THREAD = savedThreadCT8; else delete globalThis.__QQ_TEST_CODEX_THREAD;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// N6b. Terminal delivery truth: a returned transport failure must not claim
+// delivery (the tracker stays retryable for the sweeper backstop), a confirmed
+// success suppresses repeats, and concurrent attempts coalesce onto one send.
+{
+  const retryDir = mkdtempSync(join(tmpdir(), "test-notify-retry-"));
+  const retryCount = join(retryDir, "count");
+  const savedBinN6b = process.env.QQ_CODEX_BIN;
+  const hadThreadN6b = Object.prototype.hasOwnProperty.call(globalThis, "__QQ_TEST_CODEX_THREAD");
+  const savedThreadN6b = globalThis.__QQ_TEST_CODEX_THREAD;
+  const savedRunnersN6b = new Map(RUNNERS);
+  const savedExecutionsN6b = new Map(EXECUTIONS);
+  try {
+    const fakeCodex = join(retryDir, "codex");
+    writeFileSync(
+      fakeCodex,
+      `#!/usr/bin/env bash\nn=0\n[ -f "${retryCount}" ] && n=$(cat "${retryCount}")\nn=$((n+1))\necho "$n" > "${retryCount}"\nif [ "$n" -eq 1 ]; then exit 1; fi\nexit 0\n`,
+      "utf8",
+    );
+    execFileSync("chmod", ["+x", fakeCodex]);
+    globalThis.__QQ_TEST_CODEX_THREAD = "n6b-thread";
+    process.env.QQ_CODEX_BIN = fakeCodex;
+
+    const tracker = { runnerId: "n6b-1", id: "n6b-1", status: "completed", startedAt: Date.now(), result: "done" };
+    const failed = await notifyTerminal(tracker, "runner");
+    assert.equal(failed.notified, false, "failed delivery must report notified:false");
+    assert.match(String(failed.reason), /exited with code 1/);
+    assert.equal(tracker.notifiedTerminal, undefined, "failed delivery must not claim delivered");
+    assert.equal(tracker.notifiedTerminalInFlight, undefined, "failed delivery must clear the in-flight marker");
+
+    const delivered = await notifyTerminal(tracker, "runner");
+    assert.equal(delivered.notified, true, "a retry after a failed transport must deliver");
+    assert.equal(tracker.notifiedTerminal, true, "only a confirmed success marks delivered");
+    const repeat = await notifyTerminal(tracker, "runner");
+    assert.equal(repeat.reason, "already-notified");
+    assert.equal(readFileSync(retryCount, "utf8").trim(), "2", "confirmed success must suppress further sends");
+
+    // Concurrent attempts coalesce onto one in-flight send and never claim
+    // delivered while the send is still pending.
+    const calls = [];
+    let release;
+    const gate = new Promise((resolveGate) => { release = resolveGate; });
+    globalThis.__QQ_TEST_NOTIFY_HANDLER = async (call) => { calls.push(call); await gate; };
+    const conc = { runnerId: "n6b-2", id: "n6b-2", status: "completed", startedAt: Date.now(), result: "done" };
+    const first = notifyTerminal(conc, "runner");
+    assert.equal(conc.notifiedTerminal, undefined, "in-flight attempt must not claim delivered");
+    assert.ok(conc.notifiedTerminalInFlight, "in-flight marker must be present while awaiting the transport");
+    const second = notifyTerminal(conc, "runner");
+    assert.equal(calls.length, 1, "a concurrent attempt must not start a duplicate send");
+    release();
+    const [a, b] = await Promise.all([first, second]);
+    assert.equal(a.notified, true);
+    assert.equal(b.notified, true, "the coalesced caller reports the in-flight outcome");
+    assert.equal(calls.length, 1, "concurrent attempts must produce exactly one transport send");
+    assert.equal(conc.notifiedTerminal, true);
+    assert.equal(conc.notifiedTerminalInFlight, undefined, "in-flight marker must clear once the attempt settles");
+    delete globalThis.__QQ_TEST_NOTIFY_HANDLER;
+
+    // Sweeper backstop: a failed terminal wakeup is retried on the next sweep
+    // and repeats stop once delivery is confirmed.
+    RUNNERS.clear();
+    EXECUTIONS.clear();
+    writeFileSync(retryCount, "0", "utf8");
+    const swept = { id: "n6b-3", runnerId: "n6b-3", status: "completed", startedAt: Date.now(), result: "swept" };
+    RUNNERS.set(swept.id, swept);
+    const s1 = await sweepNotifications();
+    assert.equal(s1.terminalNotified, 0, "failed delivery must not count as notified");
+    assert.equal(swept.notifiedTerminal, undefined, "failed delivery must leave the tracker retryable");
+    const s2 = await sweepNotifications();
+    assert.equal(s2.terminalNotified, 1, "the next sweep must retry and deliver");
+    assert.equal(swept.notifiedTerminal, true);
+    const s3 = await sweepNotifications();
+    assert.equal(s3.terminalNotified, 0, "confirmed delivery must suppress sweeper repeats");
+  } finally {
+    delete globalThis.__QQ_TEST_NOTIFY_HANDLER;
+    if (savedBinN6b === undefined) delete process.env.QQ_CODEX_BIN; else process.env.QQ_CODEX_BIN = savedBinN6b;
+    if (hadThreadN6b) globalThis.__QQ_TEST_CODEX_THREAD = savedThreadN6b; else delete globalThis.__QQ_TEST_CODEX_THREAD;
+    RUNNERS.clear();
+    for (const [k, v] of savedRunnersN6b) RUNNERS.set(k, v);
+    EXECUTIONS.clear();
+    for (const [k, v] of savedExecutionsN6b) EXECUTIONS.set(k, v);
+    rmSync(retryDir, { recursive: true, force: true });
   }
 }
 
@@ -2778,12 +3394,15 @@ DETECTED_CODEX_HOMES.delete("sess-detected");
   assert.ok(!atCapMsg.includes("chars omitted"), "32,768-char findings must not be truncated");
   assert.ok(atCapMsg.includes(atCap), "32,768-char findings must be preserved intact");
 
-  // Beyond 32,768 chars, head+tail capped at 16,000+16,000 with a check_runner pointer.
+  // No verified notification limit is configured, so even an over-length
+  // findings string (which the completion transport would itself reject) is
+  // delivered whole — no blind truncation, no invented 32,768 transport cap,
+  // and no pointer to check_runner (which no longer returns findings).
   const big = "z".repeat(40_000);
   const bigMsg = buildRunnerTerminalMessage({ runnerId: "big", status: "completed", startedAt: Date.now(), result: big });
-  assert.ok(bigMsg.includes("chars omitted"), "40,000-char findings must be head+tail capped");
-  assert.ok(bigMsg.includes("8000 chars omitted"), "40,000-char findings must omit 40,000 - 32,000 chars");
-  assert.ok(bigMsg.includes("check_runner"), "truncated findings must point to check_runner");
+  assert.ok(!bigMsg.includes("chars omitted"), "over-length findings must not be blind-truncated");
+  assert.ok(bigMsg.includes(big), "over-length findings must be delivered whole");
+  assert.ok(!bigMsg.includes("check_runner"), "no check_runner findings pointer may remain");
 
   const susMsg = buildSuspicionMessage("runner", { runnerId: "n5-s" }, {
     suspect: true,
@@ -3185,13 +3804,13 @@ assert.equal(getDisabledTools([], {}).size, 0);
 {
   const disabled = ["await_runner", "await_execution"];
   const list = await handleRpc("tools/list", {}, { disabledTools: disabled });
-  assert.equal(list.tools.length, 11);
+  assert.equal(list.tools.length, 12);
   const names = list.tools.map((t) => t.name);
   assert.ok(!names.includes("await_runner"));
   assert.ok(!names.includes("await_execution"));
 
   const full = await handleRpc("tools/list", {}, { disabledTools: [] });
-  assert.equal(full.tools.length, 13);
+  assert.equal(full.tools.length, 14);
 
   await assert.rejects(
     () => callTool("await_runner", { runnerId: "x" }, { disabledTools: disabled }),
@@ -3226,7 +3845,7 @@ assert.equal(getDisabledTools([], {}).size, 0);
   delete process.env.QQ_DISABLED_TOOLS;
   try {
     const full = await handleRpc("tools/list", {});
-    assert.equal(full.tools.length, 13);
+    assert.equal(full.tools.length, 14);
   } finally {
     if (savedDisabledEnv === undefined) delete process.env.QQ_DISABLED_TOOLS;
     else process.env.QQ_DISABLED_TOOLS = savedDisabledEnv;
@@ -3235,7 +3854,7 @@ assert.equal(getDisabledTools([], {}).size, 0);
   process.env.QQ_DISABLED_TOOLS = "await_runner,await_execution";
   try {
     const list = await handleRpc("tools/list", {});
-    assert.equal(list.tools.length, 11);
+    assert.equal(list.tools.length, 12);
     assert.ok(!list.tools.some((t) => t.name === "await_runner" || t.name === "await_execution"));
     await assert.rejects(() => callTool("await_execution", { id: "x" }), /Tool 'await_execution' is disabled/);
     const rpcErr = await handleRpc("tools/call", { name: "await_execution", arguments: { id: "x" } });
@@ -3284,7 +3903,7 @@ assert.equal(getDisabledTools([], {}).size, 0);
       args: ["--disabled-tools", "await_runner,await_execution"],
       stripDisabledEnv: true,
     });
-    assert.equal(listResp.result.tools.length, 11);
+    assert.equal(listResp.result.tools.length, 12);
     assert.ok(!listResp.result.tools.some((t) => t.name === "await_runner" || t.name === "await_execution"));
     assert.equal(callResp.result.isError, true);
     assert.equal(callResp.result.content[0].text, "Tool 'await_runner' is disabled");
@@ -3293,7 +3912,7 @@ assert.equal(getDisabledTools([], {}).size, 0);
   // Env var alone filters the list and rejects the call.
   {
     const [listResp, callResp] = queryServer({ env: { QQ_DISABLED_TOOLS: "await_runner,await_execution" } });
-    assert.equal(listResp.result.tools.length, 11);
+    assert.equal(listResp.result.tools.length, 12);
     assert.ok(!listResp.result.tools.some((t) => t.name === "await_runner" || t.name === "await_execution"));
     assert.equal(callResp.result.isError, true);
     assert.equal(callResp.result.content[0].text, "Tool 'await_runner' is disabled");
@@ -3302,7 +3921,7 @@ assert.equal(getDisabledTools([], {}).size, 0);
   // Neither: full Muse parity.
   {
     const [listResp] = queryServer({ stripDisabledEnv: true });
-    assert.equal(listResp.result.tools.length, 13);
+    assert.equal(listResp.result.tools.length, 14);
   }
 }
 
@@ -3403,11 +4022,12 @@ await new Promise((r) => setTimeout(r, 2000));
     assert.notEqual(awaitRes.result.response, unicodeReport.slice(0, 512) + "…", "parent must NOT fall back to clipped telemetry");
     assert.deepEqual(awaitRes.result.data_points, testDataPoints, "parent must receive exact data_points");
 
-    // check_runner returns the exact full result
+    // check_runner reports health/delivery state, NOT findings; the exact full
+    // report stays deliverable via the terminal notification and await_runner.
     const checkRes = await checkRunner({ runnerId: disp.runnerId });
     assert.equal(checkRes.status, "completed");
-    assert.equal(checkRes.result.response, unicodeReport);
-    assert.deepEqual(checkRes.result.data_points, testDataPoints);
+    assert.equal(checkRes.result, undefined, "check_runner must NOT return the full report");
+    assert.equal(checkRes.findingsRetained, true, "authoritative findings stay retained for delivery");
 
     // Wait for child process to finish close and verify transport file was cleaned up
     await new Promise((r) => setTimeout(r, 100));

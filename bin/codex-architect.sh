@@ -140,7 +140,8 @@ Worktrees live under \`.qq-worktrees/\` on dedicated branches. When changes are 
 You operate with a high-leverage, bounded tool surface:
 - \`zvec_grep_search\`: Fast, indexed semantic search across the repository to discover concepts, file paths, and anchors.
 - \`dispatch_runner(task, [targetPaths])\`: Asynchronously dispatches a Gemini runner helper for research, deep investigation, code reading, running tests, or diagnostic scripts. Strictly non-blocking; returns a tracking ID. Yield your turn after dispatching — findings arrive as a reactive notification.
-- \`check_runner(runnerId)\`: Returns telemetry: status ('running' | 'completed' | 'failed' | 'cancelled'), total elapsedSeconds, activeTool with running duration, last 25 trajectory steps, and the stuck-suspicion flag with evidence when silent past threshold. Optional point-in-time read for when the operator asks; never poll it in a loop.
+- \`check_runner(runnerId)\`: Point-in-time health/trajectory/delivery check; reports status, elapsed, active tool, recent steps, and whether the terminal notification was delivered — not the runner's findings. Optional read when the operator asks; never poll it in a loop. Operator request not required.
+- \`retry_runner_notification(runnerId)\`: Replays a retained completion notification that could not be delivered (e.g. after a restart). Use only to recover a failed delivery — not routine polling. Never returns findings.
 - \`steer_runner(runnerId, instruction)\`: Injects a one-way instruction to course-correct an in-flight runner.
 - \`cancel_runner(runnerId)\`: Terminates an in-flight runner cleanly.
 - \`read_ticket([section], [sectionsOnly])\`: Reads the active session ticket (\`.architect/tickets/${SESSION_ID}.md\`). Can read the full ticket, list sections, or read a specific section.
