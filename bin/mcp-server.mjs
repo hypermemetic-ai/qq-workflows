@@ -1,4 +1,17 @@
 #!/usr/bin/env node
+import {
+  OPERATOR_ACTION_TOOLS,
+  stageOperatorAction,
+  checkOperatorAction,
+  cancelOperatorAction,
+  cleanupOperatorAction,
+} from "../workflow/operator-action.mjs";
+
+const OPERATOR_ACTION_TOOL_NAMES = new Set(OPERATOR_ACTION_TOOLS.map((t) => t.name));
+
+function isOperatorActionEnabled(options = {}) {
+  return Boolean(options.enableOperatorAction || process.env.QQ_ENABLE_OPERATOR_ACTION === "1");
+}
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -20,6 +33,18 @@ import {
   parseWorktreePorcelain,
 } from "../workflow/git.mjs";
 import {
+  COMPLETE_TASK_DATA_POINT_LEN_MAX,
+  COMPLETE_TASK_DATA_POINTS_MAX,
+  COMPLETE_TASK_RESPONSE_MAX,
+  acceptRunnerResult,
+  validateRunnerResultPayload,
+  readAuthoritativeRunnerResult as readAuthoritativeResultFromStore,
+  renderRunnerFindings,
+} from "../workflow/results.mjs";
+import { routeNotification } from "../workflow/notify.mjs";
+import { saveReport } from "../workflow/reports.mjs";
+import { stateDirFor } from "../workflow/session.mjs";
+import {
   CANONICAL_PROVIDERS,
   PROVIDERS,
   assertKnownProvider,
@@ -33,7 +58,7 @@ import {
   ticketPath,
 } from "../workflow/ticket.mjs";
 
-export { CANONICAL_PROVIDERS, PROVIDERS, assertKnownProvider, normalizeProvider, hasImplementationChanges };
+export { CANONICAL_PROVIDERS, PROVIDERS, assertKnownProvider, normalizeProvider, hasImplementationChanges, OPERATOR_ACTION_TOOLS };
 
 export const TOOLS = [
   {
@@ -640,6 +665,12 @@ function extractTarget(toolName, parameters) {
       return cap(parameters.query || parameters.Query);
     case "steer":
       return cap(parameters.instruction || parameters.message);
+    case "stage_operator_action":
+      return cap(parameters.title || parameters.targetMachine);
+    case "check_operator_action":
+    case "cancel_operator_action":
+    case "cleanup_operator_action":
+      return cap(parameters.actionId);
     default:
       return undefined;
   }
@@ -1166,23 +1197,77 @@ export async function notifyTerminal(tracker, kind) {
       const res = await tracker.notifiedTerminalInFlight;
       return res?.notified ? res : { notified: false, reason: res?.reason || "in-flight", coalesced: true };
     }
+    // Persist the complete terminal report BEFORE notifying: the notification is
+    // a bounded delivery, never the only copy of the result.
+    const report = persistTrackerReport(tracker, kind);
+    const stateDir = trackerStateDir(tracker);
+    const sessionDir = join(stateDir, kind === "execution" ? "executions" : "runners");
     const attempt = (async () => {
       const message = kind === "execution"
         ? buildExecutionTerminalMessage(tracker)
         : buildRunnerTerminalMessage(tracker);
-      const res = await notifySession(trackerSessionId(tracker), message, {
-        kind: `${kind}.terminal`,
-        trackerId: trackerRef(tracker),
+      const routed = await routeNotification({
+        stateDir: sessionDir,
+        eventId: `${kind}:${trackerRef(tracker) || "unknown"}:terminal`,
+        jobId: trackerRef(tracker) || null,
+        role: kind,
+        workflow: { sessionKey: trackerSessionId(tracker) || null, sessionId: trackerSessionId(tracker) || null },
+        text: message,
+        reportText: buildTrackerReport(tracker, kind),
+        reportId: report?.reportId ?? null,
+        reportChars: report?.chars ?? 0,
+        transport: {
+          name: "codex-queue",
+          // The bounded text the router produced (never the raw terminal
+          // message): an over-cap report is delivered as a bounded summary that
+          // points at the durable report, instead of being lost or rejected by
+          // the transport.
+          deliver: async (notification) => {
+            const bounded = typeof notification?.text === "string" ? notification.text : message;
+            const res = await notifySession(trackerSessionId(tracker), bounded, {
+              kind: `${kind}.terminal`,
+              trackerId: trackerRef(tracker),
+            });
+            // The queue transport confirms that the thread queue ACCEPTED the
+            // message, not that the architect has seen a turn; report that
+            // distinction honestly instead of implying delivery.
+            return {
+              state: res?.notified ? "accepted" : "failed",
+              reason: res?.reason ?? null,
+              via: res?.via ?? null,
+              threadId: res?.threadId ?? null,
+            };
+          },
+        },
+        // Compatibility: an in-memory MCP tracker keeps its own notified flag
+        // and a process-scoped dedupe, so a durable record from an earlier,
+        // unrelated process can never swallow a fresh delivery. The durable
+        // record itself is still written and stays inspectable.
+        dedupe: "process",
+        cap: MCP_NOTIFY_CAP,
       });
+      if (routed.state === "duplicate") {
+        return { notified: false, reason: "duplicate-event", eventId: routed.eventId, reportId: report?.reportId ?? null, deliveryState: routed.state };
+      }
+      const accepted = routed.state === "accepted" || routed.state === "queued" || routed.state === "delivered";
+      const raw = routed.transportResult ?? {};
       // Mark delivered only after the transport confirms success. A confirmed
       // runner delivery means the architect holds the full notification, so the
       // durable retained copy is redundant and may be pruned. A rejected
       // transport leaves the artifact in place (truthful retry state).
-      if (res?.notified) {
+      if (accepted) {
         tracker.notifiedTerminal = true;
         if (kind === "runner") pruneRetainedFindings(trackerRef(tracker));
       }
-      return res;
+      return {
+        notified: accepted,
+        ...(accepted
+          ? { via: raw.via ?? "codex-queue", threadId: raw.threadId ?? null }
+          : { reason: raw.reason ?? routed.delivery?.reason ?? "delivery-failed" }),
+        eventId: routed.eventId,
+        reportId: report?.reportId ?? null,
+        deliveryState: routed.state,
+      };
     })();
     tracker.notifiedTerminalInFlight = attempt;
     try {
@@ -1376,9 +1461,20 @@ export const RUNNERS = new Map();
 // Keyed by runnerId. Also used by the Stop hook for sub-agent tracking.
 export const COMPLETE_TASK_REGISTRY = new Map();
 
-export const COMPLETE_TASK_RESPONSE_MAX = 32_768;
-export const COMPLETE_TASK_DATA_POINTS_MAX = 20;
-export const COMPLETE_TASK_DATA_POINT_LEN_MAX = 100;
+// The MCP compatibility path keeps its long-standing 32,768-character delivery
+// budget; the Architect path uses the observed 16,384-character transport cap.
+export const MCP_NOTIFY_CAP = 32_768;
+
+// Authoritative worker-result transport lives in workflow/results.mjs so the
+// MCP adapter and the native pi Architect share one implementation. The
+// validator and the pinned caps are shared; `cleanupRunnerFiles` deliberately
+// stays local because this transport retains terminal findings for replay.
+export {
+  COMPLETE_TASK_RESPONSE_MAX,
+  COMPLETE_TASK_DATA_POINTS_MAX,
+  COMPLETE_TASK_DATA_POINT_LEN_MAX,
+  validateRunnerResultPayload,
+};
 
 export function cleanupRunnerFiles(runner) {
   if (!runner) return;
@@ -1415,6 +1511,7 @@ export function cleanupRunnerFiles(runner) {
     try { rmSync(join(tmpdir(), `qq-complete-task-${runner.id}.json`), { force: true }); } catch {}
   }
 }
+
 
 // ============================================================================
 // Durable retention of validated terminal findings
@@ -1666,125 +1763,63 @@ export async function replayRetainedRunnerFindings(runnerId, { env = process.env
   };
 }
 
-export function validateRunnerResultPayload(payload, runner) {
-  if (!payload || typeof payload !== "object") {
-    return { ok: false, error: "Runner result payload is not an object" };
-  }
 
-  // Check runner binding
-  if (payload.runnerId !== undefined && payload.runnerId !== null) {
-    if (runner?.id && payload.runnerId !== runner.id) {
-      return {
-        ok: false,
-        error: `Runner result ID mismatch: expected '${runner.id}', got '${payload.runnerId}'`,
-      };
-    }
-  }
-
-  // Validate response
-  if (payload.response === undefined || payload.response === null) {
-    return { ok: false, error: "Runner result is missing 'response' field" };
-  }
-  if (typeof payload.response !== "string") {
-    return { ok: false, error: "Runner result 'response' must be a string" };
-  }
-  if (payload.response.length > COMPLETE_TASK_RESPONSE_MAX) {
-    return {
-      ok: false,
-      error: `Runner result response exceeds ${COMPLETE_TASK_RESPONSE_MAX}-character cap (got ${payload.response.length} chars)`,
-    };
-  }
-
-  // Validate data_points
-  let dataPoints = [];
-  if (payload.data_points !== undefined && payload.data_points !== null) {
-    if (!Array.isArray(payload.data_points)) {
-      return { ok: false, error: "Runner result 'data_points' must be an array of strings" };
-    }
-    if (payload.data_points.length > COMPLETE_TASK_DATA_POINTS_MAX) {
-      return {
-        ok: false,
-        error: `Runner result 'data_points' exceeds ${COMPLETE_TASK_DATA_POINTS_MAX}-item cap (got ${payload.data_points.length} items)`,
-      };
-    }
-    for (let i = 0; i < payload.data_points.length; i++) {
-      if (typeof payload.data_points[i] !== "string") {
-        return { ok: false, error: `Runner result data_points[${i}] must be a string` };
-      }
-      if (payload.data_points[i].length > COMPLETE_TASK_DATA_POINT_LEN_MAX) {
-        return {
-          ok: false,
-          error: `Runner result data_points[${i}] exceeds ${COMPLETE_TASK_DATA_POINT_LEN_MAX}-character cap (got ${payload.data_points[i].length} chars)`,
-        };
-      }
-    }
-    dataPoints = payload.data_points;
-  }
-
-  return {
-    ok: true,
-    result: {
-      response: payload.response,
-      data_points: dataPoints,
-    },
-  };
-}
-
-function getInMemoryRunnerResult(runner) {
-  if (runner?.id && COMPLETE_TASK_REGISTRY.has(runner.id)) {
-    return COMPLETE_TASK_REGISTRY.get(runner.id);
-  }
-  if (runner?.sessionId && COMPLETE_TASK_REGISTRY.has(runner.sessionId)) {
-    return COMPLETE_TASK_REGISTRY.get(runner.sessionId);
-  }
-  if (COMPLETE_TASK_REGISTRY.has("default")) {
-    return COMPLETE_TASK_REGISTRY.get("default");
-  }
-  return null;
-}
-
+// Registry-bound read for the in-memory complete_task registry used by MCP
+// clients and test doubles.
 export function readAuthoritativeRunnerResult(runner) {
-  if (!runner) return { ok: false, error: "No runner provided" };
+  return readAuthoritativeResultFromStore(runner, { registry: COMPLETE_TASK_REGISTRY });
+}
 
-  if (runner.resultFile) {
-    if (!existsSync(runner.resultFile)) {
-      // Check in-memory registry ONLY if explicitly keyed by this runner ID or session ID
-      const inMem = (runner.id && COMPLETE_TASK_REGISTRY.get(runner.id)) ||
-                    (runner.sessionId && COMPLETE_TASK_REGISTRY.get(runner.sessionId));
-      if (inMem) return validateRunnerResultPayload(inMem, runner);
-      return {
-        ok: false,
-        error: `Missing runner result transport file at '${runner.resultFile}'`,
-      };
-    }
+// Tracker state directory: the durable job/report store for the repository the
+// tracker is working in. `QQ_WORKFLOW_STATE_DIR` overrides it (tests and
+// non-default deployments).
+export function trackerStateDir(tracker, { cwd = null } = {}) {
+  const root = cwd || tracker?.cwd || process.cwd();
+  return stateDirFor(root, process.env);
+}
 
-    let raw;
-    try {
-      raw = readFileSync(runner.resultFile, "utf8");
-    } catch (err) {
-      return { ok: false, error: `Failed to read runner result transport file: ${err.message}` };
-    }
-
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (err) {
-      return { ok: false, error: `Runner result transport file is malformed JSON: ${err.message}` };
-    }
-
-    return validateRunnerResultPayload(parsed, runner);
+// Full terminal text for a tracker, used to persist the complete report before
+// any bounded notification is sent.
+export function buildTrackerReport(tracker, kind) {
+  if (!tracker) return "";
+  if (kind === "execution") {
+    const payload = {
+      id: trackerRef(tracker),
+      kind: tracker.kind ?? null,
+      status: tracker.status,
+      phase: tracker.phase ?? null,
+      branch: tracker.branch ?? null,
+      worktree: tracker.worktree ?? null,
+      error: tracker.error ?? null,
+      result: tracker.result ?? null,
+    };
+    return JSON.stringify(payload, null, 2);
   }
+  const error = tracker.error ? `\n\nerror:\n${JSON.stringify(tracker.error, null, 2)}` : "";
+  return `${renderRunnerFindings(tracker.result)}${error}`;
+}
 
-  // Fallback for test doubles without resultFile (e.g. T7a)
-  const inMem = (runner.id && COMPLETE_TASK_REGISTRY.get(runner.id)) ||
-                (runner.sessionId && COMPLETE_TASK_REGISTRY.get(runner.sessionId)) ||
-                COMPLETE_TASK_REGISTRY.get("default");
-  if (inMem) return validateRunnerResultPayload(inMem, runner);
-
-  return {
-    ok: false,
-    error: `No authoritative complete_task result available for runner '${runner.id}' (no transport file or registry entry)`,
-  };
+/**
+ * Persist the complete terminal report for a tracker. Idempotent per tracker.
+ * Returns the durable reference (or null when there is nothing to persist).
+ */
+export function persistTrackerReport(tracker, kind) {
+  if (!tracker) return null;
+  if (tracker.durableReport) return tracker.durableReport;
+  const text = buildTrackerReport(tracker, kind);
+  if (!text || !text.trim()) return null;
+  try {
+    const saved = saveReport(trackerStateDir(tracker), {
+      jobId: trackerRef(tracker) || "unknown",
+      role: kind,
+      text,
+    });
+    tracker.durableReport = { reportId: saved.reportId, chars: saved.chars, path: saved.path };
+    return tracker.durableReport;
+  } catch (err) {
+    console.error("[qq-workflows] failed to persist terminal report:", err?.message);
+    return null;
+  }
 }
 
 export async function dispatchRunner(args = {}) {
@@ -1924,10 +1959,21 @@ function startRunnerProcess(runner) {
       return;
     }
     if (runner.resultFile && existsSync(runner.resultFile)) {
-      const loaded = readAuthoritativeRunnerResult(runner);
+      // Ingestion keeps the pinned 32,768-character complete_task contract but
+      // never discards the only copy of an over-cap report: the full response is
+      // spilled to the durable report store and the runner still completes.
+      const loaded = acceptRunnerResult(
+        runner,
+        {
+          registry: COMPLETE_TASK_REGISTRY,
+          stateDir: trackerStateDir(runner),
+          saveReport: (dir, options) => saveReport(dir, options),
+        },
+      );
       if (loaded.ok) {
         runner.status = "completed";
         runner.result = loaded.result;
+        if (loaded.report) runner.spilledReport = loaded.report;
       } else {
         runner.status = "failed";
         runner.error = {
@@ -3358,6 +3404,9 @@ export async function callTool(name, args = {}, options = {}) {
   if (disabled.has(name)) {
     throw new Error(`Tool '${name}' is disabled`);
   }
+  if (OPERATOR_ACTION_TOOL_NAMES.has(name) && !isOperatorActionEnabled(options)) {
+    throw new Error(`Tool '${name}' is disabled`);
+  }
   if (name === "prepare_worktree") {
     return prepareWorktree(args);
   }
@@ -3399,6 +3448,18 @@ export async function callTool(name, args = {}, options = {}) {
   if (name === "update_ticket") {
     return updateTicket(args);
   }
+  if (name === "stage_operator_action") {
+    return stageOperatorAction(args);
+  }
+  if (name === "check_operator_action") {
+    return checkOperatorAction(args);
+  }
+  if (name === "cancel_operator_action") {
+    return cancelOperatorAction(args);
+  }
+  if (name === "cleanup_operator_action") {
+    return cleanupOperatorAction(args);
+  }
   if (name === "complete_task") {
     return completeTask(args);
   }
@@ -3429,14 +3490,31 @@ export async function handleRpc(method, params = {}, options = {}) {
 
   if (method === "tools/list") {
     const disabled = resolveDisabledTools(options.disabledTools);
-    if (disabled.size === 0) return { tools: TOOLS };
-    return { tools: TOOLS.filter((tool) => !disabled.has(tool.name)) };
+    const available = isOperatorActionEnabled(options)
+      ? [...TOOLS, ...OPERATOR_ACTION_TOOLS]
+      : TOOLS;
+    if (disabled.size === 0) return { tools: available };
+    return { tools: available.filter((tool) => !disabled.has(tool.name)) };
   }
 
   if (method === "tools/call") {
     const toolName = params?.name;
     const toolArgs = params?.arguments ?? {};
     try {
+      const disabled = resolveDisabledTools(options.disabledTools);
+      if (disabled.has(toolName)) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: `Tool '${toolName}' is disabled` }],
+        };
+      }
+      if (OPERATOR_ACTION_TOOL_NAMES.has(toolName) && !isOperatorActionEnabled(options)) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: `Tool '${toolName}' is disabled` }],
+        };
+      }
+
       const result = await callTool(toolName, toolArgs, options);
       return {
         content: [

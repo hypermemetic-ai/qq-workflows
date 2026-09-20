@@ -1,0 +1,11 @@
+{
+  "name": "qq-architect-paseo-plugin",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": { "typecheck": "tsc --noEmit" },
+  "devDependencies": {
+    "@getpaseo/plugin": "^0.8.0",
+    "typescript": "^5.9.3"
+  }
+}

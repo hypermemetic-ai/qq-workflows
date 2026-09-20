@@ -12,6 +12,19 @@ delete env.QQ_IMPLEMENTER_PROVIDER;
 delete env.QQ_REVIEWER_PROVIDER;
 delete env.QQ_RESEARCHER_PROVIDER;
 delete env.QQ_WORKFLOW_PROVIDER;
+delete env.QQ_RUNNER_ID;
+// Architect profile isolation: no test may inherit a live workflow identity, the
+// operator's prompt capture target, operator-action tooling, or central worker
+// configuration. Each run gets its own durable state directory.
+delete env.QQ_ENABLE_OPERATOR_ACTION;
+delete env.QQ_WORKFLOW_SESSION_ID;
+delete env.QQ_ARCHITECT_PROFILE;
+delete env.QQ_ARCHITECT_OWNER_AGENT_ID;
+delete env.QQ_ARCHITECT_PROMPT_CAPTURE;
+delete env.PASEO_AGENT_ID;
+delete env.QQ_WORKER_CONFIG_FILE;
+delete env.QQ_WORKER_EXEC;
+env.QQ_WORKFLOW_STATE_DIR = join(mkdtempSync(join(tmpdir(), 'qq-workflow-state-')), 'state');
 // Scrub live notification routing/thread env from test runs.
 // Targeted actual live routing values (preserve needed config: CODEX_HOME, CODEX_MODEL, CODEX_BIN).
 delete env.CODEX_THREAD_ID;
