@@ -28,7 +28,7 @@ import {
   TERMINAL_STATUSES,
   writeJob,
 } from "./jobs.mjs";
-import { defaultCompletionText, deliverCompletion, recoverPendingDeliveries } from "./notify.mjs";
+import { acknowledgeDelivery, defaultCompletionText, deliverCompletion, readNotification, recoverPendingDeliveries } from "./notify.mjs";
 import { readReport, saveReport } from "./reports.mjs";
 import { acceptRunnerResult, cleanupRunnerFiles, renderRunnerFindings } from "./results.mjs";
 import { ensureAssociation, resolveSessionKey, stateDirFor } from "./session.mjs";
@@ -778,10 +778,17 @@ export function createWorkflow({
     return { jobs: reconcileAll(stateDir).map(jobSummary) };
   }
 
-  async function recoverDeliveriesOp({ transport = notifierTransport } = {}) {
+  async function recoverDeliveriesOp({ transport = notifierTransport, evidence = null, allowUnverified = false } = {}) {
     const association = session();
     const jobs = reconcileAll(stateDir).map(jobSummary);
-    const delivery = await recoverPendingDeliveries({ stateDir, sessionKey: association.sessionKey, transport, now: now() });
+    const delivery = await recoverPendingDeliveries({
+      stateDir,
+      sessionKey: association.sessionKey,
+      transport,
+      now: now(),
+      evidence,
+      allowUnverified,
+    });
     return {
       ok: true,
       sessionKey: association.sessionKey,
@@ -789,9 +796,38 @@ export function createWorkflow({
       delivery,
       pendingDelivery: jobs.filter((job) => job.terminal && !job.delivery).map((job) => job.id),
       awaitingExplicitRetry: jobs.filter((job) => deliveryPending(stateDir, job.id)).map((job) => job.id),
+      reconciled: delivery.reconciled.map((entry) => entry.jobId),
+      deferred: delivery.deferred.map((entry) => entry.jobId),
+      uncertain: delivery.uncertain.map((entry) => entry.jobId),
+      // Events whose durable records could not be written (or read) at all. They
+      // are neither delivered nor replayed: `delivery.errors` names the exact
+      // reason, and the next pass retries the reconciliation.
+      unreconciled: delivery.errors.map((entry) => entry.jobId),
       note:
-        "recovery replays completion notifications only for this session and never restarts work: interrupted and reconciliation-required jobs stay inspectable for an explicit decision",
+        "recovery replays completion notifications only for this session and never restarts work: an event the session already retained is acknowledged from its receipt (or, for a completion a previous release steered without the identity metadata, from an exact unique content correspondence) instead of being resent, a receipt whose journal record was lost or corrupted is rebuilt from the owner-bound job record first, an event whose receipt cannot be proven is retained as outcome-unknown (an explicit /qq_recover retries it), an event whose records could not be written is reported as unreconciled rather than delivered, and interrupted or reconciliation-required jobs stay inspectable for an explicit decision",
     };
+  }
+
+  // Durable receipt path for the pi transport: consumption of the exact event is
+  // observed in the owning session, so the completion is acknowledged instead of
+  // being left queued (and instead of being sent twice). Ownership is checked
+  // first: a receipt from another session is refused.
+  function acknowledgeDeliveryOp({ eventId, jobId = null, receipt = null } = {}) {
+    if (!eventId) throw new Error("eventId is required");
+    const association = session();
+    let targetJob = jobId;
+    if (!targetJob) {
+      const notification = readNotification(stateDir, eventId);
+      targetJob = notification?.jobId ?? null;
+    }
+    if (targetJob) {
+      const record = readJob(stateDir, targetJob);
+      if (!record) throw new Error(`unknown job '${targetJob}'`);
+      if (record.workflow?.sessionKey !== association.sessionKey) {
+        return { ok: false, acknowledged: false, eventId, jobId: targetJob, error: "job belongs to another workflow session; refusing to acknowledge it" };
+      }
+    }
+    return acknowledgeDelivery({ stateDir, eventId, jobId: targetJob, receipt, now: now() });
   }
 
   async function callTool(name, args = {}) {
@@ -834,6 +870,7 @@ export function createWorkflow({
     jobsView,
     reconcile: reconcileOp,
     recoverDeliveries: recoverDeliveriesOp,
+    acknowledgeDelivery: acknowledgeDeliveryOp,
     callTool,
     readTicket: readTicketOp,
     updateTicket: updateTicketOp,

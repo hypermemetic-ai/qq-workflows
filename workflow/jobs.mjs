@@ -235,40 +235,97 @@ export function recordTerminal(
 // ---------------------------------------------------------------------------
 // Delivery bookkeeping. One notification per (job, event) — the event ID is the
 // dedupe key, so a repeated callback after a restart cannot double-deliver.
+//
+// A delivery state is a fact about the notification, never about the work:
+//   accepted/queued — the transport took the message but no receipt proves the
+//                     session retained it (volatile: a crash before the drain
+//                     loses it, so it stays reconcilable)
+//   delivered       — a receipt for this exact event exists (a pi session entry
+//                     or a started turn), recorded with its evidence
+//   failed          — the transport refused the message; nothing was accepted
+//   unknown         — the outcome cannot be proven (identity or receipt
+//                     evidence is missing); never replayed automatically and
+//                     never reported as delivered. A record with no event ID
+//                     keeps that absence, so no later pass can mistake it for an
+//                     event whose absence was proven
 // ---------------------------------------------------------------------------
+
+export const DELIVERY_STATES = ["accepted", "queued", "delivered", "failed", "unknown"];
+
+// States without a receipt: the message may or may not have reached the
+// operator. They are eligible for reconciliation (evidence first, resend only
+// when the absence is proven) and never suppress a later attempt by themselves.
+export const UNVERIFIED_DELIVERY_STATES = ["accepted", "queued", "unknown"];
+
+// Monotonic in the direction that matters: a later, weaker result can never
+// overwrite a receipt-bearing `delivered`, and a failed attempt never erases an
+// earlier acceptance or an already-unknown outcome. The acceptance timestamps
+// an earlier attempt recorded are preserved either way.
+export function nextDeliveryState(previous, incoming) {
+  if (!incoming) return previous ?? null;
+  if (!previous) return incoming;
+  if (previous === "delivered" || incoming === "delivered") return "delivered";
+  if (incoming === "failed") return previous;
+  if (previous === "failed") return incoming;
+  return incoming;
+}
 
 export function markDelivery(
   stateDir,
   jobId,
-  { eventId, state, reason = null, messageId = null, transport = null, now = Date.now() },
+  { eventId, state, observed = null, reason = null, messageId = null, transport = null, receipt = null, now = Date.now() },
 ) {
   const current = readJob(stateDir, jobId);
   if (!current) throw new Error(`unknown job '${jobId}'`);
-  const previous = current.delivery && current.delivery.eventId === eventId ? current.delivery : null;
+  if (!DELIVERY_STATES.includes(state)) throw new Error(`invalid delivery state '${state}'`);
+  if (observed && !DELIVERY_STATES.includes(observed)) throw new Error(`invalid delivery state '${observed}'`);
+  // Attempts are counted per recorded result; identity is matched per event so a
+  // record from a different event never inherits this job's history. `observed`
+  // is the result this write is based on when it differs from the state the
+  // projection ends up holding (a straggler result suppressed by a receipt).
+  //
+  // A pre-metadata record has no identity, and that absence IS its identity:
+  // `null`/`undefined` match each other, so marking such a record (e.g. as
+  // `unknown`) neither invents an event ID nor resets the acceptance evidence
+  // the record already carries.
+  const previous = current.delivery && (current.delivery.eventId ?? null) === (eventId ?? null) ? current.delivery : null;
+  const previousState = previous?.state ?? null;
+  const next = nextDeliveryState(previousState, state);
+  const observedState = observed ?? state;
+  // A result the record could not take (weaker than the state it holds) is still
+  // history: the transport result happened, it just did not become the state.
+  const suppressed = nextDeliveryState(next, observedState) !== observedState;
+  // State timestamps move only when the state actually changes: a repeated
+  // receipt, a duplicate hook, or a straggler result must not rewrite when the
+  // delivery happened.
+  const transitioned = previousState !== next;
   const delivery = {
-    eventId,
-    state,
+    eventId: eventId ?? null,
+    state: next,
     transport: transport ?? previous?.transport ?? null,
     attempts: (previous?.attempts ?? 0) + 1,
     at: now,
-    acceptedAt: state === "accepted" ? now : previous?.acceptedAt ?? null,
-    queuedAt: state === "queued" ? now : previous?.queuedAt ?? null,
-    deliveredAt: state === "delivered" ? now : previous?.deliveredAt ?? null,
-    reason: reason ?? null,
+    stateAt: transitioned ? now : previous?.stateAt ?? previous?.at ?? null,
+    acceptedAt: transitioned && next === "accepted" ? now : previous?.acceptedAt ?? null,
+    queuedAt: transitioned && next === "queued" ? now : previous?.queuedAt ?? null,
+    deliveredAt: transitioned && next === "delivered" ? now : previous?.deliveredAt ?? null,
+    receipt: receipt ?? previous?.receipt ?? null,
+    reason: suppressed ? previous?.reason ?? null : reason ?? null,
     messageId: messageId ?? previous?.messageId ?? null,
+    lastResult: suppressed ? { state: observedState, at: now, reason: reason ?? null, applied: false } : previous?.lastResult ?? null,
   };
   return writeJob(stateDir, { ...current, delivery, updatedAt: now });
 }
 
-// A pending completion is a terminal result whose notification was never
-// delivered. Cancellations are architect-initiated and need no wakeup; a failed
-// delivery always stays pending so recovery can retry it explicitly.
+// A pending completion is a terminal result whose notification is not confirmed
+// delivered: never attempted, refused, only accepted by a transport, or of
+// unprovable outcome. Cancellations are architect-initiated and need no wakeup.
 export function deliveryPending(stateDir, jobId) {
   const record = readJob(stateDir, jobId);
   if (!record?.terminal) return false;
   const state = record.delivery?.state;
-  if (state === "failed") return true;
-  if (state) return false;
+  if (state === "delivered") return false;
+  if (state) return true;
   return record.terminal.status !== "cancelled";
 }
 

@@ -368,14 +368,24 @@ await callHandlers(deliveryPi, "message_end", { message: { role: "user" } }, idl
 
 const idleDelivery = await deliveryExtension.transport.deliver({ eventId: "runner:1:terminal", text: "runner finished" });
 assert.equal(idleDelivery.state, "delivered");
+assert.equal(idleDelivery.receipt.kind, "turn-started", "the idle receipt names its basis: pi started a turn for this text");
 assert.equal(deliveryPi.sent.at(-1).kind, "user", "an idle completion starts a turn");
 assert.equal(deliveryPi.sent.at(-1).content, "runner finished");
 
 idleCtx.idle = false;
-const busyDelivery = await deliveryExtension.transport.deliver({ eventId: "runner:2:terminal", text: "runner finished while busy" });
-assert.equal(busyDelivery.state, "queued");
+const busyDelivery = await deliveryExtension.transport.deliver({ eventId: "runner:2:terminal", jobId: "job-2", role: "runner", text: "runner finished while busy" });
+assert.equal(busyDelivery.state, "queued", "queue acceptance is not a receipt");
 assert.equal(deliveryPi.sent.at(-1).kind, "message");
 assert.equal(deliveryPi.sent.at(-1).options.deliverAs, "steer", "a busy session queues/steers instead of interrupting the active turn");
+assert.equal(deliveryPi.sent.at(-1).message.customType, deliveryExtension.completionCustomType);
+assert.deepEqual(deliveryPi.sent.at(-1).message.details, {
+  eventId: "runner:2:terminal",
+  jobId: "job-2",
+  role: "runner",
+  kind: null,
+  reportId: null,
+}, "the steered completion carries the stable identity pi persists into the session entry");
+assert.equal(deliveryExtension.state.receipts.get("runner:2:terminal").jobId, "job-2", "the receipt expectation is registered before the send");
 
 const emptyDelivery = await deliveryExtension.transport.deliver({ eventId: "runner:3:terminal", text: "" });
 assert.equal(emptyDelivery.state, "failed");

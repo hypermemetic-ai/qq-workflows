@@ -3,7 +3,7 @@
 // completion delivery, and restart reconciliation.
 
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMPLETE_TASK_RESPONSE_MAX } from "../workflow/results.mjs";
 import {
@@ -30,13 +30,22 @@ import {
   saveReport,
 } from "../workflow/reports.mjs";
 import {
+  acknowledgeDelivery,
   completedEventId,
+  completionTextForms,
+  defaultCompletionText,
   deliverCompletion,
   isDuplicate,
   listJobsWithPendingDelivery,
   listNotifications,
+  matchLegacyEvidence,
+  normalizeEvidence,
+  notificationPath,
   readNotification,
+  preserveCorruptNotification,
+  readNotificationState,
   recoverPendingDeliveries,
+  repairNotificationFromJob,
   routeNotification,
 } from "../workflow/notify.mjs";
 import { acceptRunnerResult, renderRunnerFindings, validateRunnerResultPayload } from "../workflow/results.mjs";
@@ -361,11 +370,424 @@ const processDedupeSecond = await routeNotification({ stateDir, eventId: "runner
 assert.equal(processDedupeFirst.state, "delivered");
 assert.equal(processDedupeSecond.state, "duplicate");
 
-// Delivery bookkeeping is recorded on the record itself.
+// Delivery bookkeeping is recorded on the record itself, and the state machine is
+// monotonic: a later, weaker transport result can never overwrite a receipt.
 markDelivery(stateDir, "job-delivery", { eventId: firstDelivery.eventId, state: "queued", reason: "resumed" });
-assert.equal(readJob(stateDir, "job-delivery").delivery.attempts, 2);
+const afterStaleWrite = readJob(stateDir, "job-delivery").delivery;
+assert.equal(afterStaleWrite.attempts, 2);
+assert.equal(afterStaleWrite.state, "delivered", "a queued result cannot regress a delivered record");
+assert.equal(afterStaleWrite.lastResult.applied, false, "the suppressed result is recorded as history");
+assert.equal(afterStaleWrite.lastResult.state, "queued");
+assert.equal(afterStaleWrite.receipt, null, "no receipt existed for this fixture delivery");
+markDelivery(stateDir, "job-delivery", { eventId: firstDelivery.eventId, state: "failed", reason: "later failure" });
+assert.equal(readJob(stateDir, "job-delivery").delivery.state, "delivered", "a failure cannot erase a receipt either");
+markDelivery(stateDir, "job-delivery", { eventId: firstDelivery.eventId, state: "unknown", reason: "unprovable" });
+assert.equal(readJob(stateDir, "job-delivery").delivery.state, "delivered", "an unprovable outcome never downgrades a receipt");
+assert.throws(() => markDelivery(stateDir, "job-delivery", { eventId: "e", state: "nonsense" }), /invalid delivery state/);
 assert.equal(jobSummary(readJob(stateDir, "job-delivery")).terminal.reportId, saved.reportId);
+
+// A pre-metadata record has no event identity, and that absence is itself the
+// identity: marking it (e.g. as outcome-unknown) keeps it identity-less and
+// preserves the acceptance evidence it already carries instead of resetting it.
+createJob({ stateDir, id: "job-legacy-delivery", role: "runner", workflow, cwd: root, now: 9_050 });
+recordTerminal(stateDir, "job-legacy-delivery", { status: "completed", summary: "legacy", now: 9_060 });
+markDelivery(stateDir, "job-legacy-delivery", { eventId: null, state: "queued", transport: "pi-legacy", messageId: "m-legacy", now: 9_070 });
+const legacyUnknown = markDelivery(stateDir, "job-legacy-delivery", {
+  eventId: null,
+  state: "unknown",
+  reason: "missing-event-identity",
+  now: 9_080,
+}).delivery;
+assert.equal(legacyUnknown.eventId, null, "the identity-less record stays identity-less");
+assert.equal(legacyUnknown.state, "unknown");
+assert.equal(legacyUnknown.transport, "pi-legacy", "the transport that accepted it is preserved");
+assert.equal(legacyUnknown.messageId, "m-legacy", "the message id is preserved");
+assert.equal(legacyUnknown.queuedAt, 9_070, "the queue time is preserved");
+assert.equal(legacyUnknown.stateAt, 9_080, "the state time records when the outcome became unknown");
+assert.equal(legacyUnknown.attempts, 2, "the record's attempt count continues instead of resetting");
+assert.equal(deliveryPending(stateDir, "job-legacy-delivery"), true);
+
+// A receipt upgrades a volatile record, and the ack is idempotent.
+const ackEventId = "execution:job-ack:terminal";
+const ackJob = createJob({ stateDir, id: "job-ack", role: "execution", workflow, cwd: root, now: 8_200 });
+recordTerminal(stateDir, "job-ack", { status: "completed", summary: "acked", now: 8_300 });
+const queuedRoute = await routeNotification({
+  stateDir,
+  eventId: ackEventId,
+  jobId: ackJob.id,
+  role: "execution",
+  text: "acked result",
+  transport: { name: "pi", deliver: async () => ({ state: "queued", reason: "session-busy" }) },
+  persistJob: true,
+  now: 8_400,
+});
+assert.equal(queuedRoute.state, "queued");
+assert.equal(readJob(stateDir, ackJob.id).delivery.state, "queued");
+assert.equal(deliveryPending(stateDir, ackJob.id), true, "a queued notification is owed a receipt");
+assert.equal(isDuplicate(stateDir, ackEventId), false, "transport acceptance is not a duplicate");
+const receipt = { kind: "pi-session-entry", eventId: ackEventId, entryId: "entry-42", sessionFile: "/tmp/session.jsonl", at: 8_450 };
+const ack = acknowledgeDelivery({ stateDir, eventId: ackEventId, jobId: ackJob.id, receipt, now: 8_500 });
+assert.equal(ack.state, "delivered");
+assert.equal(ack.alreadyDelivered, false);
+assert.equal(readNotification(stateDir, ackEventId).receipt.entryId, "entry-42");
+assert.equal(readNotification(stateDir, ackEventId).acknowledgedAt, 8_500);
+const ackRecord = readJob(stateDir, ackJob.id).delivery;
+assert.equal(ackRecord.state, "delivered");
+assert.equal(ackRecord.receipt.entryId, "entry-42");
+assert.equal(ackRecord.deliveredAt, 8_500);
+assert.equal(ackRecord.queuedAt, 8_400, "the acceptance time is preserved through the receipt");
+assert.equal(ackRecord.queuedAt < ackRecord.deliveredAt, true, "acceptance and acknowledgement keep distinct timestamps");
+assert.equal(ackRecord.receipt.at, 8_450, "the evidence carries its own observed time");
+assert.equal(deliveryPending(stateDir, ackJob.id), false);
+assert.equal(isDuplicate(stateDir, ackEventId), true, "a receipt is the dedupe boundary");
+const repeatedAck = acknowledgeDelivery({ stateDir, eventId: ackEventId, jobId: ackJob.id, receipt, now: 8_600 });
+assert.equal(repeatedAck.alreadyDelivered, true);
+assert.equal(readJob(stateDir, ackJob.id).delivery.deliveredAt, 8_500, "a repeated receipt does not move the delivery time");
+// A suppressed straggler result changes neither the delivery time nor the state.
+const beforeStraggler = readNotification(stateDir, ackEventId);
+const stragglerRecord = await routeNotification({
+  stateDir,
+  eventId: ackEventId,
+  text: "acked result",
+  transport: { name: "straggler", deliver: async () => ({ state: "queued", reason: "session-busy" }) },
+  dedupe: "process",
+  persistJob: true,
+  now: 8_700,
+});
+assert.equal(stragglerRecord.state, "delivered");
+const afterStraggler = readNotification(stateDir, ackEventId);
+assert.equal(afterStraggler.stateAt, beforeStraggler.stateAt, "a suppressed result does not move the state time");
+assert.equal(afterStraggler.acknowledgedAt, beforeStraggler.acknowledgedAt, "a suppressed result does not move the receipt");
+assert.equal(afterStraggler.deliveryAt, beforeStraggler.deliveryAt, "a suppressed result does not become the delivery time");
+assert.equal(afterStraggler.lastResult.at, 8_700, "the suppressed result keeps its own time in the history");
+assert.equal(afterStraggler.seq, beforeStraggler.seq + 1, "the history entry is what advances");
+assert.equal(readJob(stateDir, ackJob.id).delivery.deliveredAt, 8_500, "the job projection is not regressed either");
+
+// The journal and the job projection converge: a projection that lags a receipt
+// is caught up by the next result, which is recorded as a suppressed straggler.
+const driftEventId = "runner:job-drift:terminal";
+createJob({ stateDir, id: "job-drift", role: "runner", workflow, cwd: root, now: 8_800 });
+recordTerminal(stateDir, "job-drift", { status: "completed", summary: "drift", now: 8_810 });
+markDelivery(stateDir, "job-drift", { eventId: driftEventId, state: "queued", now: 8_820 });
+await routeNotification({
+  stateDir,
+  eventId: driftEventId,
+  text: "drift",
+  transport: { name: "pi", deliver: async () => ({ state: "queued", reason: "session-busy" }) },
+  now: 8_825,
+});
+const driftAck = acknowledgeDelivery({ stateDir, eventId: driftEventId, receipt: { kind: "pi-session-entry", entryId: "entry-drift", at: 8_830 }, now: 8_835 });
+assert.equal(driftAck.state, "delivered");
+assert.equal(readNotification(stateDir, driftEventId).state, "delivered", "the journal holds the receipt");
+assert.equal(readJob(stateDir, "job-drift").delivery.state, "queued", "the projection lags until its next write");
+const catchUp = await routeNotification({
+  stateDir,
+  eventId: driftEventId,
+  jobId: "job-drift",
+  role: "runner",
+  text: "drift",
+  transport: { name: "straggler", deliver: async () => ({ state: "queued", reason: "session-busy" }) },
+  dedupe: "process",
+  persistJob: true,
+  now: 8_840,
+});
+assert.equal(catchUp.state, "delivered");
+const drift = readJob(stateDir, "job-drift").delivery;
+assert.equal(drift.state, "delivered", "the projection converges on the journal's receipt");
+assert.equal(drift.deliveredAt, 8_840, "the catch-up records when the projection learned the receipt");
+assert.equal(drift.receipt.entryId, "entry-drift");
+assert.equal(drift.lastResult.state, "queued");
+assert.equal(drift.lastResult.applied, false);
+
+// An event with no journal record cannot be acknowledged (nothing may claim a
+// delivery the workflow never recorded).
+assert.equal(acknowledgeDelivery({ stateDir, eventId: "runner:absent:terminal" }).reason, "no-notification-record");
+// A receipt is refused for a record that was never attempted in this state dir.
+assert.equal(readNotification(stateDir, "runner:absent:terminal"), null);
 assert.ok(existsSync(jobArtifacts(stateDir, readJob(stateDir, "job-delivery")).record));
 assert.ok(readFileSync(jobArtifacts(stateDir, readJob(stateDir, "job-delivery")).record, "utf8").includes("job-delivery"));
+
+// ---------------------------------------------------------------------------
+// S8. Journal integrity: a notification record that is missing or unreadable is
+//     repaired only from owner-bound durable evidence, and never silently
+//     overwritten. A repair that cannot be written is reported as a failure, so
+//     no caller can mistake it for a successful reconciliation.
+// ---------------------------------------------------------------------------
+const integrityJob = createJob({ stateDir, id: "job-integrity", role: "runner", workflow, cwd: root, now: 9_100 });
+recordTerminal(stateDir, "job-integrity", { status: "completed", summary: "integrity", reportId: saved.reportId, reportChars: saved.chars, now: 9_110 });
+markDelivery(stateDir, "job-integrity", {
+  eventId: "runner:job-integrity:terminal",
+  state: "queued",
+  transport: "pi",
+  messageId: "m-integrity",
+  now: 9_120,
+});
+assert.equal(readNotificationState(stateDir, "runner:job-integrity:terminal").status, "missing", "a journal record that was never written is missing, not corrupt");
+
+// A receipt cannot be recorded into a journal record that does not exist: the
+// caller keeps it and retries once a record can be written.
+const noRecord = acknowledgeDelivery({ stateDir, eventId: "runner:job-integrity:terminal", jobId: integrityJob.id, receipt: { kind: "pi-session-entry", entryId: "entry-x" }, now: 9_130 });
+assert.equal(noRecord.ok, false);
+assert.equal(noRecord.reason, "no-notification-record");
+assert.equal(readJob(stateDir, integrityJob.id).delivery.state, "queued", "a refused receipt never moves the projection");
+
+// The repair reconstructs the record from the owner-bound projection, keeping
+// the facts the projection still holds and naming its source.
+const repaired = repairNotificationFromJob({ stateDir, job: readJob(stateDir, integrityJob.id), eventId: "runner:job-integrity:terminal", now: 9_140 });
+assert.equal(repaired.ok, true);
+assert.equal(repaired.repaired, true);
+assert.equal(repaired.record.jobId, integrityJob.id);
+assert.equal(repaired.record.role, "runner");
+assert.equal(repaired.record.state, "queued");
+assert.equal(repaired.record.transport, "pi");
+assert.equal(repaired.record.messageId, "m-integrity");
+assert.equal(repaired.record.reportId, saved.reportId, "the retained report keeps pointing at the completion result");
+assert.equal(repaired.record.resultAvailable, true);
+assert.equal(repaired.record.repair.source, "job-projection");
+assert.equal(repaired.record.repair.previous, "missing");
+assert.equal(repaired.record.repair.at, 9_140);
+assert.equal(readNotification(stateDir, "runner:job-integrity:terminal").seq, 1);
+// An existing readable record is never rewritten by a repair.
+const stableRepair = repairNotificationFromJob({ stateDir, job: readJob(stateDir, integrityJob.id), eventId: "runner:job-integrity:terminal", now: 9_150 });
+assert.equal(stableRepair.repaired, false);
+assert.equal(stableRepair.record.seq, 1);
+
+// Ownership: a repair is refused for an event that is not the job's own, and an
+// identity-less projection is only ever repaired under its canonical identity.
+assert.equal(repairNotificationFromJob({ stateDir, job: readJob(stateDir, integrityJob.id), eventId: "runner:job-other:terminal" }).reason, "event-not-owned-by-job");
+assert.equal(repairNotificationFromJob({ stateDir, job: readJob(stateDir, "job-legacy-delivery"), eventId: "runner:job-legacy-delivery:terminal" }).ok, true, "the canonical identity of an identity-less record is its own");
+assert.equal(repairNotificationFromJob({ stateDir, job: readJob(stateDir, "job-legacy-delivery"), eventId: "runner:someone-else:terminal" }).reason, "event-not-owned-by-job");
+
+// A record that exists but cannot be parsed is preserved before it is replaced,
+// and the quarantine file is evidence, not a journal record.
+const corruptEventId = "runner:job-corrupt:terminal";
+createJob({ stateDir, id: "job-corrupt", role: "runner", workflow, cwd: root, now: 9_160 });
+recordTerminal(stateDir, "job-corrupt", { status: "completed", summary: "corrupt", now: 9_170 });
+markDelivery(stateDir, "job-corrupt", { eventId: corruptEventId, state: "accepted", transport: "pi", messageId: "m-corrupt", now: 9_180 });
+writeFileSync(notificationPath(stateDir, corruptEventId), "{ this is not json", "utf8");
+assert.equal(readNotificationState(stateDir, corruptEventId).status, "corrupt");
+assert.equal(readNotification(stateDir, corruptEventId), null, "an unreadable record is not a record");
+const corruptAck = acknowledgeDelivery({ stateDir, eventId: corruptEventId, jobId: "job-corrupt", receipt: { kind: "pi-session-entry", entryId: "entry-corrupt" }, now: 9_190 });
+assert.equal(corruptAck.ok, false);
+assert.equal(corruptAck.reason, "notification-record-corrupt", "an unreadable record is reported as such, never overwritten in place");
+assert.equal(readFileSync(notificationPath(stateDir, corruptEventId), "utf8"), "{ this is not json", "the unreadable bytes are still there");
+const corruptRepair = repairNotificationFromJob({ stateDir, job: readJob(stateDir, "job-corrupt"), eventId: corruptEventId, now: 9_200 });
+assert.equal(corruptRepair.ok, true);
+assert.equal(corruptRepair.repaired, true);
+assert.equal(corruptRepair.record.repair.previous, "corrupt");
+assert.equal(corruptRepair.record.state, "accepted");
+assert.ok(corruptRepair.quarantined, "the unreadable record is preserved next to the journal");
+assert.equal(readFileSync(join(stateDir, "notifications", corruptRepair.quarantined), "utf8"), "{ this is not json");
+assert.equal(readNotification(stateDir, corruptEventId).jobId, "job-corrupt", "the reconstructed record is readable");
+assert.equal(listNotifications(stateDir).some((record) => record.jobId === "job-corrupt" && record.seq === 1), true);
+assert.equal(listNotifications(stateDir).length, listNotifications(stateDir).filter((record) => record.schema === 1).length, "a quarantine file is never read as a journal record");
+
+// A record whose bytes cannot even be read cannot be preserved either, so nothing
+// may be written over it: the uncertainty is reported instead of being silently
+// discarded.
+const blockedEventId = "runner:job-blocked:terminal";
+createJob({ stateDir, id: "job-blocked", role: "runner", workflow, cwd: root, now: 9_210 });
+recordTerminal(stateDir, "job-blocked", { status: "completed", summary: "blocked", now: 9_220 });
+markDelivery(stateDir, "job-blocked", { eventId: blockedEventId, state: "queued", transport: "pi", now: 9_230 });
+// A directory where the record belongs: reading it fails for a reason that is
+// not "nothing was written".
+mkdirSync(notificationPath(stateDir, blockedEventId), { recursive: true });
+const blockedState = readNotificationState(stateDir, blockedEventId);
+assert.equal(blockedState.status, "unreadable", "an unreadable record is not confused with a missing one");
+assert.equal(blockedState.record, null);
+const blockedRepair = repairNotificationFromJob({ stateDir, job: readJob(stateDir, "job-blocked"), eventId: blockedEventId, now: 9_240 });
+assert.equal(blockedRepair.ok, false);
+assert.equal(blockedRepair.reason, "notification-record-unreadable");
+const blockedAck = acknowledgeDelivery({ stateDir, eventId: blockedEventId, jobId: "job-blocked", receipt: { kind: "pi-session-entry", entryId: "e" }, now: 9_245 });
+assert.equal(blockedAck.ok, false);
+assert.equal(blockedAck.reason, "notification-record-unreadable");
+assert.equal(existsSync(notificationPath(stateDir, blockedEventId)), true, "the unreadable record is left in place");
+assert.equal(readJob(stateDir, "job-blocked").delivery.state, "queued", "no durable success is claimed for an unreadable record");
+
+// The quarantine step itself is reported when it cannot preserve the bytes.
+const unwritablePreserveDir = join(tempDir("qq-state-preserve-"), "state");
+mkdirSync(join(unwritablePreserveDir, "jobs"), { recursive: true });
+writeFileSync(join(unwritablePreserveDir, "notifications"), "a file blocks the journal directory", "utf8");
+const failedPreserve = preserveCorruptNotification(unwritablePreserveDir, "runner:blocked:terminal", { raw: "unreadable bytes", now: 9_246 });
+assert.equal(failedPreserve.ok, false);
+assert.equal(failedPreserve.reason, "corrupt-evidence-preserve-failed");
+assert.equal(failedPreserve.quarantined, null);
+
+// A record that exists and is readable, but whose write fails (the atomic
+// write's scratch path is occupied, which is how a failing filesystem write
+// presents itself to the journal): the receipt is refused, and neither record is
+// claimed to have advanced.
+const failingWriteEventId = "runner:job-failing-write:terminal";
+createJob({ stateDir, id: "job-failing-write", role: "runner", workflow, cwd: root, now: 9_248 });
+recordTerminal(stateDir, "job-failing-write", { status: "completed", summary: "failing write", now: 9_249 });
+await routeNotification({
+  stateDir,
+  eventId: failingWriteEventId,
+  jobId: "job-failing-write",
+  role: "runner",
+  text: "failing write result",
+  transport: { name: "pi", deliver: async () => ({ state: "queued", reason: "session-busy" }) },
+  persistJob: true,
+  now: 9_251,
+});
+assert.equal(readNotification(stateDir, failingWriteEventId).state, "queued");
+mkdirSync(`${notificationPath(stateDir, failingWriteEventId)}.tmp-${process.pid}`, { recursive: true });
+const failingWriteAck = acknowledgeDelivery({
+  stateDir,
+  eventId: failingWriteEventId,
+  jobId: "job-failing-write",
+  receipt: { kind: "pi-session-entry", entryId: "entry-failing" },
+  now: 9_252,
+});
+assert.equal(failingWriteAck.ok, false, "a receipt whose record could not be written is not acknowledged");
+assert.equal(failingWriteAck.acknowledged, false);
+assert.equal(failingWriteAck.reason, "notification-write-failed");
+assert.ok(failingWriteAck.error, "the write failure is reported");
+assert.equal(readNotification(stateDir, failingWriteEventId).state, "queued", "the record is unchanged");
+assert.equal(readJob(stateDir, "job-failing-write").delivery.state, "queued", "and the projection is untouched");
+rmSync(`${notificationPath(stateDir, failingWriteEventId)}.tmp-${process.pid}`, { recursive: true, force: true });
+const recoveredWriteAck = acknowledgeDelivery({
+  stateDir,
+  eventId: failingWriteEventId,
+  jobId: "job-failing-write",
+  receipt: { kind: "pi-session-entry", entryId: "entry-failing" },
+  now: 9_253,
+});
+assert.equal(recoveredWriteAck.ok, true, "the same receipt lands once the record can be written");
+assert.equal(readJob(stateDir, "job-failing-write").delivery.state, "delivered");
+
+// The router preserves an unreadable record before it writes that event's
+// record again (the completion is still attempted — a proven-absent event must be
+// able to reach its owner), reuses the first quarantine instead of piling up
+// copies, and refuses outright when the bytes cannot even be read.
+const routedCorruptEventId = "runner:job-routed-corrupt:terminal";
+createJob({ stateDir, id: "job-routed-corrupt", role: "runner", workflow, cwd: root, now: 9_247 });
+recordTerminal(stateDir, "job-routed-corrupt", { status: "completed", summary: "routed corrupt", now: 9_247 });
+writeFileSync(notificationPath(stateDir, routedCorruptEventId), "{ partially written", "utf8");
+const routedCorrupt = await routeNotification({
+  stateDir,
+  eventId: routedCorruptEventId,
+  jobId: "job-routed-corrupt",
+  role: "runner",
+  text: "routed corrupt result",
+  transport: { name: "pi", deliver: async () => ({ state: "queued", reason: "session-busy" }) },
+  persistJob: true,
+  now: 9_252,
+});
+assert.equal(routedCorrupt.state, "queued", "the attempt still reaches the transport");
+assert.equal(routedCorrupt.delivery.repair, undefined, "the record is a fresh attempt, not a reconstruction");
+const firstQuarantine = readdirSync(join(stateDir, "notifications")).filter((name) => name.startsWith("runner_job-routed-corrupt_terminal.corrupt-"));
+assert.equal(firstQuarantine.length, 1, "the unreadable bytes are preserved");
+assert.equal(readFileSync(join(stateDir, "notifications", firstQuarantine[0]), "utf8"), "{ partially written");
+const preservedReuse = preserveCorruptNotification(stateDir, routedCorruptEventId, { raw: "{ partially written", now: 9_252 });
+assert.equal(preservedReuse.ok, true);
+assert.equal(preservedReuse.existing, true, "the first preserved copy is the evidence, so it is not rewritten");
+assert.equal(readdirSync(join(stateDir, "notifications")).filter((name) => name.startsWith("runner_job-routed-corrupt_terminal.corrupt-")).length, 1);
+const unreadableRoutedEventId = "runner:job-routed-unreadable:terminal";
+createJob({ stateDir, id: "job-routed-unreadable", role: "runner", workflow, cwd: root, now: 9_247 });
+recordTerminal(stateDir, "job-routed-unreadable", { status: "completed", summary: "routed unreadable", now: 9_247 });
+mkdirSync(notificationPath(stateDir, unreadableRoutedEventId), { recursive: true });
+let unreadableTransportCalls = 0;
+const unreadableRouted = await routeNotification({
+  stateDir,
+  eventId: unreadableRoutedEventId,
+  jobId: "job-routed-unreadable",
+  role: "runner",
+  text: "routed unreadable result",
+  transport: { name: "pi", deliver: async () => { unreadableTransportCalls += 1; return { state: "queued" }; } },
+  persistJob: true,
+  now: 9_252,
+});
+assert.equal(unreadableRouted.ok, false, "a record that cannot be read is never written over");
+assert.equal(unreadableRouted.reason, "notification-record-unreadable");
+assert.equal(unreadableTransportCalls, 0, "and the event is not sent under an outcome that cannot be verified");
+assert.equal(readJob(stateDir, "job-routed-unreadable").delivery, null, "a refused attempt records no delivery at all");
+assert.equal(deliveryPending(stateDir, "job-routed-unreadable"), true, "the completion stays pending for the recovery that can read the record");
+
+// A notification directory that cannot be written reports a write failure
+// rather than a repaired record (nothing may claim a durable write that did not
+// happen), and the projection is left exactly where it was.
+const unwritableDir = join(tempDir("qq-state-unwritable-"), "state");
+mkdirSync(join(unwritableDir, "jobs"), { recursive: true });
+symlinkSync(join(unwritableDir, "nowhere"), join(unwritableDir, "notifications"));
+createJob({ stateDir: unwritableDir, id: "job-unwritable", role: "runner", workflow, cwd: root, now: 9_250 });
+recordTerminal(unwritableDir, "job-unwritable", { status: "completed", summary: "unwritable", now: 9_260 });
+markDelivery(unwritableDir, "job-unwritable", { eventId: "runner:job-unwritable:terminal", state: "queued", transport: "pi", now: 9_270 });
+const unwritableRepair = repairNotificationFromJob({ stateDir: unwritableDir, job: readJob(unwritableDir, "job-unwritable"), eventId: "runner:job-unwritable:terminal", now: 9_280 });
+assert.equal(unwritableRepair.ok, false);
+assert.equal(unwritableRepair.reason, "notification-write-failed");
+assert.ok(unwritableRepair.error, "the write failure is reported, not swallowed");
+assert.equal(readJob(unwritableDir, "job-unwritable").delivery.state, "queued", "a failed repair leaves the projection exactly where it was");
+const unwritableAck = acknowledgeDelivery({ stateDir: unwritableDir, eventId: "runner:job-unwritable:terminal", jobId: "job-unwritable", receipt: { kind: "pi-session-entry", entryId: "e" }, now: 9_290 });
+assert.equal(unwritableAck.ok, false);
+assert.equal(unwritableAck.reason, "no-notification-record", "a journal that cannot be written is reported as missing, never as delivered");
+rmSync(join(unwritableDir, "notifications"), { force: true });
+mkdirSync(join(unwritableDir, "notifications"), { recursive: true });
+const recoveredRepair = repairNotificationFromJob({ stateDir: unwritableDir, job: readJob(unwritableDir, "job-unwritable"), eventId: "runner:job-unwritable:terminal", now: 9_295 });
+assert.equal(recoveredRepair.ok, true, "the same repair converges once the journal can be written");
+assert.equal(recoveredRepair.record.state, "queued");
+
+// ---------------------------------------------------------------------------
+// S9. Legacy completion evidence: entries a previous release persisted without
+//     the identity metadata are preserved as evidence, and only exact content
+//     correspondence may ever read them as retention.
+// ---------------------------------------------------------------------------
+const legacyEvidence = normalizeEvidence({
+  entries: [{ eventId: "runner:known:terminal", entryId: "entry-known", at: 5 }],
+  unidentified: [
+    { entryId: "entry-legacy", at: 6, text: "runner job-1 completed: old text" },
+    { entryId: "entry-other-type", at: 7, text: "not a completion", customType: "some-other-extension" },
+    { entryId: "entry-empty", at: 8, text: "" },
+    "not an object",
+  ],
+  sessionFile: "legacy.jsonl",
+  pendingMessages: false,
+});
+assert.equal(legacyEvidence.known, true);
+assert.equal(legacyEvidence.byEventId.get("runner:known:terminal").entryId, "entry-known");
+assert.equal(legacyEvidence.unidentified.length, 1, "only this profile's identity-less completions are evidence");
+assert.equal(legacyEvidence.unidentified[0].entryId, "entry-legacy");
+assert.equal(legacyEvidence.unidentified[0].customType, "qq-workflow-completion");
+assert.deepEqual(normalizeEvidence(null).unidentified, [], "no evidence source means no legacy evidence either");
+
+// Raw session-entry shapes are read the same way (a completion custom message
+// with text and no identity), while a user message is not completion evidence.
+const rawEvidence = normalizeEvidence({
+  entries: [
+    { id: "raw-1", type: "custom_message", customType: "qq-workflow-completion", content: "runner job-1 completed: raw", timestamp: "2024-01-01T00:00:00.000Z" },
+    { id: "raw-2", type: "message", message: { role: "user", content: [{ type: "text", text: "runner job-1 completed: raw" }] } },
+    { id: "raw-3", type: "custom_message", customType: "some-other-extension", content: "runner job-1 completed: raw" },
+  ],
+  sessionFile: "raw.jsonl",
+  pendingMessages: false,
+});
+assert.equal(rawEvidence.unidentified.length, 1, "only this profile's completion entries are legacy evidence");
+assert.equal(rawEvidence.unidentified[0].entryId, "raw-1");
+assert.equal(rawEvidence.unidentified[0].text, "runner job-1 completed: raw");
+assert.equal(rawEvidence.unidentified[0].at, Date.parse("2024-01-01T00:00:00.000Z"), "the entry timestamp is kept as the observation time");
+
+const legacyTextJob = readJob(stateDir, "job-legacy-delivery");
+assert.deepEqual(completionTextForms(legacyTextJob), [defaultCompletionText(legacyTextJob)], "a short completion has exactly one delivered form");
+const matched = matchLegacyEvidence({ job: legacyTextJob, evidence: normalizeEvidence({ unidentified: [{ entryId: "entry-match", text: defaultCompletionText(legacyTextJob), at: 9 }] }) });
+assert.equal(matched.state, "exact");
+assert.equal(matched.copies, 1);
+const identicalCopies = matchLegacyEvidence({
+  job: legacyTextJob,
+  evidence: normalizeEvidence({ unidentified: [{ entryId: "entry-match", text: defaultCompletionText(legacyTextJob) }, { entryId: "entry-copy", text: defaultCompletionText(legacyTextJob) }] }),
+});
+assert.equal(identicalCopies.state, "exact", "identical copies of one text are copies of one event, not two identities");
+assert.equal(identicalCopies.copies, 2, "the copies are recorded");
+const twoClaimants = matchLegacyEvidence({
+  job: legacyTextJob,
+  evidence: normalizeEvidence({ unidentified: [{ entryId: "entry-match", text: defaultCompletionText(legacyTextJob) }] }),
+  claimants: new Map([[defaultCompletionText(legacyTextJob), ["job-legacy-delivery", "runner-other"]]]),
+});
+assert.equal(twoClaimants.state, "ambiguous", "a text two pending events could claim is never read as proof for either");
+assert.deepEqual(twoClaimants.claimants, ["job-legacy-delivery", "runner-other"]);
+assert.equal(twoClaimants.entry, undefined);
+const partial = matchLegacyEvidence({ job: legacyTextJob, evidence: normalizeEvidence({ unidentified: [{ entryId: "entry-short", text: defaultCompletionText(legacyTextJob).slice(0, 12) }] }) });
+assert.equal(partial.state, "unconfirmed", "a partial copy of this event's header is not a receipt");
+const unrelated = matchLegacyEvidence({ job: legacyTextJob, evidence: normalizeEvidence({ unidentified: [{ entryId: "entry-other", text: "execution job-9 completed: unrelated" }] }) });
+assert.equal(unrelated.state, "none", "an unrelated completion leaves this event's absence standing");
 
 console.log("architect durable state tests passed");

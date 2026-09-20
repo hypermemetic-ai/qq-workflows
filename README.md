@@ -316,9 +316,64 @@ instead of being lost.
 
 Delivery is explicit about what happened: idle sessions start a turn, busy
 sessions queue/steer without interrupting the operator's active work, and the
-record distinguishes transport acceptance, queued, delivered, and result
-availability. Event IDs are stable, so repeated callbacks and reconnects never
-duplicate a side effect.
+durable record distinguishes what the transport achieved from what the session
+actually retained:
+
+* `accepted` / `queued` — the transport took the message (a queue command exited
+  0, or pi accepted the steer behind the active turn). **Volatile**: no receipt
+  proves the session kept it, so a crash before the queue drains cannot silently
+  lose the wakeup. These states stay reconcilable.
+* `delivered` — a **receipt** proves the owning session retained this exact
+  event: the pi session entry whose `details` carry the event/job identity (the
+  busy/steer path), the exact session user message pi appended (the idle path),
+  or the turn pi started for it. Never merely transport acceptance, never model
+  turn success. The evidence (`kind`, entry id, session file, observed time) is
+  recorded on both the notification and the job record.
+* `failed` — the transport refused it; nothing was accepted, so it stays
+  retryable.
+* `unknown` — the outcome cannot be proven: a record from an older release has
+  no stable event identity at all, the owning session's evidence could not be
+  read, or the only evidence is a completion entry whose text cannot be tied to
+  exactly one event. It is never reported as delivered. The exact reason is
+  recorded (`missing-event-identity`, `no-session-evidence`,
+  `legacy-completion-identity-ambiguous`,
+  `legacy-completion-identity-unconfirmed`). A record that only lacked readable
+  evidence is re-evaluated on the next pass that has it (proven retention
+  acknowledges it, proven absence replays it). An identity-less record stays
+  identity-less on every pass that has no evidence — nothing invents an identity
+  for it — so it is delivered only by an explicit operator retry (under the
+  canonical identity this release would have assigned) or by the exact content
+  correspondence described below, which is proof of retention and never a
+  replay.
+* `unreconciled` (recovery result) — the retention is proven but a durable record
+  could not be written or read (a lost, corrupt, unwritable, or unreadable
+  notification record). The pass reports it instead of claiming a delivery,
+  sends nothing, and leaves the projection exactly where it was; recovery
+  converges on the next pass that can write both records.
+
+Acknowledging is a separate step from sending, by necessity. The Architect puts
+the stable `eventId`/`jobId` in the completion's custom-message `details`, which
+pi persists verbatim into the session entry — but pi writes that entry *after*
+its extension handlers return, so the check runs on a later task and only a
+proven entry becomes a receipt. Event IDs are stable and a receipt is the dedupe
+boundary, so repeated callbacks, duplicate message hooks, coalesced concurrent
+attempts, and reconnects never duplicate a side effect, and a late queued or
+failed result for an already acknowledged event is recorded as history without
+downgrading the delivery.
+
+That deferred check is bound to the session that scheduled it, because pi's
+context is *designed* to fail: after `newSession()`, `fork()`,
+`switchSession()`, or `/reload`, every guarded getter of the old context raises
+“This extension ctx is stale after session replacement or reload”. The check
+therefore captures its context instead of resolving one later, and a session
+change invalidates it: it never reads the replaced context (it used to end the
+session with an uncaught exception), never falls back to the context that
+replaced it (that would acknowledge one session's completion from another
+session's entries), and never turns a failed read into proof of absence. The
+outstanding expectation is dropped with the session it belonged to; the durable
+records stay volatile, so the owning session's own recovery still resolves them.
+The delivery path is guarded the same way: a context it cannot read is never
+written to, and the completion stays pending instead of being claimed.
 
 Automatic on restart, for every pi start reason: pi emits `startup` for a fresh
 CLI session and for `--session <file>` (the shape Paseo opens), `resume`/`new`/
@@ -331,17 +386,132 @@ that window is neither sent nor claimed: its durable record stays pending and th
 readiness step delivers it exactly once.
 
 Records are then reconciled against live processes (fingerprint-checked, so a
-reused PID is never adopted or signalled), undelivered completion notifications
-are replayed for their owning session only, and cancellations stay tombstoned. A
-recovered completion in an idle session starts a turn — including a reopened
+reused PID is never adopted or signalled), and every completion whose delivery is
+not confirmed is resolved against the owning session, in this order:
+
+1. the event is present in the session's entries → **acknowledge** it as
+   `delivered` from that receipt; nothing is sent again. Before the receipt is
+   recorded, a notification record that is missing or unreadable is rebuilt from
+   the owner-bound job projection, and a corrupt one is preserved (quarantined
+   next to the journal) rather than silently overwritten — if neither can be
+   done, the event is reported as **unreconciled** and nothing is sent;
+2. the session holds a completion entry from a release that steered it *without*
+   the identity metadata (see below) → **acknowledge** it only when the entry's
+   text is exactly the text this event's completion carried *and* exactly one
+   pending event in this session can claim that text. Identical copies of one
+   text are copies of one event; a text two events could claim, or a partial
+   (truncated) copy of this event's text, is not proof of anything: it is
+   reported as `unknown` and is neither acknowledged nor replayed;
+3. the live session is still holding this exact event in its message queue →
+   **defer** it; it is on its way, and resending would duplicate it. pi's
+   `hasPendingMessages()` cannot report this by itself — it counts only queued
+   user prompts, while a completion is steered as a custom message into a
+   separate agent queue — so the owning extension supplies the exact in-flight
+   events it is still expecting a receipt for. The claim is process-scoped and
+   bounded: it survives an extension `/reload` (which keeps the same live agent)
+   and is released when pi drains the message, when the receipt is observed, and
+   when the run that accepted it settles — and it dies with the process, exactly
+   like the queue it mirrors, so a queue pi abandoned can never block
+   reconciliation forever;
+4. the event is absent (no entry relates to it, and no completion evidence
+   mentions it) and no queued messages remain → the crash happened before the
+   drain, so the completion is **replayed** to the owner;
+5. the outcome cannot be proven (no identity, no session evidence at all, or
+   ambiguous legacy evidence) → the record is marked `unknown` and reported:
+   never blindly duplicated, never labelled delivered. Such a record is never
+   auto-replayed, on this pass or any later one; explicit recovery's retry is the
+   only path that delivers it, under the canonical event identity.
+
+#### Upgrading from a release that sent completions without an identity
+
+Before this change the completion was steered as a custom message with only its
+text; the durable job and notification records were left `queued` when the
+session was busy, even though the operator's session had already consumed the
+message. Those session entries are the only evidence that such a completion was
+retained, so they are **preserved** as evidence (the extension reports them
+separately from identity-bearing entries) and are read through an exact
+correspondence with the canonical completion text of each pending event:
+
+* entry text == the event's completion text, and exactly one pending event can
+  claim that text → the event was retained: acknowledge it, record the
+  correspondence hint (entry id, copy count, text length) as the receipt, and
+  never send it again;
+* several identical entries → still one event, acknowledged once, with the copy
+  count recorded;
+* a partial copy (truncated, or a text this release no longer reproduces
+  exactly), a text two events could claim, or an unknown formatting difference →
+  the record is reported as `unknown` and **never** replayed automatically;
+  `/qq_recover` is the explicit decision that may retry it;
+* no related entry at all → the absence stands, and the genuinely lost busy
+  notification is replayed to its owner exactly once.
+
+Missing identity metadata therefore never implies the completion was never
+received. It also never means "delivered": a similar text is not a receipt, an
+arbitrary completion entry is not a receipt, and nothing is acknowledged from a
+different session's entries — the ownership check runs before any evidence is
+read.
+
+A recovered completion in an idle session starts a turn — including a reopened
 session the operator has not spoken in yet; in a busy session it is steered
-between tool calls and never interrupts the active work. Everything else is
-deliberately manual: an interrupted or reconciliation-required job is surfaced
-with `interrupted`, `pid-reused`, or `process-unreadable` and its artifacts, and
-is never restarted, never marked complete, and never silently re-run.
+between tool calls and never interrupts the active work. An event reported as
+unknown or deferred is a decision for the operator: `/qq_recover` is the explicit
+path that retries an unprovable completion on request (and `recover_deliveries`
+is the native tool equivalent, which reports the unverifiable set instead of
+retrying it). Explicit recovery is still not a licence to duplicate: an event
+positively known to be in the live session's queue is deferred there too, and
+becomes retryable once that run settles. Everything else is deliberately manual
+as well: an interrupted or reconciliation-required job is surfaced with
+`interrupted`, `pid-reused`, or `process-unreadable` and its artifacts, and is
+never restarted, never marked complete, and never silently re-run.
 Implementation, review, and landing are not replayed after an uncertain crash —
-inspect the record and decide explicitly. `recover_deliveries` and `/qq_recover`
-remain available as explicit operator-triggered recovery.
+inspect the record and decide explicitly.
+
+#### Crash-boundary limits (not exactly-once)
+
+pi offers no transaction across its queue, its session file, and this workflow's
+records, so the honest guarantee is: **a completion is sent until a receipt
+proves the session retained it, and never sent again after that**. What follows
+from that boundary, precisely:
+
+* a crash between pi accepting a steer and the queue drain leaves the record
+  `queued`; the next recovery replays it, because the session provably never
+  held it. If the model had already read the message in the crashed turn, the
+  operator may see it once more: re-delivery is possible, silence is not;
+* a crash between pi retaining the entry and this workflow writing the receipt
+  is repaired by reconciliation from the session entry — no duplicate;
+* pi's session file is flushed lazily (a fresh session writes its entries when
+  the first assistant message completes). A crash before that flush loses the
+  entry, so the receipt is absent and recovery replays the completion — the same
+  re-delivery window as above, on evidence that no longer exists;
+* the inverse window is possible for the same reason: a receipt may be written
+  from an entry pi retained in memory that had not been flushed yet. If the
+  process dies immediately after the model read the completion, the record says
+  `delivered` while the session file never shows the entry. The receipt keeps the
+  entry id and the observation time, so the discrepancy stays diagnosable, and
+  the completion is not re-sent;
+* the idle branch's receipt is "pi started a turn for this text", confirmed later
+  by the exact session entry; a wake that lost a prompt race without producing an
+  entry keeps an unconfirmed turn-start receipt rather than claiming consumption;
+* an identity-less record is never silently repaired in either direction: it
+  keeps that absence, keeps the acceptance evidence it already carries, and is
+  reported as `unknown` on every pass that has no evidence, so only an explicit
+  retry delivers it (under the canonical identity) — or the exact content
+  correspondence above proves retention, which acknowledges it and leaves its
+  identity-less form intact;
+* an `unknown` record that had no readable evidence at the time is re-evaluated
+  when evidence becomes readable — proven retention acknowledges it, proven
+  absence replays it, and a positive in-flight fact still defers it;
+* the notification record is part of the crash surface: it is written before the
+  job projection, so it can be lost or corrupted while the projection still says
+  `queued`. Both cases are recovered *from the projection* (or, when the session
+  retained the event, repaired and then acknowledged), never by pretending the
+  records agree. A record that cannot be read is not overwritten — its bytes are
+  evidence — and a record whose write fails is reported as **unreconciled**:
+  recovery re-reports and converges on the next pass that can write, instead of
+  reporting a delivery it did not persist.
+
+No generated test-state artifact is part of this change: every suite runs in its
+own temporary state directory and only prunes records it owns.
 
 ### Compatibility with the MCP architecture
 
@@ -354,7 +524,9 @@ retention/replay path (`cleanupRunnerFiles`, `retainRunnerFindings`,
 the in-flight/retry delivery semantics are unchanged. Terminal results are
 persisted to the report store **before** the notification, which is bounded and
 carries the report reference, and the durable record states exactly what the
-transport achieved (acceptance, not a delivered turn).
+transport achieved (acceptance, not a delivered turn). The adapter keeps its own
+process-scoped dedupe and `notifiedTerminal` gate, so its `accepted` records are
+never mistaken for the Architect's acknowledgement receipts.
 
 This branch also carries one prerequisite inherited from local `main`: the
 operator-action tools (`workflow/operator-action.mjs`, `tests/operator-action.mjs`)
@@ -377,10 +549,15 @@ test reads or writes the operator's live state. The Architect-specific suites ar
 `architect-pi-extension.mjs` (prompt enforcement at the provider boundary, tool
 surface, compaction policy, delivery), `architect-operations.mjs` (native
 workflow tools and the mocked runner roundtrip), `architect-state.mjs` (durable
-jobs, reports, restart recovery, over-cap spill), `architect-install.mjs`
-(installer idempotence and isolation), and `mcp-durable-notify.mjs` (the merged
-MCP terminal path: persist-before-notify, bounded delivery, retry/coalescing,
-and retention pruning).
+jobs, reports, restart recovery, over-cap spill), `architect-notify-receipts.mjs`
+(completion receipts and recovery counterexamples: consumed-before-send races,
+crash before/after session insertion, upgrade from an identity-less release,
+journal repair/quarantine for a lost or corrupt record, unprovable outcomes,
+deferred checks against a replaced session, explicit recovery, and coalescing),
+`architect-install.mjs` (installer idempotence and isolation),
+and `mcp-durable-notify.mjs` (the merged MCP terminal path:
+persist-before-notify, bounded delivery, retry/coalescing, and retention
+pruning).
 
 The central worker launch contract has its own suites:
 `worker-central-contract.mjs` (both target repositories, all three seats, the
