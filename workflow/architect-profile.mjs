@@ -8,6 +8,7 @@
 // Architect-specific policy instead of relying on the shared pi default.
 
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -47,17 +48,106 @@ export const STOCK_PROMPT_MARKERS = [
 // Architect-specific long-session policy. pi's shared setting disables automatic
 // compaction globally; this profile compacts itself at a threshold so a long
 // architecture session cannot silently overflow the context window.
+//
+// `triggerFraction`, `reserveTokens` and `minIntervalMs` are enforced by the
+// extension itself (see `pi-extension/qq-architect.mjs`), which is what makes
+// the policy effective even while pi's own auto-compaction is switched off.
+// `keepRecentTokens` cannot be passed through `ctx.compact()`: pi 0.84.1 accepts
+// only `customInstructions`/`onComplete`/`onError` there and reads the retention
+// budget from `~/.pi/agent/settings.json` / `<cwd>/.pi/settings.json`. Rewriting
+// those would leak the profile into unrelated pi sessions, so the profile
+// declares a retention FLOOR and verifies the runtime's effective value against
+// it (`readPiCompactionSettings` + `inspectCompactionPolicy`) instead of
+// pretending to set it.
 export const ARCHITECT_COMPACTION = {
   enabled: true,
   // Compact before the model's own reserve is exhausted; expressed as a fraction
   // of the context window so it scales with the selected model.
   triggerFraction: 0.75,
   reserveTokens: 24_576,
+  // Retention floor the runtime's effective `compaction.keepRecentTokens` must
+  // meet. Divergence below it is reported, never silently accepted.
   keepRecentTokens: 20_000,
   // Bounded: at most one compaction attempt per window, and none while a
   // compaction is already in flight or the session is streaming.
   minIntervalMs: 60_000,
 };
+
+// pi's own fallbacks (dist/core/compaction/compaction.js DEFAULT_COMPACTION_SETTINGS
+// and dist/core/settings-manager.js getCompaction*), used when a settings file is
+// absent or does not mention compaction.
+export const PI_COMPACTION_DEFAULTS = {
+  enabled: true,
+  reserveTokens: 16_384,
+  keepRecentTokens: 20_000,
+};
+
+export function piAgentDir(env = process.env) {
+  const override = String(env?.PI_CODING_AGENT_DIR ?? "").trim();
+  return override || join(homedir(), ".pi", "agent");
+}
+
+function numberOr(value, fallback) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+// Read the compaction settings pi will actually use. This is the supported,
+// documented channel (pi docs/settings.md: global `~/.pi/agent/settings.json`,
+// project `<cwd>/.pi/settings.json`, project overriding global); the profile
+// only READS them. A missing or malformed file falls back to pi's defaults, and
+// only the three keys that drive compaction are read.
+export function readPiCompactionSettings({ cwd = null, env = process.env, readFile = readFileSync } = {}) {
+  const paths = [join(piAgentDir(env), "settings.json")];
+  if (cwd) paths.push(join(cwd, ".pi", "settings.json"));
+  const effective = { ...PI_COMPACTION_DEFAULTS };
+  const sources = [];
+  for (const path of paths) {
+    let parsed;
+    try {
+      parsed = JSON.parse(readFile(path, "utf8"));
+    } catch {
+      continue; // absent, unreadable, or malformed: pi's default for this scope
+    }
+    const compaction = parsed && typeof parsed === "object" ? parsed.compaction : null;
+    if (!compaction || typeof compaction !== "object" || Array.isArray(compaction)) continue;
+    if (typeof compaction.enabled === "boolean") effective.enabled = compaction.enabled;
+    effective.reserveTokens = numberOr(compaction.reserveTokens, effective.reserveTokens);
+    effective.keepRecentTokens = numberOr(compaction.keepRecentTokens, effective.keepRecentTokens);
+    sources.push(path);
+  }
+  return { ...effective, sources };
+}
+
+// Compare the runtime's effective compaction settings with this profile's
+// policy. The findings are deliberately truthful rather than corrective: the
+// profile cannot change another scope's settings, so a divergence is surfaced.
+export function inspectCompactionPolicy({ settings, policy = ARCHITECT_COMPACTION, contextWindow = null } = {}) {
+  const effective = {
+    ...PI_COMPACTION_DEFAULTS,
+    ...(settings && typeof settings === "object" ? settings : {}),
+  };
+  const findings = [];
+  if (effective.keepRecentTokens < policy.keepRecentTokens) {
+    findings.push({
+      code: "retention-below-profile-floor",
+      effective: effective.keepRecentTokens,
+      floor: policy.keepRecentTokens,
+    });
+  }
+  const window = typeof contextWindow === "number" && contextWindow > 0 ? contextWindow : null;
+  if (window && effective.keepRecentTokens + policy.reserveTokens >= window) {
+    // pi cannot cut the session down far enough in this window: the retained
+    // tail plus the profile's reserve already fills it, so a manual compaction
+    // can end up with nothing to summarize.
+    findings.push({
+      code: "retention-exceeds-window-budget",
+      effective: effective.keepRecentTokens,
+      reserve: policy.reserveTokens,
+      window,
+    });
+  }
+  return { ok: findings.length === 0, effective, window, findings };
+}
 
 export function stripFrontmatter(markdown) {
   const text = String(markdown ?? "");
@@ -149,31 +239,115 @@ export function inspectAssembledPrompt(prompt) {
   };
 }
 
+// Roles that carry a request's system instruction inside a message list. pi
+// writes `system` for most models and `developer` where the provider supports
+// it (openai-completions and openai-responses both branch on
+// `supportsDeveloperRole`), so both are treated as the system slot.
+const SYSTEM_MESSAGE_ROLES = new Set(["system", "developer"]);
+
+function isTextBlock(block) {
+  return Boolean(block) && typeof block === "object" && typeof block.text === "string";
+}
+
+// Collapse a block array onto a single owned text block: the first text block
+// keeps its metadata and receives the assembled prompt, every other text block
+// is DROPPED. Dropping (rather than keeping) the remaining text blocks is what
+// makes an append from another extension or the daemon unable to leak: a second
+// text block in the same slot is exactly that append. Non-text blocks (images,
+// cache markers, tool parts) are preserved untouched.
+function collapseTextBlocks(blocks, prompt, insert = null) {
+  if (!Array.isArray(blocks)) return null;
+  const index = blocks.findIndex(isTextBlock);
+  if (index === -1) return insert ? [insert(), ...blocks] : null;
+  const head = { ...blocks[index], text: prompt };
+  const rest = blocks.filter((block, position) => position !== index && !isTextBlock(block));
+  return [head, ...rest];
+}
+
+function replaceMessageContent(content, prompt) {
+  if (typeof content === "string") return prompt;
+  // A system slot with no text block at all (only, say, a cache marker): the
+  // owned prompt must still BE the system instruction, so it is inserted rather
+  // than reported as unenforceable.
+  return collapseTextBlocks(content, prompt, () => ({ type: "text", text: prompt }));
+}
+
+function replaceSystemMessage(messages, prompt) {
+  if (!Array.isArray(messages)) return null;
+  const index = messages.findIndex((message) => message && typeof message === "object" && SYSTEM_MESSAGE_ROLES.has(message.role));
+  if (index === -1) return null;
+  const content = replaceMessageContent(messages[index].content, prompt);
+  if (content === null) return null;
+  const next = [...messages];
+  next[index] = { ...messages[index], content };
+  return next;
+}
+
+// Google's system instruction: a plain string, or `{parts:[{text}]}` inside the
+// request config (`config.systemInstruction` for the @google/genai SDK shape,
+// `systemInstruction` for the REST shape).
+function enforceSystemInstruction(target, prompt) {
+  if (typeof target.systemInstruction === "string") {
+    target.systemInstruction = prompt;
+    return true;
+  }
+  const parts = target.systemInstruction?.parts;
+  if (Array.isArray(parts)) {
+    const next = collapseTextBlocks(parts, prompt, () => ({ text: prompt }));
+    if (next) {
+      target.systemInstruction = { ...target.systemInstruction, parts: next };
+      return true;
+    }
+  }
+  return false;
+}
+
 // Rewrite provider-level system instructions so the final payload carries
-// exactly the assembled Architect prompt. Handles the shapes pi's providers
-// serialize: Responses `instructions`, Anthropic `system`, and a leading system
-// message. Returns what it changed so callers can assert at the boundary.
+// exactly the assembled Architect prompt. Covers every shape pi 0.84.1 actually
+// serializes for the models an Architect session can select:
+//   * `instructions`            — OpenAI/Codex Responses (openai-codex-responses)
+//   * `input[].role=developer|system` — OpenAI Responses (`input`)
+//   * `messages[].role=developer|system` — openai-completions, Mistral
+//   * `system` string / `system[]` — Anthropic messages, Bedrock Converse
+//   * `systemInstruction` / `config.systemInstruction` — Google Generative AI
+//     and Vertex (string or `{parts:[{text}]}`)
+// Returns what it changed so callers can assert at the boundary; a payload with
+// no system slot is reported as `replaced:false` rather than claimed.
 export function enforceProviderPayloadPrompt(payload, prompt) {
   if (!payload || typeof payload !== "object") return { replaced: false, path: null, payload };
   const next = Array.isArray(payload) ? [...payload] : { ...payload };
+  const done = (path) => ({ replaced: true, path, payload: next });
+
   if (typeof next.instructions === "string") {
     next.instructions = prompt;
-    return { replaced: true, path: "instructions", payload: next };
+    return done("instructions");
+  }
+  if (enforceSystemInstruction(next, prompt)) return done("systemInstruction");
+  if (next.config && typeof next.config === "object" && !Array.isArray(next.config)) {
+    const config = { ...next.config };
+    if (enforceSystemInstruction(config, prompt)) {
+      next.config = config;
+      return done("config.systemInstruction");
+    }
   }
   if (typeof next.system === "string") {
     next.system = prompt;
-    return { replaced: true, path: "system", payload: next };
+    return done("system");
   }
-  if (Array.isArray(next.system)) {
-    const blocks = next.system.filter((block) => block && block.type === "text");
-    if (blocks.length > 0) {
-      next.system = [{ ...blocks[0], text: prompt }, ...next.system.filter((block) => !blocks.includes(block))];
-      return { replaced: true, path: "system[]", payload: next };
-    }
+  const systemBlocks = collapseTextBlocks(next.system, prompt);
+  if (systemBlocks) {
+    next.system = systemBlocks;
+    return done("system[]");
   }
-  if (Array.isArray(next.messages) && next.messages[0]?.role === "system") {
-    next.messages = [{ ...next.messages[0], content: prompt }, ...next.messages.slice(1)];
-    return { replaced: true, path: "messages[0]", payload: next };
+  const messages = replaceSystemMessage(next.messages, prompt);
+  if (messages) {
+    next.messages = messages;
+    return done("messages");
+  }
+  const input = replaceSystemMessage(next.input, prompt);
+  if (input) {
+    next.input = input;
+    return done("input");
   }
   return { replaced: false, path: null, payload: next };
 }

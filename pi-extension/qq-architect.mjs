@@ -35,10 +35,13 @@ import {
   ARCHITECT_PROFILE_ENV,
   ARCHITECT_PROMPT_MARKER,
   ARCHITECT_READ_ONLY_TOOLS,
+  PI_COMPACTION_DEFAULTS,
   assembleArchitectSystemPrompt,
   enforceProviderPayloadPrompt,
   inspectAssembledPrompt,
+  inspectCompactionPolicy,
   loadArchitectPrompt,
+  readPiCompactionSettings,
 } from "../workflow/architect-profile.mjs";
 import { createWorkflow, WORKFLOW_TOOLS, WORKFLOW_TOOL_NAMES } from "../workflow/operations.mjs";
 import { loadManagedExecutionLauncher } from "./managed-execution.mjs";
@@ -76,6 +79,10 @@ async function toolSchemas(tools) {
   return tools.map((tool) => Type.Unsafe(tool.parameters));
 }
 
+function effectiveNumber(value, fallback) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
 export function createArchitectExtension(pi, options = {}) {
   const env = options.env ?? process.env;
   const cwd = options.cwd ?? process.cwd();
@@ -88,6 +95,10 @@ export function createArchitectExtension(pi, options = {}) {
   // there would race pi's own initialization (and the operator's first prompt).
   const schedule = options.schedule ?? ((fn) => setTimeout(fn, ARCHITECT_DELIVERY.readyDelayMs));
   const loadPrompt = options.loadPrompt ?? loadArchitectPrompt;
+  // Effective pi compaction settings are READ through their documented channel
+  // (settings files); the profile never writes them, so a divergence is
+  // observed and reported instead of silently assumed.
+  const loadCompactionSettings = options.readCompactionSettings ?? readPiCompactionSettings;
 
   const state = {
     ownedPrompt: null,
@@ -96,6 +107,9 @@ export function createArchitectExtension(pi, options = {}) {
     lastCtx: null,
     lastCompactionAt: 0,
     compacting: false,
+    compactionRuntime: null,
+    compactionPolicy: null,
+    compactionPolicyNotified: false,
     deliveries: [],
     // Notifications offered while the session was still opening. Nothing was
     // sent and nothing was claimed: their durable records stay pending, so the
@@ -248,6 +262,20 @@ export function createArchitectExtension(pi, options = {}) {
     state.sessionReady = options.interactive ?? false;
     ensurePrompt();
     enforceToolSurface(ctx);
+    // Record the runtime's effective compaction settings for this session (the
+    // window-dependent part of the policy check runs at compaction time).
+    const compactionRuntime = loadCompactionRuntime();
+    state.compactionPolicy = inspectCompactionPolicy({ settings: compactionRuntime, policy: compaction });
+    recordCapture(
+      {
+        at: now(),
+        kind: "compaction-runtime",
+        effective: compactionRuntime,
+        policy: { ...compaction },
+        findings: state.compactionPolicy.findings,
+      },
+      env,
+    );
     const wf = ensureWorkflow();
     if (typeof ctx?.ui?.setStatus === "function") {
       ctx.ui.setStatus(ARCHITECT_EXTENSION_NAME, `architect ${wf.session().sessionId.slice(0, 8)}`);
@@ -328,6 +356,37 @@ export function createArchitectExtension(pi, options = {}) {
     return maybeCompact(ctx);
   });
 
+  // Effective pi compaction settings for this session, read once through the
+  // documented settings-file channel and cached. A read failure falls back to
+  // pi's documented defaults; the profile never writes these files.
+  function loadCompactionRuntime() {
+    if (state.compactionRuntime) return state.compactionRuntime;
+    try {
+      state.compactionRuntime = loadCompactionSettings({ cwd, env });
+    } catch (err) {
+      state.compactionRuntime = { ...PI_COMPACTION_DEFAULTS, sources: [], error: err?.message || String(err) };
+    }
+    return state.compactionRuntime;
+  }
+
+  // Surface a retention divergence once per session: the profile cannot change
+  // another scope's settings, so the operator is told instead of being left with
+  // an invisible policy mismatch.
+  function surfaceCompactionPolicy(ctx, policy) {
+    if (!policy || policy.ok || state.compactionPolicyNotified) return false;
+    state.compactionPolicyNotified = true;
+    recordCapture({ at: now(), kind: "compaction-policy", findings: policy.findings, effective: policy.effective }, env);
+    const codes = policy.findings.map((finding) => finding.code).join(", ");
+    const detail = `reserveTokens=${policy.effective.reserveTokens}, keepRecentTokens=${policy.effective.keepRecentTokens}${policy.window ? `, context window ${policy.window}` : ""}`;
+    if (typeof ctx?.ui?.notify === "function") {
+      ctx.ui.notify(
+        `qq-workflows Architect: pi's effective compaction settings diverge from this profile's policy (${codes}: ${detail}). The profile still compacts this session at its own threshold; adjust pi's compaction settings if the runtime retention should match the profile.`,
+        "warning",
+      );
+    }
+    return true;
+  }
+
   async function maybeCompact(ctx) {
     if (!compaction.enabled) return { compacted: false, reason: "disabled" };
     if (typeof ctx?.isIdle === "function" && !ctx.isIdle()) {
@@ -340,8 +399,16 @@ export function createArchitectExtension(pi, options = {}) {
     const usage = ctx.getContextUsage();
     if (!usage || typeof usage.tokens !== "number") return { compacted: false, reason: "no-usage" };
     const window = typeof usage.contextWindow === "number" && usage.contextWindow > 0 ? usage.contextWindow : null;
+    // The runtime owns the retention budget and the model's reserve; the profile
+    // observes both and folds the larger reserve into its own trigger, so a
+    // runtime with more headroom compacts earlier instead of overflowing.
+    const runtime = loadCompactionRuntime();
+    const policy = inspectCompactionPolicy({ settings: runtime, policy: compaction, contextWindow: window });
+    state.compactionPolicy = policy;
+    surfaceCompactionPolicy(ctx, policy);
+    const reserve = Math.max(compaction.reserveTokens, effectiveNumber(runtime.reserveTokens, PI_COMPACTION_DEFAULTS.reserveTokens));
     const fraction = window ? usage.tokens / window : 0;
-    const overReserve = window && window > compaction.reserveTokens ? usage.tokens >= window - compaction.reserveTokens : false;
+    const overReserve = window && window > reserve ? usage.tokens >= window - reserve : false;
     const overFraction = fraction >= compaction.triggerFraction;
     if (!overFraction && !overReserve) return { compacted: false, reason: "below-threshold", tokens: usage.tokens, fraction };
     if (now() - state.lastCompactionAt < compaction.minIntervalMs) {
@@ -409,6 +476,8 @@ export function createArchitectExtension(pi, options = {}) {
     runReadyTick,
     whenReady: () => state.readyPromise,
     maybeCompact,
+    loadCompactionRuntime,
+    surfaceCompactionPolicy,
     registerTools,
     enforceToolSurface,
     allowedTools: ARCHITECT_ALLOWED_TOOLS,

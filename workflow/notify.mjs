@@ -80,7 +80,12 @@ export function isDuplicate(stateDir, eventId, { dedupe = "durable" } = {}) {
   return record.state === "delivered" || record.state === "queued" || record.state === "accepted";
 }
 
-export function markProcessSeen(eventId) {
+// Record a process-scoped confirmation. A failed attempt is deliberately NOT
+// recorded: it stays retryable, exactly like the durable mode where a `failed`
+// record is not a duplicate. Without this, a transport failure would be
+// swallowed as a duplicate by the next attempt in the same process.
+export function markProcessSeen(eventId, state = null) {
+  if (state === "failed") return;
   processSeen.add(eventId);
 }
 
@@ -177,7 +182,7 @@ export async function routeNotification({
     seq: (previous?.seq ?? 0) + 1,
   };
   writeJsonAtomic(notificationPath(stateDir, eventId), record);
-  markProcessSeen(eventId);
+  markProcessSeen(eventId, state);
   if (persistJob && jobId) {
     markDelivery(stateDir, jobId, {
       eventId,

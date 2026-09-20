@@ -32,6 +32,9 @@ delete env.CODEX_SESSION_ID;
 delete env.CODEX_CONVERSATION_ID;
 // Explicit safe notification transport backstop.
 env.QQ_CODEX_BIN = "/usr/bin/true";
+// Durable retention of terminal findings must never write into the operator's
+// real state dir during tests. Point every child at one unique temp dir.
+env.QQ_RUNNER_FINDINGS_DIR = mkdtempSync(join(tmpdir(), 'qq-test-findings-'));
 
 const tests = readdirSync(directory)
   .filter(name => name.endsWith('.mjs') && !['run.mjs', 'live.mjs'].includes(name))

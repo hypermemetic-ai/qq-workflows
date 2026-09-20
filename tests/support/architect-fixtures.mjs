@@ -26,9 +26,17 @@ export async function tempRepo({ agents = null, prompt = null, extraFiles = {} }
     mkdirSync(join(path, ".."), { recursive: true });
     writeFileSync(path, content, "utf8");
   }
-  // Isolated environment: never read the operator's live central worker config.
-  const env = { QQ_WORKER_CONFIG_FILE: join(root, "no-central-worker-config.json") };
-  return { root, env, prompt };
+  // Isolated environment: never read the operator's live central worker config
+  // or the operator's live pi settings. The Architect profile OBSERVES the
+  // runtime's compaction settings through pi's documented config directory, so
+  // that directory is a fixture path too, not the real ~/.pi/agent.
+  const agentDir = join(root, ".pi-agent");
+  mkdirSync(agentDir, { recursive: true });
+  const env = {
+    QQ_WORKER_CONFIG_FILE: join(root, "no-central-worker-config.json"),
+    PI_CODING_AGENT_DIR: agentDir,
+  };
+  return { root, env, prompt, agentDir };
 }
 
 // Deterministic scheduler double for the extension's deferred readiness tick.

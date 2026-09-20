@@ -14,10 +14,10 @@ function isOperatorActionEnabled(options = {}) {
 }
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, readlinkSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import {
@@ -37,7 +37,6 @@ import {
   COMPLETE_TASK_DATA_POINTS_MAX,
   COMPLETE_TASK_RESPONSE_MAX,
   acceptRunnerResult,
-  cleanupRunnerFiles,
   validateRunnerResultPayload,
   readAuthoritativeRunnerResult as readAuthoritativeResultFromStore,
   renderRunnerFindings,
@@ -155,13 +154,27 @@ export const TOOLS = [
   },
   {
     name: "check_runner",
-    description: "Check telemetry, trajectory, and status of a running or finished runner. Point-in-time read; surfaces the stuck-suspicion flag with evidence when silent past threshold.",
+    description: "Check health, trajectory, and delivery state of a running or finished runner (status, elapsed, active tool, recent steps, notification delivery). Point-in-time read; surfaces the stuck-suspicion flag with evidence when silent past threshold. Does not return the runner's findings.",
     inputSchema: {
       type: "object",
       properties: {
         runnerId: {
           type: "string",
           description: "Tracking ID of the runner",
+        },
+      },
+      required: ["runnerId"],
+    },
+  },
+  {
+    name: "retry_runner_notification",
+    description: "Replay the retained terminal notification for a runner whose completion wakeup could not be delivered (e.g. after an MCP-server restart). Sends the SAME terminal message through the normal notification path; the full findings stay retained until a delivery is confirmed. Use only to recover a failed delivery, not for routine polling. Does not return findings.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runnerId: {
+          type: "string",
+          description: "Tracking ID of the runner whose retained notification should be replayed",
         },
       },
       required: ["runnerId"],
@@ -658,8 +671,6 @@ function extractTarget(toolName, parameters) {
     case "cancel_operator_action":
     case "cleanup_operator_action":
       return cap(parameters.actionId);
-    case "complete_task":
-      return cap(parameters.response ? parameters.response.slice(0, MAX) : undefined);
     default:
       return undefined;
   }
@@ -669,9 +680,20 @@ function addTrajectory(target, entry) {
   // Filter out agent_response thinking steps — they add no signal and bloat context.
   if (entry.action === "agent_response") return;
 
-  // Replace raw parameters with a capped target string.
+  // Replace raw parameters with a capped target string. The one exception is a
+  // completion call: its arguments carry the authoritative findings payload, so
+  // a capped copy must never become a trajectory target (that would covertly
+  // re-surface the very findings check_runner is meant to exclude). Keep the
+  // tool name and timing; drop the payload.
   const { parameters, action, ...rest } = entry;
-  const toolTarget = parameters !== undefined ? extractTarget(action, parameters) : rest.target;
+  const payloadBearing = action === "complete_task" ||
+    (parameters && typeof parameters === "object" &&
+      (parameters.ToolName === "complete_task" || parameters.toolName === "complete_task"));
+  const toolTarget = payloadBearing
+    ? undefined
+    : parameters !== undefined
+      ? extractTarget(action, parameters)
+      : rest.target;
   const clean = { action, ...rest };
   if (toolTarget !== undefined) clean.target = toolTarget;
   // Ensure parameters is never stored.
@@ -681,6 +703,15 @@ function addTrajectory(target, entry) {
   if (target.trajectory.length > 25) {
     target.trajectory.shift();
   }
+}
+
+// Record a non-JSON stdout line as a bounded, payload-free trajectory entry:
+// the fact that output occurred (byte count + timing), never the text. Raw
+// stdout is arbitrary payload — a runner that echoes its findings as plain
+// stdout must not resurface them through check_runner's trajectory.
+export function recordRunnerStdoutLine(target, line) {
+  if (!target || typeof line !== "string" || !line.trim()) return;
+  addTrajectory(target, { action: "log", bytes: Buffer.byteLength(line, "utf8"), timestamp: Date.now() });
 }
 
 // ============================================================================
@@ -1081,6 +1112,13 @@ export function buildExecutionTerminalMessage(execution) {
   return `Execution ${id} (${kind}) failed in phase '${phase}' after ${elapsed}s: ${message}${branch}${wt}${extra}`;
 }
 
+// Deliver the full composed terminal notification (header + findings +
+// data_points) through the normal path. There is deliberately no blind
+// truncation, no summary-only replay, and no speculative byte knob: the
+// completion-response cap (COMPLETE_TASK_RESPONSE_MAX) is a completion cap, not
+// a verified transport limit. If the transport rejects an over-long message,
+// delivery is reported as failed and the durable retained copy stays in place
+// for an explicit, truthfully-reported retry (replayRetainedRunnerFindings).
 export function buildRunnerTerminalMessage(runner) {
   const id = runner?.runnerId || runner?.id || "unknown";
   const elapsed = trackerElapsedSeconds(runner);
@@ -1097,14 +1135,7 @@ export function buildRunnerTerminalMessage(runner) {
       findings = String(result ?? "(no output)");
     }
     const dp = dataPoints.length ? `\n\ndata_points:\n${dataPoints.map((d) => `- ${d}`).join("\n")}` : "";
-    const findingsStr = String(findings);
-    let findingsBlock;
-    if (findingsStr.length <= 32_768) {
-      findingsBlock = findingsStr;
-    } else {
-      findingsBlock = `${sanitizeHeadTail(findingsStr, { headLen: 16_000, tailLen: 16_000 })}\n\n[Findings shortened to 32,000 chars. Full findings available via check_runner for runner '${id}'.]`;
-    }
-    return `Runner ${id} completed in ${elapsed}s.\n\nFindings:\n${findingsBlock}${dp}`;
+    return `Runner ${id} completed in ${elapsed}s.\n\nFindings:\n${String(findings)}${dp}`;
   }
   const err = runner?.error || {};
   const message = err.message || "unknown error";
@@ -1115,6 +1146,8 @@ export function buildRunnerTerminalMessage(runner) {
   const tail = runner?.outputTail && String(runner.outputTail).trim()
     ? `\n\nLast output:\n${sanitizeHeadTail(String(runner.outputTail).trim(), { headLen: 500, tailLen: 500 })}`
     : "";
+  // The failure diagnostic is intentionally part of the authoritative terminal
+  // notification (the architect's delivery path), not check_runner.
   return `Runner ${id} failed after ${elapsed}s: ${message}${extra}${tail}`;
 }
 
@@ -1138,59 +1171,112 @@ export function buildSuspicionMessage(kind, tracker, suspicion) {
 
 // Notify once when a tracker reaches a terminal state. Completed/failed only:
 // cancelled is architect-initiated (no wakeup needed) and running is never
-// terminal. The flag is set synchronously so concurrent transition paths
-// (event handler + sweeper backstop) cannot double-notify. Never throws.
+// terminal. Never throws.
+//
+// Delivery truth lives in two fields on the tracker:
+//   * notifiedTerminal — set only after a delivery has been CONFIRMED
+//     successful. It dedupes and suppresses repeats. It is never set before
+//     the send, so a returned failure or a rejection/throw leaves the tracker
+//     retryable and the sweeper backstop re-attempts on its next pass.
+//   * notifiedTerminalInFlight — the promise of an attempt currently waiting
+//     on the transport. Concurrent transition paths (event handler + sweeper)
+//     coalesce onto this promise instead of sending a duplicate. It is not a
+//     delivery claim and is cleared once the attempt settles. Because the
+//     `codex queue` transport can time out after the message was accepted,
+//     this bounds concurrent duplicate sends but does not promise exactly-once
+//     external delivery.
 export async function notifyTerminal(tracker, kind) {
   try {
     if (!tracker || tracker.notifiedTerminal) return { notified: false, reason: "already-notified" };
     if (tracker.status !== "completed" && tracker.status !== "failed") {
       return { notified: false, reason: "not-terminal" };
     }
-    tracker.notifiedTerminal = true;
-    const message = kind === "execution"
-      ? buildExecutionTerminalMessage(tracker)
-      : buildRunnerTerminalMessage(tracker);
+    if (tracker.notifiedTerminalInFlight) {
+      // Coalesce onto the attempt already in flight instead of sending a
+      // duplicate; report its outcome without claiming a new delivery.
+      const res = await tracker.notifiedTerminalInFlight;
+      return res?.notified ? res : { notified: false, reason: res?.reason || "in-flight", coalesced: true };
+    }
     // Persist the complete terminal report BEFORE notifying: the notification is
     // a bounded delivery, never the only copy of the result.
     const report = persistTrackerReport(tracker, kind);
     const stateDir = trackerStateDir(tracker);
     const sessionDir = join(stateDir, kind === "execution" ? "executions" : "runners");
-    const routed = await routeNotification({
-      stateDir: sessionDir,
-      eventId: `${kind}:${trackerRef(tracker) || "unknown"}:terminal`,
-      jobId: trackerRef(tracker) || null,
-      role: kind,
-      workflow: { sessionKey: trackerSessionId(tracker) || null, sessionId: trackerSessionId(tracker) || null },
-      text: message,
-      reportText: buildTrackerReport(tracker, kind),
-      reportId: report?.reportId ?? null,
-      reportChars: report?.chars ?? 0,
-      transport: {
-        name: "codex-queue",
-        deliver: async () =>
-          await notifySession(trackerSessionId(tracker), message, {
-            kind: `${kind}.terminal`,
-            trackerId: trackerRef(tracker),
-          }),
-      },
-      // Compatibility: an in-memory MCP tracker keeps its own notified flag and
-      // process-scoped dedupe, while the durable record stays inspectable.
-      dedupe: "process",
-      cap: MCP_NOTIFY_CAP,
-    });
-    if (routed.state === "duplicate") {
-      return { notified: false, reason: "duplicate-event", eventId: routed.eventId };
+    const attempt = (async () => {
+      const message = kind === "execution"
+        ? buildExecutionTerminalMessage(tracker)
+        : buildRunnerTerminalMessage(tracker);
+      const routed = await routeNotification({
+        stateDir: sessionDir,
+        eventId: `${kind}:${trackerRef(tracker) || "unknown"}:terminal`,
+        jobId: trackerRef(tracker) || null,
+        role: kind,
+        workflow: { sessionKey: trackerSessionId(tracker) || null, sessionId: trackerSessionId(tracker) || null },
+        text: message,
+        reportText: buildTrackerReport(tracker, kind),
+        reportId: report?.reportId ?? null,
+        reportChars: report?.chars ?? 0,
+        transport: {
+          name: "codex-queue",
+          // The bounded text the router produced (never the raw terminal
+          // message): an over-cap report is delivered as a bounded summary that
+          // points at the durable report, instead of being lost or rejected by
+          // the transport.
+          deliver: async (notification) => {
+            const bounded = typeof notification?.text === "string" ? notification.text : message;
+            const res = await notifySession(trackerSessionId(tracker), bounded, {
+              kind: `${kind}.terminal`,
+              trackerId: trackerRef(tracker),
+            });
+            // The queue transport confirms that the thread queue ACCEPTED the
+            // message, not that the architect has seen a turn; report that
+            // distinction honestly instead of implying delivery.
+            return {
+              state: res?.notified ? "accepted" : "failed",
+              reason: res?.reason ?? null,
+              via: res?.via ?? null,
+              threadId: res?.threadId ?? null,
+            };
+          },
+        },
+        // Compatibility: an in-memory MCP tracker keeps its own notified flag
+        // and a process-scoped dedupe, so a durable record from an earlier,
+        // unrelated process can never swallow a fresh delivery. The durable
+        // record itself is still written and stays inspectable.
+        dedupe: "process",
+        cap: MCP_NOTIFY_CAP,
+      });
+      if (routed.state === "duplicate") {
+        return { notified: false, reason: "duplicate-event", eventId: routed.eventId, reportId: report?.reportId ?? null, deliveryState: routed.state };
+      }
+      const accepted = routed.state === "accepted" || routed.state === "queued" || routed.state === "delivered";
+      const raw = routed.transportResult ?? {};
+      // Mark delivered only after the transport confirms success. A confirmed
+      // runner delivery means the architect holds the full notification, so the
+      // durable retained copy is redundant and may be pruned. A rejected
+      // transport leaves the artifact in place (truthful retry state).
+      if (accepted) {
+        tracker.notifiedTerminal = true;
+        if (kind === "runner") pruneRetainedFindings(trackerRef(tracker));
+      }
+      return {
+        notified: accepted,
+        ...(accepted
+          ? { via: raw.via ?? "codex-queue", threadId: raw.threadId ?? null }
+          : { reason: raw.reason ?? routed.delivery?.reason ?? "delivery-failed" }),
+        eventId: routed.eventId,
+        reportId: report?.reportId ?? null,
+        deliveryState: routed.state,
+      };
+    })();
+    tracker.notifiedTerminalInFlight = attempt;
+    try {
+      return await attempt;
+    } finally {
+      // Always clear the in-flight marker: success is gated by
+      // notifiedTerminal, while a failure/throw stays retryable.
+      if (tracker.notifiedTerminalInFlight === attempt) delete tracker.notifiedTerminalInFlight;
     }
-    const raw = routed.transportResult ?? {};
-    return {
-      notified: Boolean(raw.notified),
-      ...(raw.notified
-        ? { via: raw.via ?? "codex-queue", threadId: raw.threadId ?? null }
-        : { reason: raw.reason ?? routed.delivery?.reason ?? "delivery-failed" }),
-      eventId: routed.eventId,
-      reportId: report?.reportId ?? null,
-      deliveryState: routed.state,
-    };
   } catch (err) {
     return { notified: false, reason: err?.message || String(err) };
   }
@@ -1380,14 +1466,303 @@ export const COMPLETE_TASK_REGISTRY = new Map();
 export const MCP_NOTIFY_CAP = 32_768;
 
 // Authoritative worker-result transport lives in workflow/results.mjs so the
-// MCP adapter and the native pi Architect share one implementation.
+// MCP adapter and the native pi Architect share one implementation. The
+// validator and the pinned caps are shared; `cleanupRunnerFiles` deliberately
+// stays local because this transport retains terminal findings for replay.
 export {
   COMPLETE_TASK_RESPONSE_MAX,
   COMPLETE_TASK_DATA_POINTS_MAX,
   COMPLETE_TASK_DATA_POINT_LEN_MAX,
-  cleanupRunnerFiles,
   validateRunnerResultPayload,
 };
+
+export function cleanupRunnerFiles(runner) {
+  if (!runner) return;
+  // Single choke point for terminal transitions: every path sets
+  // status/result/error and then calls this, so retaining here is what makes
+  // BOTH completed and failed terminal outcomes durable BEFORE the transient
+  // transport file is removed. A failed runner carries no `result`; its
+  // bounded diagnostic (message/stderr/outputTail) is the authoritative
+  // failure notification and the only place that evidence survives, so it is
+  // retained too.
+  const terminal = runner.status === "completed" || runner.status === "failed";
+  // A confirmed terminal delivery means the architect already holds the full
+  // notification and the durable copy was pruned, so a later cleanup pass (the
+  // child's close event) must not re-retain a stale artifact that nothing would
+  // ever prune.
+  const delivered = runner.notifiedTerminal === true;
+  const retainedPath = terminal && !delivered ? retainRunnerFindings(runner) : null;
+  // A persistence failure must never destroy the ONLY durable copy of the
+  // terminal outcome:
+  //   * completed: the transport file holds the validated findings;
+  //   * failed: the transport file (when one exists) is the sole durable copy
+  //     of the failure payload/diagnostic, because check_runner no longer
+  //     echoes the raw diagnostic and the in-memory tracker dies with this
+  //     process.
+  // A confirmed delivery already handed the full notification to the architect,
+  // so the transient file is disposable; check_runner still reports
+  // findingsRetained:false, truthfully.
+  const hasResult = runner.result !== null && runner.result !== undefined;
+  const keepTransport = terminal && !delivered && !retainedPath && (hasResult || runner.status === "failed");
+  if (!keepTransport && runner.resultFile) {
+    try { rmSync(runner.resultFile, { force: true }); } catch {}
+  }
+  if (runner.id) {
+    try { rmSync(join(tmpdir(), `qq-complete-task-${runner.id}.json`), { force: true }); } catch {}
+  }
+}
+
+
+// ============================================================================
+// Durable retention of validated terminal findings
+// ============================================================================
+//
+// Findings live on the in-memory tracker and are delivered by the terminal
+// notification. `cleanupRunnerFiles` deletes the child's result transport file
+// the moment a runner finalizes, so a delivery failure followed by an
+// MCP-server restart would otherwise leave no copy at all. We therefore persist
+// the validated outcome (completed OR failed) to a private, atomically-written
+// file BEFORE the transport file is cleaned up (see `cleanupRunnerFiles`). The
+// record carries stable identity/routing metadata so it can be replayed through
+// the SAME terminal-notification mechanism (replayRetainedRunnerFindings).
+//
+// This is durable retention, not a second findings path: the retained file is
+// never read by check_runner or await_runner, and nothing here schedules jobs or
+// claims exactly-once delivery.
+
+export const RETAINED_FINDINGS_VERSION = 1;
+
+// runnerIds are randomUUID() values. Validate strictly BEFORE any path is
+// built, so a caller-supplied id can never escape the findings directory
+// (path traversal) or name an arbitrary file. pruneRetainedFindings rmSyncs
+// this path, so validation is a safety boundary, not cosmetics.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isValidRunnerId(runnerId) {
+  return typeof runnerId === "string" && UUID_RE.test(runnerId);
+}
+
+export function runnerFindingsDir(env = process.env) {
+  if (env && env.QQ_RUNNER_FINDINGS_DIR && String(env.QQ_RUNNER_FINDINGS_DIR).trim()) {
+    return resolve(String(env.QQ_RUNNER_FINDINGS_DIR));
+  }
+  const base = env && env.XDG_STATE_HOME && String(env.XDG_STATE_HOME).trim()
+    ? resolve(String(env.XDG_STATE_HOME))
+    : join(env && env.HOME && String(env.HOME).trim() ? String(env.HOME) : homedir(), ".local", "state");
+  return join(base, "qq-workflows", "runner-findings");
+}
+
+// Path for a runner's retained record, or null when the id is invalid or the
+// resolved path would fall outside the findings directory. Returning null (not
+// a path) is the fail-closed contract for every caller that touches the fs.
+export function retainedFindingsPath(runnerId, env = process.env) {
+  if (!isValidRunnerId(runnerId)) return null;
+  const dir = runnerFindingsDir(env);
+  const candidate = join(dir, `${runnerId}.json`);
+  const rel = relative(dir, candidate);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) return null;
+  return candidate;
+}
+
+// Create/verify a private (owner-only) findings directory. mkdirSync's mode
+// does not fix a pre-existing directory, so re-check and tighten; refuse to
+// proceed if the path is not a real directory or cannot be made private.
+function ensurePrivateRunnerDir(dir) {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const st = lstatSync(dir);
+  if (!st.isDirectory()) return false; // rejects a symlink planted at the path
+  if ((st.mode & 0o077) !== 0) {
+    try { chmodSync(dir, 0o700); } catch { return false; }
+    if ((lstatSync(dir).mode & 0o077) !== 0) return false;
+  }
+  return true;
+}
+
+// Bounded failure payload for retention/replay: only the fields the terminal
+// builder uses, all already bounded on the tracker (message is short; stderr is
+// sanitizeHeadTail'd to <= 2000 chars). Never a length cap and never the raw
+// unbounded stream.
+function failureRecord(runner) {
+  const err = runner?.error && typeof runner.error === "object" ? runner.error : {};
+  const out = {};
+  for (const key of ["message", "exitCode", "signalCode", "stderr"]) {
+    if (err[key] !== undefined && err[key] !== null) out[key] = err[key];
+  }
+  return out;
+}
+
+// Atomically persist a validated terminal outcome (completed OR failed) to a
+// private, O_EXCL temp file renamed into place. Returns the path on success;
+// null when there is nothing to retain, the id is invalid, or the write failed
+// (best-effort: a retention failure must never fail the runner or its
+// notification, and callers must not treat null as retention).
+export function retainRunnerFindings(runner, { env = process.env, now = Date.now() } = {}) {
+  const runnerId = runner?.runnerId || runner?.id;
+  const status = runner?.status;
+  if (!isValidRunnerId(runnerId)) return null;
+  if (status !== "completed" && status !== "failed") return null;
+  const path = retainedFindingsPath(runnerId, env);
+  if (!path) return null;
+  const dir = runnerFindingsDir(env);
+  const record = {
+    version: RETAINED_FINDINGS_VERSION,
+    runnerId,
+    sessionId: trackerSessionId(runner) || null,
+    threadId: resolveCodexThreadId(trackerSessionId(runner)) || null,
+    startedAt: typeof runner.startedAt === "number" ? runner.startedAt : null,
+    retainedAt: now,
+    status,
+    result: status === "completed" ? runner.result : null,
+    error: status === "failed" ? failureRecord(runner) : null,
+    outputTail: status === "failed" && runner.outputTail ? String(runner.outputTail) : null,
+  };
+  // Unique, exclusive temp file inside the 0700 dir: "wx" is O_CREAT|O_EXCL, so
+  // it never follows or clobbers a planted symlink/entry.
+  const tmpPath = join(dir, `.${runnerId}.${process.pid}.${now}.${randomUUID()}.tmp`);
+  try {
+    if (!ensurePrivateRunnerDir(dir)) return null;
+    writeFileSync(tmpPath, JSON.stringify(record), { encoding: "utf8", mode: 0o600, flag: "wx" });
+    renameSync(tmpPath, path);
+    return path;
+  } catch {
+    try { rmSync(tmpPath, { force: true }); } catch {}
+    return null;
+  }
+}
+
+export function loadRetainedFindings(runnerId, { env = process.env } = {}) {
+  const path = retainedFindingsPath(runnerId, env);
+  if (!path || !existsSync(path)) return null;
+  try {
+    const record = JSON.parse(readFileSync(path, "utf8"));
+    if (!record || record.version !== RETAINED_FINDINGS_VERSION || record.runnerId !== runnerId) return null;
+    return { ...record, path };
+  } catch {
+    return null;
+  }
+}
+
+// Whether a durable record currently exists. This is the true "findings
+// retained" state: result!=null on the in-memory tracker says nothing about
+// durability.
+export function hasRetainedFindings(runnerId, { env = process.env } = {}) {
+  const path = retainedFindingsPath(runnerId, env);
+  return Boolean(path && existsSync(path));
+}
+
+export function listRetainedFindings({ env = process.env } = {}) {
+  const dir = runnerFindingsDir(env);
+  if (!existsSync(dir)) return [];
+  try {
+    return readdirSync(dir)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => name.slice(0, -".json".length))
+      .filter((id) => isValidRunnerId(id))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+export function pruneRetainedFindings(runnerId, { env = process.env } = {}) {
+  const path = retainedFindingsPath(runnerId, env);
+  if (!path) return false;
+  try {
+    rmSync(path, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Trusted runtime identity of THIS MCP-server process (the caller). Sourced
+// only from harness-controlled context — the Codex-provided thread env or the
+// ancestor rollout descriptor found via procfs — never from tool arguments. A
+// tool caller cannot influence process.env of the server.
+export function currentRuntimeIdentity() {
+  const env = process.env;
+  const sessionId = env.CODEX_SESSION_ID || env.CODEX_CONVERSATION_ID || null;
+  const threadId = resolveCodexThreadId(null) || null;
+  return { sessionId: sessionId || null, threadId };
+}
+
+// The caller owns a record iff its trusted runtime thread matches the thread
+// recorded when the outcome was retained. Cross-session callers resolve to a
+// different Codex thread (a different rollout descriptor), so they fail this
+// check. Absent/ambiguous identity fails closed; there is no cross-session
+// fallback.
+function verifyRecordOwnership(record, caller) {
+  if (record.threadId && caller.threadId && record.threadId === caller.threadId) return { ok: true };
+  if (!record.threadId) return { ok: false, reason: "no-record-identity" };
+  if (!caller.threadId) return { ok: false, reason: "no-caller-identity" };
+  return { ok: false, reason: "not-originating-session" };
+}
+
+// Explicit recovery: replay the retained terminal notification for a runner
+// whose wakeup could not be delivered (including after an MCP-server restart,
+// when the in-memory tracker is gone). It rebuilds the SAME terminal message
+// and sends it through the SAME notifySession transport — this is not a
+// findings read and is never reachable from check_runner or await_runner.
+//
+// Routing is taken ONLY from the retained record (its originating session and
+// thread); a caller cannot redirect it. Ownership is verified against trusted
+// runtime context first. Within the same process, an in-flight normal terminal
+// send is awaited instead of duplicated. This makes no cross-process
+// exactly-once claim; it reports notification delivery, not task outcome.
+export async function replayRetainedRunnerFindings(runnerId, { env = process.env } = {}) {
+  if (!isValidRunnerId(runnerId)) return { ok: false, runnerId: null, reason: "invalid-runner-id" };
+  const record = loadRetainedFindings(runnerId, { env });
+  if (!record) return { ok: false, runnerId, reason: "no-retained-findings" };
+  const taskStatus = record.status === "failed" ? "failed" : "completed";
+
+  const caller = currentRuntimeIdentity();
+  const ownership = verifyRecordOwnership(record, caller);
+  if (!ownership.ok) {
+    return { ok: false, runnerId: record.runnerId, taskStatus, reason: ownership.reason };
+  }
+
+  // Same-process coordination: reuse an in-flight/confirmed normal send instead
+  // of duplicating it.
+  const tracker = RUNNERS.get(record.runnerId);
+  if (tracker && tracker.notifiedTerminal) {
+    return { ok: true, runnerId: record.runnerId, taskStatus, via: "already-notified", reason: null };
+  }
+  if (tracker && tracker.notifiedTerminalInFlight) {
+    const res = await tracker.notifiedTerminalInFlight;
+    if (res?.notified) {
+      pruneRetainedFindings(record.runnerId, { env });
+      return { ok: true, runnerId: record.runnerId, taskStatus, via: res.via ?? null, reason: null };
+    }
+    return { ok: false, runnerId: record.runnerId, taskStatus, reason: res?.reason || "in-flight", coalesced: true };
+  }
+
+  // Reconstruct the SAME terminal message from the retained record and route it
+  // to the record's originating session/thread only.
+  const recordRunner = {
+    runnerId: record.runnerId,
+    status: record.status,
+    startedAt: record.startedAt ?? record.retainedAt,
+    result: record.result,
+    error: record.error || undefined,
+    outputTail: record.outputTail || undefined,
+  };
+  const message = buildRunnerTerminalMessage(recordRunner);
+  const res = await notifySession(record.sessionId, message, {
+    kind: "runner.terminal.replay",
+    trackerId: record.runnerId,
+    ...(record.threadId ? { threadId: record.threadId } : {}),
+  });
+  // A confirmed delivery makes the durable copy redundant.
+  if (res?.notified) pruneRetainedFindings(record.runnerId, { env });
+  return {
+    ok: Boolean(res?.notified),
+    runnerId: record.runnerId,
+    taskStatus,
+    via: res?.via ?? null,
+    reason: res?.notified ? null : (res?.reason ?? "delivery-failed"),
+  };
+}
+
 
 // Registry-bound read for the in-memory complete_task registry used by MCP
 // clients and test doubles.
@@ -1556,7 +1931,7 @@ function startRunnerProcess(runner) {
       const event = JSON.parse(trimmed);
       handleRunnerEvent(runner, event);
     } catch {
-      addTrajectory(runner, { action: "log", message: trimmed.slice(0, 200), timestamp: Date.now() });
+      recordRunnerStdoutLine(runner, trimmed);
     }
   });
 
@@ -1679,6 +2054,10 @@ export function handleRunnerEvent(runner, event) {
           if (runner.process) {
             try { runner.process.kill("SIGTERM"); } catch {}
           }
+          // Terminal transition: retain the outcome durably (completed findings
+          // or the bounded failure diagnostic) BEFORE the transient transport
+          // file is removed and before the terminal notification is attempted.
+          cleanupRunnerFiles(runner);
           void notifyTerminal(runner, "runner");
         }
       }
@@ -1716,8 +2095,68 @@ export function handleRunnerEvent(runner, event) {
       };
     }
     runner.activeTool = null;
+    cleanupRunnerFiles(runner);
     void notifyTerminal(runner, "runner");
   }
+}
+
+// Bounded, non-payload diagnostic vocabulary for a raw worker message. The tag
+// is drawn from a fixed failure vocabulary (e.g. "429", "quota",
+// "ECONNRESET"), or "worker_error" when nothing matched. Because it returns
+// only a vocabulary token — never message text — it cannot carry findings even
+// when the raw message does. This is deliberately not a length cap.
+const WORKER_FAILURE_PATTERN = /(\b(401|402|403|408|429|5\d\d)\b)|unauthorized|forbidden|quota|rate.?limit|insufficient|api[_ ]key|authentication|missing environment variable|stream error|stream disconnected|connection (error|failed|refused|reset)|ECONNREFUSED|ECONNRESET|ETIMEDOUT|model_not_found|no such model|payment|billing|budget/i;
+
+export function workerFailureTag(message) {
+  if (typeof message !== "string") return "worker_error";
+  const m = message.match(WORKER_FAILURE_PATTERN);
+  return m ? String(m[0]).toLowerCase().slice(0, 32) : "worker_error";
+}
+
+// Delivery state for check_runner: has the terminal wakeup been confirmed
+// delivered, or is it still pending the sweeper's retry? Read-only — sends
+// nothing and never touches the findings themselves. "Delivered" here means
+// transport acceptance (the wakeup was queued), not confirmed consumption.
+export function notificationDeliveryState(tracker) {
+  if (!tracker) return null;
+  if (tracker.status !== "completed" && tracker.status !== "failed") {
+    return { terminal: false, delivered: false, pendingRetry: false };
+  }
+  const delivered = tracker.notifiedTerminal === true;
+  return {
+    terminal: true,
+    delivered,
+    pendingRetry: !delivered,
+    inFlight: Boolean(tracker.notifiedTerminalInFlight),
+  };
+}
+
+// Bounded, payload-free terminal diagnostic for check_runner. Only a stable
+// type/reason plus exit/signal/tool metadata — never raw stderr, outputTail, or
+// an arbitrary error message (any of which can echo the findings). The full
+// diagnostic is preserved on the tracker and delivered by the terminal
+// notification, never here.
+export function boundedTerminalDiagnostic(tracker) {
+  if (!tracker) return null;
+  const err = tracker.error && typeof tracker.error === "object" ? tracker.error : {};
+  const raw = typeof err.message === "string" ? err.message : "";
+  let reason;
+  if (/transport error/i.test(raw)) reason = "transport_error";
+  else if (/without calling complete_task/i.test(raw)) reason = "no_completion";
+  else if (/^Runner (worker|process) exited with code/i.test(raw)) reason = "exit_nonzero";
+  else if (/complete_task.*failed/i.test(raw)) reason = "completion_tool_rejected";
+  else if (/launch rejected/i.test(raw)) reason = "launch_rejected";
+  else if (workerFailureTag(raw) !== "worker_error") reason = workerFailureTag(raw);
+  else if (workerFailureTag(tracker.childFailureReason) !== "worker_error") reason = workerFailureTag(tracker.childFailureReason);
+  else if (typeof err.exitCode === "number" && err.exitCode !== 0) reason = "exit_nonzero";
+  else if (typeof err.signalCode === "string" && err.signalCode) reason = "signalled";
+  else reason = "worker_failed";
+  const diag = { status: "failed", reason };
+  if (typeof err.exitCode === "number") diag.exitCode = err.exitCode;
+  if (typeof err.signalCode === "string" && err.signalCode) diag.signalCode = err.signalCode;
+  const tool = tracker.activeTool && typeof tracker.activeTool.name === "string" ? tracker.activeTool.name : null;
+  if (tool) diag.lastTool = tool;
+  return diag;
 }
 
 export async function checkRunner(args = {}) {
@@ -1742,10 +2181,16 @@ export async function checkRunner(args = {}) {
       trajectory: [...runner.trajectory],
       suspicion: null,
       stuckSuspect: false,
-      // Completed runners include the full unabridged result so clients
-      // without await_runner (e.g. Codex dispatch-and-yield) can inspect it.
-      ...(runner.status === "completed" ? { result: runner.result } : {}),
-      ...(runner.status === "failed" ? { error: runner.error } : {}),
+      // check_runner reports health, trajectory, and delivery state — NOT
+      // findings. The authoritative result stays on the tracker for the
+      // terminal notification and its sweeper retries; `notification` surfaces
+      // whether that wakeup was confirmed delivered or is still pending.
+      notification: notificationDeliveryState(runner),
+      findingsRetained: hasRetainedFindings(runner.id),
+      // Bounded, payload-free failure diagnostic. The full diagnostic (raw
+      // stderr/outputTail/message) stays on the tracker for the terminal
+      // notification and any retained artifact; check_runner never dumps it.
+      ...(runner.status === "failed" ? { error: boundedTerminalDiagnostic(runner) } : {}),
     };
   }
 
@@ -1761,6 +2206,7 @@ export async function checkRunner(args = {}) {
     trajectory: [...runner.trajectory],
     suspicion,
     stuckSuspect: suspicion !== null,
+    notification: notificationDeliveryState(runner),
   };
 }
 
@@ -2981,6 +3427,11 @@ export async function callTool(name, args = {}, options = {}) {
   }
   if (name === "await_runner") {
     return awaitRunner(args);
+  }
+  if (name === "retry_runner_notification") {
+    // Routing is taken ONLY from the retained record; the caller supplies no
+    // thread/session and ownership is verified against trusted runtime context.
+    return replayRetainedRunnerFindings(args.runnerId);
   }
   if (name === "dispatch_execution") {
     return dispatchExecution(args);

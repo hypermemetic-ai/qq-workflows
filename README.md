@@ -152,11 +152,20 @@ binding degrades rather than breaks.
 
 - **Prompt.** The final system prompt is the owned Architect prompt
   (`agents/architect/agent.md`) plus repository instructions and skills included
-  through one controlled mechanism. The stock pi coding prompt is replaced, and
-  the prompt is re-asserted at the provider boundary so an append from another
-  extension or the daemon cannot leak into the request. `QQ_ARCHITECT_PROMPT_CAPTURE=<file>`
-  records the assembled prompt, the enforced payload, the active tools, and
-  compaction events for verification.
+  through one controlled mechanism (`before_agent_start`). The stock pi coding
+  prompt is replaced, and the assembled prompt is then re-asserted at the
+  provider boundary (`before_provider_request`), so an append from another
+  extension or the daemon cannot leak into the request. Every wire shape pi
+  0.84.1 serializes for selectable models is covered: `instructions`
+  (codex/responses), `input[]` system/developer messages (OpenAI Responses),
+  `messages[]` system/developer messages (chat completions, Mistral), `system`
+  as a string or as a block array (Anthropic typed blocks and Bedrock bare
+  `{text}` blocks â€” a second text block in the same slot is dropped as an
+  append), and `systemInstruction` / `config.systemInstruction` as a string or
+  `{parts:[{text}]}` (Google Generative AI and Vertex).
+  `QQ_ARCHITECT_PROMPT_CAPTURE=<file>` records the assembled prompt, the enforced
+  payload with the path it replaced, the active tools, the runtime compaction
+  settings, and compaction events for verification.
 - **Tools.** `read`, `grep`, `find`, `ls` plus the native workflow tools
   (`read_ticket`, `update_ticket`, `dispatch_runner`, `check_runner`,
   `await_runner`, `steer_runner`, `cancel_runner`, `read_report`, `list_jobs`,
@@ -173,11 +182,22 @@ binding degrades rather than breaks.
   extensions, moods/harness settings, and instructions of other providers are
   unaffected, and ordinary Codex/pi sessions in Paseo keep their normal
   behaviour.
-- **Long sessions.** pi's shared setting disables automatic compaction; this
-  profile compacts itself at its own threshold (75% of the context
-  window or the reserved-token floor), at most once per minute, never while a
-  turn is streaming, with ticket state, decisions, running job ids, and report
-  references preserved by the compaction instructions.
+- **Long sessions.** pi's shared setting disables automatic compaction, which
+  must not become a silent context overflow. The extension therefore enforces
+  the profile's own trigger: it compacts at 75% of the context window or at the
+  reserved-token floor (whichever fires first), at most once per minute, never
+  while a turn is streaming, with ticket state, decisions, running job ids, and
+  report references preserved by the compaction instructions. The runtime's own
+  `reserveTokens` widens that trigger. pi 0.84.1's `ctx.compact()` accepts no
+  retention budget (`CompactOptions` carries only `customInstructions`,
+  `onComplete`, and `onError`) and `keepRecentTokens` lives in pi's settings
+  files, which this profile must not rewrite: it reads the effective values
+  through that documented channel (`PI_CODING_AGENT_DIR` or
+  `<cwd>/.pi/settings.json`), records them in the capture, and warns once per
+  session when the runtime retention falls below the profile's floor or cannot
+  free room inside the selected model's window. The shared
+  `compaction.enabled=false` stays where it belongs: ordinary pi sessions keep
+  their own behaviour, and the Architect still compacts.
 
 ### Completion delivery and the recovery boundary
 
@@ -221,6 +241,26 @@ Implementation, review, and landing are not replayed after an uncertain crash â€
 inspect the record and decide explicitly. `recover_deliveries` and `/qq_recover`
 remain available as explicit operator-triggered recovery.
 
+### Compatibility with the MCP architecture
+
+The MCP server keeps working through a thin adapter. The transport-independent
+modules (`workflow/results.mjs`, `workflow/notify.mjs`, `workflow/reports.mjs`,
+`workflow/jobs.mjs`) are the shared implementation: the pinned
+32,768-character `complete_task` contract, the durable runner-findings
+retention/replay path (`cleanupRunnerFiles`, `retainRunnerFindings`,
+`retry_runner_notification`), the findings-free `check_runner` trajectory, and
+the in-flight/retry delivery semantics are unchanged. Terminal results are
+persisted to the report store **before** the notification, which is bounded and
+carries the report reference, and the durable record states exactly what the
+transport achieved (acceptance, not a delivered turn).
+
+This branch also carries one prerequisite inherited from local `main`: the
+operator-action tools (`workflow/operator-action.mjs`, `tests/operator-action.mjs`)
+and their `bin/mcp-server.mjs` wiring. The adapter imports that module, so it
+ships unchanged apart from the integration; it is not part of the Architect
+migration and does not affect the Architect profile (the tools stay disabled
+unless `QQ_ENABLE_OPERATOR_ACTION=1`).
+
 ## Development & Testing
 
 Run the test suite:
@@ -228,3 +268,14 @@ Run the test suite:
 ```bash
 npm test
 ```
+
+`tests/run.mjs` runs every `tests/*.mjs` file in an isolated environment (its own
+durable state directory, findings directory, and notification backstop), so no
+test reads or writes the operator's live state. The Architect-specific suites are
+`architect-pi-extension.mjs` (prompt enforcement at the provider boundary, tool
+surface, compaction policy, delivery), `architect-operations.mjs` (native
+workflow tools and the mocked runner roundtrip), `architect-state.mjs` (durable
+jobs, reports, restart recovery, over-cap spill), `architect-install.mjs`
+(installer idempotence and isolation), and `mcp-durable-notify.mjs` (the merged
+MCP terminal path: persist-before-notify, bounded delivery, retry/coalescing,
+and retention pruning).

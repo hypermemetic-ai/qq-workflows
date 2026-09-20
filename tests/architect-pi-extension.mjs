@@ -4,7 +4,7 @@
 // delivery (idle wake vs busy queue) with durable recovery.
 
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createArchitectExtension } from "../pi-extension/qq-architect.mjs";
 import {
@@ -14,11 +14,14 @@ import {
   ARCHITECT_PROVIDER_ID,
   ARCHITECT_PROVIDER_LABEL,
   ARCHITECT_READ_ONLY_TOOLS,
+  PI_COMPACTION_DEFAULTS,
   architectProviderEntry,
   assembleArchitectSystemPrompt,
   enforceProviderPayloadPrompt,
   inspectAssembledPrompt,
+  inspectCompactionPolicy,
   loadArchitectPrompt,
+  readPiCompactionSettings,
 } from "../workflow/architect-profile.mjs";
 import { createWorkflow, WORKFLOW_TOOL_NAMES } from "../workflow/operations.mjs";
 import { loadManagedExecutionLauncher } from "../pi-extension/managed-execution.mjs";
@@ -26,7 +29,7 @@ import { deliveryPending, readJob, recordTerminal, createJob } from "../workflow
 import { createJob as _createJob } from "../workflow/jobs.mjs";
 import { agentTransport, callHandlers, fakeContext, fakePi, runnerSpawner, tempRepo, tickQueue } from "./support/architect-fixtures.mjs";
 
-const { root, env } = await tempRepo({ agents: "Repository rule: never edit outside the worktree.\n" });
+const { root, env, agentDir } = await tempRepo({ agents: "Repository rule: never edit outside the worktree.\n" });
 const capturePath = join(root, "prompt-capture.jsonl");
 const stateDir = join(root, ".architect", "state");
 const extensionEnv = {
@@ -37,7 +40,13 @@ const extensionEnv = {
   QQ_ARCHITECT_PROMPT_CAPTURE: capturePath,
 };
 
-function buildExtension({ interactive = false, compaction = null, env: overrideEnv = null, workflowFactory = null } = {}) {
+function buildExtension({
+  interactive = false,
+  compaction = null,
+  env: overrideEnv = null,
+  workflowFactory = null,
+  readCompactionSettings = null,
+} = {}) {
   const pi = fakePi({ existingTools: ["read", "grep", "find", "ls", "bash", "edit", "write", "task"] });
   // The readiness tick is scheduled, never inline (production uses setTimeout(0));
   // tests drive it explicitly so a still-opening session is observable.
@@ -49,6 +58,7 @@ function buildExtension({ interactive = false, compaction = null, env: overrideE
     schedule: scheduled.schedule,
     ...(compaction ? { compaction } : {}),
     ...(workflowFactory ? { workflowFactory } : {}),
+    ...(readCompactionSettings ? { readCompactionSettings } : {}),
   });
   // Mirrors the real load path: pi runs the extension factory (which registers
   // the workflow tools) before the first session event.
@@ -86,19 +96,52 @@ assert.equal(inspectAssembledPrompt(`${assembled}\n\nYou are an expert coding as
 assert.equal(inspectAssembledPrompt(`${assembled}${ARCHITECT_PROMPT_MARKER}`).ownedMarkerCount, 2, "a duplicate owned prompt is detectable");
 assert.equal(architectProviderEntry().command[1], "--no-extensions", "the Architect launches without global pi extensions");
 
-// Provider-level payload shapes are all normalized to the assembled prompt.
+// Provider-level payload shapes are all normalized to the assembled prompt. The
+// list is the set of shapes pi 0.84.1 actually serializes for selectable models:
+// Responses `instructions` and `input`, chat-completions/Mistral `messages`
+// (`system` or `developer` role), Anthropic `system` blocks, Bedrock `system`
+// blocks with a bare `text` field, and Google `systemInstruction` either as a
+// string or as `{parts:[{text}]}` inside `config`.
 for (const payload of [
   { instructions: "STOCK", input: [] },
   { system: "STOCK" },
   { system: [{ type: "text", text: "STOCK" }] },
+  { system: [{ text: "STOCK" }] },
+  { system: [{ type: "text", text: "STOCK", cache_control: { type: "ephemeral" } }, { type: "text", text: "STOCK-APPEND" }] },
   { messages: [{ role: "system", content: "STOCK" }, { role: "user", content: "hi" }] },
+  { messages: [{ role: "developer", content: "STOCK" }] },
+  { input: [{ role: "developer", content: "STOCK" }, { role: "user", content: [{ type: "input_text", text: "hi" }] }] },
+  { input: [{ role: "system", content: [{ type: "input_text", text: "STOCK" }] }] },
+  { systemInstruction: "STOCK" },
+  { systemInstruction: { role: "system", parts: [{ text: "STOCK" }, { text: "STOCK-APPEND" }] } },
+  { model: "google/gemini", contents: [], config: { systemInstruction: "STOCK" } },
 ]) {
   const enforced = enforceProviderPayloadPrompt(payload, "OWNED-PROMPT");
-  assert.equal(enforced.replaced, true);
-  assert.equal(JSON.stringify(enforced.payload).includes("STOCK"), false);
-  assert.equal(JSON.stringify(enforced.payload).includes("OWNED-PROMPT"), true);
+  assert.equal(enforced.replaced, true, `enforced: ${JSON.stringify(payload)}`);
+  assert.equal(JSON.stringify(enforced.payload).includes("STOCK"), false, `append removed: ${JSON.stringify(enforced.payload)}`);
+  assert.equal(JSON.stringify(enforced.payload).includes("OWNED-PROMPT"), true, `owned prompt present: ${JSON.stringify(enforced.payload)}`);
 }
+// A text block that carried cache metadata keeps it; unrelated parts survive.
+const cacheEnforced = enforceProviderPayloadPrompt(
+  { system: [{ type: "text", text: "STOCK", cache_control: { type: "ephemeral" } }, { type: "image", data: "x" }] },
+  "OWNED-PROMPT",
+);
+assert.equal(cacheEnforced.payload.system[0].cache_control.type, "ephemeral");
+assert.equal(cacheEnforced.payload.system[1].type, "image");
+// A system slot with no text block still receives the owned prompt (inserted),
+// because the system instruction must never be someone else's.
+const inserted = enforceProviderPayloadPrompt({ messages: [{ role: "system", content: [{ type: "image", data: "x" }] }] }, "OWNED-PROMPT");
+assert.equal(inserted.replaced, true);
+assert.equal(inserted.payload.messages[0].content[0].text, "OWNED-PROMPT");
+assert.equal(inserted.payload.messages[0].content[1].type, "image", "non-text blocks are preserved");
+const insertedParts = enforceProviderPayloadPrompt({ systemInstruction: { role: "system", parts: [{ inlineData: {} }] } }, "OWNED-PROMPT");
+assert.equal(insertedParts.replaced, true);
+assert.equal(insertedParts.payload.systemInstruction.parts[0].text, "OWNED-PROMPT");
+
+// No system slot at all is reported truthfully rather than claimed.
 assert.equal(enforceProviderPayloadPrompt({ input: [] }, "x").replaced, false);
+assert.equal(enforceProviderPayloadPrompt({ messages: [{ role: "user", content: "hi" }] }, "x").replaced, false);
+assert.equal(enforceProviderPayloadPrompt(null, "x").replaced, false);
 
 // ---------------------------------------------------------------------------
 // P2. The extension replaces the final prompt and neutralizes Paseo appends.
@@ -233,6 +276,87 @@ const { pi: noCompactPi } = buildExtension({ compaction: { enabled: false } });
 const [disabledResult] = await callHandlers(noCompactPi, "turn_end", {}, fakeContext({ tokens: bigWindow, contextWindow: bigWindow }));
 assert.equal(disabledResult.compacted, false);
 assert.equal(disabledResult.reason, "disabled");
+
+// ---------------------------------------------------------------------------
+// P4b. The runtime's effective compaction settings are observed, not assumed.
+//
+// pi 0.84.1's `ctx.compact(options)` accepts only customInstructions (no
+// retention budget) and reads `keepRecentTokens`/`reserveTokens` from pi's
+// settings files, which this profile must not rewrite. The profile therefore
+// READS them through that documented channel, verifies them against its own
+// policy, and reports a divergence.
+// ---------------------------------------------------------------------------
+const settingsFile = join(agentDir, "settings.json");
+writeFileSync(settingsFile, JSON.stringify({ compaction: { enabled: false } }), "utf8");
+const readBack = readPiCompactionSettings({ cwd: root, env: extensionEnv });
+assert.equal(readBack.enabled, false, "the operator's shared setting is honoured, never rewritten");
+assert.equal(readBack.keepRecentTokens, PI_COMPACTION_DEFAULTS.keepRecentTokens, "an unset retention budget falls back to pi's own default");
+assert.equal(readBack.reserveTokens, PI_COMPACTION_DEFAULTS.reserveTokens);
+assert.deepEqual(readBack.sources, [settingsFile], "the settings file that decided the effective policy is reported");
+// Project settings override global ones, exactly as pi resolves them.
+mkdirSync(join(root, ".pi"), { recursive: true });
+writeFileSync(join(root, ".pi", "settings.json"), JSON.stringify({ compaction: { keepRecentTokens: 5_000 } }), "utf8");
+const projectScoped = readPiCompactionSettings({ cwd: root, env: extensionEnv });
+assert.equal(projectScoped.keepRecentTokens, 5_000);
+assert.equal(projectScoped.enabled, false, "an unmentioned key keeps the global value");
+const before = readFileSync(settingsFile, "utf8");
+
+// A retention floor below the profile's is reported, not silently accepted.
+const { pi: policyPi, extension: policyExtension } = buildExtension({
+  readCompactionSettings: () => ({ enabled: true, reserveTokens: 16_384, keepRecentTokens: 5_000, sources: ["stub"] }),
+});
+const policyCtx = fakeContext({ tokens: 10_000, contextWindow: bigWindow });
+await callHandlers(policyPi, "session_start", { reason: "startup" }, policyCtx);
+const policyCapture = readFileSync(capturePath, "utf8").trim().split("\n").map((line) => JSON.parse(line))
+  .filter((entry) => entry.kind === "compaction-runtime").pop();
+assert.ok(policyCapture, "the effective compaction settings are captured for verification");
+assert.deepEqual(policyCapture.findings.map((finding) => finding.code), ["retention-below-profile-floor"]);
+assert.equal(policyCapture.effective.keepRecentTokens, 5_000);
+await callHandlers(policyPi, "turn_end", {}, policyCtx);
+assert.equal(policyCtx.notifications.length, 1, "a policy divergence is surfaced to the operator once");
+assert.match(policyCtx.notifications[0].message, /retention-below-profile-floor/);
+assert.equal(policyCtx.notifications[0].level, "warning");
+await callHandlers(policyPi, "agent_settled", {}, fakeContext({ tokens: 10_000, contextWindow: bigWindow }));
+assert.equal(policyCtx.notifications.length, 1, "the divergence warning is not repeated every turn");
+assert.equal(policyExtension.state.compactionPolicy.effective.keepRecentTokens, 5_000);
+
+// A retention budget that cannot free room inside the window is reported too.
+const tightWindow = 40_000;
+const { pi: tightPi } = buildExtension({
+  readCompactionSettings: () => ({ enabled: true, reserveTokens: PI_COMPACTION_DEFAULTS.reserveTokens, keepRecentTokens: 20_000, sources: ["stub"] }),
+});
+const tightCtx = fakeContext({ tokens: 30_000, contextWindow: tightWindow });
+await callHandlers(tightPi, "turn_end", {}, tightCtx);
+assert.equal(tightCtx.notifications.length, 1);
+assert.match(tightCtx.notifications[0].message, /retention-exceeds-window-budget/);
+assert.equal(tightCtx.compactCalls.length, 1, "the profile still compacts at its own threshold");
+
+// The effective runtime reserve widens the profile's own trigger: with a
+// runtime reserve of 100k a 110k-token context must compact even though the
+// profile's own 75%-of-window threshold would not fire yet.
+const reservePi = buildExtension({
+  readCompactionSettings: () => ({ enabled: false, reserveTokens: 100_000, keepRecentTokens: PI_COMPACTION_DEFAULTS.keepRecentTokens, sources: ["stub"] }),
+});
+const reserveCtx = fakeContext({ tokens: 110_000, contextWindow: bigWindow });
+const [reserveResult] = await callHandlers(reservePi.pi, "turn_end", {}, reserveCtx);
+assert.equal(reserveResult.compacted, true, "the runtime's reserve is folded into the Architect trigger");
+assert.equal(reserveCtx.compactCalls.length, 1);
+
+// The profile only ever reads pi's settings.
+const tightDir = join(root, ".pi");
+assert.equal(readFileSync(join(tightDir, "settings.json"), "utf8").includes("keepRecentTokens"), true);
+assert.equal(readFileSync(settingsFile, "utf8"), before, "the profile never rewrites pi settings");
+assert.equal(readdirSync(agentDir).join(","), "settings.json", "no settings backup or sidecar is written");
+
+// Leave the shared fixture root as it was: the rest of this file must observe
+// pi's defaults, not the deliberately divergent project settings above.
+rmSync(join(root, ".pi", "settings.json"), { force: true });
+assert.equal(readPiCompactionSettings({ cwd: root, env: extensionEnv }).keepRecentTokens, PI_COMPACTION_DEFAULTS.keepRecentTokens);
+
+// The policy check itself is pure and truthful, including the window budget.
+assert.equal(inspectCompactionPolicy({ settings: { keepRecentTokens: 20_000 }, contextWindow: 200_000 }).ok, true);
+assert.equal(inspectCompactionPolicy({ settings: { keepRecentTokens: 1_000 } }).findings[0].code, "retention-below-profile-floor");
+assert.equal(inspectCompactionPolicy({ settings: {}, contextWindow: 30_000 }).findings[0].code, "retention-exceeds-window-budget");
 
 // ---------------------------------------------------------------------------
 // P5. Completion delivery: idle starts a turn, busy queues without interrupting.
