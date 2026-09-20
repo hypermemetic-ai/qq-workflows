@@ -57,8 +57,18 @@ import {
   templatePath,
   ticketPath,
 } from "../workflow/ticket.mjs";
+import {
+  WORKER_PROVIDER,
+  WORKER_SEATS,
+  loadWorkerConfig,
+} from "../workflow/worker-config.mjs";
+import { FINAL_RESPONSE_MAX_CHARS_LABEL } from "../workflow/limits.mjs";
+import {
+  assertCentralWorkerConfig,
+  buildCentralWorkerLaunch,
+} from "../workflow/worker-launch.mjs";
 
-export { CANONICAL_PROVIDERS, PROVIDERS, assertKnownProvider, normalizeProvider, hasImplementationChanges, OPERATOR_ACTION_TOOLS };
+export { CANONICAL_PROVIDERS, PROVIDERS, assertKnownProvider, normalizeProvider, hasImplementationChanges, OPERATOR_ACTION_TOOLS, loadWorkerConfig, WORKER_SEATS, WORKER_PROVIDER };
 
 export const TOOLS = [
   {
@@ -79,26 +89,6 @@ export const TOOLS = [
         cwd: {
           type: "string",
           description: "Optional repository working directory (defaults to process.cwd())",
-        },
-        provider: {
-          type: "string",
-          enum: ["muse", "gemini", "deepseek", "codex", "astra"],
-          description: "Optional global provider default: 'muse' (default), 'gemini', 'deepseek', 'codex', or 'astra'. Per-seat providers override it.",
-        },
-        implementerProvider: {
-          type: "string",
-          enum: ["muse", "gemini", "deepseek", "codex", "astra"],
-          description: "Optional implementer seat provider. Overrides the global provider.",
-        },
-        reviewerProvider: {
-          type: "string",
-          enum: ["muse", "gemini", "deepseek", "codex", "astra"],
-          description: "Optional reviewer seat provider. Overrides the global provider.",
-        },
-        researcherProvider: {
-          type: "string",
-          enum: ["muse", "gemini", "deepseek", "codex", "astra"],
-          description: "Optional researcher seat provider. Overrides the global provider.",
         },
       },
       required: ["kind"],
@@ -245,19 +235,6 @@ export const TOOLS = [
           type: "string",
           description: "Optional repository working directory (defaults to process.cwd())",
         },
-        provider: {
-          type: "string",
-          enum: ["muse", "gemini", "deepseek", "codex", "astra"],
-          description: "Optional provider default",
-        },
-        implementerProvider: {
-          type: "string",
-          enum: ["muse", "gemini", "deepseek", "codex", "astra"],
-        },
-        reviewerProvider: {
-          type: "string",
-          enum: ["muse", "gemini", "codex", "astra"],
-        },
       },
       required: ["kind"],
     },
@@ -349,7 +326,7 @@ export const TOOLS = [
       properties: {
         response: {
           type: "string",
-          description: "Narrative findings/outcome. Hard cap of 32,768 characters.",
+          description: `Narrative findings/outcome. Hard cap of ${FINAL_RESPONSE_MAX_CHARS_LABEL} characters.`,
         },
         data_points: {
           type: "array",
@@ -397,31 +374,36 @@ export async function resolveSessionId(root, explicitId) {
   return resolved;
 }
 
-// Which providers serve which seat. Wiring a provider into another seat
-// later is additive: extend the seat's list and add its template below.
+// Which providers serve which seat. The architect seat keeps its legacy
+// selection (unchanged); the worker seats are pinned to the central operator
+// configuration and no longer accept per-call or per-seat provider selection.
 export const SEAT_PROVIDERS = {
-  implementer: ["muse", "gemini", "deepseek", "codex", "astra"],
-  reviewer: ["muse", "gemini", "codex", "astra"],
-  researcher: ["muse", "gemini", "codex", "astra"],
+  implementer: [WORKER_PROVIDER],
+  reviewer: [WORKER_PROVIDER],
   architect: ["muse", "gemini", "codex", "astra"],
 };
 
-// Resolve which provider serves a seat. Precedence:
-// seat arg > seat env > global arg > global env > 'muse'.
-// Unknown strings always throw; a known provider that does not serve the
-// seat throws with no silent fallback.
+// Resolve which provider serves a non-worker seat (architect). Precedence:
+// arg > seat env > 'muse'. Unknown strings always throw; a known provider
+// that does not serve the seat throws with no silent fallback.
 export function resolveProvider(seat, { arg, seatEnv, globalArg, globalEnv } = {}) {
   for (const value of [arg, seatEnv, globalArg, globalEnv]) {
     if (value !== undefined && value !== null) assertKnownProvider(value);
   }
   const raw = arg ?? seatEnv ?? globalArg ?? globalEnv ?? "muse";
   const normalized = normalizeProvider(raw);
-  if (!SEAT_PROVIDERS[seat].includes(raw) && !SEAT_PROVIDERS[seat].includes(normalized)) {
+  if (!SEAT_PROVIDERS[seat] || (!SEAT_PROVIDERS[seat].includes(raw) && !SEAT_PROVIDERS[seat].includes(normalized))) {
     throw new Error(`provider '${raw}' does not support seat '${seat}'`);
   }
   return normalized;
 }
 
+// Legacy provider-selection keys. `researcherProvider` / `QQ_RESEARCHER_PROVIDER`
+// are retained ONLY as fail-closed compatibility defenses: research is ordinary
+// investigation work carried by the runner seat, so a caller presenting one of
+// those keys is rejected exactly like any other provider override rather than
+// having it silently ignored or aliased onto a real seat. These defenses do not
+// make a researcher seat available.
 const SEAT_ARGS = {
   implementer: "implementerProvider",
   reviewer: "reviewerProvider",
@@ -434,42 +416,68 @@ const SEAT_ENVS = {
   researcher: "QQ_RESEARCHER_PROVIDER",
 };
 
-export function resolveSeatProvider(seat, args = {}, env = process.env) {
-  return resolveProvider(seat, {
-    arg: args[SEAT_ARGS[seat]],
-    seatEnv: env[SEAT_ENVS[seat]],
-    globalArg: args.provider,
-    globalEnv: env.QQ_WORKFLOW_PROVIDER,
-  });
+// Worker provider/model selection belongs to the operator's central
+// configuration. Any per-call or per-seat override, and any conflicting legacy
+// provider env, refuses the launch instead of being honored or silently
+// ignored.
+export function assertNoProviderOverrides(args = {}, env = process.env) {
+  for (const key of ["provider", "implementerProvider", "reviewerProvider", "researcherProvider"]) {
+    if (args[key] !== undefined && args[key] !== null) {
+      throw new Error(
+        `provider override '${key}' is not permitted: worker provider selection belongs to operator workflow configuration, not architect arguments`,
+      );
+    }
+  }
+  const conflicts = [];
+  const globalValue = env?.QQ_WORKFLOW_PROVIDER;
+  if (globalValue !== undefined && globalValue !== null && normalizeProvider(globalValue) !== WORKER_PROVIDER) {
+    conflicts.push(`QQ_WORKFLOW_PROVIDER=${globalValue}`);
+  }
+  for (const [seat, envKey] of Object.entries(SEAT_ENVS)) {
+    const value = env?.[envKey];
+    if (value !== undefined && value !== null && normalizeProvider(value) !== WORKER_PROVIDER) {
+      conflicts.push(`${envKey}=${value}`);
+    }
+  }
+  if (conflicts.length > 0) {
+    throw new Error(
+      `worker provider configuration is not authorized: ${conflicts.join(", ")} conflicts with the pinned '${WORKER_PROVIDER}' worker provider`,
+    );
+  }
 }
 
-// Per-seat command templates, keyed by provider. Each template renders one
-// delegation step; unsupported seat x provider pairs have no template.
-const IMPLEMENTER_TEMPLATES = {
-  muse: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'muse exec --preset implementer --yolo "${prompt} Leave changes uncommitted. Do not commit, push, review, or land."'`,
-  gemini: (cwd, prompt, conversationId) =>
-    `Delegate via run_command (with Cwd: ${cwd}) using a fresh conversation: 'agy --agent implementer --conversation ${conversationId} --print-timeout 60m --print "${prompt} Leave changes uncommitted. Do not commit, push, review, or land."'
-Do NOT pass '--new-project'.`,
-  deepseek: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'dsh --profile implementer "${prompt} Leave changes uncommitted. Do not commit, push, review, or land."'`,
-  codex: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'codex exec --profile implementer "${prompt} Leave changes uncommitted. Do not commit, push, review, or land."'`,
-};
-IMPLEMENTER_TEMPLATES.astra = IMPLEMENTER_TEMPLATES.codex;
+// Resolve a worker seat from central operator configuration only. Fails closed
+// on a misconfigured central config (or a missing one) and on a conflicting
+// legacy provider env var.
+export function resolveSeatProvider(seat, args = {}, env = process.env, options = {}) {
+  if (!WORKER_SEATS.includes(seat)) {
+    throw new Error(`provider resolution for seat '${seat}' does not use central worker configuration`);
+  }
+  assertNoProviderOverrides(args, env);
+  const file = assertCentralWorkerConfig({ env, configFile: options.configFile ?? null });
+  const config = loadWorkerConfig({ env, file });
+  if (SEAT_PROVIDERS[seat] && !SEAT_PROVIDERS[seat].includes(config.provider)) {
+    throw new Error(`provider '${config.provider}' does not support seat '${seat}'`);
+  }
+  return config.provider;
+}
 
-const REVIEWER_TEMPLATES = {
-  muse: (cwd, prompt) => `invoke reviewer via run_command (with Cwd: ${cwd}): 'muse exec --preset reviewer --yolo "${prompt} Do not commit, push, or land."'`,
-  gemini: (cwd, prompt, conversationId) =>
-    `invoke reviewer via run_command (with Cwd: ${cwd}) using a fresh conversation: 'agy --agent reviewer --conversation ${conversationId} --print-timeout 60m --print "${prompt} Do not commit, push, or land."'
-Do NOT pass '--new-project'.`,
-  codex: (cwd, prompt) => `invoke reviewer via run_command (with Cwd: ${cwd}): 'codex exec --profile reviewer "${prompt} Do not commit, push, or land."'`,
-};
-REVIEWER_TEMPLATES.astra = REVIEWER_TEMPLATES.codex;
+// Canonical worker launcher. All three worker seats launch through the same
+// central harness; the architect never selects a provider, model, or
+// executable, and the target project supplies only its working directory.
+const WORKER_EXEC = fileURLToPath(new URL("../bin/worker-exec.mjs", import.meta.url));
+export const WORKER_LAUNCHER_PATH = WORKER_EXEC;
 
-const RESEARCHER_TEMPLATES = {
-  muse: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'muse exec --preset researcher --yolo "${prompt} Leave files uncommitted. Do not commit, push, or land."'`,
-  gemini: (cwd, prompt) => `Invoke research subagent with ticket path ${cwd}/.architect/ticket.md and worktree cwd via run_command (with Cwd: ${cwd}) using Prompt: "${prompt} Leave files uncommitted. Do not commit, push, or land."`,
-  codex: (cwd, prompt) => `Delegate via run_command (with Cwd: ${cwd}): 'codex exec --profile researcher "${prompt} Leave files uncommitted. Do not commit, push, or land."'`,
+const WORKER_OWNERSHIP = {
+  implementer: "Leave changes uncommitted. Do not commit, push, review, or land.",
+  reviewer: "Do not commit, push, or land.",
+  runner: "Leave files uncommitted. Do not commit, push, review, or land.",
 };
-RESEARCHER_TEMPLATES.astra = RESEARCHER_TEMPLATES.codex;
+
+export function buildWorkerStep(seat, cwd, prompt) {
+  const ownership = WORKER_OWNERSHIP[seat] || "";
+  return `Delegate via run_command (with Cwd: ${cwd}): '${WORKER_EXEC} --seat ${seat} --cwd ${cwd} --prompt "${prompt} ${ownership}"'`;
+}
 
 export function buildImplementerPrompt(worktreeCwd) {
   const ticketPath = join(worktreeCwd, ".architect", "ticket.md");
@@ -488,24 +496,26 @@ ${reviewerOutput}
 Please resolve these defects. When finished, report your answer.`;
 }
 
-export function buildResearcherPrompt(worktreeCwd) {
+// Investigation prompt for a prepared research worktree. It is the `task` of
+// the concrete dispatch_runner handoff (below): research is ordinary
+// investigation work carried by the runner seat, whose identity/transport the
+// dispatch_runner tool owns. No manual worker-exec seat invocation is emitted.
+export function buildInvestigationPrompt(worktreeCwd) {
   const ticketPath = join(worktreeCwd, ".architect", "ticket.md");
   return `Investigate '${ticketPath}' in working directory '${worktreeCwd}'. Report findings.`;
 }
 
-export function buildImplementerStep(cwd, prompt, provider, conversationId) {
-  const p = normalizeProvider(provider);
-  return IMPLEMENTER_TEMPLATES[p](cwd, prompt, conversationId);
+export const buildResearcherPrompt = buildInvestigationPrompt;
+
+// Provider arguments are accepted for backwards compatibility but ignored:
+// worker seats always launch through the central configuration, so there is
+// exactly one implementer/reviewer delegation command.
+export function buildImplementerStep(cwd, prompt) {
+  return buildWorkerStep("implementer", cwd, prompt);
 }
 
-export function buildReviewerStep(cwd, prompt, provider, conversationId) {
-  const p = normalizeProvider(provider);
-  return REVIEWER_TEMPLATES[p](cwd, prompt, conversationId);
-}
-
-export function buildResearcherStep(cwd, prompt, provider) {
-  const p = normalizeProvider(provider);
-  return RESEARCHER_TEMPLATES[p](cwd, prompt);
+export function buildReviewerStep(cwd, prompt) {
+  return buildWorkerStep("reviewer", cwd, prompt);
 }
 
 export async function prepareWorktree(args = {}) {
@@ -513,12 +523,12 @@ export async function prepareWorktree(args = {}) {
   if (!kind || (kind !== "bounded" && kind !== "open" && kind !== "research")) {
     throw new Error("kind is required: 'bounded' | 'open' | 'research'");
   }
-  // Resolve providers before creating anything so a bad value fails fast
-  // without leaving a stray worktree or branch behind. Only seats the kind
-  // delegates to are resolved; config for unused seats is inert.
+  // Reject provider overrides before creating anything so a bad value fails
+  // fast without leaving a stray worktree or branch behind. Worker seats are
+  // resolved from central operator configuration only.
+  assertNoProviderOverrides(args);
   const implementerProvider = kind === "research" ? null : resolveSeatProvider("implementer", args);
   const reviewerProvider = kind === "open" ? resolveSeatProvider("reviewer", args) : null;
-  const researcherProvider = kind === "research" ? resolveSeatProvider("researcher", args) : null;
 
   const curr = await currentBranch(cwd).catch(() => null);
   if ((curr && curr.startsWith("architect/")) || cwd.includes(".qq-worktrees") || resolve(cwd).includes(".qq-worktrees")) {
@@ -535,14 +545,22 @@ export async function prepareWorktree(args = {}) {
   const reviewRequired = kind === "open";
 
   if (kind === "research") {
-    const researcherPrompt = buildResearcherPrompt(wt.cwd);
-    const step = buildResearcherStep(wt.cwd, researcherPrompt, researcherProvider);
+    // Research stays a real, read-only worktree; the delegation itself is a
+    // concrete dispatch_runner tool call. The runner seat is the only carrier
+    // for investigation work now, and dispatch_runner owns its identity and
+    // completion transport, so no bare worker-exec command is emitted here and
+    // no worker is launched as a hidden side effect of preparing the tree.
+    const investigationTask = buildInvestigationPrompt(wt.cwd);
+    const handoff = {
+      tool: "dispatch_runner",
+      arguments: { task: investigationTask, cwd: wt.cwd },
+    };
     const instructions = `Worktree ready at ${wt.cwd}.
 Branch: ${wt.branch}
 Review required: false
 
 Next steps:
-1. ${step}
+1. Call the '${handoff.tool}' tool with cwd '${wt.cwd}' and task: ${investigationTask}
 2. When finished, call 'land'.`;
 
     return {
@@ -553,8 +571,7 @@ Next steps:
       reviewRequired: false,
       sessionId,
       ticketSource,
-      researcherPrompt,
-      researcherProvider,
+      handoff,
       instructions,
     };
   }
@@ -564,9 +581,9 @@ Next steps:
   const reviewerPrompt = buildReviewerPrompt(wt.cwd);
   const reviewerSessionId = randomUUID();
 
-  const implementerStep = buildImplementerStep(wt.cwd, implementerPrompt, implementerProvider, childSessionId);
+  const implementerStep = buildImplementerStep(wt.cwd, implementerPrompt);
   const instructions = reviewRequired
-    ? `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: true\n\nNext steps:\n1. ${implementerStep}\n2. When implementation finishes, ${buildReviewerStep(wt.cwd, reviewerPrompt, reviewerProvider, reviewerSessionId)}\n3. When review passes, call 'land'.`
+    ? `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: true\n\nNext steps:\n1. ${implementerStep}\n2. When implementation finishes, ${buildReviewerStep(wt.cwd, reviewerPrompt)}\n3. When review passes, call 'land'.`
     : `Worktree ready at ${wt.cwd}.\nBranch: ${wt.branch}\nReview required: false\n\nNext steps:\n1. ${implementerStep}\n2. When finished, call 'land'.`;
 
   return {
@@ -1770,6 +1787,23 @@ export function readAuthoritativeRunnerResult(runner) {
   return readAuthoritativeResultFromStore(runner, { registry: COMPLETE_TASK_REGISTRY });
 }
 
+// Transport backstop: the authoritative result file can appear on any event
+// shape, so completion is checked as soon as it validates. Only a running
+// runner with a validated transport payload transitions (and the payload must
+// satisfy the same cap/binding rules as every other ingestion path), so a
+// rejected or over-cap result never authorizes success.
+export function checkRunnerTransportBackstop(runner) {
+  if (!runner || runner.status !== "running" || !runner.resultFile || !existsSync(runner.resultFile)) return false;
+  const loaded = readAuthoritativeRunnerResult(runner);
+  if (!loaded.ok) return false;
+  runner.status = "completed";
+  runner.result = loaded.result;
+  runner.activeTool = null;
+  cleanupRunnerFiles(runner);
+  void notifyTerminal(runner, "runner");
+  return true;
+}
+
 // Tracker state directory: the durable job/report store for the repository the
 // tracker is working in. `QQ_WORKFLOW_STATE_DIR` overrides it (tests and
 // non-default deployments).
@@ -1885,27 +1919,46 @@ function startRunnerProcess(runner) {
     prompt += `\n\nTarget paths to inspect:\n${runner.targetPaths.join("\n")}`;
   }
 
-  const bin = process.env.QQ_RUNNER_BIN || process.env.REAL_AGY_BIN || "agy";
-  const runnerModel = process.env.QQ_RUNNER_MODEL || "gemini-3.8-flash-high";
-  const childArgs = [
-    "--agent", "runner",
-    "--model", runnerModel,
-    "--dangerously-skip-permissions",
-    "--output-format", "stream-json",
-    "--print-timeout", "60m",
-    "--print", prompt,
-  ];
-
-  let child;
+  // The runner seat launches through the central worker contract. Its bound
+  // identity and result transport ride inside that contract (the configured
+  // harness decides how its seat receives them); no target-project executable is
+  // probed and there is no agy/legacy fallback.
+  let launch;
   try {
-    child = spawn(bin, childArgs, {
+    launch = buildCentralWorkerLaunch({
+      seat: "runner",
       cwd: runner.cwd,
-      stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...process.env,
+      prompt,
+      env: process.env,
+      mcpEnv: {
         QQ_RUNNER_ID: runner.runnerId,
         QQ_RUNNER_RESULT_FILE: runner.resultFile,
       },
+    });
+  } catch (err) {
+    runner.status = "failed";
+    runner.error = { message: `Runner worker launch rejected: ${err.message}` };
+    cleanupRunnerFiles(runner);
+    void notifyTerminal(runner, "runner");
+    return;
+  }
+  runner.provider = launch.config.provider;
+  runner.model = launch.config.model;
+  runner.harness = launch.config.harness;
+  runner.workerBin = launch.bin;
+
+  // Explicit test/operator binary override (offline tests and smoke harnesses).
+  // The centrally configured provider, model and harness still govern the argv.
+  if (process.env.QQ_RUNNER_BIN) launch.bin = process.env.QQ_RUNNER_BIN;
+
+  let child;
+  try {
+    child = spawn(launch.bin, launch.args, {
+      cwd: runner.cwd,
+      // stdin is /dev/null: the worker reads its prompt from argv and must never
+      // block waiting on an open stdin pipe.
+      stdio: ["ignore", "pipe", "pipe"],
+      env: launch.env,
     });
   } catch (err) {
     runner.status = "failed";
@@ -1959,9 +2012,9 @@ function startRunnerProcess(runner) {
       return;
     }
     if (runner.resultFile && existsSync(runner.resultFile)) {
-      // Ingestion keeps the pinned 32,768-character complete_task contract but
-      // never discards the only copy of an over-cap report: the full response is
-      // spilled to the durable report store and the runner still completes.
+      // Ingestion keeps the pinned complete_task contract (one authoritative
+      // character cap) but never discards the only copy of an over-cap report:
+      // the full response is spilled to the durable report store.
       const loaded = acceptRunnerResult(
         runner,
         {
@@ -2450,7 +2503,11 @@ export function evaluateReviewPassed(outputOrResult, explicitExitCode) {
   return parsed.verdict === "PASS" && !parsed.conflicting;
 }
 
-async function runChildSubagent(execution, { role, cwd, prompt, provider }) {
+// Managed (implementer/reviewer) seat launcher. Every worker seat launches
+// through the central operator configuration; the per-call `provider` is
+// ignored here (and rejected at the public entry points) and is kept only for
+// the test-handler signature below.
+export async function runChildSubagent(execution, { role, cwd, prompt, provider }) {
   if (globalThis.__QQ_TEST_SUBAGENT_HANDLER) {
     try {
       const res = await globalThis.__QQ_TEST_SUBAGENT_HANDLER({ role, cwd, prompt, provider, execution });
@@ -2460,40 +2517,19 @@ async function runChildSubagent(execution, { role, cwd, prompt, provider }) {
     }
   }
 
-  const conversationId = randomUUID();
-  let bin, args;
-  const p = normalizeProvider(provider);
-  if (p === "gemini") {
-    bin = process.env.REAL_AGY_BIN || "agy";
-    args = [
-      "--agent", role,
-      "--conversation", conversationId,
-      "--dangerously-skip-permissions",
-      "--output-format", "stream-json",
-      "--print-timeout", "60m",
-      "--add-dir", cwd,
-      "--print", prompt,
-    ];
-  } else if (p === "deepseek") {
-    bin = "dsh";
-    args = ["--profile", role, prompt];
-  } else if (p === "codex") {
-    bin = "codex";
-    args = ["exec", "--profile", role, "--json", prompt];
-  } else {
-    bin = "muse";
-    const museModel = process.env.QQ_MUSE_MODEL || "muse-spark-1.3";
-    const museEffort = process.env.QQ_MUSE_REASONING_EFFORT || "max";
-    args = [
-      "exec",
-      "--preset", role,
-      "--model", museModel,
-      "--reasoning-effort", museEffort,
-      "--yolo",
-      "--json",
-      prompt,
-    ];
+  let launch;
+  try {
+    launch = buildCentralWorkerLaunch({ seat: role, cwd, prompt, env: process.env });
+  } catch (err) {
+    return {
+      ok: false,
+      exitCode: 1,
+      error: { message: `Worker launch rejected: ${err.message}`, exitCode: 1 },
+    };
   }
+  // Explicit test/operator binary override for the offline suites; the centrally
+  // configured provider/model/harness still govern the argv.
+  if (process.env.QQ_SUBAGENT_BIN) launch.bin = process.env.QQ_SUBAGENT_BIN;
 
   // Fresh per-child stream state. Structured terminal text wins; accumulated
   // plain-text lines are the fallback when no terminal event is emitted.
@@ -2505,10 +2541,10 @@ async function runChildSubagent(execution, { role, cwd, prompt, provider }) {
     let stderr = "";
     let child;
     try {
-      child = spawn(bin, args, {
+      child = spawn(launch.bin, launch.args, {
         cwd,
-        stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env },
+        stdio: ["ignore", "pipe", "pipe"],
+        env: launch.env,
       });
     } catch (err) {
       resolvePromise({ ok: false, error: { message: err.message } });
@@ -3013,6 +3049,10 @@ export async function dispatchExecution(args = {}) {
   if (!kind || (kind !== "bounded" && kind !== "open")) {
     throw new Error("kind is required: 'bounded' | 'open'");
   }
+  // The managed pipeline owns worker provider/model selection: a per-call
+  // override (or a conflicting legacy provider env) refuses the dispatch before
+  // any worktree, implementer, or reviewer is started.
+  assertNoProviderOverrides(args);
 
   const root = await mainRepoRoot(cwd);
   const sessionId = await resolveSessionId(root, args.sessionId || args.id);
@@ -3279,7 +3319,7 @@ export async function completeTask(args = {}) {
   }
   if (response.length > COMPLETE_TASK_RESPONSE_MAX) {
     throw new Error(
-      `response exceeds the 32,768-character cap (got ${response.length} chars). Summarize before calling complete_task.`,
+      `response exceeds the ${FINAL_RESPONSE_MAX_CHARS_LABEL}-character cap (got ${response.length} chars). Summarize before calling complete_task.`,
     );
   }
   if (data_points !== undefined) {

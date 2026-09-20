@@ -10,7 +10,12 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-export const COMPLETE_TASK_RESPONSE_MAX = 32_768;
+import { FINAL_RESPONSE_MAX_CHARS, FINAL_RESPONSE_MAX_CHARS_LABEL } from "./limits.mjs";
+
+// Single authoritative cap (workflow/limits.mjs): the narrative a worker may
+// deliver through the completion transport, shared by the complete_task writer,
+// this reader, the DeepSeek Minimal terminal adapter, and the seat contracts.
+export const COMPLETE_TASK_RESPONSE_MAX = FINAL_RESPONSE_MAX_CHARS;
 export const COMPLETE_TASK_DATA_POINTS_MAX = 20;
 export const COMPLETE_TASK_DATA_POINT_LEN_MAX = 100;
 
@@ -60,7 +65,7 @@ export function validateRunnerResultPayload(payload, runner) {
       code: "response-over-cap",
       limit: COMPLETE_TASK_RESPONSE_MAX,
       actual: payload.response.length,
-      error: `Runner result response exceeds ${COMPLETE_TASK_RESPONSE_MAX}-character cap (got ${payload.response.length} chars)`,
+      error: `Runner result response exceeds ${FINAL_RESPONSE_MAX_CHARS_LABEL}-character cap (got ${payload.response.length} chars)`,
     };
   }
 

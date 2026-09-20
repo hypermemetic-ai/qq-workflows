@@ -1,0 +1,25 @@
+{
+  "upstream": {
+    "repo": "https://github.com/deepseek-ai/deepseek-harness",
+    "commit": "ddefc45fbc7f8e46dd73185e68295696d1297887",
+    "version": "0.1.6-alpha.2",
+    "note": "Audited commit from the pre-implementation investigation. The runtime is built from this exact commit; the globally installed dsh (0.1.5-rc.1) is NEVER used."
+  },
+  "publishedPackage": {
+    "name": "@deepseek-ai/dsh",
+    "version": "0.1.6-alpha.2",
+    "distTag": "alpha",
+    "note": "Published build of the same release. Not used as the runtime: @deepseek-ai/dsh-tool-fs only exports `apply` (Config/apply/inject/name), so applyReadImageTool cannot be imported from the packaged lib. The source checkout keeps the ./src/* export that makes read-image-only registration possible."
+  },
+  "provider": {
+    "route": "deepseek-official",
+    "model": "deepseek-flash",
+    "reasoningEffort": "max",
+    "protocol": "messages",
+    "note": "Literal catalog id deepseek-flash (only image-capable default model); effort `max` serializes as output_config.effort on the Messages protocol."
+  },
+  "forbiddenGlobals": {
+    "dshGlobalVersionObserved": "0.1.5-rc.1",
+    "note": "Runtime tests must not invoke the global dsh; setup-runtime.mjs records both versions and fails closed if the source runtime does not report the pinned version."
+  }
+}

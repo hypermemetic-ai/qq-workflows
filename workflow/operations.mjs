@@ -446,7 +446,22 @@ export function createWorkflow({
     if (Array.isArray(targetPaths) && targetPaths.length > 0) {
       prompt += `\n\nTarget paths to inspect:\n${targetPaths.join("\n")}`;
     }
-    const launched = planToSpawn(launchPlan, { prompt, env, root });
+    // The runner's bound identity and result transport are the caller's, and
+    // they reach the worker only through the central launch contract: the
+    // configured harness owns how its seat receives them. The target project is
+    // the working directory (`cwd`) and nothing else.
+    let launched;
+    try {
+      launched = planToSpawn(launchPlan, {
+        prompt,
+        env,
+        cwd,
+        mcpEnv: { QQ_RUNNER_ID: id, QQ_RUNNER_RESULT_FILE: resultFile },
+      });
+    } catch (err) {
+      void finishJob(record, { status: "failed", error: { message: `runner launch rejected: ${err.message}` } });
+      return { ok: false, jobId: id, status: "failed", error: err.message, launchPlan: record.launchPlan };
+    }
 
     const runner = { id, runnerId: id, sessionId: association.sessionId, sessionKey: association.sessionKey, resultFile, reportFile, cwd, status: RUNNING };
     registerWait(id);
@@ -456,7 +471,7 @@ export function createWorkflow({
       child = spawnFn(launched.command, launched.args, {
         cwd,
         stdio: ["pipe", "pipe", "pipe"],
-        env: { ...launched.env, QQ_RUNNER_ID: id, QQ_RUNNER_RESULT_FILE: resultFile, QQ_RUNNER_REPORT_FILE: reportFile },
+        env: launched.env,
       });
     } catch (err) {
       void finishJob(record, { status: "failed", error: { message: `runner spawn failed: ${err.message}` } });

@@ -1,0 +1,15 @@
+{
+  "name": "zvec-grep-gateway",
+  "version": "0.0.0-prototype",
+  "private": true,
+  "type": "module",
+  "description": "Root-bound zvec-grep search gateway: an MCP stdio server that exposes only zvec_grep_search (bound root, wait_for_fresh, autoUpdate) and forwards to the pinned zg stdio bridge.",
+  "exports": {
+    ".": "./zvec-grep-gateway.mjs",
+    "./tool": "./zvec-grep-tool.mjs"
+  },
+  "peerDependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/server": "2.0.0"
+  }
+}

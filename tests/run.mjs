@@ -24,6 +24,17 @@ delete env.QQ_ARCHITECT_PROMPT_CAPTURE;
 delete env.PASEO_AGENT_ID;
 delete env.QQ_WORKER_CONFIG_FILE;
 delete env.QQ_WORKER_EXEC;
+delete env.QQ_WORKER_CODEX_HOME;
+delete env.QQ_WORKER_CODEX_BIN;
+delete env.QQ_SUBAGENT_BIN;
+delete env.QQ_RUNNER_BIN;
+delete env.REAL_AGY_BIN;
+delete env.QQ_DEEPSEEK_RUNTIME_ROOT;
+// Never inherit a live zvec-grep gateway binding: a seat's search root is bound
+// by the adapter from its own worktree, never by an ambient test environment.
+for (const key of Object.keys(env)) {
+  if (key.startsWith('QQ_ZVEC_GREP_')) delete env[key];
+}
 env.QQ_WORKFLOW_STATE_DIR = join(mkdtempSync(join(tmpdir(), 'qq-workflow-state-')), 'state');
 // Scrub live notification routing/thread env from test runs.
 // Targeted actual live routing values (preserve needed config: CODEX_HOME, CODEX_MODEL, CODEX_BIN).

@@ -11,3 +11,8 @@ __pycache__/
 .architect/worktrees/
 .architect/credentials.yaml
 .architect/tickets/
+
+# Runner/notification state left by the DeepSeek Minimal acceptance suite
+# (generated, never source; the suite now writes its state under its own
+# disposable temp root, this keeps any earlier residue out of the release).
+prototype/deepseek-minimal/.architect/

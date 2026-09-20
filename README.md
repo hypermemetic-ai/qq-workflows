@@ -10,9 +10,9 @@ The ticket is session-scoped at `.architect/tickets/<sessionId>.md`, automatical
 
 1. **Plan together.** Describe the change you want. Architect asks questions, investigates the codebase, and records scope and testing plans in `.architect/tickets/<sessionId>.md`.
 2. **Teach in-session.** When an architectural fork requires unfamiliar domain knowledge, Architect teaches until you are informed enough to decide, recording the decision in the ticket.
-3. **Research.** For documentation and codebase lookups, Architect delegates to a `researcher` — the `researcher` preset on the muse seat, or Antigravity's built-in `research` subagent on the gemini seat.
-4. **Implement.** Architect prepares a dedicated worktree branch (`architect/<kind>/<sessionId.slice(0,8)>`) and delegates to `implementer` working in that checkout. Children leave changes uncommitted; only the architect session lands.
-5. **Review.** Architect delegates to `reviewer` to verify changes against the testing plan in that checkout without altering project code.
+3. **Research.** For documentation and codebase lookups, Architect delegates investigation to the `runner` seat (`dispatch_runner`); research is ordinary runner work, not a separate seat.
+4. **Implement.** Architect prepares a dedicated worktree branch (`architect/<kind>/<sessionId.slice(0,8)>`) and delegates to `implementer` working in that checkout — through the centrally configured worker harness (see *Worker harness*). Children leave changes uncommitted; only the architect session lands.
+5. **Review.** Architect delegates to `reviewer` (same central harness) to verify changes against the testing plan in that checkout without altering project code.
 6. **Land.** When review passes, Architect lands the work: commits changes, creates and merges the PR via `gh` with `--delete-branch` (or fast-forwards local main for local repos), retires the worktree (`git worktree remove`), and cleans up the local branch (`git branch -d`).
 
 ## Quick Start
@@ -72,33 +72,135 @@ Or invoke `architect` from an active Antigravity session.
 
 `muse exec --preset <name>` requires the name to exist, so the installer guarantees the four seat names (`architect`, `implementer`, `reviewer`, `researcher`) in the muse `settings.json`. Preset content stays `{}`: role text rides in the delegation prompts built by `prepare_worktree`, not in preset configuration.
 
-## Providers
+## Worker harness (central, operator-owned)
 
-Each delegation seat (implementer, reviewer, researcher, architect) is served by a provider. Every seat defaults to `muse`; DeepSeek serves implementation only:
+The three worker seats — `runner`, `implementer`, `reviewer` — do not select a
+provider, model, endpoint, effort level, or harness. Every one of them launches
+the same centrally configured worker harness, resolved from the operator's
+configuration file `~/.config/qq-workflows/worker-config.json`
+(`QQ_WORKER_CONFIG_FILE` overrides the path):
 
-| Seat | `muse` | `gemini` | `deepseek` |
-| --- | --- | --- | --- |
-| implementer | ✓ | ✓ | ✓ |
-| reviewer | ✓ | ✓ | — |
-| researcher | ✓ | ✓ | — |
-| architect | ✓ | ✓ | — |
+```json
+{
+  "provider": "deepseek",
+  "model": "deepseek-flash",
+  "base_url": "https://api.deepseek.com",
+  "wire_api": "responses",
+  "env_key": "DEEPSEEK_API_KEY",
+  "api_key_file": "~/.config/qq-workflows/deepseek-api-key",
+  "harness": "deepseek-minimal",
+  "reasoning_effort": "max"
+}
+```
 
-`muse` delegates via `muse exec --preset <seat> --yolo`, `gemini` via `agy --agent <seat> --conversation <uuid> --print-timeout 60m --print` (Gemini's built-in research subagent serves the researcher seat), and `deepseek` via `dsh --profile implementer`.
+`harness` selects the runtime that executes a seat turn: `deepseek-minimal`
+(the pinned DeepSeek Harness runtime under
+`~/.local/state/qq-workflows/deepseek-minimal-runtime`) or `codex` (the Codex
+CLI with the same DeepSeek provider/model pins). The DeepSeek pin
+(`provider`/`model`/`base_url`/`reasoning_effort`) is validated exactly and
+fails closed: any other value refuses the launch instead of substituting a
+provider, model, or effort level.
 
-Switch providers globally or per seat. Per-seat precedence: seat arg > seat env > global arg > global env > `muse`:
+One resolution point (`workflow/worker-launch.mjs` →
+`workflow/worker-config.mjs`) serves every entry point:
 
-| Scope | `prepare_worktree` arg | Env |
-| --- | --- | --- |
-| global | `provider` | `QQ_WORKFLOW_PROVIDER` |
-| implementer | `implementerProvider` | `QQ_IMPLEMENTER_PROVIDER` |
-| reviewer | `reviewerProvider` | `QQ_REVIEWER_PROVIDER` |
-| researcher | `researcherProvider` | `QQ_RESEARCHER_PROVIDER` |
+| Entry point | Seat(s) |
+| --- | --- |
+| native workflow runner (`dispatch_runner`, `workflow/operations.mjs`) | runner |
+| managed execution pipeline (`dispatch_execution` → implementer/reviewer) | implementer, reviewer |
+| manual delegation (`bin/worker-exec.mjs`, `prepare_worktree` handoff) | all three |
 
-The architect launcher takes `--provider` / `ARCHITECT_PROVIDER` (default `muse`, served via `muse-architect`; override the binary with `MUSE_ARCHITECT_BIN`).
+Fail-closed rules that hold for all three seats:
 
-Unknown provider strings throw `unknown provider '<x>': expected 'muse' | 'gemini' | 'deepseek'`. A known provider resolving for a seat it does not serve throws `provider '<p>' does not support seat '<seat>'` with no silent fallback — so a global `deepseek` works for `bounded` tickets, while `open`/`research` tickets need explicit per-seat overrides for the reviewer/researcher seats.
+- A missing central configuration, a missing/incompatible configured runtime, a
+  pin violation, or a conflicting legacy provider environment refuses the
+  launch with an actionable diagnostic. There is no fallback to `agy`, native
+  Codex, `pi`, or a harness discovered inside the target project.
+- Per-call provider selection is refused (`provider`, `implementerProvider`,
+  `reviewerProvider`, `researcherProvider`, and the `QQ_*_PROVIDER`
+  environment variables). Worker provider selection belongs to operator
+  configuration, not to architect arguments.
+- The target repository is a working directory only. The harness executable,
+  adapter source, and runtime root come from the installed integration source
+  and the operator's state directory — never from a project-local launcher.
+- A runner keeps its bound identity and explicit result transport
+  (`QQ_RUNNER_ID` / `QQ_RUNNER_RESULT_FILE`); implementer/reviewer never inherit
+  them. Research work is ordinary runner work (`dispatch_runner`), not a
+  separate seat.
+- The final worker narrative has ONE authoritative cap
+  (`workflow/limits.mjs`: 16,384 characters), enforced fail-closed by the
+  `complete_task` transport, the result reader, the DeepSeek Minimal adapter,
+  and the seat contracts.
 
-The deepseek seat needs operator-side prerequisites the installer does not manage: a `~/.dsh` profile named `implementer` and a `DEEPSEEK_API_KEY` in the environment.
+The architect seat is unchanged: the launcher takes `--provider` /
+`ARCHITECT_PROVIDER` (default `muse`, served via `muse-architect`; override the
+binary with `MUSE_ARCHITECT_BIN`), and unknown or unsupported values throw with
+no silent fallback.
+
+### Reused production worker source
+
+The central worker contract and its DeepSeek Minimal harness were promoted from
+the audited prototype into this repository. Reused verbatim (reviewed production
+source): `workflow/worker-config.mjs` (central configuration, pins, seat
+contracts, the `deepseek-minimal` launch branch), `workflow/limits.mjs`
+(single-source narrative cap), `prototype/deepseek-minimal/**` (the harness
+adapter `adapter/*`, the pinned runtime setup `scripts/setup-runtime.mjs`, the
+seat-scoped search gateway `gateway/*` + `profile/*`, the `read_image`
+plugin/overlay, the loopback provider double `mock/*`, `PIN.json`, and the
+runtime acceptance suite `tests/t1..t11`), the seat role contracts
+`agents/{runner,implementer,reviewer}/agent.md`.
+
+Adapted for this integration:
+
+- `workflow/worker-launch.mjs` was replaced by the central resolution contract
+  above: it no longer probes the target project for an executable and has no
+  `agy`/legacy-fallback branch. The retired executable overrides (for example
+  `QQ_WORKER_EXEC`) are refused explicitly.
+- `bin/worker-exec.mjs` now passes the runner's bound identity/result transport
+  into the central launch (`--runner-id` / `--runner-result-file`, or exactly
+  those two environment variables) instead of relying on an ambient identity.
+- `workflow/results.mjs` derives `COMPLETE_TASK_RESPONSE_MAX` from
+  `workflow/limits.mjs`, so the completion transport and the seat contracts can
+  not disagree about the cap.
+- `bin/mcp-server.mjs` launches the runner (native MCP `dispatch_runner`) and the
+  managed implementer/reviewer seats through the same central constructor,
+  refuses provider overrides at `prepare_worktree`/`dispatch_execution`, emits
+  the `bin/worker-exec.mjs` delegation handoff instead of per-provider command
+  templates, and reports research delegation as a `dispatch_runner` handoff.
+- `pi-extension/managed-execution.mjs` refuses to drive a pipeline revision that
+  does not carry the central launch contract.
+
+The central worker tests carried with it are
+`tests/{worker-central-contract,worker-launch,deepseek-minimal,worker-effort-wire}.mjs`.
+
+### Release packaging
+
+The integration has no npm dependency of its own and resolves the pinned worker
+runtime from the operator's state directory, not from the checkout it is started
+in, so a versioned deployment is a plain source archive of the landed revision:
+
+```bash
+LANDED_SHA=$(git rev-parse HEAD)
+DEST=$HOME/.local/share/qq-workflows/releases/$LANDED_SHA
+mkdir -p "$DEST"
+git archive --format=tar "$LANDED_SHA" | tar -C "$DEST" -xf -
+node "$DEST/scripts/install-architect.mjs"     # installs the profile + plugin, verifies it runs
+```
+
+- The archive must include `prototype/deepseek-minimal/**` (adapter, gateway,
+  profiles, plugin, setup script, pins, provider double) and
+  `workflow/{worker-config,worker-launch,limits}.mjs` + `bin/worker-exec.mjs`;
+  without the adapter source a `deepseek-minimal` launch fails closed with
+  "no adapter source at ..." instead of substituting another harness.
+- `.git` is not needed: the acceptance suites and a real dispatch run from an
+  extracted archive (`git archive` of the landed revision) with no `.git` and no
+  `node_modules`; the target projects are ordinary repositories, and the harness
+  is still the one the operator configured.
+- Deployment is versioned on purpose: agent/plugin installs symlink the release
+  directory, so a mutable development checkout must never be the installed
+  source. The pinned runtime under `~/.local/state/qq-workflows/` is reused
+  as-is; do not re-materialize it unless the adapter reports an incompatible
+  artifact.
 
 ## Paseo-native Architect (pi)
 
@@ -279,3 +381,22 @@ jobs, reports, restart recovery, over-cap spill), `architect-install.mjs`
 (installer idempotence and isolation), and `mcp-durable-notify.mjs` (the merged
 MCP terminal path: persist-before-notify, bounded delivery, retry/coalescing,
 and retention pruning).
+
+The central worker launch contract has its own suites:
+`worker-central-contract.mjs` (both target repositories, all three seats, the
+runner/managed-execution/manual entry points, provider-override refusal,
+fail-closed runtime and configuration checks, and read-only worker
+configuration), `worker-launch.mjs` (per-seat launch semantics and role
+contracts), `deepseek-minimal.mjs` (harness selector, Messages endpoint mapping,
+output-token setting, adapter fail-closed boundaries), and
+`worker-effort-wire.mjs` (on-wire reasoning effort, run against a local capture
+server with the installed Codex client; skipped when no client is installed).
+
+The runtime-backed acceptance suite for the pinned DeepSeek Minimal harness boots
+the real runtime against a loopback provider double and is kept separate because
+it requires the pinned runtime to be materialized:
+
+```bash
+node prototype/deepseek-minimal/tests/run.mjs            # t7 production adapter, t8 relocation, t9 quiet window, ...
+node prototype/deepseek-minimal/tests/run.mjs t7         # one file
+```
