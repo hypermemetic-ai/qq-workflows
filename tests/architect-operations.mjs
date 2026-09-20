@@ -230,6 +230,9 @@ assert.doesNotMatch(orphanNotice.text, /completed/);
 assert.equal(orphan.terminal.reportId, null, "an interrupted job has no fabricated result");
 assert.equal(orphan.terminal.resultAvailable, false);
 assert.match(recovered.note, /never restarts work/);
+assert.match(recovered.note, /unreconciled rather than delivered/, "recovery documents what it does with a record it could not persist");
+assert.deepEqual(recovered.unreconciled, [], "a clean recovery reports no unreconciled completion");
+assert.equal(Array.isArray(recovered.reconciled), true);
 
 // A cancelled job is never restarted or re-notified by recovery.
 assert.equal(restartTransport.delivered.some((notification) => notification.jobId === heldDispatch.jobId), false);
@@ -271,9 +274,15 @@ assert.equal((await wfC.readTicket({})).ok, false, "a fresh session has no ticke
 assert.match((await wfA.readTicket({ section: "Problem" })).content, /ticket A/);
 assert.match((await wfB.readTicket({ section: "Problem" })).content, /ticket B/);
 
-// A replayed completion can only reach its own session's transport.
+// A replayed completion can only reach its own session's transport. A pending
+// completion owned by another session is reported as orphaned (including one
+// still only queued, whose receipt is unverified) and never re-routed.
 const recoveryA = await wfA.recoverDeliveries();
-assert.equal(recoveryA.delivery.orphaned.length, 0);
+assert.deepEqual(recoveryA.delivery.replayed, [], "nothing is replayed for a session with no pending delivery");
+assert.ok(
+  recoveryA.delivery.orphaned.every((entry) => entry.owner !== "cross-A"),
+  "orphaned entries always name a different owning session",
+);
 assert.equal(crossB.delivered.length, 1, "recovery for A never delivers to B");
 
 // ---------------------------------------------------------------------------

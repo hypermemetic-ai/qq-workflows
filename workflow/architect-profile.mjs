@@ -34,9 +34,21 @@ export const ARCHITECT_DENIED_TOOLS = ["bash", "edit", "write"];
 // opening the session; a completion must not fabricate a turn there. This profile
 // therefore starts delivery (and restart recovery) on a deferred tick that runs
 // after the handler returned and pi's own initialization continuation resumed.
+//
+// `receiptDelayMs` defers the receipt check the same way, and for the same
+// reason in the other direction: pi appends the custom-message session entry
+// AFTER its extension handlers returned (`_handleAgentEvent` persists on
+// message_end), so a receipt may only be read on a later task, never inside the
+// handler that observed the consumption.
 export const ARCHITECT_DELIVERY = {
   readyDelayMs: 0,
+  receiptDelayMs: 0,
 };
+
+// The custom message type the Architect sends for a completion. Its `details`
+// carry the stable event/job identity, which pi persists verbatim into the
+// session entry — that entry is the receipt recovery reconciles against.
+export const ARCHITECT_COMPLETION_CUSTOM_TYPE = "qq-workflow-completion";
 
 // Strings that identify pi's stock coding-assistant prompt. Their presence in
 // the assembled Architect prompt means an uncontrolled default or append leaked.

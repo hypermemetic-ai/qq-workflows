@@ -254,3 +254,148 @@ export async function callHandlers(pi, name, event, ctx) {
   }
   return results;
 }
+
+// Invoke handlers synchronously. An async handler still runs its whole body up
+// to the first `await` before returning, which is what a runtime that drains a
+// queued message inside the send call actually does to the extension.
+export function callHandlersSync(pi, name, event, ctx) {
+  for (const handler of pi.handlers.get(name) ?? []) {
+    handler(event, ctx);
+  }
+}
+
+// Minimal double of the pi 0.84.1 session runtime that the Architect completion
+// path is written against. Its ordering follows the installed source:
+//
+//   * `sendMessage({customType, details}, {deliverAs:"steer"})` queues the
+//     message on the agent (`agent.steer`) and returns immediately;
+//   * when the loop drains the queue it emits `message_start` then `message_end`
+//     and only THEN does agent-session persist the entry
+//     (`appendCustomMessageEntry` runs after the extension handlers returned);
+//   * `sendUserMessage` (the idle wakeup) raises a regular user message entry.
+//
+// `consume: "sync"` drains the queue inside the send call — the early-consumption
+// race — while the default queues the drain for the caller to run explicitly.
+export function piRuntimeDouble({ idle = true, sessionFile = "/tmp/pi-session.jsonl", persist = true, consume = "manual", ui = null } = {}) {
+  const handlers = new Map();
+  const sent = [];
+  const entries = [];
+  const commands = {};
+  const queue = [];
+  const runtime = {
+    handlers,
+    sent,
+    entries,
+    commands,
+    queue,
+    consume,
+    persisted: [],
+  };
+  let drainPromise = null;
+
+  const ctx = {
+    ui: ui ?? { notifications: [], notify(message, level) { ctx.ui.notifications.push({ message, level }); }, setStatus() {} },
+    // Mutable: `pi.ctx.idle = false` models the operator's turn starting.
+    isIdle: () => ctx.idle,
+    // Faithful to pi 0.84.1: `hasPendingMessages()` reports the session's
+    // `pendingMessageCount`, which counts only queued *user prompt*
+    // steers/follow-ups. A custom message steered by an extension goes into the
+    // agent's own steering queue and is invisible here, so tests model a queued
+    // user prompt by setting `pi.ctx.pendingUserMessages`.
+    hasPendingMessages: () => (ctx.pendingUserMessages ?? 0) > 0,
+    pendingUserMessages: 0,
+    getContextUsage: () => ({ tokens: 10, contextWindow: 1_000_000 }),
+    compact() {},
+    // ReadonlySessionManager surface the extension is allowed to read.
+    sessionManager: {
+      getEntries: () => [...entries],
+      getSessionFile: () => sessionFile,
+      getLeafId: () => entries.at(-1)?.id ?? null,
+    },
+  };
+  runtime.ctx = ctx;
+  ctx.idle = idle;
+
+  function appendEntry(entry) {
+    const record = { id: `entry-${entries.length + 1}`, parentId: entries.at(-1)?.id ?? null, timestamp: new Date().toISOString(), ...entry };
+    if (persist) entries.push(record);
+    runtime.persisted.push(record);
+    return record;
+  }
+
+  // Drain one pending custom message exactly as the pi agent loop does.
+  async function drain({ sync = false } = {}) {
+    const message = queue.shift();
+    if (!message) return null;
+    const startEvent = { type: "message_start", message };
+    const endEvent = { type: "message_end", message };
+    if (sync) {
+      callHandlersSync(runtime.pi, "message_start", startEvent, ctx);
+      callHandlersSync(runtime.pi, "message_end", endEvent, ctx);
+    } else {
+      await callHandlers(runtime.pi, "message_start", startEvent, ctx);
+      await callHandlers(runtime.pi, "message_end", endEvent, ctx);
+    }
+    if (message.role === "custom") {
+      appendEntry({
+        type: "custom_message",
+        customType: message.customType,
+        content: message.content,
+        display: message.display,
+        details: message.details,
+      });
+    }
+    return message;
+  }
+
+  async function wakeUser(text) {
+    const message = { role: "user", content: [{ type: "text", text }], timestamp: Date.now() };
+    await callHandlers(runtime.pi, "message_start", { type: "message_start", message }, ctx);
+    await callHandlers(runtime.pi, "message_end", { type: "message_end", message }, ctx);
+    appendEntry({ type: "message", message });
+    return message;
+  }
+
+  const pi = {
+    handlers,
+    sent,
+    commands,
+    entries,
+    queue,
+    persisted: runtime.persisted,
+    on(name, handler) {
+      handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+      return () => {};
+    },
+    registerTool() {},
+    registerCommand(name, definition) {
+      commands[name] = definition;
+    },
+    getAllTools: () => [],
+    setActiveTools() {},
+    sendMessage(message, options) {
+      sent.push({ kind: "message", message, options });
+      if (options?.deliverAs === "steer") {
+        queue.push({ role: "custom", ...message, timestamp: Date.now() });
+        if (consume === "sync") {
+          drainPromise = drain({ sync: true });
+        }
+      }
+    },
+    sendUserMessage(content, options) {
+      sent.push({ kind: "user", content, options });
+      if (consume === "sync") {
+        drainPromise = wakeUser(typeof content === "string" ? content : "");
+      }
+    },
+  };
+  // The double IS the pi surface an extension is constructed with; the runtime
+  // hooks (ctx, entries, drain, wakeUser, queue) hang off the same object so a
+  // test can drive the session and inspect it in one place.
+  pi.ctx = ctx;
+  pi.drain = drain;
+  pi.wakeUser = wakeUser;
+  pi.pendingDrain = () => drainPromise;
+  runtime.pi = pi;
+  return pi;
+}
