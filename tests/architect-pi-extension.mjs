@@ -549,6 +549,10 @@ assert.ok(restartCtx.notifications.some((entry) => /qq-workflows recovery/.test(
 // ---------------------------------------------------------------------------
 const phases = [];
 const stubPipeline = {
+  // The stub stands in for the installed pipeline, so it must present the same
+  // central worker launch contract the real module exposes.
+  assertNoProviderOverrides: () => {},
+  WORKER_SEATS: ["runner", "implementer", "reviewer"],
   dispatchExecution: async ({ kind, sessionId }) => ({ ok: true, id: "exec-1", status: "running", kind, sessionId }),
   checkExecution: async () => {
     phases.push("checked");
@@ -572,6 +576,13 @@ await assert.rejects(
   () => loadManagedExecutionLauncher({ importModule: async () => ({}) })({ kind: "bounded", cwd: root, sessionId: "s" }),
   /managed execution pipeline is unavailable/,
   "a missing managed pipeline is reported instead of falling back to a direct mutation path",
+);
+// A stale pipeline that would launch the seats through some other harness is
+// refused rather than silently used.
+await assert.rejects(
+  () => loadManagedExecutionLauncher({ importModule: async () => ({ dispatchExecution: async () => ({ id: "x" }), checkExecution: async () => ({ status: "completed" }) }) })({ kind: "bounded", cwd: root, sessionId: "s" }),
+  /does not use the central worker launch contract/,
+  "a pipeline without the central launch contract is refused",
 );
 
 const execToolWorkflow = createWorkflow({

@@ -27,6 +27,15 @@ export function loadManagedExecutionLauncher({ importModule = (specifier) => imp
     if (typeof pipeline.dispatchExecution !== "function") {
       throw new Error("the repository's managed execution pipeline is unavailable (dispatchExecution missing)");
     }
+    // The pipeline must be a revision that launches the implementer and reviewer
+    // seats through the ONE central worker contract and refuses provider/model
+    // overrides. A stale or foreign pipeline module fails closed here rather
+    // than silently running the seats through a different harness.
+    if (typeof pipeline.assertNoProviderOverrides !== "function" || !Array.isArray(pipeline.WORKER_SEATS)) {
+      throw new Error(
+        "the installed managed execution pipeline does not use the central worker launch contract (assertNoProviderOverrides/WORKER_SEATS missing); reinstall the integration source instead of substituting another harness",
+      );
+    }
     const started = await pipeline.dispatchExecution({ kind, cwd, sessionId });
     onPhase?.("implementing", started?.id ?? null);
     for (;;) {

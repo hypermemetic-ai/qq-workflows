@@ -1,0 +1,59 @@
+# SEAT-SCOPED overlay: applied only for the implementer and reviewer seats,
+# AFTER the sdk-minimal bundle layer and the read_image overlay.
+#
+# It mounts exactly one additional MCP server: the root-bound zvec-grep search
+# gateway. dsh's pinned `@deepseek-ai/dsh-mcp-client` connects to it over stdio
+# and publishes the gateway's single tool under the stable public name
+# `mcp__zvec_grep__zvec_grep_search` (serverName `zvec_grep` + raw name
+# `zvec_grep_search`). The runner seat never receives this overlay, so its tool
+# surface is unchanged.
+#
+# The gateway is materialized inside the runtime root by
+# scripts/setup-runtime.mjs; `command`/`args` resolve it relative to DSH_HOME
+# (the harness home) so nothing points back into a checkout. The bound root,
+# seat, zg binary, and the bounded timeouts arrive through the adapter's
+# environment, which is the only source the model cannot influence.
+#
+# `failOnStartupError` is true on purpose: if this row cannot load (gateway
+# missing, environment unbound), the seat's turn fails loudly instead of
+# silently running without search. A zg that is merely unavailable does NOT
+# fail startup - the gateway connects to it lazily on the first search and
+# returns an explicit unavailable error, so unrelated work keeps going.
+#
+# toolCallTimeoutMs stays above the gateway's own bounded budgets (index
+# creation 600s + one search phase 180s) so the gateway, not the bridge, is the
+# component that decides how a slow index settles.
+
+- insert:
+    - id: proto-zvec-grep-gateway
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        transport: stdio
+        serverName: zvec_grep
+        command: !!js process.execPath
+        args:
+          - !!js process.env.DSH_HOME + '/../gateway/zvec-grep-gateway.mjs'
+        cwd: !!js process.env.QQ_ZVEC_GREP_ROOT
+        env:
+          QQ_ZVEC_GREP_ROOT: !!js process.env.QQ_ZVEC_GREP_ROOT
+          QQ_ZVEC_GREP_SEAT: !!js process.env.QQ_ZVEC_GREP_SEAT
+          QQ_ZVEC_GREP_BIN: !!js process.env.QQ_ZVEC_GREP_BIN ?? 'zg'
+          QQ_ZVEC_GREP_SEARCH_TIMEOUT_MS: !!js process.env.QQ_ZVEC_GREP_SEARCH_TIMEOUT_MS ?? '180000'
+          QQ_ZVEC_GREP_INDEX_TIMEOUT_MS: !!js process.env.QQ_ZVEC_GREP_INDEX_TIMEOUT_MS ?? '600000'
+          QQ_ZVEC_GREP_RECONCILE_ATTEMPTS: !!js process.env.QQ_ZVEC_GREP_RECONCILE_ATTEMPTS ?? '1'
+          QQ_ZVEC_GREP_RECONCILE_DELAY_MS: !!js process.env.QQ_ZVEC_GREP_RECONCILE_DELAY_MS ?? '1000'
+        toolCallTimeoutMs: 900000
+        failOnStartupError: true
+
+# The pinned bridge (`@deepseek-ai/dsh-mcp-client`) unconditionally registers an
+# MCP *resource* provider for every server it connects, and sdk-minimal ships
+# `@deepseek-ai/dsh-mcp-resources`, whose three generic tools
+# (`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`)
+# would then appear in the model's function list. The gateway serves no
+# resources, so that surface is neither useful nor authorized for these seats:
+# this seat-scoped layer disables the row, keeping the implementer/reviewer
+# surface exactly `bash` + `read_image` + `mcp__zvec_grep__zvec_grep_search`.
+# Both the row and the disabling patch live in the --patch layer, so the runner
+# (which never receives this overlay) and every other surface are untouched.
+- id: mcp-resources
+  disabled: true

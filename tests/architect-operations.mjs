@@ -5,19 +5,20 @@
 
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createWorkflow, interpretRunnerEvent, WORKFLOW_TOOL_NAMES } from "../workflow/operations.mjs";
 import { readJob, writeJob } from "../workflow/jobs.mjs";
 import { readReport } from "../workflow/reports.mjs";
 import {
   DEFAULT_WORKER_CONFIG_PATH,
-  LEGACY_RUNNER_MODEL,
   planFingerprint,
   planToSpawn,
   readCentralWorkerConfig,
   resolveWorkerLaunchPlan,
   workerConfigPath,
 } from "../workflow/worker-launch.mjs";
+import { WORKER_DEEPSEEK_ADAPTER } from "../workflow/worker-config.mjs";
 import { agentTransport, runnerSpawner, tempRepo, tempDir } from "./support/architect-fixtures.mjs";
 
 const { root, env } = await tempRepo({ agents: "Repository rule: keep changes in the worktree.\n" });
@@ -81,17 +82,33 @@ assert.equal(dispatch.ok, true);
 assert.equal(dispatch.status, "running");
 assert.equal(dispatch.pid, 424242);
 const spawn = spawnsLong[0];
-assert.equal(spawn.command, "agy", "the existing runner launch path is unchanged without central worker config");
-assert.equal(spawn.args[1], "runner");
-assert.ok(spawn.args[spawn.args.length - 1].includes("verify the retry path"));
-assert.ok(spawn.args[spawn.args.length - 1].includes("workflow/operations.mjs"));
+// The runner seat launches the centrally configured harness adapter, with an
+// explicit seat, the target repository as working directory only, and its bound
+// identity/transport inside the central contract. No agy/legacy path remains.
+assert.equal(spawn.command, process.execPath, "the configured harness adapter runs under this node");
+assert.equal(spawn.args[0], WORKER_DEEPSEEK_ADAPTER, "the central adapter source, not a target-project launcher");
+assert.equal(spawn.args[1], "--production", "production mode is explicit");
+const spawnArgv = spawn.args.join(" ");
+assert.ok(spawnArgv.includes("--seat runner"), "the seat is explicit");
+assert.ok(spawnArgv.includes(`--runtime-root ${root}/deepseek-minimal-runtime`), "the pinned runtime root is the fixture's");
+assert.ok(spawnArgv.includes("--cwd"), "the target repository is only a working directory");
+assert.ok(spawnArgv.includes("verify the retry path"), "the task is the prompt");
+assert.ok(spawnArgv.includes("workflow/operations.mjs"), "target paths ride in the prompt");
+assert.doesNotMatch(spawnArgv, /(^|\s)agy(\s|$)|--agent\s|--model\s+gemini|gemini-3\.8/, "no legacy runner argv may survive");
 assert.equal(spawn.options.env.QQ_RUNNER_ID, dispatch.jobId);
 assert.ok(spawn.options.env.QQ_RUNNER_RESULT_FILE.endsWith(".json"));
+assert.equal(spawn.options.env.DEEPSEEK_API_KEY, undefined, "no credential is invented for the runner launch");
 
 const runningView = agentLong.checkRunner({ jobId: dispatch.jobId });
 assert.equal(runningView.status, "running");
 assert.equal(runningView.sessionKey, "agent-A");
-assert.equal(runningView.launchPlan.source, "default-pins");
+assert.equal(runningView.launchPlan.source, "central-config");
+assert.equal(runningView.launchPlan.harness, "deepseek-minimal", "the recorded plan is the centrally configured harness");
+assert.equal(runningView.launchPlan.provider, "deepseek");
+assert.equal(runningView.launchPlan.model, "deepseek-flash");
+assert.equal(runningView.launchPlan.reasoning_effort, "max");
+assert.equal(runningView.launchPlan.runtime_root, join(root, "deepseek-minimal-runtime"));
+assert.ok(runningView.launchPlan.fingerprint);
 
 const settled = await agentLong.awaitRunner({ jobId: dispatch.jobId });
 assert.equal(settled.settled, true);
@@ -398,7 +415,11 @@ const pins = {
   harness: "deepseek-minimal",
 };
 writeFileSync(workerConfigPathFixture, JSON.stringify(pins, null, 2), "utf8");
-const pinnedEnv = { QQ_WORKER_CONFIG_FILE: workerConfigPathFixture };
+const runtimeRoot = join(workerConfigDir, "runtime");
+mkdirSync(join(runtimeRoot, "upstream"), { recursive: true });
+writeFileSync(join(runtimeRoot, "provenance.json"), JSON.stringify({ globalDshUsed: false }), "utf8");
+writeFileSync(join(runtimeRoot, "upstream", "package.json"), JSON.stringify({ version: "0.1.6-alpha.2" }), "utf8");
+const pinnedEnv = { QQ_WORKER_CONFIG_FILE: workerConfigPathFixture, QQ_DEEPSEEK_RUNTIME_ROOT: runtimeRoot };
 assert.equal(workerConfigPath(pinnedEnv), workerConfigPathFixture);
 assert.equal(workerConfigPath({}), DEFAULT_WORKER_CONFIG_PATH, "the default central config path is unchanged");
 const central = readCentralWorkerConfig({ env: pinnedEnv });
@@ -421,23 +442,57 @@ assert.deepEqual(
   { ...pins, api_key_file: pins.api_key_file },
   "the plan records the operator's pins verbatim",
 );
+assert.equal(plan.configPath, workerConfigPathFixture);
+assert.equal(plan.runtime_root, runtimeRoot);
 assert.equal(planFingerprint(plan).length, 16);
-const spawnPlan = planToSpawn(plan, { prompt: "do work", env: pinnedEnv, root });
-assert.equal(spawnPlan.executable.mode, "legacy-fallback", "a harness with no resolvable executable falls back to the existing runner path");
-assert.match(spawnPlan.executable.note, /no resolvable executable/);
-assert.equal(spawnPlan.args[1], "runner");
-assert.equal(spawnPlan.args[3], "deepseek-flash", "the pinned model is passed through unchanged");
-assert.equal(spawnPlan.args.includes("do work"), true);
 
-// A repo-provided harness adapter is used when present (no substitution of the pins).
+// The plan becomes the real production launcher argument contract: the
+// configured harness adapter, an explicit seat, the target repository as cwd,
+// the pinned runtime root, and the runner's bound identity/transport.
+const runnerId = "o7-bound-runner";
+const resultFile = join(tmpdir(), `qq-runner-result-${runnerId}.json`);
+const spawnPlan = planToSpawn(plan, {
+  prompt: "do work",
+  env: pinnedEnv,
+  cwd: root,
+  mcpEnv: { QQ_RUNNER_ID: runnerId, QQ_RUNNER_RESULT_FILE: resultFile },
+});
+assert.equal(spawnPlan.executable.mode, "central");
+assert.equal(spawnPlan.executable.harness, "deepseek-minimal");
+assert.equal(spawnPlan.command, process.execPath);
+assert.equal(spawnPlan.args[0], WORKER_DEEPSEEK_ADAPTER);
+assert.equal(spawnPlan.args[1], "--production");
+assert.deepEqual(spawnPlan.args.slice(2, 8), ["--seat", "runner", "--cwd", root, "--prompt", "do work"]);
+assert.deepEqual(spawnPlan.args.slice(-2), ["--runtime-root", runtimeRoot]);
+assert.equal(spawnPlan.env.QQ_RUNNER_ID, runnerId);
+assert.equal(spawnPlan.env.QQ_RUNNER_RESULT_FILE, resultFile);
+assert.equal(spawnPlan.env.QQ_DEEPSEEK_RUNTIME_ROOT, runtimeRoot);
+assert.equal(spawnPlan.env.QQ_WORKER_CONFIG_FILE, workerConfigPathFixture, "the adapter re-reads the same central config");
+
+// A project-local launcher (or a harness probe under the target repository) is
+// never consulted: the integration source in this checkout is the only source.
 mkdirSync(join(root, "bin"), { recursive: true });
-writeFileSync(join(root, "bin", "worker-exec.mjs"), "// central worker adapter\n", "utf8");
-const withAdapter = planToSpawn(plan, { prompt: "do work", env: pinnedEnv, root });
-assert.equal(withAdapter.executable.mode, "harness");
-assert.equal(withAdapter.command, process.execPath);
-assert.ok(withAdapter.args[0].endsWith("worker-exec.mjs"));
-assert.deepEqual(withAdapter.args.slice(-4), ["--seat", "runner", "--prompt", "do work"]);
+writeFileSync(join(root, "bin", "worker-exec.mjs"), "// project-local launcher\n", "utf8");
+mkdirSync(join(root, "prototype", "deepseek-minimal", "adapter"), { recursive: true });
+writeFileSync(join(root, "prototype", "deepseek-minimal", "adapter", "worker.mjs"), "// project-local adapter\n", "utf8");
+const projectProbe = planToSpawn(plan, {
+  prompt: "do work",
+  env: pinnedEnv,
+  cwd: root,
+  mcpEnv: { QQ_RUNNER_ID: runnerId, QQ_RUNNER_RESULT_FILE: resultFile },
+});
+assert.equal(projectProbe.args[0], WORKER_DEEPSEEK_ADAPTER, "the installed adapter is used, not the target project's");
+assert.ok(!projectProbe.args[0].startsWith(root), "the target project cannot hijack the worker launcher");
+assert.deepEqual(projectProbe.args, spawnPlan.args);
+rmSync(join(root, "prototype"), { recursive: true, force: true });
 rmSync(join(root, "bin", "worker-exec.mjs"), { force: true });
+
+// A configured executable override outside the central contract is refused
+// instead of being honored.
+assert.throws(
+  () => resolveWorkerLaunchPlan({ role: "runner", env: { ...pinnedEnv, QQ_WORKER_EXEC: "/usr/bin/agy" } }),
+  /QQ_WORKER_EXEC=.* is not a supported worker launch override/,
+);
 
 // Fail closed on a pin violation; never fall back to another provider or model.
 for (const violation of [{ provider: "openai" }, { model: "gpt-x" }]) {
@@ -445,13 +500,41 @@ for (const violation of [{ provider: "openai" }, { model: "gpt-x" }]) {
   writeFileSync(path, JSON.stringify({ ...pins, ...violation }), "utf8");
   assert.throws(
     () => resolveWorkerLaunchPlan({ role: "runner", env: { QQ_WORKER_CONFIG_FILE: path } }),
-    /violates the worker pin/,
+    /not authorized/,
     "a pin violation refuses the launch instead of substituting a provider",
   );
 }
-const absentPlan = resolveWorkerLaunchPlan({ role: "runner", env: { QQ_WORKER_CONFIG_FILE: join(workerConfigDir, "missing.json") } });
-assert.equal(absentPlan.source, "default-pins");
-assert.equal(absentPlan.model, LEGACY_RUNNER_MODEL, "legacy runner pin behaviour is unchanged");
+
+// A missing central configuration is refused: there is no default pins path,
+// no agy fallback, and no legacy model substitution.
+const missingConfig = join(workerConfigDir, "missing.json");
+assert.throws(
+  () => resolveWorkerLaunchPlan({ role: "runner", env: { QQ_WORKER_CONFIG_FILE: missingConfig } }),
+  new RegExp(`central worker configuration is missing at '${missingConfig}'`),
+);
+assert.throws(
+  () => planToSpawn({ ...plan, configPath: missingConfig }, { prompt: "x", env: { QQ_WORKER_CONFIG_FILE: missingConfig }, cwd: root, mcpEnv: { QQ_RUNNER_ID: runnerId, QQ_RUNNER_RESULT_FILE: resultFile } }),
+  /central worker configuration is missing/,
+  "the spawn path cannot bypass the missing-configuration refusal",
+);
+
+// A missing pinned runtime fails closed with the setup command, and a missing
+// adapter source fails closed instead of substituting another harness.
+assert.throws(
+  () => planToSpawn(plan, {
+    prompt: "do work",
+    env: { ...pinnedEnv, QQ_DEEPSEEK_RUNTIME_ROOT: join(workerConfigDir, "absent-runtime") },
+    cwd: root,
+    mcpEnv: { QQ_RUNNER_ID: runnerId, QQ_RUNNER_RESULT_FILE: resultFile },
+  }),
+  /no prepared runtime at .*setup-runtime\.mjs/s,
+  "a missing configured runtime refuses the launch",
+);
+assert.throws(
+  () => resolveWorkerLaunchPlan({ role: "implementer", env: { QQ_WORKER_CONFIG_FILE: join(workerConfigDir, "missing.json") } }),
+  /central worker configuration is missing/,
+  "every seat resolves the same central configuration",
+);
 assert.throws(() => resolveWorkerLaunchPlan({ role: "researcher", env: {} }), /unknown worker seat/);
 assert.throws(() => planToSpawn(null, { prompt: "x" }), /launch plan is required/);
 assert.throws(() => planToSpawn(plan, { prompt: "" }), /worker prompt is required/);

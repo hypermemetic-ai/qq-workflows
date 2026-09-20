@@ -45,7 +45,6 @@ import {
   awaitWindowMs,
   buildExecutionTerminalMessage,
   buildImplementerStep,
-  buildResearcherStep,
   buildReviewerStep,
   buildRunnerTerminalMessage,
   buildSuspicionMessage,
@@ -115,6 +114,12 @@ import {
 } from "../bin/mcp-server.mjs";
 import { git } from "../workflow/git.mjs";
 import { resolveTicketSource } from "../workflow/ticket.mjs";
+import { WORKER_LAUNCHER_PATH, buildWorkerStep } from "../bin/mcp-server.mjs";
+import { COMPLETE_TASK_RESPONSE_MAX } from "../workflow/results.mjs";
+import { FINAL_RESPONSE_MAX_CHARS_LABEL } from "../workflow/limits.mjs";
+import { WORKER_DEEPSEEK_ADAPTER, WORKER_SEATS } from "../workflow/worker-config.mjs";
+import { UNSETTABLE_WORKER_EXEC_ENV, resolveWorkerLaunchPlan } from "../workflow/worker-launch.mjs";
+import { centralWorkerConfig } from "./support/architect-fixtures.mjs";
 
 const exec = promisify(execFile);
 
@@ -151,144 +156,106 @@ const prepareTool = TOOLS.find((t) => t.name === "prepare_worktree");
 assert.ok(prepareTool);
 assert.deepEqual(prepareTool.inputSchema.required, ["kind"]);
 assert.deepEqual(prepareTool.inputSchema.properties.kind.enum, ["bounded", "open", "research"]);
-assert.deepEqual(prepareTool.inputSchema.properties.provider.enum, ["muse", "gemini", "deepseek", "codex", "astra"]);
-assert.deepEqual(prepareTool.inputSchema.properties.implementerProvider.enum, ["muse", "gemini", "deepseek", "codex", "astra"]);
-assert.deepEqual(prepareTool.inputSchema.properties.reviewerProvider.enum, ["muse", "gemini", "deepseek", "codex", "astra"]);
-assert.deepEqual(prepareTool.inputSchema.properties.researcherProvider.enum, ["muse", "gemini", "deepseek", "codex", "astra"]);
 assert.equal(prepareTool.inputSchema.properties.engine, undefined);
+// Worker provider/model selection is not part of any tool schema: it belongs to
+// the operator's central configuration alone.
+for (const name of ["prepare_worktree", "dispatch_execution"]) {
+  const tool = TOOLS.find((t) => t.name === name);
+  for (const key of ["provider", "implementerProvider", "reviewerProvider", "researcherProvider"]) {
+    assert.equal(tool.inputSchema.properties[key], undefined, `${name} must not expose '${key}'`);
+  }
+}
 
-// 1b. Provider support table checks
+// 1b. Seat support table: worker seats are pinned to the centrally configured
+// provider; only the architect seat keeps legacy selection.
 assert.deepEqual(PROVIDERS, ["muse", "gemini", "deepseek", "codex", "astra"]);
-assert.deepEqual(SEAT_PROVIDERS.implementer, ["muse", "gemini", "deepseek", "codex", "astra"]);
-assert.deepEqual(SEAT_PROVIDERS.reviewer, ["muse", "gemini", "codex", "astra"]);
-assert.deepEqual(SEAT_PROVIDERS.researcher, ["muse", "gemini", "codex", "astra"]);
+assert.deepEqual(SEAT_PROVIDERS.implementer, ["deepseek"]);
+assert.deepEqual(SEAT_PROVIDERS.reviewer, ["deepseek"]);
 assert.deepEqual(SEAT_PROVIDERS.architect, ["muse", "gemini", "codex", "astra"]);
+assert.deepEqual(WORKER_SEATS, ["runner", "implementer", "reviewer"]);
 
-// 1c. Per-seat command template checks (every supported seat x provider).
-// Ownership lines ride inside the child prompt so every child sees them.
+// 1c. Exactly one delegation command per worker seat: the canonical
+// bin/worker-exec.mjs launcher, whose own resolution is the central contract.
+// No agy/muse/dsh/codex command text can be rendered for a worker seat.
 const IMPLEMENTER_OWNERSHIP = "Leave changes uncommitted. Do not commit, push, review, or land.";
 const REVIEWER_OWNERSHIP = "Do not commit, push, or land.";
-const RESEARCHER_OWNERSHIP = "Leave files uncommitted. Do not commit, push, or land.";
-assert.equal(
-  buildImplementerStep("/wt", "P", "muse", "uuid-1"),
-  `Delegate via run_command (with Cwd: /wt): 'muse exec --preset implementer --yolo "P ${IMPLEMENTER_OWNERSHIP}"'`,
-);
-assert.equal(
-  buildImplementerStep("/wt", "P", "gemini", "uuid-1"),
-  `Delegate via run_command (with Cwd: /wt) using a fresh conversation: 'agy --agent implementer --conversation uuid-1 --print-timeout 60m --print "P ${IMPLEMENTER_OWNERSHIP}"'\nDo NOT pass '--new-project'.`,
-);
-assert.equal(
-  buildImplementerStep("/wt", "P", "deepseek", "uuid-1"),
-  `Delegate via run_command (with Cwd: /wt): 'dsh --profile implementer "P ${IMPLEMENTER_OWNERSHIP}"'`,
-);
-assert.equal(
-  buildImplementerStep("/wt", "P", "codex", "uuid-1"),
-  `Delegate via run_command (with Cwd: /wt): 'codex exec --profile implementer "P ${IMPLEMENTER_OWNERSHIP}"'`,
-);
-assert.equal(
-  buildImplementerStep("/wt", "P", "astra", "uuid-1"),
-  `Delegate via run_command (with Cwd: /wt): 'codex exec --profile implementer "P ${IMPLEMENTER_OWNERSHIP}"'`,
-);
-assert.equal(
-  buildReviewerStep("/wt", "P", "muse", "uuid-2"),
-  `invoke reviewer via run_command (with Cwd: /wt): 'muse exec --preset reviewer --yolo "P ${REVIEWER_OWNERSHIP}"'`,
-);
-assert.equal(
-  buildReviewerStep("/wt", "P", "gemini", "uuid-2"),
-  `invoke reviewer via run_command (with Cwd: /wt) using a fresh conversation: 'agy --agent reviewer --conversation uuid-2 --print-timeout 60m --print "P ${REVIEWER_OWNERSHIP}"'\nDo NOT pass '--new-project'.`,
-);
-assert.equal(
-  buildReviewerStep("/wt", "P", "codex", "uuid-2"),
-  `invoke reviewer via run_command (with Cwd: /wt): 'codex exec --profile reviewer "P ${REVIEWER_OWNERSHIP}"'`,
-);
-assert.equal(
-  buildReviewerStep("/wt", "P", "astra", "uuid-2"),
-  `invoke reviewer via run_command (with Cwd: /wt): 'codex exec --profile reviewer "P ${REVIEWER_OWNERSHIP}"'`,
-);
-assert.equal(
-  buildResearcherStep("/wt", "P", "muse"),
-  `Delegate via run_command (with Cwd: /wt): 'muse exec --preset researcher --yolo "P ${RESEARCHER_OWNERSHIP}"'`,
-);
-assert.equal(
-  buildResearcherStep("/wt", "P", "gemini"),
-  `Invoke research subagent with ticket path /wt/.architect/ticket.md and worktree cwd via run_command (with Cwd: /wt) using Prompt: "P ${RESEARCHER_OWNERSHIP}"`,
-);
-assert.equal(
-  buildResearcherStep("/wt", "P", "codex"),
-  `Delegate via run_command (with Cwd: /wt): 'codex exec --profile researcher "P ${RESEARCHER_OWNERSHIP}"'`,
-);
-assert.equal(
-  buildResearcherStep("/wt", "P", "astra"),
-  `Delegate via run_command (with Cwd: /wt): 'codex exec --profile researcher "P ${RESEARCHER_OWNERSHIP}"'`,
-);
-// Every template carries its seat's ownership line.
-for (const provider of ["muse", "gemini", "deepseek", "codex", "astra"]) {
-  assert.ok(buildImplementerStep("/wt", "Do it", provider, "uuid-1").includes(IMPLEMENTER_OWNERSHIP));
-}
-for (const provider of ["muse", "gemini", "codex", "astra"]) {
-  assert.ok(buildReviewerStep("/wt", "Check it", provider, "uuid-2").includes(REVIEWER_OWNERSHIP));
-  assert.ok(buildResearcherStep("/wt", "Study it", provider).includes(RESEARCHER_OWNERSHIP));
+const RUNNER_OWNERSHIP = "Leave files uncommitted. Do not commit, push, review, or land.";
+assert.equal(buildWorkerStep("implementer", "/wt", "P"), `Delegate via run_command (with Cwd: /wt): '${WORKER_LAUNCHER_PATH} --seat implementer --cwd /wt --prompt "P ${IMPLEMENTER_OWNERSHIP}"'`);
+assert.equal(buildImplementerStep("/wt", "P"), `Delegate via run_command (with Cwd: /wt): '${WORKER_LAUNCHER_PATH} --seat implementer --cwd /wt --prompt "P ${IMPLEMENTER_OWNERSHIP}"'`);
+assert.equal(buildReviewerStep("/wt", "P"), `Delegate via run_command (with Cwd: /wt): '${WORKER_LAUNCHER_PATH} --seat reviewer --cwd /wt --prompt "P ${REVIEWER_OWNERSHIP}"'`);
+assert.equal(buildReviewerStep("/wt", "P", "gemini", "uuid-2"), buildReviewerStep("/wt", "P"), "a per-call provider is ignored, never rendered");
+assert.ok(WORKER_LAUNCHER_PATH.endsWith("bin/worker-exec.mjs"));
+for (const step of [buildImplementerStep("/wt", "Do it"), buildReviewerStep("/wt", "Check it")]) {
+  assert.doesNotMatch(step, /(^|[\s'"])agy([\s'"]|$)|muse exec|dsh --profile|codex exec --profile/, `no legacy worker launcher may be rendered: ${step}`);
 }
 
-// 1d. Provider precedence checks (seat arg > seat env > global arg > global env > 'muse')
-assert.equal(resolveSeatProvider("implementer", {}, {}), "muse");
-assert.equal(resolveSeatProvider("reviewer", {}, {}), "muse");
-assert.equal(resolveSeatProvider("researcher", {}, {}), "muse");
-assert.equal(resolveSeatProvider("implementer", {}, { QQ_WORKFLOW_PROVIDER: "gemini" }), "gemini");
-assert.equal(
-  resolveSeatProvider("implementer", { provider: "deepseek" }, { QQ_WORKFLOW_PROVIDER: "gemini" }),
-  "deepseek",
-);
-assert.equal(
-  resolveSeatProvider("implementer", {}, { QQ_WORKFLOW_PROVIDER: "gemini", QQ_IMPLEMENTER_PROVIDER: "deepseek" }),
-  "deepseek",
-);
-assert.equal(
-  resolveSeatProvider(
-    "implementer",
-    { provider: "gemini", implementerProvider: "muse" },
-    { QQ_WORKFLOW_PROVIDER: "deepseek", QQ_IMPLEMENTER_PROVIDER: "deepseek" },
-  ),
-  "muse",
-);
-assert.equal(
-  resolveSeatProvider("reviewer", { provider: "deepseek", reviewerProvider: "muse" }, {}),
-  "muse",
-);
-assert.equal(resolveSeatProvider("implementer", { provider: "codex" }, {}), "codex");
-assert.equal(resolveSeatProvider("implementer", { provider: "astra" }, {}), "codex");
-assert.equal(resolveSeatProvider("reviewer", { provider: "astra" }, {}), "codex");
-assert.equal(resolveSeatProvider("researcher", { provider: "codex" }, {}), "codex");
+// 1d. Legacy architect-seat resolution is unchanged.
 assert.equal(resolveProvider("architect", {}), "muse");
 assert.equal(resolveProvider("architect", { seatEnv: "gemini" }), "gemini");
 assert.equal(resolveProvider("architect", { arg: "astra" }), "codex");
 assert.equal(resolveProvider("architect", { seatEnv: "codex" }), "codex");
+assert.throws(() => resolveProvider("architect", { arg: "deepseek" }), /provider 'deepseek' does not support seat 'architect'/);
+assert.throws(() => resolveProvider("architect", { arg: "foo" }), /unknown provider 'foo'/);
 
-// 1e. Provider error checks
+// 1e. Worker seats resolve the operator's central configuration only; every
+// per-call and per-env provider override is refused, and a missing central
+// configuration fails closed instead of defaulting to a legacy provider.
+const centralFixture = centralWorkerConfig(mkdtempSync(join(tmpdir(), "qq-mcp-central-")));
+const centralEnv = { ...centralFixture.env };
+assert.equal(resolveSeatProvider("implementer", {}, centralEnv), "deepseek");
+assert.equal(resolveSeatProvider("reviewer", {}, centralEnv), "deepseek");
+for (const key of ["provider", "implementerProvider", "reviewerProvider", "researcherProvider"]) {
+  assert.throws(
+    () => resolveSeatProvider("implementer", { [key]: "gemini" }, centralEnv),
+    new RegExp(`provider override '${key}' is not permitted`),
+    `'${key}' must be refused`,
+  );
+}
 assert.throws(
-  () => resolveSeatProvider("implementer", { provider: "foo" }, {}),
-  /^Error: unknown provider 'foo': expected 'muse' \| 'gemini' \| 'deepseek' \| 'codex' \| 'astra'$/,
+  () => resolveSeatProvider("implementer", {}, { ...centralEnv, QQ_IMPLEMENTER_PROVIDER: "gemini" }),
+  /worker provider configuration is not authorized: QQ_IMPLEMENTER_PROVIDER=gemini/,
 );
 assert.throws(
-  () => resolveSeatProvider("implementer", { implementerProvider: "agy" }, {}),
-  /^Error: unknown provider 'agy': expected 'muse' \| 'gemini' \| 'deepseek' \| 'codex' \| 'astra'$/,
+  () => resolveSeatProvider("implementer", {}, { ...centralEnv, QQ_WORKFLOW_PROVIDER: "muse" }),
+  /worker provider configuration is not authorized: QQ_WORKFLOW_PROVIDER=muse/,
 );
 assert.throws(
-  () => resolveSeatProvider("implementer", {}, { QQ_WORKFLOW_PROVIDER: "dsh" }),
-  /^Error: unknown provider 'dsh': expected 'muse' \| 'gemini' \| 'deepseek' \| 'codex' \| 'astra'$/,
+  () => resolveSeatProvider("implementer", {}, { QQ_WORKER_CONFIG_FILE: join(tmpdir(), "no-such-worker-config.json") }),
+  /central worker configuration is missing/,
+  "a missing central configuration never falls back to a legacy provider",
 );
-assert.throws(
-  () => resolveSeatProvider("reviewer", { provider: "deepseek" }, {}),
-  /^Error: provider 'deepseek' does not support seat 'reviewer'$/,
-);
-assert.throws(
-  () => resolveSeatProvider("researcher", { researcherProvider: "deepseek" }, {}),
-  /^Error: provider 'deepseek' does not support seat 'researcher'$/,
-);
-assert.throws(
-  () => resolveProvider("architect", { arg: "deepseek" }),
-  /^Error: provider 'deepseek' does not support seat 'architect'$/,
-);
+assert.throws(() => resolveSeatProvider("researcher", {}, centralEnv), /does not use central worker configuration/);
+{
+  const badConfig = join(tmpdir(), `qq-bad-worker-config-${Date.now()}.json`);
+  writeFileSync(badConfig, JSON.stringify({ provider: "muse", model: "deepseek-flash" }), "utf8");
+  try {
+    assert.throws(
+      () => resolveSeatProvider("implementer", {}, { ...centralEnv, QQ_WORKER_CONFIG_FILE: badConfig }),
+      /worker provider 'muse' is not authorized/,
+    );
+  } finally {
+    rmSync(badConfig, { force: true });
+  }
+}
+
+// 1f. A configured executable override outside the central contract is refused
+// by the one central resolver (no agy/project-local launcher path).
+for (const key of UNSETTABLE_WORKER_EXEC_ENV) {
+  assert.throws(
+    () => resolveWorkerLaunchPlan({ role: "runner", env: { ...centralEnv, [key]: "/usr/bin/agy" } }),
+    new RegExp(`${key}=.* is not a supported worker launch override`),
+  );
+}
+const centralPlan = resolveWorkerLaunchPlan({ role: "implementer", env: centralEnv });
+assert.equal(centralPlan.harness, "deepseek-minimal");
+assert.equal(centralPlan.adapter, WORKER_DEEPSEEK_ADAPTER);
+assert.equal(centralPlan.provider, "deepseek");
+assert.equal(centralPlan.model, "deepseek-flash");
+assert.equal(centralPlan.reasoning_effort, "max");
+
+// Every worker-seat entry point below resolves this same central configuration
+// from the process environment, exactly like production does.
+for (const [key, value] of Object.entries(centralFixture.env)) process.env[key] = value;
 
 const landTool = TOOLS.find((t) => t.name === "land");
 assert.ok(landTool);
@@ -343,8 +310,9 @@ try {
   assert.equal(boundedResult.kind, "bounded");
   assert.equal(boundedResult.branch, "architect/bounded/12345678");
   assert.equal(boundedResult.reviewRequired, false);
-  assert.equal(boundedResult.implementerProvider, "muse");
-  assert.ok(boundedResult.instructions.includes("muse exec --preset implementer --yolo"));
+  assert.equal(boundedResult.implementerProvider, "deepseek", "the seat provider is the centrally configured one");
+  assert.ok(boundedResult.instructions.includes(`${WORKER_LAUNCHER_PATH} --seat implementer --cwd ${boundedResult.worktree}`));
+  assert.doesNotMatch(boundedResult.instructions, /agy|muse exec|dsh --profile|codex exec --profile/);
   assert.ok(boundedResult.instructions.includes(IMPLEMENTER_OWNERSHIP));
   assert.ok(boundedResult.instructions.includes("call 'land'"));
   assert.ok(boundedResult.instructions.includes(`Cwd: ${boundedResult.worktree}`));
@@ -422,12 +390,13 @@ try {
   assert.equal(openResult.kind, "open");
   assert.equal(openResult.branch, "architect/open/87654321");
   assert.equal(openResult.reviewRequired, true);
-  assert.equal(openResult.implementerProvider, "muse");
-  assert.equal(openResult.reviewerProvider, "muse");
-  assert.ok(openResult.instructions.includes("muse exec --preset implementer --yolo"));
+  assert.equal(openResult.implementerProvider, "deepseek");
+  assert.equal(openResult.reviewerProvider, "deepseek");
+  assert.ok(openResult.instructions.includes(`${WORKER_LAUNCHER_PATH} --seat implementer --cwd ${openResult.worktree}`));
   assert.ok(openResult.instructions.includes(openResult.implementerPrompt));
   assert.ok(openResult.instructions.includes(IMPLEMENTER_OWNERSHIP));
-  assert.ok(openResult.instructions.includes("muse exec --preset reviewer --yolo"));
+  assert.ok(openResult.instructions.includes(`${WORKER_LAUNCHER_PATH} --seat reviewer --cwd ${openResult.worktree}`));
+  assert.doesNotMatch(openResult.instructions, /agy|muse exec|dsh --profile|codex exec --profile/);
   assert.ok(openResult.instructions.includes(openResult.reviewerPrompt));
   assert.ok(openResult.instructions.includes(REVIEWER_OWNERSHIP));
   assert.ok(openResult.instructions.includes(`Cwd: ${openResult.worktree}`));
@@ -441,184 +410,56 @@ try {
     `Follow '${join(openResult.worktree, ".architect", "ticket.md")}' in working directory '${openResult.worktree}'. Follow its testing plan. Do not change project code. Run tests to completion and report Verdict: PASS/FAIL with evidence; incomplete verification must not emit a fake FAIL. In non-interactive execution, ending your turn while background tasks run cancels them; actively await all background verification tasks until finished. Incomplete tests are not code defects.`,
   );
 
-  // 5b. Verify prepare_worktree with provider: "gemini" outputs agy commands
-  const geminiSessionId = "11223344-5566-7788-99aa-bbccddeeff00";
-  writeFileSync(join(ticketsDir, `${geminiSessionId}.md`), "# Gemini Session Ticket\n\n## Kind\nopen\n");
-  const geminiResult = await prepareWorktree({
-    kind: "open",
-    sessionId: geminiSessionId,
-    cwd: repoDir,
-    provider: "gemini",
-  });
-  assert.equal(geminiResult.ok, true);
-  assert.equal(geminiResult.implementerProvider, "gemini");
-  assert.equal(geminiResult.reviewerProvider, "gemini");
-  assert.ok(geminiResult.instructions.includes("agy --agent implementer"));
-  assert.match(geminiResult.instructions, /--conversation [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
-  assert.ok(geminiResult.instructions.includes("Do NOT pass '--new-project'"));
-  assert.ok(geminiResult.instructions.includes("agy --agent reviewer"));
-  await retireTestWorktree(repoDir, geminiResult);
-
-  // 5c. Mixed seats: gemini implementer with default muse reviewer
-  const mixedSessionId = "22334455-6677-8899-aabb-ccddeeff0011";
-  writeFileSync(join(ticketsDir, `${mixedSessionId}.md`), "# Mixed Session Ticket\n\n## Kind\nopen\n");
-  const mixedResult = await prepareWorktree({
-    kind: "open",
-    sessionId: mixedSessionId,
-    cwd: repoDir,
-    implementerProvider: "gemini",
-  });
-  assert.equal(mixedResult.ok, true);
-  assert.equal(mixedResult.implementerProvider, "gemini");
-  assert.equal(mixedResult.reviewerProvider, "muse");
-  assert.ok(mixedResult.instructions.includes("agy --agent implementer"));
-  assert.ok(mixedResult.instructions.includes("muse exec --preset reviewer --yolo"));
-  await retireTestWorktree(repoDir, mixedResult);
-
-  // 5d. Global deepseek works for bounded (implementer-only delegation)
-  const dsSessionId = "33445566-7788-99aa-bbcc-ddeeff001122";
-  writeFileSync(join(ticketsDir, `${dsSessionId}.md`), "# DeepSeek Session Ticket\n\n## Kind\nbounded\n");
-  const dsResult = await prepareWorktree({
-    kind: "bounded",
-    sessionId: dsSessionId,
-    cwd: repoDir,
-    provider: "deepseek",
-  });
-  assert.equal(dsResult.ok, true);
-  assert.equal(dsResult.implementerProvider, "deepseek");
-  assert.ok(dsResult.instructions.includes('dsh --profile implementer "'));
-  await retireTestWorktree(repoDir, dsResult);
-
-  // 5e. Per-seat deepseek implementer on an open ticket with muse reviewer
-  const dsOpenSessionId = "44556677-8899-aabb-ccdd-eeff00112233";
-  writeFileSync(join(ticketsDir, `${dsOpenSessionId}.md`), "# DeepSeek Open Ticket\n\n## Kind\nopen\n");
-  const dsOpenResult = await prepareWorktree({
-    kind: "open",
-    sessionId: dsOpenSessionId,
-    cwd: repoDir,
-    implementerProvider: "deepseek",
-  });
-  assert.equal(dsOpenResult.ok, true);
-  assert.equal(dsOpenResult.implementerProvider, "deepseek");
-  assert.equal(dsOpenResult.reviewerProvider, "muse");
-  assert.ok(dsOpenResult.instructions.includes('dsh --profile implementer "'));
-  assert.ok(dsOpenResult.instructions.includes("muse exec --preset reviewer --yolo"));
-  await retireTestWorktree(repoDir, dsOpenResult);
-
-  // 5f. Global deepseek on an open ticket throws for the reviewer seat
-  // (no silent fallback) and leaves no worktree or branch behind.
-  const dsFailSessionId = "55667788-99aa-bbcc-ddee-ff0011223344";
-  writeFileSync(join(ticketsDir, `${dsFailSessionId}.md`), "# DeepSeek Fail Ticket\n\n## Kind\nopen\n");
-  await assert.rejects(
-    () =>
-      prepareWorktree({
-        kind: "open",
-        sessionId: dsFailSessionId,
-        cwd: repoDir,
-        provider: "deepseek",
-      }),
-    /^Error: provider 'deepseek' does not support seat 'reviewer'$/,
-  );
-  await assert.rejects(() => git(repoDir, ["rev-parse", "--verify", "refs/heads/architect/open/55667788"]));
-
-  // 5g. Explicit deepseek reviewer throws even with a valid global provider.
-  await assert.rejects(
-    () =>
-      prepareWorktree({
-        kind: "open",
-        sessionId: "66778899-aabb-ccdd-eeff-001122334455",
-        cwd: repoDir,
-        provider: "muse",
-        reviewerProvider: "deepseek",
-      }),
-    /^Error: provider 'deepseek' does not support seat 'reviewer'$/,
-  );
-  await assert.rejects(() => git(repoDir, ["rev-parse", "--verify", "refs/heads/architect/open/66778899"]));
-
-  // 5h. Unknown provider strings throw.
-  await assert.rejects(
-    () =>
-      prepareWorktree({
-        kind: "bounded",
-        sessionId: "778899aa-bbcc-ddee-ff00-112233445566",
-        cwd: repoDir,
-        provider: "foo",
-      }),
-    /^Error: unknown provider 'foo': expected 'muse' \| 'gemini' \| 'deepseek' \| 'codex' \| 'astra'$/,
-  );
-  await assert.rejects(
-    () =>
-      prepareWorktree({
-        kind: "bounded",
-        sessionId: "889900aa-bbcc-ddee-ff00-112233445566",
-        cwd: repoDir,
-        implementerProvider: "agy",
-      }),
-    /^Error: unknown provider 'agy': expected 'muse' \| 'gemini' \| 'deepseek' \| 'codex' \| 'astra'$/,
-  );
-
-  // 5i. Env precedence end to end: seat env beats global env, seat arg beats all.
-  const envSessionId = "9900aabb-ccdd-eeff-0011-223344556677";
-  writeFileSync(join(ticketsDir, `${envSessionId}.md`), "# Env Session Ticket\n\n## Kind\nbounded\n");
-  process.env.QQ_WORKFLOW_PROVIDER = "gemini";
-  process.env.QQ_IMPLEMENTER_PROVIDER = "deepseek";
-  try {
-    const envResult = await prepareWorktree({
-      kind: "bounded",
-      sessionId: envSessionId,
-      cwd: repoDir,
-    });
-    assert.equal(envResult.implementerProvider, "deepseek");
-    assert.ok(envResult.instructions.includes('dsh --profile implementer "'));
-    await retireTestWorktree(repoDir, envResult);
-
-    const argWinsSessionId = "aa00bbcc-ddee-ff00-1122-334455667788";
-    writeFileSync(join(ticketsDir, `${argWinsSessionId}.md`), "# Arg Wins Ticket\n\n## Kind\nbounded\n");
-    const argWinsResult = await prepareWorktree({
-      kind: "bounded",
-      sessionId: argWinsSessionId,
-      cwd: repoDir,
-      implementerProvider: "muse",
-    });
-    assert.equal(argWinsResult.implementerProvider, "muse");
-    assert.ok(argWinsResult.instructions.includes("muse exec --preset implementer --yolo"));
-    await retireTestWorktree(repoDir, argWinsResult);
-  } finally {
-    delete process.env.QQ_WORKFLOW_PROVIDER;
-    delete process.env.QQ_IMPLEMENTER_PROVIDER;
+  // 5b. Provider selection is refused on worker seats: prepare_worktree fails
+  // fast, before any worktree or branch exists, and never renders a legacy
+  // launcher for the seat.
+  for (const [label, args] of [
+    ["global provider", { provider: "gemini" }],
+    ["implementer seat provider", { implementerProvider: "gemini" }],
+    ["reviewer seat provider", { reviewerProvider: "muse" }],
+    ["legacy researcher provider", { researcherProvider: "muse" }],
+  ]) {
+    const session = "11223344-5566-7788-99aa-bbccddeeff00";
+    writeFileSync(join(ticketsDir, `${session}.md`), "# Provider Override Ticket\n\n## Kind\nopen\n");
+    await assert.rejects(
+      () => prepareWorktree({ kind: "open", sessionId: session, cwd: repoDir, ...args }),
+      /provider override '.*' is not permitted: worker provider selection belongs to operator workflow configuration/,
+      `${label} must be refused`,
+    );
+    await assert.rejects(
+      () => git(repoDir, ["rev-parse", "--verify", "refs/heads/architect/open/11223344"]),
+      undefined,
+      `${label} must not leave a branch behind`,
+    );
   }
 
-  // 5j. prepare_worktree with provider: "codex" outputs codex exec commands
-  const codexSessionId = "c0dec0de-1122-3344-5566-778899aabbcc";
-  writeFileSync(join(ticketsDir, `${codexSessionId}.md`), "# Codex Session Ticket\n\n## Kind\nopen\n");
-  const codexResult = await prepareWorktree({
-    kind: "open",
-    sessionId: codexSessionId,
-    cwd: repoDir,
-    provider: "codex",
-  });
-  assert.equal(codexResult.ok, true);
-  assert.equal(codexResult.implementerProvider, "codex");
-  assert.equal(codexResult.reviewerProvider, "codex");
-  assert.ok(codexResult.instructions.includes("codex exec --profile implementer"));
-  assert.ok(codexResult.instructions.includes("codex exec --profile reviewer"));
-  await retireTestWorktree(repoDir, codexResult);
+  // 5c. A conflicting legacy provider env refuses the launch too, and the
+  // central configuration is the only source of the seat's provider.
+  process.env.QQ_IMPLEMENTER_PROVIDER = "gemini";
+  try {
+    await assert.rejects(
+      () => prepareWorktree({ kind: "open", sessionId: openSessionId, cwd: repoDir }),
+      /worker provider configuration is not authorized: QQ_IMPLEMENTER_PROVIDER=gemini/,
+    );
+  } finally {
+    delete process.env.QQ_IMPLEMENTER_PROVIDER;
+  }
+  assert.equal(resolveSeatProvider("implementer", {}, process.env), "deepseek");
 
-  // 5k. prepare_worktree with provider: "astra" normalizes to codex commands
-  const astraSessionId = "a577a000-1122-3344-5566-778899aabbcc";
-  writeFileSync(join(ticketsDir, `${astraSessionId}.md`), "# Astra Session Ticket\n\n## Kind\nopen\n");
-  const astraResult = await prepareWorktree({
-    kind: "open",
-    sessionId: astraSessionId,
-    cwd: repoDir,
-    provider: "astra",
-  });
-  assert.equal(astraResult.ok, true);
-  assert.equal(astraResult.implementerProvider, "codex");
-  assert.equal(astraResult.reviewerProvider, "codex");
-  assert.ok(astraResult.instructions.includes("codex exec --profile implementer"));
-  assert.ok(astraResult.instructions.includes("codex exec --profile reviewer"));
-  await retireTestWorktree(repoDir, astraResult);
+  // 5d. With no central configuration at all, prepare_worktree fails closed
+  // instead of defaulting to a legacy or native provider.
+  {
+    const saved = process.env.QQ_WORKER_CONFIG_FILE;
+    process.env.QQ_WORKER_CONFIG_FILE = join(tmpdir(), "qq-mcp-absent-worker-config.json");
+    try {
+      await assert.rejects(
+        () => prepareWorktree({ kind: "open", sessionId: openSessionId, cwd: repoDir }),
+        /central worker configuration is missing/,
+      );
+    } finally {
+      process.env.QQ_WORKER_CONFIG_FILE = saved;
+    }
+  }
 
   // 6. Test landing worktree
   // Make changes in bounded worktree
@@ -655,66 +496,40 @@ try {
   assert.equal(researchResult.kind, "research");
   assert.equal(researchResult.branch, "architect/research/abcdef99");
   assert.equal(researchResult.reviewRequired, false);
-  assert.equal(researchResult.researcherProvider, "muse");
   assert.equal(
-    researchResult.researcherPrompt,
+    researchResult.handoff.arguments.task,
     `Investigate '${join(researchResult.worktree, ".architect", "ticket.md")}' in working directory '${researchResult.worktree}'. Report findings.`,
   );
   assert.equal(researchResult.implementerPrompt, undefined);
   assert.equal(researchResult.reviewerPrompt, undefined);
-  assert.ok(researchResult.instructions.includes(`Cwd: ${researchResult.worktree}`));
-  assert.ok(researchResult.instructions.includes("run_command"));
-  assert.ok(researchResult.instructions.includes("muse exec --preset researcher --yolo"));
-  assert.ok(researchResult.instructions.includes(RESEARCHER_OWNERSHIP));
+  // Research is ordinary investigation work carried by the runner seat, whose
+  // identity and transport the dispatch_runner tool owns. No provider-specific
+  // researcher launcher and no bare worker-exec handoff is emitted here.
+  assert.equal(researchResult.handoff.tool, "dispatch_runner");
+  assert.deepEqual(researchResult.handoff.arguments.cwd, researchResult.worktree);
+  assert.equal(researchResult.researcherProvider, undefined);
   assert.equal(
     researchResult.instructions,
-    `Worktree ready at ${researchResult.worktree}.\nBranch: ${researchResult.branch}\nReview required: false\n\nNext steps:\n1. Delegate via run_command (with Cwd: ${researchResult.worktree}): 'muse exec --preset researcher --yolo "Investigate '${join(researchResult.worktree, ".architect", "ticket.md")}' in working directory '${researchResult.worktree}'. Report findings. ${RESEARCHER_OWNERSHIP}"'\n2. When finished, call 'land'.`,
+    `Worktree ready at ${researchResult.worktree}.\nBranch: ${researchResult.branch}\nReview required: false\n\nNext steps:\n1. Call the 'dispatch_runner' tool with cwd '${researchResult.worktree}' and task: Investigate '${join(researchResult.worktree, ".architect", "ticket.md")}' in working directory '${researchResult.worktree}'. Report findings.\n2. When finished, call 'land'.`,
   );
+  assert.doesNotMatch(researchResult.instructions, /agy|muse exec|dsh --profile|codex exec --profile|--seat runner/);
   assert.equal(
     readFileSync(join(researchResult.worktree, ".architect", "ticket.md"), "utf8"),
     "# Research Session Ticket\n\n## Kind\nresearch\n",
   );
 
-  // 6b-ii. Gemini researcher uses the built-in research subagent text.
-  const gemResSessionId = "bb11cc22-ddee-ff00-1122-334455667788";
-  writeFileSync(join(ticketsDir, `${gemResSessionId}.md`), "# Gemini Research Ticket\n\n## Kind\nresearch\n");
-  const gemResResult = await prepareWorktree({
-    kind: "research",
-    sessionId: gemResSessionId,
-    cwd: repoDir,
-    researcherProvider: "gemini",
-  });
-  assert.equal(gemResResult.ok, true);
-  assert.equal(gemResResult.researcherProvider, "gemini");
-  assert.ok(gemResResult.instructions.includes("Invoke research subagent with ticket path"));
-  assert.ok(gemResResult.instructions.includes(`using Prompt: "${gemResResult.researcherPrompt} ${RESEARCHER_OWNERSHIP}"`));
-  await retireTestWorktree(repoDir, gemResResult);
-
-  // 6b-iii. DeepSeek does not serve the researcher seat.
-  await assert.rejects(
-    () =>
-      prepareWorktree({
-        kind: "research",
-        sessionId: "cc22dd33-eeff-0011-2233-445566778899",
-        cwd: repoDir,
-        provider: "deepseek",
-      }),
-    /^Error: provider 'deepseek' does not support seat 'researcher'$/,
-  );
-
-  // 6b-iv. Codex / Astra researcher
-  const astraResSessionId = "a577a999-ddee-ff00-1122-334455667788";
-  writeFileSync(join(ticketsDir, `${astraResSessionId}.md`), "# Astra Research Ticket\n\n## Kind\nresearch\n");
-  const astraResResult = await prepareWorktree({
-    kind: "research",
-    sessionId: astraResSessionId,
-    cwd: repoDir,
-    researcherProvider: "astra",
-  });
-  assert.equal(astraResResult.ok, true);
-  assert.equal(astraResResult.researcherProvider, "codex");
-  assert.ok(astraResResult.instructions.includes("codex exec --profile researcher"));
-  await retireTestWorktree(repoDir, astraResResult);
+  // 6b-ii. A research delegation accepts no provider selection either: the
+  // runner seat is resolved centrally, so the override is refused outright.
+  for (const [label, args] of [
+    ["global provider", { provider: "deepseek" }],
+    ["researcher seat provider", { researcherProvider: "gemini" }],
+  ]) {
+    await assert.rejects(
+      () => prepareWorktree({ kind: "research", sessionId: researchSessionId, cwd: repoDir, ...args }),
+      /provider override '.*' is not permitted/,
+      `${label} must be refused for research delegation too`,
+    );
+  }
 
   writeFileSync(join(researchResult.worktree, "findings.md"), "# Research Findings\n");
   const landResearchResult = await land({
@@ -1001,27 +816,35 @@ try {
 
   delete globalThis.__QQ_TEST_RUNNER_HANDLER;
 
-  // Runner process spawns with --model gemini-3.8-flash-high by default
+  // The runner process spawns the centrally configured harness adapter with an
+  // explicit seat, the target repository as working directory, and the bound
+  // identity/transport the parent owns. No agy/legacy argv exists any more.
   {
     const fakeRunnerDir = mkdtempSync(join(tmpdir(), "test-runner-bin-"));
     try {
       const runnerLog = join(fakeRunnerDir, "runner-call.txt");
-      const fakeAgy = join(fakeRunnerDir, "fake-agy.sh");
+      const fakeAgy = join(fakeRunnerDir, "fake-runner.sh");
       writeFileSync(
         fakeAgy,
-        `#!/usr/bin/env bash\necho "$@" > "${runnerLog}"\n`,
+        `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > "${runnerLog}"\nenv | grep -E '^QQ_RUNNER_(ID|RESULT_FILE)=' >> "${runnerLog}"\n`,
       );
       execFileSync("chmod", ["+x", fakeAgy]);
 
       const prevRunnerBin = process.env.QQ_RUNNER_BIN;
       process.env.QQ_RUNNER_BIN = fakeAgy;
       try {
-        await dispatchRunner({ task: "test model flag", cwd: repoDir });
+        const dispatched = await dispatchRunner({ task: "test model flag", cwd: repoDir });
         await new Promise((r) => setTimeout(r, 200));
         assert.ok(existsSync(runnerLog));
         const loggedArgs = readFileSync(runnerLog, "utf8");
-        assert.ok(loggedArgs.includes("--model gemini-3.8-flash-high"));
-        assert.ok(loggedArgs.includes("--agent runner"));
+        assert.ok(loggedArgs.includes(WORKER_DEEPSEEK_ADAPTER), "the central adapter is the worker entry");
+        assert.ok(loggedArgs.includes("--production"), "production mode is explicit, never mock");
+        assert.ok(loggedArgs.includes("--seat\nrunner"), "the seat is explicit");
+        assert.ok(loggedArgs.includes(repoDir), "the target repository is the working directory");
+        assert.ok(loggedArgs.includes(`QQ_RUNNER_ID=${dispatched.runnerId}`), "the runner keeps its bound identity");
+        assert.ok(/QQ_RUNNER_RESULT_FILE=.+qq-runner-result-.+\.json/.test(loggedArgs), "the runner keeps its explicit transport path");
+        assert.ok(!loggedArgs.includes("gemini"), "no legacy model may ride along");
+        assert.ok(!loggedArgs.includes("--agent"), "no per-call agent flags may ride along");
       } finally {
         if (prevRunnerBin !== undefined) process.env.QQ_RUNNER_BIN = prevRunnerBin;
         else delete process.env.QQ_RUNNER_BIN;
@@ -1372,9 +1195,9 @@ rl.close();
 
 // T1. complete_task: enforces hard caps
 await assert.rejects(
-  () => completeTask({ response: "x".repeat(32_769) }),
-  /response exceeds the 32,768-character cap/,
-  "complete_task must reject response > 32768 chars",
+  () => completeTask({ response: "x".repeat(COMPLETE_TASK_RESPONSE_MAX + 1) }),
+  new RegExp(`response exceeds the ${FINAL_RESPONSE_MAX_CHARS_LABEL}-character cap`),
+  `complete_task must reject response > ${COMPLETE_TASK_RESPONSE_MAX} chars`,
 );
 await assert.rejects(
   () => completeTask({ response: "ok", data_points: Array.from({ length: 21 }, (_, i) => `point-${i}`) }),
@@ -1397,11 +1220,11 @@ assert.equal(ctRes.recorded, true);
 assert.equal(ctRes.responseLength, "Found the issue in foo.mjs line 42.".length);
 assert.equal(ctRes.dataPointsCount, 2);
 
-// T1c. complete_task: accepts responses up to 32,768 characters
-const ctLarge = await completeTask({ response: "y".repeat(32_768) });
+// T1c. complete_task: accepts responses up to the single authoritative cap
+const ctLarge = await completeTask({ response: "y".repeat(COMPLETE_TASK_RESPONSE_MAX) });
 assert.equal(ctLarge.ok, true);
 assert.equal(ctLarge.recorded, true);
-assert.equal(ctLarge.responseLength, 32_768);
+assert.equal(ctLarge.responseLength, COMPLETE_TASK_RESPONSE_MAX);
 
 // T2. readTicket: returns single content field without duplicate text key
 {
@@ -2701,24 +2524,29 @@ assert.equal(toolSilenceThresholdMs(undefined), 290_000);
   assert.equal(evaluateSuspicion(livelyRunner), null);
 }
 
-// W11. Runner spawn passes --print-timeout 60m (matching implementer/reviewer
-// steps) so the CLI's own 5m default can't truncate long investigations.
+// W11. Runner spawn carries the pinned runtime root and the target cwd, and
+// never a per-call provider/model/agent flag: the harness is centrally
+// configured, so no caller can retune the runner invocation.
 {
   const fakeDir = mkdtempSync(join(tmpdir(), "test-runner-timeout-"));
   try {
     const callLog = join(fakeDir, "runner-call.txt");
-    const fakeAgy = join(fakeDir, "fake-agy.sh");
-    writeFileSync(fakeAgy, `#!/usr/bin/env bash\necho "$@" > "${callLog}"\n`);
+    const fakeAgy = join(fakeDir, "fake-runner.sh");
+    writeFileSync(fakeAgy, `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > "${callLog}"\n`);
     execFileSync("chmod", ["+x", fakeAgy]);
     const prevBin = process.env.QQ_RUNNER_BIN;
     process.env.QQ_RUNNER_BIN = fakeAgy;
     try {
-      await dispatchRunner({ task: "print-timeout probe", cwd: tmpdir() });
+      await dispatchRunner({ task: "runtime-root probe", cwd: tmpdir() });
       await new Promise((r) => setTimeout(r, 300));
       assert.ok(existsSync(callLog));
       const logged = readFileSync(callLog, "utf8");
-      assert.ok(logged.includes("--print-timeout"), "runner spawn must pass --print-timeout");
-      assert.ok(logged.includes("60m"), "runner print-timeout must be 60m");
+      assert.ok(
+        logged.includes(`--runtime-root\n${process.env.QQ_DEEPSEEK_RUNTIME_ROOT}`),
+        "runner spawn must pass the centrally configured runtime root",
+      );
+      assert.ok(!logged.includes("--print-timeout"), "no CLI-specific timeout flag may remain");
+      assert.ok(!logged.includes("--model"), "the model is never passed on the command line");
     } finally {
       if (prevBin !== undefined) process.env.QQ_RUNNER_BIN = prevBin;
       else delete process.env.QQ_RUNNER_BIN;
@@ -3008,13 +2836,14 @@ function makeStreamTestExecution() {
   }
 }
 
-// S7. Pipeline with a fake muse binary: --json is passed, 30 streamed tool
+// S7. Pipeline with a worker double for the central harness: the central
+// launcher argv is used (never a per-provider template), 30 streamed tool
 // events recycle the trajectory past provision_worktree, and the summary is
 // clean markdown rather than raw JSONL.
 {
   const pipeRepo = mkdtempSync(join(tmpdir(), "architect-exec-stream-"));
   const fakeBin = mkdtempSync(join(tmpdir(), "architect-exec-fakebin-"));
-  const prevPath = process.env.PATH;
+  const prevSubagentBin = process.env.QQ_SUBAGENT_BIN;
   try {
     await git(pipeRepo, ["init", "-b", "main"]);
     await git(pipeRepo, ["config", "user.name", "MCP Test"]);
@@ -3026,7 +2855,7 @@ function makeStreamTestExecution() {
     mkdirSync(join(pipeRepo, ".architect", "tickets"), { recursive: true });
     writeFileSync(join(pipeRepo, ".architect", "tickets", `${streamSessId}.md`), "# Stream Ticket\n\n## Kind\nbounded\n");
 
-    const argsLog = join(fakeBin, "muse-args.txt");
+    const argsLog = join(fakeBin, "worker-args.txt");
     const streamLines = [];
     for (let i = 1; i <= 30; i++) {
       streamLines.push(
@@ -3037,18 +2866,21 @@ function makeStreamTestExecution() {
       );
     }
     writeFileSync(
-      join(fakeBin, "muse"),
-      `#!/usr/bin/env bash\necho "$@" > "${argsLog}"\necho probe > stream-probe.txt\n${streamLines.join("\n")}\nprintf '%s\\n' '{"payload_type":"run.terminal.completed","payload":{"kind":"run_terminal","terminal":"completed","text":"## Done\\nStreamed implementation complete."}}'\n`,
+      join(fakeBin, "worker-double.sh"),
+      `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > "${argsLog}"\necho probe > stream-probe.txt\n${streamLines.join("\n")}\nprintf '%s\\n' '{"payload_type":"run.terminal.completed","payload":{"kind":"run_terminal","terminal":"completed","text":"## Done\\nStreamed implementation complete."}}'\n`,
     );
-    execFileSync("chmod", ["+x", join(fakeBin, "muse")]);
-    process.env.PATH = `${fakeBin}:${prevPath}`;
+    execFileSync("chmod", ["+x", join(fakeBin, "worker-double.sh")]);
+    process.env.QQ_SUBAGENT_BIN = join(fakeBin, "worker-double.sh");
 
     const disp = await dispatchExecution({ kind: "bounded", sessionId: streamSessId, cwd: pipeRepo });
     const done = await awaitExecution({ id: disp.id });
     assert.equal(done.status, "completed");
 
     const loggedArgs = readFileSync(argsLog, "utf8");
-    assert.ok(loggedArgs.includes("--json"), "muse spawn must pass --json");
+    assert.ok(loggedArgs.includes(WORKER_DEEPSEEK_ADAPTER), "the centrally configured adapter is the worker entry");
+    assert.ok(loggedArgs.includes("--production"), "production mode is explicit");
+    assert.ok(loggedArgs.includes("--seat\nimplementer"), "the implementer seat is explicit");
+    assert.ok(!loggedArgs.includes("--json"), "no provider-template flag may reach the worker");
 
     const check = await checkExecution({ id: disp.id });
     // 3 milestones + 30 tools + 3 closing milestones = 36 entries -> keep last 25.
@@ -3064,7 +2896,8 @@ function makeStreamTestExecution() {
     assert.ok(!done.result.implementerSummary.includes("payload_type"));
     assert.ok(!done.result.implementerSummary.includes("tool_batch"));
   } finally {
-    process.env.PATH = prevPath;
+    if (prevSubagentBin === undefined) delete process.env.QQ_SUBAGENT_BIN;
+    else process.env.QQ_SUBAGENT_BIN = prevSubagentBin;
     try {
       rmSync(join(dirname(pipeRepo), ".qq-worktrees", basename(pipeRepo)), { recursive: true, force: true });
     } catch {}
@@ -3073,12 +2906,14 @@ function makeStreamTestExecution() {
   }
 }
 
-// S8. Pipeline with a fake codex binary: --json is passed, tool items enter
-// the trajectory, and the agent_message becomes the clean summary.
+// S8. Pipeline with a codex-shaped worker double for the centrally configured
+// harness: tool items enter the trajectory and the agent_message becomes the
+// clean summary. A per-call provider is refused instead of selecting a
+// different launcher.
 {
   const pipeRepo = mkdtempSync(join(tmpdir(), "architect-exec-codex-"));
   const fakeBin = mkdtempSync(join(tmpdir(), "architect-exec-codexbin-"));
-  const prevPath = process.env.PATH;
+  const prevSubagentBin = process.env.QQ_SUBAGENT_BIN;
   try {
     await git(pipeRepo, ["init", "-b", "main"]);
     await git(pipeRepo, ["config", "user.name", "MCP Test"]);
@@ -3090,31 +2925,36 @@ function makeStreamTestExecution() {
     mkdirSync(join(pipeRepo, ".architect", "tickets"), { recursive: true });
     writeFileSync(join(pipeRepo, ".architect", "tickets", `${codexSessId}.md`), "# Codex Ticket\n\n## Kind\nbounded\n");
 
-    const argsLog = join(fakeBin, "codex-args.txt");
+    const argsLog = join(fakeBin, "worker-args.txt");
     writeFileSync(
-      join(fakeBin, "codex"),
-      `#!/usr/bin/env bash\nif [ "$1" = "exec" ]; then\necho "$@" >> "${argsLog}"\necho "codex implementation" > codex-impl.txt\n` +
+      join(fakeBin, "worker-double.sh"),
+      `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > "${argsLog}"\necho "codex implementation" > codex-impl.txt\n` +
         `printf '%s\\n' '{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":["cat","package.json"],"status":"in_progress"}}'\n` +
         `printf '%s\\n' '{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":["cat","package.json"],"status":"completed"}}'\n` +
         `printf '%s\\n' '{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","tool":"list_files","status":"in_progress"}}'\n` +
         `printf '%s\\n' '{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","tool":"list_files","status":"completed"}}'\n` +
         `printf '%s\\n' '{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Codex finished the task."}}'\n` +
-        `printf '%s\\n' '{"type":"turn.completed","usage":{}}'\nfi\n`,
+        `printf '%s\\n' '{"type":"turn.completed","usage":{}}'\n`,
     );
-    execFileSync("chmod", ["+x", join(fakeBin, "codex")]);
-    process.env.PATH = `${fakeBin}:${prevPath}`;
+    execFileSync("chmod", ["+x", join(fakeBin, "worker-double.sh")]);
+    process.env.QQ_SUBAGENT_BIN = join(fakeBin, "worker-double.sh");
+
+    // A per-call provider override is refused before any worker starts.
+    await assert.rejects(
+      () => dispatchExecution({ kind: "bounded", sessionId: codexSessId, cwd: pipeRepo, implementerProvider: "codex" }),
+      /provider override 'implementerProvider' is not permitted/,
+    );
 
     const disp = await dispatchExecution({
       kind: "bounded",
       sessionId: codexSessId,
       cwd: pipeRepo,
-      implementerProvider: "codex",
     });
     const done = await awaitExecution({ id: disp.id });
     assert.equal(done.status, "completed");
 
     const loggedArgs = readFileSync(argsLog, "utf8");
-    assert.ok(loggedArgs.includes("--json"), "codex spawn must pass --json");
+    assert.ok(loggedArgs.includes("--seat\nimplementer"), "the implementer seat comes from the pipeline, not a provider argument");
 
     const check = await checkExecution({ id: disp.id });
     const actions = check.trajectory.map((t) => t.action);
@@ -3126,7 +2966,8 @@ function makeStreamTestExecution() {
     assert.equal(done.result.implementerSummary, "Codex finished the task.");
     assert.ok(!done.result.implementerSummary.includes("item.completed"));
   } finally {
-    process.env.PATH = prevPath;
+    if (prevSubagentBin === undefined) delete process.env.QQ_SUBAGENT_BIN;
+    else process.env.QQ_SUBAGENT_BIN = prevSubagentBin;
     try {
       rmSync(join(dirname(pipeRepo), ".qq-worktrees", basename(pipeRepo)), { recursive: true, force: true });
     } catch {}
@@ -3135,12 +2976,13 @@ function makeStreamTestExecution() {
   }
 }
 
-// S9. Text-mode fallback: a child with no structured terminal event resolves
-// with accumulated plain text, and long lines become bounded log entries.
+// S9. Text-mode fallback: a worker double with no structured terminal event
+// resolves with accumulated plain text, and long lines become bounded log
+// entries. The worker still launches under the central contract.
 {
   const pipeRepo = mkdtempSync(join(tmpdir(), "architect-exec-text-"));
   const fakeBin = mkdtempSync(join(tmpdir(), "architect-exec-textbin-"));
-  const prevPath = process.env.PATH;
+  const prevSubagentBin = process.env.QQ_SUBAGENT_BIN;
   try {
     await git(pipeRepo, ["init", "-b", "main"]);
     await git(pipeRepo, ["config", "user.name", "MCP Test"]);
@@ -3153,18 +2995,18 @@ function makeStreamTestExecution() {
     writeFileSync(join(pipeRepo, ".architect", "tickets", `${textSessId}.md`), "# Text Ticket\n\n## Kind\nbounded\n");
 
     const longLine = `LONG-${"x".repeat(500)}`;
+    const argsLog = join(fakeBin, "worker-args.txt");
     writeFileSync(
-      join(fakeBin, "dsh"),
-      `#!/usr/bin/env bash\necho probe > text-probe.txt\nprintf '%s\\n' 'Plain text implementation report.' '${longLine}'\n`,
+      join(fakeBin, "worker-double.sh"),
+      `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > "${argsLog}"\necho probe > text-probe.txt\nprintf '%s\\n' 'Plain text implementation report.' '${longLine}'\n`,
     );
-    execFileSync("chmod", ["+x", join(fakeBin, "dsh")]);
-    process.env.PATH = `${fakeBin}:${prevPath}`;
+    execFileSync("chmod", ["+x", join(fakeBin, "worker-double.sh")]);
+    process.env.QQ_SUBAGENT_BIN = join(fakeBin, "worker-double.sh");
 
     const disp = await dispatchExecution({
       kind: "bounded",
       sessionId: textSessId,
       cwd: pipeRepo,
-      implementerProvider: "deepseek",
     });
     const done = await awaitExecution({ id: disp.id });
     assert.equal(done.status, "completed");
@@ -3177,8 +3019,11 @@ function makeStreamTestExecution() {
     for (const entry of logs) {
       assert.ok(entry.message.length <= 200, "log messages must be bounded");
     }
+    const loggedArgs = readFileSync(argsLog, "utf8");
+    assert.ok(loggedArgs.includes("--seat\nimplementer"), "the text-mode worker is still the central implementation seat");
   } finally {
-    process.env.PATH = prevPath;
+    if (prevSubagentBin === undefined) delete process.env.QQ_SUBAGENT_BIN;
+    else process.env.QQ_SUBAGENT_BIN = prevSubagentBin;
     try {
       rmSync(join(dirname(pipeRepo), ".qq-worktrees", basename(pipeRepo)), { recursive: true, force: true });
     } catch {}
@@ -3384,15 +3229,15 @@ DETECTED_CODEX_HOMES.delete("sess-detected");
   assert.ok(runFailMsg.includes("exited with code 1"));
   assert.ok(runFailMsg.includes("trace"));
 
-  // Findings up to 64,000 chars are preserved completely without truncation.
-  const medium = "z".repeat(17_622);
+  // Findings up to the transport cap are preserved completely without truncation.
+  const medium = "z".repeat(Math.floor(COMPLETE_TASK_RESPONSE_MAX * 0.6));
   const mediumMsg = buildRunnerTerminalMessage({ runnerId: "medium", status: "completed", startedAt: Date.now(), result: medium });
-  assert.ok(!mediumMsg.includes("chars omitted"), "17,622-char findings must not be truncated");
-  assert.ok(mediumMsg.includes(medium), "17,622-char findings must be preserved intact");
-  const atCap = "z".repeat(32_768);
+  assert.ok(!mediumMsg.includes("chars omitted"), "sub-cap findings must not be truncated");
+  assert.ok(mediumMsg.includes(medium), "sub-cap findings must be preserved intact");
+  const atCap = "z".repeat(COMPLETE_TASK_RESPONSE_MAX);
   const atCapMsg = buildRunnerTerminalMessage({ runnerId: "atcap", status: "completed", startedAt: Date.now(), result: atCap });
-  assert.ok(!atCapMsg.includes("chars omitted"), "32,768-char findings must not be truncated");
-  assert.ok(atCapMsg.includes(atCap), "32,768-char findings must be preserved intact");
+  assert.ok(!atCapMsg.includes("chars omitted"), "cap-length findings must not be truncated");
+  assert.ok(atCapMsg.includes(atCap), "cap-length findings must be preserved intact");
 
   // No verified notification limit is configured, so even an over-length
   // findings string (which the completion transport would itself reject) is
@@ -4039,20 +3884,20 @@ await new Promise((r) => setTimeout(r, 2000));
   }
 }
 
-// R2. Cap enforcement: exactly 32,768 characters accepted, 32,769 rejected.
+// R2. Cap enforcement: exactly the authoritative cap accepted, one more rejected.
 {
-  // Exactly 32,768 chars accepted
-  const exactlyCap = "C".repeat(32_768);
+  // Exactly the cap is accepted
+  const exactlyCap = "C".repeat(COMPLETE_TASK_RESPONSE_MAX);
   const okResult = await completeTask({ response: exactlyCap });
   assert.equal(okResult.ok, true);
-  assert.equal(okResult.responseLength, 32_768);
+  assert.equal(okResult.responseLength, COMPLETE_TASK_RESPONSE_MAX);
 
-  // 32,769 chars rejected with clear summarization guidance
-  const overCap = "C".repeat(32_769);
+  // One character over is rejected with clear summarization guidance
+  const overCap = "C".repeat(COMPLETE_TASK_RESPONSE_MAX + 1);
   await assert.rejects(
     () => completeTask({ response: overCap }),
     (err) => {
-      assert.match(err.message, /response exceeds the 32,768-character cap \(got 32769 chars\)/);
+      assert.match(err.message, new RegExp(`response exceeds the ${FINAL_RESPONSE_MAX_CHARS_LABEL}-character cap \\(got ${COMPLETE_TASK_RESPONSE_MAX + 1} chars\\)`));
       assert.match(err.message, /Summarize before calling complete_task/);
       return true;
     },
@@ -4224,12 +4069,12 @@ await new Promise((r) => setTimeout(r, 1000));
   const fakeRunner = { id: "test-overcap-runner" };
   const overcapPayload = {
     runnerId: "test-overcap-runner",
-    response: "Z".repeat(32_769),
+    response: "Z".repeat(COMPLETE_TASK_RESPONSE_MAX + 1),
     data_points: [],
   };
   const val = validateRunnerResultPayload(overcapPayload, fakeRunner);
   assert.equal(val.ok, false);
-  assert.match(val.error, /exceeds 32768-character cap/);
+  assert.match(val.error, new RegExp(`exceeds ${FINAL_RESPONSE_MAX_CHARS_LABEL}-character cap`));
 }
 
 // R8. Write failure cannot signal successful completion or authorize Stop hook exit.
@@ -4689,10 +4534,13 @@ Duration: 4.5s
   const prepRes = await prepareWorktree({ kind: "research", sessionId: resSess, cwd: ambientRepo });
   assert.ok(prepRes.worktree !== ambientRepo);
   assert.equal(
-    prepRes.researcherPrompt,
+    prepRes.handoff.arguments.task,
     `Investigate '${join(prepRes.worktree, ".architect", "ticket.md")}' in working directory '${prepRes.worktree}'. Report findings.`,
   );
-  assert.ok(prepRes.instructions.includes(prepRes.researcherPrompt));
+  assert.equal(prepRes.handoff.tool, "dispatch_runner");
+  assert.equal(prepRes.handoff.arguments.cwd, prepRes.worktree);
+  assert.ok(prepRes.instructions.includes(prepRes.handoff.arguments.task));
+  assert.ok(prepRes.instructions.includes("dispatch_runner"));
   await retireTestWorktree(ambientRepo, prepRes);
 
   // Path 8: Execution pipeline actual invocation delivers absolute ticket and worktree cwd to subagent

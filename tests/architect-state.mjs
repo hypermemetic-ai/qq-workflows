@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { COMPLETE_TASK_RESPONSE_MAX } from "../workflow/results.mjs";
 import {
   createJob,
   deliveryPending,
@@ -252,7 +253,7 @@ const spilled = acceptRunnerResult(
 );
 assert.equal(spilled.ok, true, "an over-cap response still yields a usable result");
 assert.equal(spilled.spilled, true);
-assert.ok(spilled.report.chars > 32_768);
+assert.ok(spilled.report.chars > COMPLETE_TASK_RESPONSE_MAX, "the spilled report carries the whole over-cap response");
 let spilledText = "";
 let spilledOffset = 0;
 for (;;) {

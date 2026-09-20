@@ -1,0 +1,26 @@
+# Prototype overlay applied AFTER the sdk-minimal bundle layer.
+#
+# sdk-minimal deliberately omits fs / attachments / tool-fs, so upstream
+# read_image cannot register there. This overlay adds back exactly what
+# read_image needs:
+#   * @deepseek-ai/dsh-fs-local         -> the `fs` service (path resolution + reads)
+#   * @deepseek-ai/dsh-attachment-local -> the durable attachment store read_image commits into
+#   * dsh-tool-read-image-only          -> the prototype-local wrapper that registers ONLY read_image
+#
+# It deliberately does NOT add @deepseek-ai/dsh-tool-fs itself, so read/write/
+# edit never exist in this runtime. The baseline minimal tools (persistent
+# bash, etc.) come from the sdk-minimal layer and stay untouched.
+
+- insert:
+    - id: proto-fs-local
+      name: '@deepseek-ai/dsh-fs-local'
+      config:
+        cwd: !!js process.cwd()
+
+    - id: proto-attachment-local
+      name: '@deepseek-ai/dsh-attachment-local'
+      config:
+        dshHome: !!js process.env.DSH_HOME
+
+    - id: proto-tool-read-image-only
+      name: 'dsh-tool-read-image-only'

@@ -15,6 +15,40 @@ export function tempDir(prefix = "qq-architect-") {
   return mkdtempSync(join(tmpdir(), prefix));
 }
 
+// The central worker configuration a test run resolves, plus a per-test pinned
+// runtime root. It carries the operator's production pins (DeepSeek Flash, the
+// pinned Messages root, `max` effort, the deepseek-minimal harness) so tests
+// exercise the ACTUAL central contract; the loopback Messages root keeps any
+// accidental provider contact off the network, and the runtime root only has to
+// exist for the launch preflight (the worker binaries are test doubles).
+export function centralWorkerConfig(root, extra = {}) {
+  const runtimeRoot = join(root, "deepseek-minimal-runtime");
+  mkdirSync(join(runtimeRoot, "upstream"), { recursive: true });
+  writeFileSync(join(runtimeRoot, "provenance.json"), `${JSON.stringify({
+    preparedBy: "test fixture",
+    runtimeRoot,
+    upstreamRoot: join(runtimeRoot, "upstream"),
+    head: "ddefc45fbc7f8e46dd73185e68295696d1297887",
+    version: "0.1.6-alpha.2",
+    globalDshUsed: false,
+  }, null, 2)}\n`, "utf8");
+  writeFileSync(join(runtimeRoot, "upstream", "package.json"), `${JSON.stringify({ name: "deepseek-harness", version: "0.1.6-alpha.2" }, null, 2)}\n`, "utf8");
+  const file = join(root, "worker-config.json");
+  writeFileSync(file, `${JSON.stringify({
+    provider: "deepseek",
+    model: "deepseek-flash",
+    base_url: "https://api.deepseek.com",
+    wire_api: "responses",
+    env_key: "DEEPSEEK_API_KEY",
+    api_key_file: join(root, "deepseek-api-key"),
+    harness: "deepseek-minimal",
+    reasoning_effort: "max",
+    messages_base_url: "http://127.0.0.1:9",
+    ...extra,
+  }, null, 2)}\n`, "utf8");
+  return { file, runtimeRoot, env: { QQ_WORKER_CONFIG_FILE: file, QQ_DEEPSEEK_RUNTIME_ROOT: runtimeRoot } };
+}
+
 // A throwaway repository root with the packaged ticket template installed.
 export async function tempRepo({ agents = null, prompt = null, extraFiles = {} } = {}) {
   const root = tempDir("qq-architect-repo-");
@@ -32,11 +66,15 @@ export async function tempRepo({ agents = null, prompt = null, extraFiles = {} }
   // that directory is a fixture path too, not the real ~/.pi/agent.
   const agentDir = join(root, ".pi-agent");
   mkdirSync(agentDir, { recursive: true });
+  // Isolated environment: never read the operator's live central worker config
+  // or the operator's live pi settings. The worker seats resolve the same
+  // central contract as production, from this repository's own config file.
+  const central = centralWorkerConfig(root);
   const env = {
-    QQ_WORKER_CONFIG_FILE: join(root, "no-central-worker-config.json"),
+    ...central.env,
     PI_CODING_AGENT_DIR: agentDir,
   };
-  return { root, env, prompt, agentDir };
+  return { root, env, prompt, agentDir, central };
 }
 
 // Deterministic scheduler double for the extension's deferred readiness tick.
