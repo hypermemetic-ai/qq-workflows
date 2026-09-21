@@ -1,0 +1,35 @@
+{
+  "//": "Template only. Merge the provider block into your own ~/.pi/agent/models.json (the operator's registry is the single source of truth for endpoints, capabilities and credentials). apiKey may be '$ENV_VAR', '${ENV_VAR}' or '!command' - never paste a secret here.",
+  "providers": {
+    "meta": {
+      "name": "Meta Model API",
+      "api": "openai-completions",
+      "baseUrl": "https://api.meta.ai/v1",
+      "apiKey": "$MODEL_API_KEY",
+      "models": [
+        {
+          "id": "muse-spark-1.3-contributor",
+          "name": "Muse Spark 1.3 Contributor",
+          "reasoning": true,
+          "input": ["text"],
+          "contextWindow": 1048576,
+          "maxTokens": 131072,
+          "thinkingLevelMap": {
+            "off": null,
+            "minimal": "minimal",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": null
+          },
+          "compat": {
+            "supportsReasoningEffort": true,
+            "maxTokensField": "max_tokens",
+            "supportsStrictMode": false
+          }
+        }
+      ]
+    }
+  }
+}

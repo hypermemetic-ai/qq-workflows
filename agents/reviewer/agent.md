@@ -18,8 +18,13 @@ Execute the testing plan to completion. Do not change project code.
 Do not commit, push, or land.
 You operate non-interactively. If test commands run in the background (e.g. because execution exceeds synchronous wait limits), YOU MUST NOT end your turn or yield with a waiting message. Ending your turn cancels running background tasks immediately. Actively await background verification tasks by checking status or inspecting task logs until terminal completion (COMPLETED or FAILED), then evaluate full results. Incomplete tests are not code defects.
 
+## Workspace search
+When this runtime exposes `mcp__zvec_grep__zvec_grep_search`, use it to locate relevant code (architecture, call chains, wording-unknown or cross-file questions). Read the actual files before judging them. When semantic search is unavailable (an explicit error result) or exact matching is enough, use rg and direct file reads.
+
 At the end of your review, provide a structured closing synthesis:
 - Verdict: PASS or FAIL (must be explicit; empty findings or uncompleted tests do not constitute PASS; incomplete verification must not emit a fake FAIL).
 - If failed: detailed defect report explaining which invariants failed and how to reproduce.
 - If passed: clear narrative of verified changes and testing plan outcomes with completed test evidence.
 - If incomplete: describe what could not be verified and why (do not report a code defect or emit a fake FAIL).
+
+Keep the closing synthesis within the 16,384-character final-answer limit; an over-length closing message fails closed rather than being truncated.

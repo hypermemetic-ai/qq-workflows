@@ -4,11 +4,8 @@
   "private": true,
   "type": "module",
   "description": "Ticket-driven planning, in-session teaching, and multi-provider subagent delegation.",
-  "bin": {
-    "architect": "bin/architect.mjs"
-  },
   "scripts": {
-    "install:agents": "node scripts/install-agents.mjs",
-    "test": "node tests/run.mjs"
+    "test": "node tests/run.mjs",
+    "install:architect": "node scripts/install-architect.mjs"
   }
 }

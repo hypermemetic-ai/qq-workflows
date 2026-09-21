@@ -69,7 +69,11 @@ assert.match(architectContent, /The ticket is `\.architect\/tickets\/<sessionId>
 assert.match(architectContent, /## Teaching/);
 assert.match(architectContent, /teach until the user is informed enough to decide/);
 assert.match(architectContent, /call `dispatch_execution\(kind\)`/);
-assert.match(architectContent, /await_execution/);
+// The blocking wait tools are absent from the active instruction surface.
+assert.doesNotMatch(architectContent, /await_execution/);
+assert.doesNotMatch(architectContent, /await_runner/);
+assert.match(architectContent, /There is no wait tool/);
+assert.match(architectContent, /check_execution/);
 assert.match(architectContent, /dispatch_runner/);
 assert.match(architectContent, /Ask questions one at a time with recommendations\./);
 assert.match(architectContent, /Populate ticket and testing plan collaboratively with the operator\./);
@@ -104,5 +108,17 @@ assert.match(reviewerContent, /Actively await background verification tasks/);
 assert.match(reviewerContent, /Incomplete tests are not code defects/);
 assert.match(reviewerContent, /Verdict: PASS or FAIL/);
 assert.doesNotMatch(reviewerContent, /call done/);
+
+// 6. Runner role checks: the completion contract names the exact qualified
+// client spelling (no "discover your namespaced spelling" deferral), while the
+// registered MCP tool name stays `complete_task`.
+const runnerContent = readFileSync(join(repoRoot, "agents", "runner", "agent.md"), "utf8");
+assert.match(runnerContent, /mcp__qq_workflows__complete_task/, "runner role must name the exact qualified complete_task tool");
+assert.match(runnerContent, /call `mcp__qq_workflows__complete_task`/, "runner role must tell the worker to call the completion tool");
+assert.match(runnerContent, /`complete_task`/, "runner role must still reference the registered tool name");
+assert.match(runnerContent, /Calling `complete_task` is strictly required/, "the completion call must stay strictly required");
+assert.doesNotMatch(runnerContent, /whatever qualified\/namespaced spelling/, "the discover-your-spelling deferral must be gone");
+assert.doesNotMatch(runnerContent, /your harness registers/, "no harness-specific spelling deferral");
+assert.match(runnerContent, /correct the call, and retry/, "runner role must tell the worker to correct and retry a rejected call");
 
 console.log("roles tests passed successfully.");

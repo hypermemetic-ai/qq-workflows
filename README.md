@@ -1,109 +1,173 @@
 # qq-workflows
 
-Ticket-driven planning, in-session teaching, and subagent delegation with two harnesses: **Muse Spark** (`muse`, default) and **Google Antigravity** (`agy`, opt-in).
+Ticket-driven planning, in-session teaching, and deliberate delegation. One
+Architect, one worker runtime.
 
-You collaborate with a planning agent (**Architect**) to explore intent, make architectural decisions, and draft a specification ticket. When decisions require domain knowledge, Architect teaches interactively in-session until you can make an authentic choice. When the ticket is ready, Architect delegates to specialized subagents for implementation, research, and review.
+- **Architect**: a Pi profile on Paseo (`pi-extension/qq-architect.mjs` +
+  `paseo-plugin/`), installed by `scripts/install-architect.mjs`. It plans with
+  the operator, owns the session ticket at `.architect/tickets/<sessionId>.md`,
+  and delegates through durable background jobs. Its own model choice is
+  independent of the worker runtime.
+- **Workers**: the `runner`, `implementer`, and `reviewer` seats run through one
+  documented runtime interface - pi's RPC mode (`pi --mode rpc`) - driven by
+  `workflow/pi-worker/adapter.mjs`. Provider, model, endpoint, capabilities and
+  credentials come from pi's own registry; the operator's selection lives in one
+  central configuration file.
 
-The ticket is session-scoped at `.architect/tickets/<sessionId>.md`, automatically created and prefilled before execution.
+There is no second Architect launcher and no blocking wait tool: the Architect
+dispatches, yields the turn, and is woken by the durable completion
+notification. `check_runner` / `check_execution` are point-in-time reads.
 
-## How it works
+## Repository map
 
-1. **Plan together.** Describe the change you want. Architect asks questions, investigates the codebase, and records scope and testing plans in `.architect/tickets/<sessionId>.md`.
-2. **Teach in-session.** When an architectural fork requires unfamiliar domain knowledge, Architect teaches until you are informed enough to decide, recording the decision in the ticket.
-3. **Research.** For documentation and codebase lookups, Architect delegates to a `researcher` — the `researcher` preset on the muse seat, or Antigravity's built-in `research` subagent on the gemini seat.
-4. **Implement.** Architect prepares a dedicated worktree branch (`architect/<kind>/<sessionId.slice(0,8)>`) and delegates to `implementer` working in that checkout. Children leave changes uncommitted; only the architect session lands.
-5. **Review.** Architect delegates to `reviewer` to verify changes against the testing plan in that checkout without altering project code.
-6. **Land.** When review passes, Architect lands the work: commits changes, creates and merges the PR via `gh` with `--delete-branch` (or fast-forwards local main for local repos), retires the worktree (`git worktree remove`), and cleans up the local branch (`git branch -d`).
+| Area | Where |
+| --- | --- |
+| Architect profile (Pi on Paseo) | `pi-extension/qq-architect.mjs`, `pi-extension/managed-execution.mjs`, `paseo-plugin/` |
+| Architect installation | `scripts/install-architect.mjs` |
+| Worker runtime (Pi RPC) | `workflow/pi-worker/adapter.mjs`, `workflow/pi-worker/rpc.mjs` |
+| Effective seat instructions in a Pi session | `workflow/pi-worker/instructions.mjs` |
+| Worker tools in a Pi session | `pi-extension/worker-tools.mjs` (root-bound `zvec_grep_search`) |
+| Central worker configuration | `workflow/worker-config.mjs`, `workflow/worker-launch.mjs` |
+| Workflow tools and durable jobs | `workflow/operations.mjs`, `workflow/jobs.mjs`, `workflow/notify.mjs`, `workflow/reports.mjs`, `workflow/results.mjs` |
+| Shared MCP server | `bin/mcp-server.mjs` (`complete_task`, ticket tools, `prepare_worktree`/`land`, `dispatch_execution`, ...) |
+| Out-of-process worker launcher | `bin/worker-exec.mjs` |
+| Search gateway (shared ZG) | `prototype/deepseek-minimal/gateway/`, `bin/zg-rerank.py` |
+| Worker role contracts | `agents/{runner,implementer,reviewer}/agent.md` |
+| Migration/activation guide | `docs/pi-worker-migration.md`, templates in `config/` |
 
-## Quick Start
-
-### 1. Install Agents, Presets & Launchers
-
-Clone the repository and install both harnesses:
+## Install
 
 ```bash
 git clone https://github.com/hypermemetic-ai/qq-workflows.git
 cd qq-workflows
-npm run install:agents
+npm test                 # offline suite, no provider calls
+npm run install:architect
 ```
 
-This:
+`install:architect` registers the Pi/Paseo Architect provider (`paseo-plugin`),
+installs the extension the provider entry points at, and reports what it
+observed. It never writes worker provider/model selection - that is
+configuration, not installation (see below).
 
-- Ensures `presets.{architect,implementer,reviewer,researcher}` exist in the muse `settings.json` (`$XDG_CONFIG_HOME/muse` when set, else `~/.config/muse`), creating missing names as `{}` while preserving all pre-existing content, and registers the `qq-workflows` MCP server there.
-- Links the `muse-architect` launcher into `~/.local/bin/` (target: `bin/muse-architect.sh` in this repo).
-- Links the `opencode` alias into `~/.local/bin/` (target: `bin/muse-architect.sh`) so Orca detects its built-in opencode slot as installed, and renames that slot's display labels to `Muse Spark` in Orca's shipped bundles (a foreign `opencode` entry is always left alone).
-- Links `architect`, `implementer`, and `reviewer` into `~/.gemini/config/agents/`.
-- Configures the `architect-ticket` `PreInvocation` hook in `~/.gemini/config/hooks.json` to automatically create `.architect/tickets/<sessionId>.md` from template before turn 1.
-- Registers the `qq-workflows` MCP server in `~/.gemini/config/mcp_config.json` providing `prepare_worktree` and `land`.
-- Installs the `architect` CLI launcher into `~/.local/bin/architect`.
+## Central worker configuration
 
-The installer also removes one stale artifact when present (with a stdout note): the hardcoded `architect/AGENTS.md` prompt (the launcher now renders from `agents/architect/agent.md`).
+One operator-owned file - `~/.config/qq-workflows/worker-config.json`,
+overridable with `QQ_WORKER_CONFIG_FILE` - selects the worker runtime and the
+worker model. Changing provider or model inside pi's supported catalog is a
+config change: no workflow source edit, no per-role rewrite.
 
-Old ticket mirrors under `~/.gemini/antigravity-cli/brain/` from previous versions are orphaned and harmless; the installer leaves user files alone and never recreates them.
-
-### 2. Start an Architecture Session (Muse)
-
-In any project repository, run:
-
-```bash
-muse-architect
+```json
+{
+  "harness": "pi",
+  "provider": "meta",
+  "model": "muse-spark-1.3-contributor",
+  "reasoning_effort": "xhigh",
+  "env_key": "MODEL_API_KEY",
+  "api_key_file": "/home/<operator>/.config/qq-workflows/model-api-key",
+  "context": {
+    "enabled": true,
+    "reserve_tokens": 917504,
+    "keep_recent_tokens": 20000
+  }
+}
 ```
 
-This seeds `.architect/tickets/<sessionId>.md` (reusing `--session <id>` when given), renders the architect prompt from `agents/architect/agent.md`, and execs `muse --preset architect --yolo` with the ticket open. See `muse-architect --help` for options.
+`reserve_tokens: 917504` is the `~128k` working window on the 1M-capacity
+target model (`workerCompactionBudget({ contextWindow: 1048576, reserveTokens:
+917504 })` -> `workingWindow: 131072`); it is a compaction trigger, not a hard
+input cap. `config/worker-config.muse.template.json` carries the same value.
 
-Alternatively, via the `architect` launcher (same session, provider-switchable):
+Rules that hold for every seat and every entry point:
 
-```bash
-architect
-architect --provider gemini
-```
+- `harness: "pi"` is the one documented worker runtime. `base_url`/`wire_api`
+  and `max_output_tokens` are refused there: the endpoint, protocol, output cap
+  and model capabilities belong to pi's registry (`~/.pi/agent/models.json`),
+  as do credentials (`auth.json`); `env_key`/`api_key_file` is the operator's
+  credential *reference*, resolved per launch and never embedded in a prompt or
+  ticket.
+- Provider and model are validated structurally, then against the model's real
+  capability at launch. The requested `reasoning_effort` is emitted verbatim
+  (`--thinking <level>`) and checked with `get_available_thinking_levels`: an
+  unavailable level refuses the launch instead of silently dropping to `high`.
+- The swap is confirmed, not assumed: before the prompt is sent, the runtime's
+  own report of the selected provider/model is compared with the configuration
+  and a mismatch refuses the launch (`model_mismatch` / `provider_mismatch`).
+  Success also requires a message that did not end in `error`, `aborted`, or
+  `length` - a failed or truncated turn is a named failure
+  (`message_error`, `run_aborted`, `final_answer_truncated`), never a delivered
+  partial result.
+- Context policy is materialized into an isolated worker pi agent directory
+  (`~/.local/state/qq-workflows/pi-worker-agent/settings.json`) that references
+  the operator's registry in place. The adapter verifies the runtime actually
+  enabled compaction (`get_state.autoCompactionEnabled`) and reports measured
+  `contextUsage` from `get_session_stats`. `reserve_tokens` is a compaction
+  trigger knob, **not** a hard input cap; provider `contextWindow` is capacity
+  metadata, not an enforced bound. See `docs/pi-worker-migration.md`.
+- Per-call or legacy provider selection is refused (`provider`,
+  `implementerProvider`, `reviewerProvider`, and the `QQ_*_PROVIDER`
+  environment variables), as are retired executable overrides such as
+  `QQ_WORKER_EXEC`. The target repository is a working directory only: the
+  launcher, adapter, and runtime come from this installation, never from a
+  project-local probe.
+- A runner keeps its bound identity and explicit result transport
+  (`QQ_RUNNER_ID` / `QQ_RUNNER_RESULT_FILE`) and completes only through the
+  authoritative `complete_task` module (`workflow/results.mjs`,
+  `workflow/reports.mjs`); implementer/reviewer never inherit runner identity.
+  A Pi worker session has no MCP tool at all, so the adapter bridges the
+  runner's closing assistant message into that same module, and the runner's
+  effective instructions state exactly that (`workflow/pi-worker/instructions.mjs`).
+- One narrative cap per result (`workflow/limits.mjs`: 16,384 characters),
+  enforced fail-closed by the transport, the result reader, the adapter, and the
+  seat contracts.
+- Each seat's instructions are adapted to the runtime that will read them: the
+  shared role contract keeps its wording, the Pi session is told the transport it
+  actually has, and a seat instruction naming a tool outside that seat's
+  allowlist refuses the launch instead of instructing an impossible action.
+- Seat tool policy is explicit and asserted: every seat reads and searches
+  (`read`/`grep`/`find`/`ls` + the root-bound `zvec_grep_search`), the runner and
+  reviewer execute commands (`bash`), and only the implementer writes
+  (`edit`/`write`). The runner keeps the command execution its seat had on every
+  earlier runtime (tests, reproductions, diagnostics) and reads images through
+  pi's own `read` tool.
 
-### 3. Start an Architecture Session (Antigravity)
+## Background work and completion
 
-Via Antigravity CLI directly:
+`dispatch_runner` and `dispatch_execution` return a durable job id immediately.
+The Architect then yields:
 
-```bash
-agy --agent architect
-```
+- a terminal completion is persisted (report + terminal record) and delivered to
+  the owning session - an idle turn is started, a busy one is queued or steered,
+  and `recover_deliveries` replays completions that were never consumed;
+- `check_runner` / `check_execution` report status, active tool, trajectory, and
+  stall evidence without touching the work;
+- `steer_runner` / `cancel_runner` are the only ways to influence a running job;
+  cancellation is tombstoned so recovery never restarts or revives it;
+- there is no `await_runner` / `await_execution`: the blocking wait tools were
+  deleted from the executable surface, the prompts, and the launchers, because
+  parking a turn on a long job is what made the Paseo Architect unresponsive.
 
-Or invoke `architect` from an active Antigravity session.
+## Retained legacy harness (rollback only)
 
-## Presets
+`workflow/worker-config.mjs` still understands the previously installed
+`deepseek-minimal` (and `codex`) harnesses **when the same central config file
+selects them**, so an installed release keeps working until the operator
+activates the Pi worker selection. They are provider-specific runtimes with no
+source-level provider/model allowance beyond their own documented pin, they are
+never selected implicitly, and they are removed with the DeepSeek runtime after
+activation (see the migration guide). The documented production worker runtime
+is Pi.
 
-`muse exec --preset <name>` requires the name to exist, so the installer guarantees the four seat names (`architect`, `implementer`, `reviewer`, `researcher`) in the muse `settings.json`. Preset content stays `{}`: role text rides in the delegation prompts built by `prepare_worktree`, not in preset configuration.
-
-## Providers
-
-Each delegation seat (implementer, reviewer, researcher, architect) is served by a provider. Every seat defaults to `muse`; DeepSeek serves implementation only:
-
-| Seat | `muse` | `gemini` | `deepseek` |
-| --- | --- | --- | --- |
-| implementer | ✓ | ✓ | ✓ |
-| reviewer | ✓ | ✓ | — |
-| researcher | ✓ | ✓ | — |
-| architect | ✓ | ✓ | — |
-
-`muse` delegates via `muse exec --preset <seat> --yolo`, `gemini` via `agy --agent <seat> --conversation <uuid> --print-timeout 60m --print` (Gemini's built-in research subagent serves the researcher seat), and `deepseek` via `dsh --profile implementer`.
-
-Switch providers globally or per seat. Per-seat precedence: seat arg > seat env > global arg > global env > `muse`:
-
-| Scope | `prepare_worktree` arg | Env |
-| --- | --- | --- |
-| global | `provider` | `QQ_WORKFLOW_PROVIDER` |
-| implementer | `implementerProvider` | `QQ_IMPLEMENTER_PROVIDER` |
-| reviewer | `reviewerProvider` | `QQ_REVIEWER_PROVIDER` |
-| researcher | `researcherProvider` | `QQ_RESEARCHER_PROVIDER` |
-
-The architect launcher takes `--provider` / `ARCHITECT_PROVIDER` (default `muse`, served via `muse-architect`; override the binary with `MUSE_ARCHITECT_BIN`).
-
-Unknown provider strings throw `unknown provider '<x>': expected 'muse' | 'gemini' | 'deepseek'`. A known provider resolving for a seat it does not serve throws `provider '<p>' does not support seat '<seat>'` with no silent fallback — so a global `deepseek` works for `bounded` tickets, while `open`/`research` tickets need explicit per-seat overrides for the reviewer/researcher seats.
-
-The deepseek seat needs operator-side prerequisites the installer does not manage: a `~/.dsh` profile named `implementer` and a `DEEPSEEK_API_KEY` in the environment.
-
-## Development & Testing
-
-Run the test suite:
+## Test
 
 ```bash
 npm test
 ```
+
+The suite is offline and hermetic: temporary repositories and state
+directories, fake pi RPC runtimes and worker doubles, no provider calls, no
+operator configuration writes. `tests/pi-worker.mjs` covers the worker runtime
+contract (capability validation, context policy, selection confirmation, tool
+binding, result transport, failure/cancellation) without a live model, and
+`tests/pi-runtime-wire.mjs` drives the installed pi runtime through the real
+adapter against a localhost mock provider (dummy key, no provider traffic; it
+skips when no pi runtime is on `PATH`).
