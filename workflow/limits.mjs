@@ -1,12 +1,14 @@
 // Single authoritative source for the final-response character cap.
 //
 // Units are CHARACTERS, not tokens. The cap bounds the narrative a worker may
-// deliver through the completion transport (the `complete_task` tool for the
-// runner seat, the adapter's closing-answer gate for every seat on the
-// `deepseek-minimal` harness). It is deliberately the ONE place the number
+// deliver through the completion transport: the `complete_task` tool on a
+// harness that exposes it, and the adapter's closing-answer gate for every seat
+// on the `deepseek-minimal` and `pi` harnesses (the Pi session has no MCP tool
+// at all, so its effective seat instructions state this same cap for the
+// closing assistant message). It is deliberately the ONE place the number
 // lives: the complete_task schema/description/writer, the runner-result reader,
-// the DeepSeek terminal adapter, the effective seat instructions, and the
-// tests all derive from it instead of restating a literal.
+// the DeepSeek and Pi terminal adapters, the effective seat instructions, and
+// the tests all derive from it instead of restating a literal.
 //
 // Policy is fail-closed: an over-cap answer is rejected with a bounded
 // diagnostic and never silently truncated, and it can never authorize a

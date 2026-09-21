@@ -15,6 +15,16 @@ import {
 
 console.log("Running operator-action tests...");
 
+// Wait for a spawned child to exit. The exit event may already have fired while
+// the test awaited the cancel/cleanup call that killed it; registering a
+// listener only at that point would park the top-level await forever (node
+// exits 13 on an unsettled top-level await), so the already-exited case
+// resolves immediately.
+function waitForExit(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => child.once("exit", resolve));
+}
+
 const tempRoot = await mkdtemp(join(tmpdir(), "op-action-test-"));
 const baseDir = join(tempRoot, "state");
 const tmpDir = join(tempRoot, "tmp");
@@ -505,9 +515,7 @@ echo "finished-slow-script"
       "Expected cancellation_requested or cancelled, got: " + cancelRes.status
     );
 
-    await new Promise((resolve) => {
-      child.on("exit", resolve);
-    });
+    await waitForExit(child);
 
     const finalCheck = await checkOperatorAction({ actionId: staged.actionId, baseDir });
     assert.equal(finalCheck.status, "cancelled", "Action must be cancelled after process death");
@@ -545,9 +553,7 @@ echo "done"
     assert.notEqual(run2.status, 0, "Duplicate concurrent run must fail");
     assert.match(run2.stderr, /already running/, "Error message must state already running");
 
-    await new Promise((resolve) => {
-      child1.on("exit", resolve);
-    });
+    await waitForExit(child1);
 
     const checkSucceeded = await checkOperatorAction({ actionId: staged.actionId, baseDir });
     assert.equal(checkSucceeded.status, "succeeded");
@@ -591,9 +597,7 @@ sleep 10
     const cleanRes = await cleanupOperatorAction({ actionId: staged.actionId, force: true, baseDir, tmpDir });
     assert.equal(cleanRes.cleaned, true);
 
-    await new Promise((resolve) => {
-      child.on("exit", resolve);
-    });
+    await waitForExit(child);
     assert.ok(!existsSync(staged.actionDir), "Action dir must be removed");
     assert.ok(!existsSync(staged.shortPath), "Trampoline must be removed");
   }

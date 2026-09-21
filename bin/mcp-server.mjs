@@ -203,20 +203,6 @@ export const TOOLS = [
     },
   },
   {
-    name: "await_runner",
-    description: "Wait for a runner and return status by 4:50: terminal payload if finished, needs-decision with stall evidence if silent past threshold, or running-fine heartbeat. Never fails for clocks; re-await while running. Parking an await on running work is safe.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        runnerId: {
-          type: "string",
-          description: "Tracking ID of the runner",
-        },
-      },
-      required: ["runnerId"],
-    },
-  },
-  {
     name: "dispatch_execution",
     description: "Provision dedicated worktree, run implementer, run reviewer (for open kind) with retry loop, and automatically land on passing review.",
     inputSchema: {
@@ -242,20 +228,6 @@ export const TOOLS = [
   {
     name: "check_execution",
     description: "Check progress, active phase, telemetry, and status of an execution pipeline. Point-in-time read; surfaces the stuck-suspicion flag with evidence when silent past threshold.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        id: {
-          type: "string",
-          description: "Tracking ID of the execution",
-        },
-      },
-      required: ["id"],
-    },
-  },
-  {
-    name: "await_execution",
-    description: "Wait for an execution pipeline and return status by 4:50: terminal payload if finished, needs-decision with stall evidence if silent past threshold, or running-fine heartbeat. Never fails for clocks; re-await while running. Parking an await on running work is safe.",
     inputSchema: {
       type: "object",
       properties: {
@@ -374,30 +346,6 @@ export async function resolveSessionId(root, explicitId) {
   return resolved;
 }
 
-// Which providers serve which seat. The architect seat keeps its legacy
-// selection (unchanged); the worker seats are pinned to the central operator
-// configuration and no longer accept per-call or per-seat provider selection.
-export const SEAT_PROVIDERS = {
-  implementer: [WORKER_PROVIDER],
-  reviewer: [WORKER_PROVIDER],
-  architect: ["muse", "gemini", "codex", "astra"],
-};
-
-// Resolve which provider serves a non-worker seat (architect). Precedence:
-// arg > seat env > 'muse'. Unknown strings always throw; a known provider
-// that does not serve the seat throws with no silent fallback.
-export function resolveProvider(seat, { arg, seatEnv, globalArg, globalEnv } = {}) {
-  for (const value of [arg, seatEnv, globalArg, globalEnv]) {
-    if (value !== undefined && value !== null) assertKnownProvider(value);
-  }
-  const raw = arg ?? seatEnv ?? globalArg ?? globalEnv ?? "muse";
-  const normalized = normalizeProvider(raw);
-  if (!SEAT_PROVIDERS[seat] || (!SEAT_PROVIDERS[seat].includes(raw) && !SEAT_PROVIDERS[seat].includes(normalized))) {
-    throw new Error(`provider '${raw}' does not support seat '${seat}'`);
-  }
-  return normalized;
-}
-
 // Legacy provider-selection keys. `researcherProvider` / `QQ_RESEARCHER_PROVIDER`
 // are retained ONLY as fail-closed compatibility defenses: research is ordinary
 // investigation work carried by the runner seat, so a caller presenting one of
@@ -428,20 +376,23 @@ export function assertNoProviderOverrides(args = {}, env = process.env) {
       );
     }
   }
+  // A legacy provider environment value is refused for the same reason: the
+  // selection lives in the central worker configuration, and honoring a stale
+  // variable would silently reintroduce a second selection path.
   const conflicts = [];
   const globalValue = env?.QQ_WORKFLOW_PROVIDER;
-  if (globalValue !== undefined && globalValue !== null && normalizeProvider(globalValue) !== WORKER_PROVIDER) {
+  if (globalValue !== undefined && globalValue !== null && String(globalValue).trim() !== "") {
     conflicts.push(`QQ_WORKFLOW_PROVIDER=${globalValue}`);
   }
-  for (const [seat, envKey] of Object.entries(SEAT_ENVS)) {
+  for (const envKey of Object.values(SEAT_ENVS)) {
     const value = env?.[envKey];
-    if (value !== undefined && value !== null && normalizeProvider(value) !== WORKER_PROVIDER) {
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
       conflicts.push(`${envKey}=${value}`);
     }
   }
   if (conflicts.length > 0) {
     throw new Error(
-      `worker provider configuration is not authorized: ${conflicts.join(", ")} conflicts with the pinned '${WORKER_PROVIDER}' worker provider`,
+      `legacy worker provider selection is not authorized: ${conflicts.join(", ")} is ignored by design; worker provider/model selection lives in the central worker configuration`,
     );
   }
 }
@@ -456,9 +407,8 @@ export function resolveSeatProvider(seat, args = {}, env = process.env, options 
   assertNoProviderOverrides(args, env);
   const file = assertCentralWorkerConfig({ env, configFile: options.configFile ?? null });
   const config = loadWorkerConfig({ env, file });
-  if (SEAT_PROVIDERS[seat] && !SEAT_PROVIDERS[seat].includes(config.provider)) {
-    throw new Error(`provider '${config.provider}' does not support seat '${seat}'`);
-  }
+  // No source-level provider allowance: the configured provider serves every
+  // worker seat, and the runtime validates it against its own registry.
   return config.provider;
 }
 
@@ -754,13 +704,14 @@ export function recordRunnerStdoutLine(target, line) {
 // flag inherently clears on delivery and re-arms on the next access if the
 // work is still silent. Re-await keeps watching with nothing lost.
 
-export const AWAIT_CALL_WINDOW_MS = 290_000; // 4:50 — always home before the ~300s harness cliff
 export const LONG_TOOL_SUSPICION_MS = 600_000; // 10:00 absolute for known-long shell tools
 
-// Tools whose quiet runs are legitimately long (test suites, builds). All
-// other tools (and the between-tools idle state) trip suspicion after one
-// quiet 4:50 call window.
-export const LONG_RUNNING_TOOLS = ["run_command"];
+// Tools whose quiet runs are legitimately long (test suites, builds). Both
+// spellings a worker seat can report are known: the legacy Antigravity seat's
+// `run_command` and the one Pi worker runtime's `bash` (the name its shell tool
+// reports in `step_update`). All other tools (and the between-tools idle state)
+// trip suspicion after one quiet 4:50 call window.
+export const LONG_RUNNING_TOOLS = ["run_command", "bash"];
 
 function watchdogOverrides() {
   const o = globalThis.__QQ_TEST_WATCHDOG;
@@ -768,10 +719,12 @@ function watchdogOverrides() {
   return {};
 }
 
-export function awaitWindowMs() {
+export const STALL_SUSPICION_WINDOW_MS = 290_000; // 4:50 of silence before a point-in-time read calls the work quiet
+
+export function stallSuspicionWindowMs() {
   const o = watchdogOverrides();
-  if (typeof o.awaitWindowMs === "number" && o.awaitWindowMs > 0) return o.awaitWindowMs;
-  return AWAIT_CALL_WINDOW_MS;
+  if (typeof o.stallSuspicionWindowMs === "number" && o.stallSuspicionWindowMs > 0) return o.stallSuspicionWindowMs;
+  return STALL_SUSPICION_WINDOW_MS;
 }
 
 export function longToolSuspicionMs() {
@@ -785,7 +738,7 @@ export function longToolSuspicionMs() {
 // a verdict).
 export function toolSilenceThresholdMs(toolName) {
   if (toolName && LONG_RUNNING_TOOLS.includes(toolName)) return longToolSuspicionMs();
-  return awaitWindowMs();
+  return stallSuspicionWindowMs();
 }
 
 function touchActivity(target, now = Date.now()) {
@@ -835,10 +788,8 @@ export function evaluateSuspicion(tracker, now = Date.now()) {
 // Reactive Codex notifications: dispatch-and-yield wakeups
 // ============================================================================
 //
-// Muse has no session queueing, so it keeps the 4:50 await contract above
-// (await_runner / await_execution with heartbeat + suspicion envelopes).
-// Codex (Astra) architects instead dispatch and yield their turn immediately;
-// this section wakes the idle session only when something needs it:
+// Architect turns dispatch and yield: nothing in the workflow blocks on a job,
+// so this section wakes the idle session only when something needs it:
 //
 // 1. Terminal wakeup: an execution or runner reaches completed/failed.
 //    Per-transition hooks call notifyTerminal exactly once (deduped by a
@@ -1544,7 +1495,7 @@ export function cleanupRunnerFiles(runner) {
 // the SAME terminal-notification mechanism (replayRetainedRunnerFindings).
 //
 // This is durable retention, not a second findings path: the retained file is
-// never read by check_runner or await_runner, and nothing here schedules jobs or
+// never read by check_runner, and nothing here schedules jobs or
 // claims exactly-once delivery.
 
 export const RETAINED_FINDINGS_VERSION = 1;
@@ -1719,7 +1670,7 @@ function verifyRecordOwnership(record, caller) {
 // whose wakeup could not be delivered (including after an MCP-server restart,
 // when the in-memory tracker is gone). It rebuilds the SAME terminal message
 // and sends it through the SAME notifySession transport — this is not a
-// findings read and is never reachable from check_runner or await_runner.
+// findings read and is never reachable from check_runner.
 //
 // Routing is taken ONLY from the retained record (its originating session and
 // thread); a caller cannot redirect it. Ownership is verified against trusted
@@ -2317,83 +2268,6 @@ export async function cancelRunner(args = {}) {
   }
 
   return { ok: true, runnerId, status: "cancelled" };
-}
-
-export async function awaitRunner(args = {}) {
-  const runnerId = args.runnerId || args.id;
-  if (!runnerId) throw new Error("runnerId is required");
-  const runner = RUNNERS.get(runnerId);
-  if (!runner) throw new Error(`no runner found for id '${runnerId}'`);
-  // Legacy timeoutMs is accepted but never fails the wait: awaits return
-  // status by 4:50 every time (heartbeat, suspicion, or terminal). There is
-  // no timeout-as-error.
-
-  const windowMs = awaitWindowMs();
-  const start = Date.now();
-  for (;;) {
-    // Dead-process reconcile on every pass: a dead helper reports factually.
-    reconcileDeadRunner(runner);
-
-    if (runner.status === "completed") {
-      return {
-        ok: true,
-        runnerId,
-        status: "completed",
-        result: runner.result,
-      };
-    }
-    if (runner.status === "cancelled") {
-      const err = new Error(`Runner '${runnerId}' was cancelled`);
-      err.status = "cancelled";
-      throw err;
-    }
-    if (runner.status === "failed") {
-      const err = new Error(runner.error?.message || `Runner '${runnerId}' failed`);
-      err.error = runner.error;
-      throw err;
-    }
-
-    // Running: suspicion-with-evidence ends the wait immediately with a
-    // needs-decision envelope. The work underneath is untouched.
-    const now = Date.now();
-    const suspicion = evaluateSuspicion(runner, now);
-    if (suspicion) {
-      const elapsedSeconds = Math.round((now - runner.startedAt) / 1000);
-      const silenceSeconds = Math.max(0, Math.round((now - (runner.lastActivityAt || runner.startedAt)) / 1000));
-      const activeTool = activeToolView(runner.activeTool, now);
-      const trajectory = [...runner.trajectory];
-      return {
-        ok: true,
-        runnerId,
-        status: "running",
-        needsDecision: true,
-        suspicion,
-        elapsedSeconds,
-        silenceSeconds,
-        activeTool,
-        trajectory,
-      };
-    }
-
-    // Window expired with nothing to report: running-fine heartbeat. The
-    // work continues underneath; re-await keeps watching.
-    if (now - start >= windowMs) {
-      const elapsedSeconds = Math.round((now - runner.startedAt) / 1000);
-      const silenceSeconds = Math.max(0, Math.round((now - (runner.lastActivityAt || runner.startedAt)) / 1000));
-      return {
-        ok: true,
-        runnerId,
-        status: "running",
-        heartbeat: true,
-        elapsedSeconds,
-        silenceSeconds,
-        activeTool: activeToolView(runner.activeTool, now),
-        trajectory: [...runner.trajectory],
-      };
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
 }
 
 // ============================================================================
@@ -3144,77 +3018,6 @@ export async function checkExecution(args = {}) {
   };
 }
 
-export async function awaitExecution(args = {}) {
-  const id = args.id || args.executionId;
-  if (!id) throw new Error("id is required");
-  const exec = EXECUTIONS.get(id);
-  if (!exec) throw new Error(`no execution found for id '${id}'`);
-  // Legacy timeoutMs is accepted but never fails the wait: awaits return
-  // status by 4:50 every time (heartbeat, suspicion, or terminal). There is
-  // no timeout-as-error.
-
-  const windowMs = awaitWindowMs();
-  const start = Date.now();
-  for (;;) {
-    if (exec.status === "completed") {
-      return {
-        ok: true,
-        id,
-        status: "completed",
-        result: exec.result,
-      };
-    }
-    if (exec.status === "failed") {
-      const err = new Error(exec.error?.message || `Execution '${id}' failed in phase '${exec.phase}'`);
-      err.error = exec.error;
-      throw err;
-    }
-
-    // Running: suspicion-with-evidence ends the wait immediately with a
-    // needs-decision envelope. The work underneath is untouched.
-    const now = Date.now();
-    const suspicion = evaluateSuspicion(exec, now);
-    if (suspicion) {
-      const elapsedSeconds = Math.round((now - exec.startedAt) / 1000);
-      const silenceSeconds = Math.max(0, Math.round((now - (exec.lastActivityAt || exec.startedAt)) / 1000));
-      const activeTool = activeToolView(exec.activeTool, now);
-      const trajectory = [...exec.trajectory];
-      return {
-        ok: true,
-        id,
-        status: "running",
-        phase: exec.phase,
-        needsDecision: true,
-        suspicion,
-        elapsedSeconds,
-        silenceSeconds,
-        activeTool,
-        trajectory,
-      };
-    }
-
-    // Window expired with nothing to report: running-fine heartbeat. The
-    // work continues underneath; re-await keeps watching.
-    if (now - start >= windowMs) {
-      const elapsedSeconds = Math.round((now - exec.startedAt) / 1000);
-      const silenceSeconds = Math.max(0, Math.round((now - (exec.lastActivityAt || exec.startedAt)) / 1000));
-      return {
-        ok: true,
-        id,
-        status: "running",
-        phase: exec.phase,
-        heartbeat: true,
-        elapsedSeconds,
-        silenceSeconds,
-        activeTool: activeToolView(exec.activeTool, now),
-        trajectory: [...exec.trajectory],
-      };
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-}
-
 // ============================================================================
 // Dedicated Ticket Tools
 // ============================================================================
@@ -3396,10 +3199,8 @@ export async function completeTask(args = {}) {
   };
 }
 
-// Tool exclusion for clients that must not see certain tools: Codex/Astra
-// runs dispatch-and-yield, so its MCP server hides await_runner and
-// await_execution from the callable schema. Configured via the
-// `--disabled-tools <comma-separated-names>` CLI arg and/or the
+// Tool exclusion for clients that must not see certain tools. Configured via
+// the `--disabled-tools <comma-separated-names>` CLI arg and/or the
 // QQ_DISABLED_TOOLS env var (comma-separated); both sources union.
 export function parseDisabledTools(argv = process.argv.slice(2), env = process.env) {
   const names = [];
@@ -3465,9 +3266,6 @@ export async function callTool(name, args = {}, options = {}) {
   if (name === "cancel_runner") {
     return cancelRunner(args);
   }
-  if (name === "await_runner") {
-    return awaitRunner(args);
-  }
   if (name === "retry_runner_notification") {
     // Routing is taken ONLY from the retained record; the caller supplies no
     // thread/session and ownership is verified against trusted runtime context.
@@ -3478,9 +3276,6 @@ export async function callTool(name, args = {}, options = {}) {
   }
   if (name === "check_execution") {
     return checkExecution(args);
-  }
-  if (name === "await_execution") {
-    return awaitExecution(args);
   }
   if (name === "read_ticket") {
     return readTicket(args);

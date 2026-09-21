@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import {
   WORKER_MODEL,
   WORKER_PROVIDER,
+  WORKER_LEGACY_REASONING_EFFORT_LEVELS,
   WORKER_REASONING_EFFORT_LEVELS,
   WORKER_SEATS,
   buildWorkerLaunch,
@@ -25,6 +26,7 @@ import { FINAL_RESPONSE_MAX_CHARS_LABEL } from "../workflow/limits.mjs";
 const root = mkdtempSync(join(tmpdir(), "qq-worker-launch-"));
 const configFile = join(root, "worker-config.json");
 writeFileSync(configFile, JSON.stringify({
+  harness: "codex",
   provider: "deepseek",
   model: "deepseek-flash",
   base_url: "https://api.deepseek.com",
@@ -121,23 +123,31 @@ for (const seat of WORKER_SEATS) {
   }
 }
 
-// L3. Fail-closed validation: any non-DeepSeek-Flash pin throws, no fallback.
+// L3. Fail-closed validation: the legacy harness refuses a provider/model it
+// cannot serve, and the Pi runtime refuses a missing selection. Neither ever
+// substitutes anything.
 {
   const badProvider = join(root, "bad-provider.json");
-  writeFileSync(badProvider, JSON.stringify({ provider: "muse", model: "deepseek-flash" }));
-  assert.throws(() => loadWorkerConfig({ env, file: badProvider }), /worker provider 'muse' is not authorized/);
+  writeFileSync(badProvider, JSON.stringify({ harness: "deepseek-minimal", provider: "muse", model: "deepseek-flash" }));
+  assert.throws(() => loadWorkerConfig({ env, file: badProvider }), /serves only 'deepseek'/);
 
   const badModel = join(root, "bad-model.json");
-  writeFileSync(badModel, JSON.stringify({ provider: "deepseek", model: "deepseek-v4-pro" }));
-  assert.throws(() => loadWorkerConfig({ env, file: badModel }), /worker model 'deepseek-v4-pro' is not authorized/);
+  writeFileSync(badModel, JSON.stringify({ harness: "deepseek-minimal", provider: "deepseek", model: "deepseek-v4-pro" }));
+  assert.throws(() => loadWorkerConfig({ env, file: badModel }), /serves only model 'deepseek-flash'/);
 
   const badJson = join(root, "bad.json");
   writeFileSync(badJson, "{ not json");
   assert.throws(() => loadWorkerConfig({ env, file: badJson }), /not valid JSON/);
 
+  // The Pi runtime has no source-level default provider or model: a config that
+  // omits the selection is refused instead of falling back to the legacy pin.
+  const noSelection = join(root, "pi-no-selection.json");
+  writeFileSync(noSelection, JSON.stringify({ harness: "pi", reasoning_effort: "xhigh" }));
+  assert.throws(() => loadWorkerConfig({ env, file: noSelection }), /must select a provider/);
+
   assert.throws(
-    () => buildWorkerLaunch({ seat: "implementer", cwd: "/tmp", prompt: "x", env, config: { provider: "gemini", model: "deepseek-flash" } }),
-    /worker provider 'gemini' is not authorized|not authorized/,
+    () => buildWorkerLaunch({ seat: "implementer", cwd: "/tmp", prompt: "x", env, config: { harness: "deepseek-minimal", provider: "gemini", model: "deepseek-flash" } }),
+    /serves only 'deepseek'/,
   );
 }
 
@@ -146,6 +156,7 @@ for (const seat of WORKER_SEATS) {
 // absent unless the operator explicitly configures it.
 {
   const baseConfig = {
+    harness: "codex",
     provider: "deepseek",
     model: "deepseek-flash",
     base_url: "https://api.deepseek.com",
@@ -161,7 +172,8 @@ for (const seat of WORKER_SEATS) {
   const overrideArg = (level) => `model_reasoning_effort="${level}"`;
 
   // Supported backend levels normalize to the canonical level.
-  assert.deepEqual(WORKER_REASONING_EFFORT_LEVELS, ["low", "high", "max"]);
+  assert.deepEqual(WORKER_LEGACY_REASONING_EFFORT_LEVELS, ["low", "high", "max"]);
+  assert.deepEqual(WORKER_REASONING_EFFORT_LEVELS, ["off", "minimal", "low", "medium", "high", "xhigh", "max"], "the pi runtime accepts every documented level");
   for (const [name, extra, expected] of [
     ["max-raw", { reasoning_effort: "max" }, "max"],
     ["high-camel", { reasoningEffort: "high" }, "high"],

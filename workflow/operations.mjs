@@ -35,8 +35,6 @@ import { ensureAssociation, resolveSessionKey, stateDirFor } from "./session.mjs
 import { extractSection, listSections, loadPackagedTemplate, replaceSection, ticketPath } from "./ticket.mjs";
 import { planFingerprint, planToSpawn, resolveWorkerLaunchPlan } from "./worker-launch.mjs";
 
-export const AWAIT_CALL_WINDOW_MS = 290_000; // 4:50 — always home before the harness cliff
-
 // Native tool surface for the Architect. Local inspection stays read-only
 // (read/grep/find/ls); workflow capabilities are scoped ticket updates and
 // managed delegation. No shell, no editor/write tool, and no direct
@@ -46,7 +44,6 @@ export const WORKFLOW_TOOL_NAMES = [
   "update_ticket",
   "dispatch_runner",
   "check_runner",
-  "await_runner",
   "steer_runner",
   "cancel_runner",
   "read_report",
@@ -54,7 +51,6 @@ export const WORKFLOW_TOOL_NAMES = [
   "recover_deliveries",
   "dispatch_execution",
   "check_execution",
-  "await_execution",
 ];
 
 export const WORKFLOW_TOOLS = [
@@ -89,7 +85,7 @@ export const WORKFLOW_TOOLS = [
     name: "dispatch_runner",
     label: "Dispatch runner",
     description:
-      "Delegate read-only research, inspection, or diagnostics to a runner worker and return its durable job id.",
+      "Delegate research, inspection, reproduction, or diagnostics to a runner worker and return its durable job id. The runner investigates and reports; implementation and landing stay with the managed pipeline.",
     parameters: {
       type: "object",
       properties: {
@@ -105,21 +101,6 @@ export const WORKFLOW_TOOLS = [
     label: "Check runner",
     description: "Point-in-time status of a runner job, including its report reference.",
     parameters: { type: "object", properties: { jobId: { type: "string" } }, required: ["jobId"], additionalProperties: false },
-  },
-  {
-    name: "await_runner",
-    label: "Await runner",
-    description:
-      "Wait for a runner job to finish, or return a status heartbeat before the call window closes. Always returns.",
-    parameters: {
-      type: "object",
-      properties: {
-        jobId: { type: "string" },
-        timeoutMs: { type: "number", description: "Optional wait window in milliseconds." },
-      },
-      required: ["jobId"],
-      additionalProperties: false,
-    },
   },
   {
     name: "steer_runner",
@@ -162,21 +143,6 @@ export const WORKFLOW_TOOLS = [
     label: "Check execution",
     description: "Point-in-time status of a managed execution, including its phase and report reference.",
     parameters: { type: "object", properties: { jobId: { type: "string" } }, required: ["jobId"], additionalProperties: false },
-  },
-  {
-    name: "await_execution",
-    label: "Await execution",
-    description:
-      "Wait for a managed execution to finish, or return a status heartbeat before the call window closes. Always returns.",
-    parameters: {
-      type: "object",
-      properties: {
-        jobId: { type: "string" },
-        timeoutMs: { type: "number", description: "Optional wait window in milliseconds." },
-      },
-      required: ["jobId"],
-      additionalProperties: false,
-    },
   },
   {
     name: "read_report",
@@ -253,13 +219,10 @@ export function createWorkflow({
   notifierTransport = null,
   now = () => Date.now(),
   registry = new Map(),
-  awaitWindowMs = AWAIT_CALL_WINDOW_MS,
-  delayFn = null,
   executionLauncher = null,
 } = {}) {
   if (!root) throw new Error("repository root is required");
   const stateDir = stateDirFor(root, env);
-  const waiting = new Map(); // jobId -> resolve(terminalSummary)
   const live = new Map(); // jobId -> { child, outputTail, activeTool, trajectory, stderr }
 
   function session() {
@@ -287,22 +250,6 @@ export function createWorkflow({
       throw new Error(`job '${jobId}' belongs to another workflow session; refusing to operate on it`);
     }
     return record;
-  }
-
-  function registerWait(jobId) {
-    let resolveFn;
-    const promise = new Promise((resolve) => {
-      resolveFn = resolve;
-    });
-    waiting.set(jobId, { resolve: resolveFn, promise });
-    return promise;
-  }
-
-  function settle(jobId, value) {
-    const entry = waiting.get(jobId);
-    if (!entry) return;
-    waiting.delete(jobId);
-    entry.resolve(value);
   }
 
   // Persist the complete report + terminal outcome BEFORE notifying, then hand a
@@ -341,10 +288,9 @@ export function createWorkflow({
         now: now(),
       });
     }
-    // Settle with the final record so the awaited summary reflects the delivery
-    // state that was actually achieved, not the state before delivery.
+    // Report the final record so a caller sees the delivery state that was
+    // actually achieved, not the state before delivery.
     const finalRecord = readJob(stateDir, record.id) ?? settled;
-    settle(record.id, jobSummary(finalRecord));
     return { record: finalRecord, delivery };
   }
 
@@ -464,7 +410,6 @@ export function createWorkflow({
     }
 
     const runner = { id, runnerId: id, sessionId: association.sessionId, sessionKey: association.sessionKey, resultFile, reportFile, cwd, status: RUNNING };
-    registerWait(id);
 
     let child;
     try {
@@ -539,7 +484,6 @@ export function createWorkflow({
       if (finished.cancellation || signal === "SIGTERM" || signal === "SIGINT") {
         cleanupRunnerFiles(runner);
         live.delete(id);
-        settle(id, jobSummary(readJob(stateDir, id) ?? finished));
         return;
       }
       cleanupRunnerFiles(runner);
@@ -581,54 +525,6 @@ export function createWorkflow({
     };
   }
 
-  async function awaitRunnerOp({ jobId, timeoutMs = awaitWindowMs } = {}) {
-    const record = requireJob(jobId);
-    if (TERMINAL_STATUSES.includes(record.status)) {
-      return {
-        settled: true,
-        ...jobSummary(record),
-        ...(record.recovery
-          ? { note: `reconciled after a restart (${record.recovery.verdict}); nothing was killed, adopted, or restarted` }
-          : {}),
-      };
-    }
-    const entry = waiting.get(jobId);
-    const promise = entry?.promise;
-    if (!promise) {
-      // A job that survived a restart is inspectable but never re-attached.
-      const reconciled = reconcileJob(stateDir, jobId) ?? record;
-      return {
-        settled: true,
-        ...jobSummary(reconciled),
-        note: "no live waiter for this job after restart; reconciled from durable state (nothing was killed, adopted, or restarted)",
-      };
-    }
-    const timeout = Math.max(1, Math.min(Number(timeoutMs) || awaitWindowMs, awaitWindowMs));
-    // The wait window is an unref'd timer and is always cleared: a settled await
-    // must never leave a live handle behind (stdio servers and tests exit cleanly).
-    let timer = null;
-    const window = new Promise((resolve) => {
-      timer = setTimeout(() => resolve({ settled: false }), timeout);
-      if (typeof timer.unref === "function") timer.unref();
-    });
-    const bounded = delayFn ? [promise.then((value) => ({ settled: true, value })), delayFn(timeout).then(() => ({ settled: false }))] : [promise.then((value) => ({ settled: true, value })), window];
-    const winner = await Promise.race(bounded);
-    if (timer) clearTimeout(timer);
-    if (winner.settled) {
-      return { settled: true, ...(winner.value ?? jobSummary(requireJob(jobId))) };
-    }
-    const current = requireJob(jobId);
-    const state = live.get(jobId) ?? null;
-    return {
-      settled: false,
-      status: current.status,
-      id: current.id,
-      role: current.role,
-      activeTool: state?.activeTool ?? null,
-      note: "still running; re-await or check_runner for a point-in-time read",
-    };
-  }
-
   function steerRunnerOp({ jobId, message } = {}) {
     const record = requireJob(jobId);
     if (typeof message !== "string" || !message.trim()) throw new Error("message is required");
@@ -667,7 +563,6 @@ export function createWorkflow({
         signalled = true;
       } catch {}
     }
-    settle(jobId, jobSummary(readJob(stateDir, jobId)));
     return {
       ok: true,
       jobId,
@@ -714,7 +609,6 @@ export function createWorkflow({
       launchPlan: plan ?? null,
       now: now(),
     });
-    registerWait(id);
     live.set(id, { execution: true, phase: record.phase });
     void (async () => {
       try {
@@ -762,12 +656,6 @@ export function createWorkflow({
     const record = requireJob(jobId);
     if (record.role !== "execution") throw new Error(`job '${jobId}' is not a managed execution`);
     return checkRunnerOp({ jobId });
-  }
-
-  async function awaitExecutionOp({ jobId, timeoutMs = awaitWindowMs } = {}) {
-    const record = requireJob(jobId);
-    if (record.role !== "execution") throw new Error(`job '${jobId}' is not a managed execution`);
-    return awaitRunnerOp({ jobId, timeoutMs });
   }
 
   function readReportOp({ reportId, offset = 0, limit } = {}) {
@@ -840,8 +728,6 @@ export function createWorkflow({
         return dispatchRunnerOp(args ?? {});
       case "check_runner":
         return checkRunnerOp(args ?? {});
-      case "await_runner":
-        return awaitRunnerOp(args ?? {});
       case "steer_runner":
         return steerRunnerOp(args ?? {});
       case "cancel_runner":
@@ -852,8 +738,6 @@ export function createWorkflow({
         return dispatchExecutionOp(args ?? {});
       case "check_execution":
         return checkExecutionOp(args ?? {});
-      case "await_execution":
-        return awaitExecutionOp(args ?? {});
       case "list_jobs":
         return { jobs: jobsView({ role: args?.role ?? null, scope: args?.scope === "all" ? "all" : "session" }) };
       case "recover_deliveries":
@@ -876,13 +760,11 @@ export function createWorkflow({
     updateTicket: updateTicketOp,
     dispatchRunner: dispatchRunnerOp,
     checkRunner: checkRunnerOp,
-    awaitRunner: awaitRunnerOp,
     steerRunner: steerRunnerOp,
     cancelRunner: cancelRunnerOp,
     readReport: readReportOp,
     dispatchExecution: dispatchExecutionOp,
     checkExecution: checkExecutionOp,
-    awaitExecution: awaitExecutionOp,
     _live: live,
   };
 }

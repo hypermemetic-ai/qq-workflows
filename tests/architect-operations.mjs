@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createWorkflow, interpretRunnerEvent, WORKFLOW_TOOL_NAMES } from "../workflow/operations.mjs";
+import { createWorkflow, interpretRunnerEvent, WORKFLOW_TOOLS, WORKFLOW_TOOL_NAMES } from "../workflow/operations.mjs";
 import { readJob, writeJob } from "../workflow/jobs.mjs";
 import { readReport } from "../workflow/reports.mjs";
 import {
@@ -18,8 +18,8 @@ import {
   resolveWorkerLaunchPlan,
   workerConfigPath,
 } from "../workflow/worker-launch.mjs";
-import { WORKER_DEEPSEEK_ADAPTER } from "../workflow/worker-config.mjs";
-import { agentTransport, runnerSpawner, tempRepo, tempDir } from "./support/architect-fixtures.mjs";
+import { WORKER_DEEPSEEK_ADAPTER, WORKER_PI_ADAPTER, loadWorkerConfig } from "../workflow/worker-config.mjs";
+import { agentTransport, runnerSpawner, tempRepo, tempDir, waitForJobTerminal } from "./support/architect-fixtures.mjs";
 
 const { root, env } = await tempRepo({ agents: "Repository rule: keep changes in the worktree.\n" });
 
@@ -110,7 +110,7 @@ assert.equal(runningView.launchPlan.reasoning_effort, "max");
 assert.equal(runningView.launchPlan.runtime_root, join(root, "deepseek-minimal-runtime"));
 assert.ok(runningView.launchPlan.fingerprint);
 
-const settled = await agentLong.awaitRunner({ jobId: dispatch.jobId });
+const settled = await waitForJobTerminal(agentLong.stateDir, dispatch.jobId, { requireDelivery: true });
 assert.equal(settled.settled, true);
 assert.equal(settled.status, "completed");
 assert.ok(settled.terminal.reportId, "the terminal record points at a durable report");
@@ -137,7 +137,7 @@ assert.ok(fullText.includes("data_points"), "data points are part of the durable
 const busy = agentTransport({ name: "agent-A-busy", idle: false });
 const agentBusy = workflowFor({ sessionKey: "agent-A", transport: busy, spawnFn: runnerSpawner({ response: "busy findings" }) });
 const busyDispatch = agentBusy.dispatchRunner({ task: "second runner" });
-const busySettled = await agentBusy.awaitRunner({ jobId: busyDispatch.jobId });
+const busySettled = await waitForJobTerminal(agentBusy.stateDir, busyDispatch.jobId, { requireDelivery: true });
 assert.equal(busySettled.status, "completed");
 assert.equal(busy.delivered[0].state, "queued", "a busy session gets a queued (non-interrupting) notification");
 assert.ok(busySettled.terminal.reportId, "the result is durable even when delivery is only queued");
@@ -151,7 +151,7 @@ const failed = workflowFor({
     runnerSpawner({ response: "ignored", exitCode: 3, resultWriter: ({ options: spawnOptions, child }) => { child.stderr.write("boom: harness failed\n"); void spawnOptions; } })(command, args, options),
 });
 const failedDispatch = failed.dispatchRunner({ task: "will fail" });
-const failedSettled = await failed.awaitRunner({ jobId: failedDispatch.jobId });
+const failedSettled = await waitForJobTerminal(failed.stateDir, failedDispatch.jobId, { requireDelivery: true });
 assert.equal(failedSettled.status, "failed");
 assert.ok(failedSettled.terminal.reportId, "failure diagnostics are persisted too");
 assert.match(readReport(join(root, ".architect", "state"), failedSettled.terminal.reportId).text, /code 3/);
@@ -240,11 +240,12 @@ const cancelledAfterRecovery = readJob(stateDir, heldDispatch.jobId);
 assert.equal(cancelledAfterRecovery.status, "cancelled");
 assert.ok(cancelledAfterRecovery.cancellation);
 
-// Await after a restart returns a truthful reconciliation instead of hanging.
-const awaited = await afterRestart.awaitRunner({ jobId: orphanId });
-assert.equal(awaited.settled, true);
-assert.equal(awaited.status, "interrupted");
-assert.match(awaited.note, /restart/);
+// After a restart the orphan stays inspectable through the point-in-time read:
+// nothing is re-attached, killed, or adopted.
+const orphanView = afterRestart.checkRunner({ jobId: orphanId });
+assert.equal(orphanView.status, "interrupted");
+assert.equal(orphanView.trajectory.length, 0);
+assert.equal(afterRestart.jobsView().some((job) => job.id === orphanId && job.status === "interrupted"), true);
 
 // ---------------------------------------------------------------------------
 // O5. Two simultaneous agents never cross-route tickets or results.
@@ -258,8 +259,8 @@ await wfB.updateTicket({ content: "# Ticket\n\n## Problem\n\nticket B\n" });
 const dispatchA = wfA.dispatchRunner({ task: "A only" });
 const dispatchB = wfB.dispatchRunner({ task: "B only" });
 const [settledA, settledB] = await Promise.all([
-  wfA.awaitRunner({ jobId: dispatchA.jobId }),
-  wfB.awaitRunner({ jobId: dispatchB.jobId }),
+  waitForJobTerminal(wfA.stateDir, dispatchA.jobId, { requireDelivery: true }),
+  waitForJobTerminal(wfB.stateDir, dispatchB.jobId, { requireDelivery: true }),
 ]);
 assert.equal(settledA.sessionKey, "cross-A");
 assert.equal(settledB.sessionKey, "cross-B");
@@ -268,7 +269,7 @@ assert.ok(crossB.delivered.every((notification) => notification.jobId === dispat
 assert.equal(crossA.delivered.length, 1);
 assert.equal(crossB.delivered.length, 1);
 assert.throws(() => wfB.checkRunner({ jobId: dispatchA.jobId }), /another workflow session/);
-await assert.rejects(() => wfB.awaitRunner({ jobId: dispatchA.jobId }), /another workflow session/);
+assert.equal(wfB.jobsView().some((job) => job.id === dispatchA.jobId), false, "another session's job is never listed");
 const wfC = workflowFor({ sessionKey: "cross-C", transport: agentTransport({ name: "cross-C" }), spawnFn: runnerSpawner({}) });
 assert.equal((await wfC.readTicket({})).ok, false, "a fresh session has no ticket and none is inferred for it");
 assert.match((await wfA.readTicket({ section: "Problem" })).content, /ticket A/);
@@ -321,7 +322,7 @@ await execWorkflow.updateTicket({ content: "# Ticket\n\n## Kind\n\nbounded\n" })
 const execDispatch = execWorkflow.dispatchExecution({ kind: "bounded" });
 assert.equal(execDispatch.ok, true);
 assert.equal(execDispatch.status, "running");
-const execSettled = await execWorkflow.awaitExecution({ jobId: execDispatch.jobId });
+const execSettled = await waitForJobTerminal(execWorkflow.stateDir, execDispatch.jobId, { requireDelivery: true });
 assert.equal(execSettled.settled, true);
 assert.equal(execSettled.status, "completed");
 assert.equal(execSettled.role, "execution");
@@ -354,7 +355,7 @@ const failingExec = createWorkflow({
   executionLauncher: async () => ({ ok: false, status: "failed", phase: "review", error: { message: "reviewer found defects", phase: "review" } }),
 });
 const failingDispatch = failingExec.dispatchExecution({ kind: "open" });
-const failingSettled = await failingExec.awaitExecution({ jobId: failingDispatch.jobId });
+const failingSettled = await waitForJobTerminal(failingExec.stateDir, failingDispatch.jobId, { requireDelivery: true });
 assert.equal(failingSettled.status, "failed");
 assert.match(failingSettled.terminal.summary, /reviewer found defects/);
 assert.ok(failingSettled.terminal.reportId, "failure diagnostics are persisted for executions too");
@@ -373,19 +374,26 @@ const runnerOnly = createWorkflow({
 });
 const runnerJob = runnerOnly.dispatchRunner({ task: "runner only" });
 assert.throws(() => runnerOnly.checkExecution({ jobId: runnerJob.jobId }), /not a managed execution/);
-await runnerOnly.awaitRunner({ jobId: runnerJob.jobId });
+await waitForJobTerminal(runnerOnly.stateDir, runnerJob.jobId, { requireDelivery: true });
 
 // ---------------------------------------------------------------------------
 // O6. Every native tool name is reachable through the shared dispatcher.
 // ---------------------------------------------------------------------------
+// The removed wait tools are absent from the executable surface, not hidden:
+// the shared dispatcher refuses them exactly like any other unknown name.
+assert.equal(WORKFLOW_TOOL_NAMES.includes("await_runner"), false, "await_runner is not part of the Architect tool surface");
+assert.equal(WORKFLOW_TOOL_NAMES.includes("await_execution"), false, "await_execution is not part of the Architect tool surface");
+assert.equal(WORKFLOW_TOOLS.some((tool) => tool.name === "await_runner" || tool.name === "await_execution"), false, "no await tool definition survives");
+await assert.rejects(() => wfA.callTool("await_runner", { jobId: dispatchA.jobId }), /unknown workflow tool/);
+await assert.rejects(() => wfA.callTool("await_execution", { jobId: execDispatch.jobId }), /unknown workflow tool/);
+
 for (const name of WORKFLOW_TOOL_NAMES) {
   if (name === "recover_deliveries") continue;
-  if (["dispatch_runner", "dispatch_execution", "check_execution", "await_execution"].includes(name)) continue;
+  if (["dispatch_runner", "dispatch_execution", "check_execution"].includes(name)) continue;
   const args = {
     read_ticket: {},
     update_ticket: { content: "# Ticket\n" },
     check_runner: { jobId: dispatchA.jobId },
-    await_runner: { jobId: dispatchA.jobId },
     steer_runner: { jobId: dispatchA.jobId, message: "x" },
     cancel_runner: { jobId: dispatchA.jobId },
     read_report: { reportId: settledA.terminal.reportId },
@@ -397,9 +405,7 @@ for (const name of WORKFLOW_TOOL_NAMES) {
 const execCheck = await execWorkflow.callTool("check_execution", { jobId: execDispatch.jobId });
 assert.equal(execCheck.role, "execution");
 assert.equal(execCheck.status, "completed");
-const execAwait = await execWorkflow.callTool("await_execution", { jobId: execDispatch.jobId });
-assert.equal(execAwait.settled, true);
-assert.equal(execAwait.kind, "bounded");
+assert.equal(execCheck.kind, "bounded");
 const jobsListed = await wfA.callTool("list_jobs", {});
 assert.ok(jobsListed.jobs.some((job) => job.id === dispatchA.jobId));
 assert.ok(jobsListed.jobs.every((job) => job.sessionKey === "cross-A"), "list_jobs is session-scoped by default");
@@ -503,15 +509,44 @@ assert.throws(
   /QQ_WORKER_EXEC=.* is not a supported worker launch override/,
 );
 
-// Fail closed on a pin violation; never fall back to another provider or model.
+// The retained legacy harness serves exactly one provider/model pair: asking
+// it for another provider is refused with an actionable pointer to the Pi
+// runtime instead of substituting anything.
 for (const violation of [{ provider: "openai" }, { model: "gpt-x" }]) {
   const path = join(workerConfigDir, `bad-${Object.keys(violation)[0]}.json`);
   writeFileSync(path, JSON.stringify({ ...pins, ...violation }), "utf8");
   assert.throws(
     () => resolveWorkerLaunchPlan({ role: "runner", env: { QQ_WORKER_CONFIG_FILE: path } }),
-    /not authorized/,
-    "a pin violation refuses the launch instead of substituting a provider",
+    /serves only/,
+    "the legacy harness refuses a provider/model it cannot serve",
   );
+}
+
+// A provider/model swap for the one worker runtime is a CONFIG change: the
+// plan reflects the operator's selection with no source edit, and the pi
+// harness takes endpoint/protocol/credentials from pi's own registry.
+{
+  const swapPath = join(workerConfigDir, "pi-swap.json");
+  writeFileSync(swapPath, JSON.stringify({
+    harness: "pi",
+    provider: "meta",
+    model: "muse-spark-1.3-contributor",
+    reasoning_effort: "xhigh",
+    env_key: "MODEL_API_KEY",
+    context: { enabled: true, reserve_tokens: 16384, keep_recent_tokens: 20000 },
+  }), "utf8");
+  const swapLoad = loadWorkerConfig({ env: { QQ_WORKER_CONFIG_FILE: swapPath } });
+  assert.equal(swapLoad.harness, "pi");
+  assert.equal(swapLoad.provider, "meta");
+  assert.equal(swapLoad.model, "muse-spark-1.3-contributor");
+  assert.equal(swapLoad.reasoningEffort, "xhigh");
+  assert.equal(swapLoad.baseUrl, null, "the pi runtime takes the endpoint from the registry, not from this file");
+  assert.equal(swapLoad.context.reserveTokens, 16384);
+  const swapPlan = resolveWorkerLaunchPlan({ role: "implementer", env: { QQ_WORKER_CONFIG_FILE: swapPath } });
+  assert.equal(swapPlan.harness, "pi");
+  assert.equal(swapPlan.pi_bin, "pi");
+  assert.equal(swapPlan.adapter, WORKER_PI_ADAPTER);
+  assert.equal(swapPlan.model, "muse-spark-1.3-contributor");
 }
 
 // A missing central configuration is refused: there is no default pins path,

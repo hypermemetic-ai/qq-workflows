@@ -27,7 +27,7 @@ import { createWorkflow, WORKFLOW_TOOL_NAMES } from "../workflow/operations.mjs"
 import { loadManagedExecutionLauncher } from "../pi-extension/managed-execution.mjs";
 import { deliveryPending, readJob, recordTerminal, createJob } from "../workflow/jobs.mjs";
 import { createJob as _createJob } from "../workflow/jobs.mjs";
-import { agentTransport, callHandlers, fakeContext, fakePi, runnerSpawner, tempRepo, tickQueue } from "./support/architect-fixtures.mjs";
+import { agentTransport, callHandlers, fakeContext, fakePi, runnerSpawner, tempRepo, tickQueue, waitForJobTerminal } from "./support/architect-fixtures.mjs";
 
 const { root, env, agentDir } = await tempRepo({ agents: "Repository rule: never edit outside the worktree.\n" });
 const capturePath = join(root, "prompt-capture.jsonl");
@@ -406,7 +406,7 @@ const readinessWorkflow = createWorkflow({
   notifierTransport: { name: "offline", deliver: async () => ({ state: "failed", reason: "session closed" }) },
 });
 const readinessDispatch = readinessWorkflow.dispatchRunner({ task: "ran while this session was closed" });
-await readinessWorkflow.awaitRunner({ jobId: readinessDispatch.jobId });
+await waitForJobTerminal(readinessWorkflow.stateDir, readinessDispatch.jobId, { requireDelivery: true });
 
 const { pi: awaitingPi, extension: awaitingExtension, scheduled: awaitingScheduled } = buildExtension({ env: readinessEnv });
 const awaitingCtx = fakeContext({ idle: true });
@@ -450,7 +450,7 @@ const wf = createWorkflow({
   notifierTransport: { name: "offline", deliver: async () => ({ state: "failed", reason: "session closed" }) },
 });
 const orphanDispatch = wf.dispatchRunner({ task: "ran while the session was closed" });
-await wf.awaitRunner({ jobId: orphanDispatch.jobId });
+await waitForJobTerminal(wf.stateDir, orphanDispatch.jobId, { requireDelivery: true });
 const orphanJob = readJob(stateDir, orphanDispatch.jobId);
 assert.equal(orphanJob.status, "completed");
 assert.equal(orphanJob.delivery.state, "failed", "a delivery that never landed stays recorded as failed");
@@ -519,7 +519,7 @@ for (const reason of ["startup", "new", "resume", "fork", "reload"]) {
     notifierTransport: { name: "offline", deliver: async () => ({ state: "failed", reason: "session closed" }) },
   });
   const reasonDispatch = reasonWorkflow.dispatchRunner({ task: `ran while ${reason} was closed` });
-  await reasonWorkflow.awaitRunner({ jobId: reasonDispatch.jobId });
+  await waitForJobTerminal(reasonWorkflow.stateDir, reasonDispatch.jobId, { requireDelivery: true });
 
   const { pi: reasonPi, extension: reasonExtension, scheduled: reasonScheduled } = buildExtension({ env: reasonEnv });
   await callHandlers(reasonPi, "session_start", { reason }, fakeContext({ idle: true }));
@@ -607,7 +607,7 @@ const execToolWorkflow = createWorkflow({
 });
 const execDispatch = await execToolWorkflow.callTool("dispatch_execution", { kind: "bounded" });
 assert.equal(execDispatch.ok, true);
-const execSettled = await execToolWorkflow.callTool("await_execution", { jobId: execDispatch.jobId });
+const execSettled = await waitForJobTerminal(execToolWorkflow.stateDir, execDispatch.jobId, { requireDelivery: true });
 assert.equal(execSettled.status, "completed");
 assert.equal(execSettled.role, "execution");
 

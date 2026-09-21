@@ -47,7 +47,7 @@ import {
 } from "../bin/mcp-server.mjs";
 import { createWorkflow } from "../workflow/operations.mjs";
 import { loadManagedExecutionLauncher } from "../pi-extension/managed-execution.mjs";
-import { fakeChild, runnerSpawner, tempDir } from "./support/architect-fixtures.mjs";
+import { fakeChild, runnerSpawner, tempDir, waitForJobTerminal } from "./support/architect-fixtures.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = dirname(HERE);
@@ -235,7 +235,7 @@ for (const [label, repo] of [["A", repoA], ["B", repoB]]) {
   assert.ok(call.options.env.QQ_RUNNER_RESULT_FILE.endsWith(".json"));
   assert.equal(call.options.env.QQ_WORKER_CONFIG_FILE, configFile);
   assert.equal(workflow.checkRunner({ jobId: dispatched.jobId }).launchPlan.source, "central-config");
-  const settled = await workflow.awaitRunner({ jobId: dispatched.jobId });
+  const settled = await waitForJobTerminal(workflow.stateDir, dispatched.jobId, { requireDelivery: false });
   assert.equal(settled.status, "completed", "the recorded launch contract still delivers a terminal result");
 }
 
@@ -260,7 +260,7 @@ for (const [label, repo] of [["A", repoA], ["B", repoB]]) {
   });
   await workflow.updateTicket({ content: "# Ticket\n\n## Problem\n\nfailure\n" });
   const dispatched = workflow.dispatchRunner({ task: "fail", targetPaths: [] });
-  const settled = await workflow.awaitRunner({ jobId: dispatched.jobId });
+  const settled = await waitForJobTerminal(workflow.stateDir, dispatched.jobId, { requireDelivery: false });
   assert.equal(settled.status, "failed", "a worker that produced no authoritative result fails the job");
   assert.equal(failing[0].args[0], WORKER_DEEPSEEK_ADAPTER, "the failing launch was the central contract");
 }
@@ -289,7 +289,7 @@ for (const [label, repo] of [["A", repoA], ["B", repoB]]) {
   assert.equal(cancelled[0].options.env.QQ_RUNNER_ID, dispatched.jobId);
   const cancelledView = workflow.cancelRunner({ jobId: dispatched.jobId, reason: "test" });
   assert.equal(cancelledView.status, "cancelled");
-  const settled = await workflow.awaitRunner({ jobId: dispatched.jobId });
+  const settled = await waitForJobTerminal(workflow.stateDir, dispatched.jobId, { requireDelivery: false });
   assert.equal(settled.status, "cancelled", "cancellation stays terminal and never reports findings");
 }
 
@@ -330,7 +330,7 @@ const missingConfig = runWorkerExec(["--seat", "implementer", "--cwd", repoA, "-
 });
 assert.equal(missingConfig.status, 1);
 assert.match(missingConfig.stderr, /central worker configuration is missing/);
-assert.match(missingConfig.stderr, /never fall back to agy, native Codex, or pi/, "the diagnostic names the refusal explicitly");
+assert.match(missingConfig.stderr, /never fall back to another runtime/, "the diagnostic names the refusal explicitly");
 assert.equal(missingConfig.stdout, "", "a refused launch emits no worker protocol output");
 
 const missingRuntime = runWorkerExec(["--seat", "implementer", "--cwd", repoA, "--prompt", "x"], {
@@ -396,7 +396,7 @@ assert.match(missingRuntime.stderr, /no prepared runtime at .*setup-runtime\.mjs
     () => prepareWorktree({ kind: "open", reviewerProvider: "muse" }),
     /provider override 'reviewerProvider' is not permitted/,
   );
-  assert.throws(() => assertNoProviderOverrides({}, { QQ_REVIEWER_PROVIDER: "gemini" }), /not authorized/);
+  assert.throws(() => assertNoProviderOverrides({}, { QQ_REVIEWER_PROVIDER: "gemini" }), /legacy worker provider selection is not authorized/);
   assert.equal(resolveSeatProvider("implementer", {}, { ...process.env, ...centralEnv }), "deepseek");
 
   // The real pipeline, driven end to end with a worker double: both seats must
@@ -623,7 +623,7 @@ assert.throws(
 );
 assert.throws(
   () => buildWorkerLaunch({ seat: "implementer", cwd: repoA, prompt: "x", env: { ...centralEnv } , config: { ...PRODUCTION_PINS, provider: "muse" } }),
-  /not authorized/,
+  /serves only 'deepseek'/,
 );
 
 function existsSyncSafe(path) {

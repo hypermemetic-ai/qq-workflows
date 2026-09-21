@@ -28,7 +28,6 @@ import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
-  AWAIT_CALL_WINDOW_MS,
   CANONICAL_PROVIDERS,
   COMPLETE_TASK_REGISTRY,
   EXECUTIONS,
@@ -37,12 +36,10 @@ import {
   NOTIFY_SWEEP_INTERVAL_MS,
   PROVIDERS,
   RUNNERS,
-  SEAT_PROVIDERS,
+  STALL_SUSPICION_WINDOW_MS,
+  stallSuspicionWindowMs,
   SUSPICION_RENOTIFY_MS,
   TOOLS,
-  awaitExecution,
-  awaitRunner,
-  awaitWindowMs,
   buildExecutionTerminalMessage,
   buildImplementerStep,
   buildReviewerStep,
@@ -87,7 +84,6 @@ import {
   readTicket,
   reconcileDeadRunner,
   resolveCodexThreadId,
-  resolveProvider,
   resolveSeatProvider,
   resolveSessionId,
   sanitizeHeadTail,
@@ -132,12 +128,46 @@ async function retireTestWorktree(repo, result) {
   } catch {}
 }
 
+// The authoritative result for a runner tracker: the transport/registry read
+// (the production completion path) first, then the in-memory terminal result a
+// test double records. Used where the old blocking wait tool used to hand the
+// result back.
+function authoritativeResult(runnerId) {
+  const runner = RUNNERS.get(runnerId);
+  const loaded = readAuthoritativeRunnerResult(runner);
+  return loaded.ok ? loaded.result : (runner?.result ?? null);
+}
+
+// Wait for a dispatched execution to reach a terminal state. The Architect is
+// woken by the completion notification; a test has no session to wake, so it
+// polls the tracker the point-in-time read reports on.
+async function waitForExecution(id, { timeoutMs = 20_000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const exec = EXECUTIONS.get(id);
+    if (exec && exec.status !== "running") return exec;
+    if (Date.now() > deadline) throw new Error(`execution '${id}' did not settle within ${timeoutMs}ms`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+// Wait for a dispatched runner tracker to leave the running state. Tests have
+// no session to wake on completion, so they poll the tracker the point-in-time
+// read reports on.
+async function waitForRunnerTerminal(runnerId, { timeoutMs = 20_000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const runner = RUNNERS.get(runnerId);
+    if (runner && runner.status !== "running") return runner;
+    if (Date.now() > deadline) throw new Error(`runner '${runnerId}' did not settle within ${timeoutMs}ms`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
 // 1. Tool schema checks
-assert.equal(TOOLS.length, 14);
+assert.equal(TOOLS.length, 12);
 const toolNames = TOOLS.map((t) => t.name).sort();
 assert.deepEqual(toolNames, [
-  "await_execution",
-  "await_runner",
   "cancel_runner",
   "check_execution",
   "check_runner",
@@ -166,12 +196,9 @@ for (const name of ["prepare_worktree", "dispatch_execution"]) {
   }
 }
 
-// 1b. Seat support table: worker seats are pinned to the centrally configured
-// provider; only the architect seat keeps legacy selection.
-assert.deepEqual(PROVIDERS, ["muse", "gemini", "deepseek", "codex", "astra"]);
-assert.deepEqual(SEAT_PROVIDERS.implementer, ["deepseek"]);
-assert.deepEqual(SEAT_PROVIDERS.reviewer, ["deepseek"]);
-assert.deepEqual(SEAT_PROVIDERS.architect, ["muse", "gemini", "codex", "astra"]);
+// 1b. Seat support table: every worker seat is served by the centrally
+// configured provider, with no source-level share of a provider table left.
+assert.deepEqual(PROVIDERS, ["muse", "gemini", "deepseek", "codex", "astra"], "the legacy provider vocabulary survives only for ticket parsing");
 assert.deepEqual(WORKER_SEATS, ["runner", "implementer", "reviewer"]);
 
 // 1c. Exactly one delegation command per worker seat: the canonical
@@ -189,21 +216,32 @@ for (const step of [buildImplementerStep("/wt", "Do it"), buildReviewerStep("/wt
   assert.doesNotMatch(step, /(^|[\s'"])agy([\s'"]|$)|muse exec|dsh --profile|codex exec --profile/, `no legacy worker launcher may be rendered: ${step}`);
 }
 
-// 1d. Legacy architect-seat resolution is unchanged.
-assert.equal(resolveProvider("architect", {}), "muse");
-assert.equal(resolveProvider("architect", { seatEnv: "gemini" }), "gemini");
-assert.equal(resolveProvider("architect", { arg: "astra" }), "codex");
-assert.equal(resolveProvider("architect", { seatEnv: "codex" }), "codex");
-assert.throws(() => resolveProvider("architect", { arg: "deepseek" }), /provider 'deepseek' does not support seat 'architect'/);
-assert.throws(() => resolveProvider("architect", { arg: "foo" }), /unknown provider 'foo'/);
+// 1d. The alternate Architect provider-resolution path is gone: the one
+// Architect is the Pi on Paseo profile, so no seat-provider resolution
+// function survives to select a launcher.
+assert.equal(typeof resolveProvider, "undefined");
 
 // 1e. Worker seats resolve the operator's central configuration only; every
 // per-call and per-env provider override is refused, and a missing central
 // configuration fails closed instead of defaulting to a legacy provider.
 const centralFixture = centralWorkerConfig(mkdtempSync(join(tmpdir(), "qq-mcp-central-")));
 const centralEnv = { ...centralFixture.env };
-assert.equal(resolveSeatProvider("implementer", {}, centralEnv), "deepseek");
+assert.equal(resolveSeatProvider("implementer", {}, centralEnv), "deepseek", "the configured provider serves the seat");
 assert.equal(resolveSeatProvider("reviewer", {}, centralEnv), "deepseek");
+assert.equal(resolveSeatProvider("runner", {}, centralEnv), "deepseek");
+{
+  // The same central file can select any provider pi supports: that is a
+  // config change, not a source change.
+  const piConfig = join(tmpdir(), `qq-pi-worker-config-${Date.now()}.json`);
+  writeFileSync(piConfig, JSON.stringify({ harness: "pi", provider: "meta", model: "muse-spark-1.3-contributor", reasoning_effort: "xhigh", env_key: "MODEL_API_KEY" }), "utf8");
+  try {
+    const piEnv = { ...centralEnv, QQ_WORKER_CONFIG_FILE: piConfig };
+    assert.equal(resolveSeatProvider("implementer", {}, piEnv), "meta");
+    assert.equal(resolveSeatProvider("reviewer", {}, piEnv), "meta");
+  } finally {
+    rmSync(piConfig, { force: true });
+  }
+}
 for (const key of ["provider", "implementerProvider", "reviewerProvider", "researcherProvider"]) {
   assert.throws(
     () => resolveSeatProvider("implementer", { [key]: "gemini" }, centralEnv),
@@ -213,11 +251,11 @@ for (const key of ["provider", "implementerProvider", "reviewerProvider", "resea
 }
 assert.throws(
   () => resolveSeatProvider("implementer", {}, { ...centralEnv, QQ_IMPLEMENTER_PROVIDER: "gemini" }),
-  /worker provider configuration is not authorized: QQ_IMPLEMENTER_PROVIDER=gemini/,
+  /legacy worker provider selection is not authorized: QQ_IMPLEMENTER_PROVIDER=gemini/,
 );
 assert.throws(
   () => resolveSeatProvider("implementer", {}, { ...centralEnv, QQ_WORKFLOW_PROVIDER: "muse" }),
-  /worker provider configuration is not authorized: QQ_WORKFLOW_PROVIDER=muse/,
+  /legacy worker provider selection is not authorized: QQ_WORKFLOW_PROVIDER=muse/,
 );
 assert.throws(
   () => resolveSeatProvider("implementer", {}, { QQ_WORKER_CONFIG_FILE: join(tmpdir(), "no-such-worker-config.json") }),
@@ -227,11 +265,12 @@ assert.throws(
 assert.throws(() => resolveSeatProvider("researcher", {}, centralEnv), /does not use central worker configuration/);
 {
   const badConfig = join(tmpdir(), `qq-bad-worker-config-${Date.now()}.json`);
-  writeFileSync(badConfig, JSON.stringify({ provider: "muse", model: "deepseek-flash" }), "utf8");
+  writeFileSync(badConfig, JSON.stringify({ harness: "deepseek-minimal", provider: "muse", model: "deepseek-flash" }), "utf8");
   try {
     assert.throws(
       () => resolveSeatProvider("implementer", {}, { ...centralEnv, QQ_WORKER_CONFIG_FILE: badConfig }),
-      /worker provider 'muse' is not authorized/,
+      /serves only 'deepseek'/,
+      "the retained legacy harness refuses a provider it cannot serve",
     );
   } finally {
     rmSync(badConfig, { force: true });
@@ -439,7 +478,7 @@ try {
   try {
     await assert.rejects(
       () => prepareWorktree({ kind: "open", sessionId: openSessionId, cwd: repoDir }),
-      /worker provider configuration is not authorized: QQ_IMPLEMENTER_PROVIDER=gemini/,
+      /legacy worker provider selection is not authorized: QQ_IMPLEMENTER_PROVIDER=gemini/,
     );
   } finally {
     delete process.env.QQ_IMPLEMENTER_PROVIDER;
@@ -708,7 +747,7 @@ try {
     /Unknown tool: write_file/,
   );
 
-  // 9. Runner tools: dispatch_runner, check_runner, steer_runner, cancel_runner, await_runner
+  // 9. Runner tools: dispatch_runner, check_runner, steer_runner, cancel_runner
   await assert.rejects(
     () => dispatchRunner({}),
     /task is required/,
@@ -774,9 +813,9 @@ try {
     "undelivered terminal wakeup must report pendingRetry",
   );
 
-  const awaitRes = await awaitRunner({ runnerId: dispatchRes.runnerId });
-  assert.equal(awaitRes.ok, true);
-  assert.deepEqual(awaitRes.result, mockRunner.result);
+  // The authoritative result is read from the same transport the completion
+  // path uses; check_runner deliberately never carries findings.
+  assert.deepEqual(authoritativeResult(dispatchRes.runnerId), mockRunner.result);
 
   // Runner cancellation
   globalThis.__QQ_TEST_RUNNER_HANDLER = () => {};
@@ -789,10 +828,8 @@ try {
   assert.equal(checkCancelled.status, "cancelled");
   assert.ok(checkCancelled.trajectory.some((t) => t.action === "cancelled"));
 
-  await assert.rejects(
-    () => awaitRunner({ runnerId: cancelDispatch.runnerId }),
-    /was cancelled/,
-  );
+  // The terminal state is reported by the point-in-time read above; the removed
+  // wait tool has no callable replacement by design.
 
   // Runner failure
   globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => {
@@ -809,10 +846,8 @@ try {
   assert.equal(checkFailed.error.exitCode, 1);
   assert.equal(checkFailed.error.message, undefined, "check_runner must not dump the raw error message");
 
-  await assert.rejects(
-    () => awaitRunner({ runnerId: failDispatch.runnerId }),
-    /Simulated runner crash/,
-  );
+  // The terminal state is reported by the point-in-time read above; the removed
+  // wait tool has no callable replacement by design.
 
   delete globalThis.__QQ_TEST_RUNNER_HANDLER;
 
@@ -854,7 +889,7 @@ try {
     }
   }
 
-  // 10. Automated execution pipeline: dispatch_execution, check_execution, await_execution
+  // 10. Automated execution pipeline: dispatch_execution, check_execution
   await assert.rejects(
     () => dispatchExecution({}),
     /kind is required: 'bounded' \| 'open'/,
@@ -883,11 +918,13 @@ try {
   assert.ok(boundedExec.id);
   assert.equal(boundedExec.status, "running");
 
-  const boundedExecDone = await awaitExecution({ id: boundedExec.id });
+  await waitForExecution(boundedExec.id);
+  const boundedExecDone = await checkExecution({ id: boundedExec.id });
   assert.equal(boundedExecDone.status, "completed");
   assert.ok(boundedExecDone.result.landingOutcome.landed);
   assert.equal(readFileSync(join(repoDir, "bounded-exec-file.txt"), "utf8"), "bounded exec content\n");
 
+  await waitForExecution(boundedExec.id);
   const checkBoundedDone = await checkExecution({ id: boundedExec.id });
   assert.equal(checkBoundedDone.status, "completed");
   assert.equal(checkBoundedDone.phase, "completed");
@@ -927,12 +964,14 @@ try {
   });
   assert.equal(openExec.ok, true);
 
-  const openExecDone = await awaitExecution({ id: openExec.id });
+  await waitForExecution(openExec.id);
+  const openExecDone = await checkExecution({ id: openExec.id });
   assert.equal(openExecDone.status, "completed");
   assert.ok(openExecDone.result.landingOutcome.landed);
   assert.equal(readFileSync(join(repoDir, "feature.txt"), "utf8"), "v2 fixed");
   assert.equal(callCount, 4);
 
+  await waitForExecution(openExec.id);
   const checkOpenDone = await checkExecution({ id: openExec.id });
   assert.equal(checkOpenDone.status, "completed");
   assert.ok(checkOpenDone.trajectory.some((t) => t.action === "review_failed_retrying"));
@@ -956,11 +995,9 @@ try {
     cwd: repoDir,
   });
 
-  await assert.rejects(
-    () => awaitExecution({ id: openFailExec.id }),
-    /Review failed after retry/,
-  );
+  // The failed execution is reported by check_execution below; no wait tool exists.
 
+  await waitForExecution(openFailExec.id);
   const checkFail = await checkExecution({ id: openFailExec.id });
   assert.equal(checkFail.status, "failed");
   assert.equal(checkFail.phase, "reviewing");
@@ -980,11 +1017,9 @@ try {
     cwd: repoDir,
   });
 
-  await assert.rejects(
-    () => awaitExecution({ id: implFailExec.id }),
-    /Syntax error in build/,
-  );
+  // The failed execution is reported by check_execution below; no wait tool exists.
 
+  await waitForExecution(implFailExec.id);
   const checkImplFail = await checkExecution({ id: implFailExec.id });
   assert.equal(checkImplFail.status, "failed");
   assert.equal(checkImplFail.phase, "implementing");
@@ -1139,7 +1174,7 @@ const pingResp = await handleRpc("ping", {});
 assert.deepEqual(pingResp, {});
 
 const listResp = await handleRpc("tools/list", {});
-assert.equal(listResp.tools.length, 14);
+assert.equal(listResp.tools.length, 12);
 
 // tools/call with missing kind should return isError: true
 const errCallResp = await handleRpc("tools/call", {
@@ -1179,7 +1214,7 @@ assert.equal(responses[0].id, 1);
 assert.equal(responses[0].result.serverInfo.name, "qq-workflows");
 
 assert.equal(responses[1].id, 2);
-assert.equal(responses[1].result.tools.length, 14);
+assert.equal(responses[1].result.tools.length, 12);
 
 assert.equal(responses[2].id, 3);
 assert.deepEqual(responses[2].result, {});
@@ -1337,9 +1372,9 @@ assert.equal(ctLarge.responseLength, COMPLETE_TASK_RESPONSE_MAX);
     assert.equal(nrCheck.findingsRetained, true, "authoritative findings stay retained");
     assert.equal(nrCheck.notification.terminal, true);
     assert.equal(nrCheck.notification.pendingRetry, true);
-    // The authoritative result is still retrievable via await_runner.
-    const nrAwait = await awaitRunner({ runnerId: nrDispatch.runnerId });
-    assert.equal(nrAwait.result, "done", "await_runner must still return the authoritative result");
+    // The authoritative result stays on the tracker for the terminal
+    // notification; check_runner never carries it and no wait tool exists.
+    assert.equal(nrRunnerObj.result, "done", "the authoritative result stays available for delivery");
   } finally {
     delete globalThis.__QQ_TEST_RUNNER_HANDLER;
     rmSync(testRepo4, { recursive: true, force: true });
@@ -1480,9 +1515,9 @@ assert.equal(ctLarge.responseLength, COMPLETE_TASK_RESPONSE_MAX);
     assert.equal(check2.findingsRetained, false, "a confirmed delivery prunes the redundant durable copy");
     delete globalThis.__QQ_TEST_NOTIFY_HANDLER;
 
-    // await_runner remains the authoritative findings path.
-    const ctAwait = await awaitRunner({ runnerId: ctDispatch.runnerId });
-    assert.deepEqual(ctAwait.result, { response: findings, data_points: dataPoints });
+    // The authoritative findings read stays available through the completion
+    // transport; no wait tool is involved.
+    assert.deepEqual(authoritativeResult(ctDispatch.runnerId), { response: findings, data_points: dataPoints });
   } finally {
     delete globalThis.__QQ_TEST_NOTIFY_HANDLER;
     delete globalThis.__QQ_TEST_RUNNER_HANDLER;
@@ -2177,35 +2212,39 @@ assert.equal(ctLarge.responseLength, COMPLETE_TASK_RESPONSE_MAX);
 }
 
 // ============================================================================
-// Watchdog: bounded awaits, suspicion-with-evidence, dead-process reconcile
+// Watchdog: stall suspicion-with-evidence and dead-process reconcile
 // ============================================================================
 
-// W1. Named constants: 4:50 call window and 10-minute long-tool tripwire,
-// plus the per-tool max-duration contract.
-assert.equal(AWAIT_CALL_WINDOW_MS, 290_000, "4:50 call window must be 290000ms");
+// W1. Named constants: 4:50 stall-suspicion window and 10-minute long-tool
+// tripwire, plus the per-tool max-duration contract. These now only gate the
+// stall evidence a point-in-time read reports; no tool waits.
+assert.equal(STALL_SUSPICION_WINDOW_MS, 290_000, "4:50 suspicion window must be 290000ms");
 assert.equal(LONG_TOOL_SUSPICION_MS, 600_000, "long-tool tripwire must be 600000ms");
 assert.ok(LONG_RUNNING_TOOLS.includes("run_command"), "run_command must be a known-long tool");
-assert.equal(awaitWindowMs(), 290_000);
+assert.ok(LONG_RUNNING_TOOLS.includes("bash"), "the Pi worker runtime's shell tool (bash) must be a known-long tool too");
+assert.equal(stallSuspicionWindowMs(), 290_000);
 assert.equal(longToolSuspicionMs(), 600_000);
 assert.equal(toolSilenceThresholdMs("run_command"), 600_000);
+assert.equal(toolSilenceThresholdMs("bash"), 600_000, "a Pi worker running the test suite is not reported as silence");
 assert.equal(toolSilenceThresholdMs("view_file"), 290_000);
 assert.equal(toolSilenceThresholdMs("grep_search"), 290_000);
 assert.equal(toolSilenceThresholdMs("thinking"), 290_000);
 assert.equal(toolSilenceThresholdMs(null), 290_000);
 assert.equal(toolSilenceThresholdMs(undefined), 290_000);
 
-// W1b. Await schemas carry no timeout: elapsed time never fails a wait.
+// W1b. The blocking wait tools are absent from the callable schema, and no
+// surviving tool advertises a wait window: there is nothing to park a turn on.
 {
-  const awaitRunnerTool = TOOLS.find((t) => t.name === "await_runner");
-  const awaitExecTool = TOOLS.find((t) => t.name === "await_execution");
-  assert.equal(awaitRunnerTool.inputSchema.properties.timeoutMs, undefined);
-  assert.equal(awaitExecTool.inputSchema.properties.timeoutMs, undefined);
-  assert.ok(awaitRunnerTool.description.includes("4:50"));
-  assert.ok(awaitExecTool.description.includes("4:50"));
+  assert.equal(TOOLS.some((t) => t.name === "await_runner" || t.name === "await_execution"), false);
+  for (const tool of TOOLS) {
+    assert.equal(tool.inputSchema.properties?.timeoutMs, undefined, `${tool.name} must not advertise a wait window`);
+  }
+  assert.equal(typeof awaitRunner, "undefined");
+  assert.equal(typeof awaitExecution, "undefined");
 }
 
-// W2. Fully-silent runner past threshold: await returns a needs-decision
-// envelope with stall evidence (not a failure, not a bare timeout), the
+// W2. Fully-silent runner past threshold: the point-in-time read returns stall
+// evidence (not a failure, not a bare timeout), the
 // child process is NOT killed, and check_runner surfaces the same flag.
 {
   globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => {
@@ -2232,15 +2271,14 @@ assert.equal(toolSilenceThresholdMs(undefined), 290_000);
   assert.ok(check.suspicion.silenceSeconds >= 290, "evidence carries silence duration");
 
   const t0 = Date.now();
-  const waited = await awaitRunner({ runnerId: disp.runnerId });
+  const checked = await checkRunner({ runnerId: disp.runnerId });
   const elapsed = Date.now() - t0;
-  assert.ok(elapsed < 10_000, `silent-past-threshold await must return promptly, took ${elapsed}ms`);
-  assert.equal(waited.status, "running");
-  assert.equal(waited.needsDecision, true);
-  assert.ok(waited.suspicion);
-  assert.equal(waited.suspicion.activeTool.name, "view_file");
-  assert.ok(waited.heartbeat === undefined, "suspicion is not a heartbeat");
-  assert.equal(runner.status, "running", "await must leave the work untouched");
+  assert.ok(elapsed < 5_000, `a point-in-time read must return promptly, took ${elapsed}ms`);
+  assert.equal(checked.status, "running");
+  assert.equal(checked.stuckSuspect, true, "quiet past threshold reports stall evidence");
+  assert.ok(checked.suspicion);
+  assert.equal(checked.suspicion.activeTool.name, "view_file");
+  assert.equal(runner.status, "running", "a read must leave the work untouched");
   assert.equal(killed, false, "watchdog suspicion must never kill the child process");
 
   // Still silent afterwards: check keeps surfacing the flag (re-armed).
@@ -2270,7 +2308,7 @@ assert.equal(toolSilenceThresholdMs(undefined), 290_000);
   assert.ok(runner.error.stderr.includes("boom"));
   assert.ok(runner.error.outputTail.includes("last helper lines"));
   assert.equal(killed, false, "reconcile must never kill (nothing left to kill)");
-  await assert.rejects(() => awaitRunner({ runnerId: disp.runnerId }), /exited with code 1/);
+  assert.equal((await checkRunner({ runnerId: disp.runnerId })).status, "failed");
 
   // 3b. Exited 0 while "running" -> completed with last output as result.
   const dispOk = await dispatchRunner({ task: "dead ok helper", cwd: tmpdir() });
@@ -2281,9 +2319,10 @@ assert.equal(toolSilenceThresholdMs(undefined), 290_000);
   assert.equal(recOk.status, "completed");
   assert.equal(runnerOk.status, "completed");
   assert.equal(runnerOk.result, "final findings");
-  const awaitOk = await awaitRunner({ runnerId: dispOk.runnerId });
-  assert.equal(awaitOk.status, "completed");
-  assert.equal(awaitOk.result, "final findings");
+  const checkOk = await checkRunner({ runnerId: dispOk.runnerId });
+  assert.equal(checkOk.status, "completed");
+  assert.equal(checkOk.result, undefined, "the read never carries findings");
+  assert.equal(runnerOk.result, "final findings", "the reconciled result stays on the tracker for delivery");
 
   // 3c. Live process (no exit fields) is never reconciled.
   const dispLive = await dispatchRunner({ task: "live helper", cwd: tmpdir() });
@@ -2327,10 +2366,11 @@ assert.equal(toolSilenceThresholdMs(undefined), 290_000);
   runner.result = { response: "done after 6 minutes" };
   runner.activeTool = null;
   const t0 = Date.now();
-  const waited = await awaitRunner({ runnerId: disp.runnerId });
-  assert.ok(Date.now() - t0 < 5_000, "await on terminal work must return instantly");
-  assert.equal(waited.status, "completed");
-  assert.deepEqual(waited.result, { response: "done after 6 minutes" });
+  const checked = await checkRunner({ runnerId: disp.runnerId });
+  assert.ok(Date.now() - t0 < 5_000, "a terminal read returns instantly");
+  assert.equal(checked.status, "completed");
+  assert.equal(checked.result, undefined, "the read never carries findings");
+  assert.deepEqual(runner.result, { response: "done after 6 minutes" });
   delete globalThis.__QQ_TEST_RUNNER_HANDLER;
 }
 
@@ -2374,9 +2414,9 @@ assert.equal(toolSilenceThresholdMs(undefined), 290_000);
   let killed = false;
   runner.process = { exitCode: null, signalCode: null, kill: () => { killed = true; } };
 
-  const waited = await awaitRunner({ runnerId: disp.runnerId });
-  assert.equal(waited.needsDecision, true);
-  assert.ok(waited.suspicion.trajectory.length >= 1);
+  const checked = await checkRunner({ runnerId: disp.runnerId });
+  assert.equal(checked.stuckSuspect, true);
+  assert.ok(checked.suspicion.trajectory.length >= 1);
   assert.equal(runner.status, "running");
   assert.equal(killed, false);
 
@@ -2389,8 +2429,8 @@ assert.equal(toolSilenceThresholdMs(undefined), 290_000);
   assert.equal(runner.status, "running");
 
   // Re-await still works afterward (still silent -> needs-decision again).
-  const rewaited = await awaitRunner({ runnerId: disp.runnerId });
-  assert.equal(rewaited.needsDecision, true);
+  const rechecked = await checkRunner({ runnerId: disp.runnerId });
+  assert.equal(rechecked.stuckSuspect, true);
   assert.equal(runner.status, "running");
 
   // Cancel still works afterward.
@@ -2409,19 +2449,19 @@ assert.equal(toolSilenceThresholdMs(undefined), 290_000);
   };
   const disp = await dispatchRunner({ task: "fast fail", cwd: tmpdir() });
   const t0 = Date.now();
-  await assert.rejects(() => awaitRunner({ runnerId: disp.runnerId }), /fast crash/);
+  assert.equal((await checkRunner({ runnerId: disp.runnerId })).status, "failed");
   assert.ok(Date.now() - t0 < 5_000, "fast failure must surface immediately");
   delete globalThis.__QQ_TEST_RUNNER_HANDLER;
 }
 
 // W8. First-window semantics with short test thresholds (no minute-long
 // sleeps): a fully-quiet first window returns suspicion for normal tools,
-// while a quiet shell tool gets a running-fine heartbeat first and
-// suspicion only at its 10-minute absolute tripwire.
+// while a quiet shell tool stays healthy inside its 10-minute absolute
+// tripwire. A read never waits: only the evidence it reports changes.
 {
-  globalThis.__QQ_TEST_WATCHDOG = { awaitWindowMs: 150, longToolMs: 1200 };
+  globalThis.__QQ_TEST_WATCHDOG = { stallSuspicionWindowMs: 150, longToolMs: 1200 };
   try {
-    assert.equal(awaitWindowMs(), 150);
+    assert.equal(stallSuspicionWindowMs(), 150);
     assert.equal(longToolSuspicionMs(), 1200);
     assert.equal(toolSilenceThresholdMs("view_file"), 150);
     assert.equal(toolSilenceThresholdMs("run_command"), 1200);
@@ -2431,51 +2471,57 @@ assert.equal(toolSilenceThresholdMs(undefined), 290_000);
       runner.activeTool = { name: "view_file", startedAt: Date.now() };
     };
     const dispNormal = await dispatchRunner({ task: "quiet normal", cwd: tmpdir() });
-    const waitedNormal = await awaitRunner({ runnerId: dispNormal.runnerId });
-    assert.equal(waitedNormal.status, "running");
-    assert.equal(waitedNormal.needsDecision, true, "quiet normal tool must trip suspicion in its first window");
-    assert.equal(waitedNormal.heartbeat, undefined);
+    // Quiet past the (short) window: the read reports the same evidence a
+    // waiting call used to report at its window end.
+    RUNNERS.get(dispNormal.runnerId).lastActivityAt = Date.now() - 1_000;
+    const checkedNormal = await checkRunner({ runnerId: dispNormal.runnerId });
+    assert.equal(checkedNormal.status, "running");
+    assert.equal(checkedNormal.stuckSuspect, true, "a quiet normal tool trips stall suspicion");
+    assert.equal(checkedNormal.suspicion.activeTool.name, "view_file");
     assert.equal(RUNNERS.get(dispNormal.runnerId).status, "running");
 
-    // 8b. Shell tool, quiet from await entry -> heartbeat (tripwire is later).
+    // 8b. Shell tool, quiet from read entry: the longer absolute tripwire means
+    // a quiet shell is healthy inside its tool-specific window.
     globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => {
       runner.activeTool = { name: "run_command", startedAt: Date.now() };
     };
     const dispShell = await dispatchRunner({ task: "quiet shell", cwd: tmpdir() });
     const t0 = Date.now();
-    const waitedShell = await awaitRunner({ runnerId: dispShell.runnerId });
+    const checkedShell = await checkRunner({ runnerId: dispShell.runnerId });
     const shellElapsed = Date.now() - t0;
-    assert.equal(waitedShell.status, "running");
-    assert.equal(waitedShell.heartbeat, true, "quiet shell must heartbeat first, not suspect");
-    assert.equal(waitedShell.needsDecision, undefined);
-    assert.ok(shellElapsed >= 100 && shellElapsed < 10_000, `heartbeat must wait out the window, took ${shellElapsed}ms`);
+    assert.equal(checkedShell.status, "running");
+    assert.equal(checkedShell.stuckSuspect, false, "a quiet shell inside its tripwire is not stuck");
+    assert.equal(checkedShell.suspicion, null);
+    assert.ok(shellElapsed < 5_000, `a point-in-time read never waits out a window, took ${shellElapsed}ms`);
     assert.equal(RUNNERS.get(dispShell.runnerId).status, "running");
 
     // 8c. Shell tool quiet past its absolute tripwire -> suspicion.
     const runnerShell = RUNNERS.get(dispShell.runnerId);
     runnerShell.lastActivityAt = Date.now() - 1500;
-    const waitedShellLate = await awaitRunner({ runnerId: dispShell.runnerId });
-    assert.equal(waitedShellLate.needsDecision, true, "shell past its tripwire must suspect");
-    assert.equal(waitedShellLate.suspicion.activeTool.name, "run_command");
+    const checkedShellLate = await checkRunner({ runnerId: dispShell.runnerId });
+    assert.equal(checkedShellLate.stuckSuspect, true, "shell past its tripwire must suspect");
+    assert.equal(checkedShellLate.suspicion.activeTool.name, "run_command");
   } finally {
     delete globalThis.__QQ_TEST_WATCHDOG;
     delete globalThis.__QQ_TEST_RUNNER_HANDLER;
   }
-  assert.equal(awaitWindowMs(), AWAIT_CALL_WINDOW_MS, "test overrides must not leak");
+  assert.equal(stallSuspicionWindowMs(), STALL_SUSPICION_WINDOW_MS, "test overrides must not leak");
 }
 
-// W9. No timeout-as-error, ever: a legacy timeoutMs cannot fail a wait.
+// W9. Legacy timeoutMs is inert: it is not a parameter of any remaining tool,
+// and a point-in-time read never fails or waits for a clock.
 {
-  globalThis.__QQ_TEST_WATCHDOG = { awaitWindowMs: 120, longToolMs: 1200 };
+  globalThis.__QQ_TEST_WATCHDOG = { stallSuspicionWindowMs: 120, longToolMs: 1200 };
   globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => {
     runner.activeTool = { name: "run_command", startedAt: Date.now() };
   };
   try {
     const disp = await dispatchRunner({ task: "legacy timeoutMs", cwd: tmpdir() });
-    // Under the old contract timeoutMs=1 would throw almost instantly.
-    const waited = await awaitRunner({ runnerId: disp.runnerId, timeoutMs: 1 });
-    assert.equal(waited.status, "running");
-    assert.equal(waited.heartbeat, true);
+    const t0 = Date.now();
+    const checked = await checkRunner({ runnerId: disp.runnerId, timeoutMs: 1 });
+    assert.equal(checked.status, "running");
+    assert.equal(checked.stuckSuspect, false);
+    assert.ok(Date.now() - t0 < 5_000, "the read must not park on a clock");
   } finally {
     delete globalThis.__QQ_TEST_WATCHDOG;
     delete globalThis.__QQ_TEST_RUNNER_HANDLER;
@@ -2576,17 +2622,18 @@ assert.equal(toolSilenceThresholdMs(undefined), 290_000);
     assert.ok(check.suspicion);
     assert.equal(check.suspicion.activeTool.name, "view_file");
 
-    const waited = await awaitExecution({ id: silentExec.id });
-    assert.equal(waited.status, "running");
-    assert.equal(waited.needsDecision, true);
-    assert.ok(waited.suspicion);
+    const checked = await checkExecution({ id: silentExec.id });
+    assert.equal(checked.status, "running");
+    assert.equal(checked.stuckSuspect, true);
+    assert.ok(checked.suspicion);
     assert.equal(silentExec.status, "running", "execution suspicion must leave work untouched");
   } finally {
     EXECUTIONS.delete(silentExec.id);
   }
 
-  // 12b. Healthy execution -> heartbeat at window end (short test window).
-  globalThis.__QQ_TEST_WATCHDOG = { awaitWindowMs: 120, longToolMs: 1200 };
+  // 12b. Healthy execution: a quiet shell tool inside its tripwire reads as
+  // healthy, and the read returns immediately.
+  globalThis.__QQ_TEST_WATCHDOG = { stallSuspicionWindowMs: 120, longToolMs: 1200 };
   const liveExec = {
     id: "w12-live", kind: "open", status: "running", phase: "reviewing",
     startedAt: Date.now(), lastActivityAt: Date.now(),
@@ -2597,16 +2644,16 @@ assert.equal(toolSilenceThresholdMs(undefined), 290_000);
   EXECUTIONS.set(liveExec.id, liveExec);
   try {
     const t0 = Date.now();
-    const waited = await awaitExecution({ id: liveExec.id });
+    const checked = await checkExecution({ id: liveExec.id });
     const elapsed = Date.now() - t0;
-    assert.equal(waited.status, "running");
-    assert.equal(waited.heartbeat, true);
-    assert.equal(waited.phase, "reviewing");
-    assert.ok(elapsed >= 80 && elapsed < 10_000, `execution heartbeat must wait out the window, took ${elapsed}ms`);
+    assert.equal(checked.status, "running");
+    assert.equal(checked.stuckSuspect, false, "a quiet shell inside its tripwire is healthy");
+    assert.equal(checked.phase, "reviewing");
+    assert.ok(elapsed < 5_000, `a point-in-time read returns immediately, took ${elapsed}ms`);
 
-    // Legacy timeoutMs cannot fail an execution wait either.
-    const waitedLegacy = await awaitExecution({ id: liveExec.id, timeoutMs: 1 });
-    assert.equal(waitedLegacy.heartbeat, true);
+    // Legacy timeoutMs is inert for the read too.
+    const checkedLegacy = await checkExecution({ id: liveExec.id, timeoutMs: 1 });
+    assert.equal(checkedLegacy.status, "running");
   } finally {
     EXECUTIONS.delete(liveExec.id);
     delete globalThis.__QQ_TEST_WATCHDOG;
@@ -2621,10 +2668,10 @@ assert.equal(toolSilenceThresholdMs(undefined), 290_000);
   EXECUTIONS.set(doneExec.id, doneExec);
   try {
     const t0 = Date.now();
-    const waited = await awaitExecution({ id: doneExec.id });
+    const checked = await checkExecution({ id: doneExec.id });
     assert.ok(Date.now() - t0 < 5_000);
-    assert.equal(waited.status, "completed");
-    assert.deepEqual(waited.result, { verifiedStory: "ok" });
+    assert.equal(checked.status, "completed");
+    assert.deepEqual(checked.result, { verifiedStory: "ok" });
   } finally {
     EXECUTIONS.delete(doneExec.id);
   }
@@ -2636,33 +2683,36 @@ assert.equal(toolSilenceThresholdMs(undefined), 290_000);
   };
   EXECUTIONS.set(failExec.id, failExec);
   try {
-    await assert.rejects(() => awaitExecution({ id: failExec.id }), /exec impl blew up/);
+    const checkedFail = await checkExecution({ id: failExec.id });
+    assert.equal(checkedFail.status, "failed");
+    assert.equal(checkedFail.error.message, "exec impl blew up");
   } finally {
     EXECUTIONS.delete(failExec.id);
   }
 }
 
-// W13. Bounded waits keep the pipe usable: after an await comes home,
-// later calls on the same surface still work (no wedge).
+// W13. Point-in-time reads keep the pipe usable: reads, steer, and cancel all
+// work on the same surface without a parked wait to wedge it.
 {
-  globalThis.__QQ_TEST_WATCHDOG = { awaitWindowMs: 100, longToolMs: 1200 };
+  globalThis.__QQ_TEST_WATCHDOG = { stallSuspicionWindowMs: 100, longToolMs: 1200 };
   globalThis.__QQ_TEST_RUNNER_HANDLER = (runner) => {
     runner.activeTool = { name: "run_command", startedAt: Date.now() };
   };
   try {
     const disp = await dispatchRunner({ task: "pipe stays usable", cwd: tmpdir() });
-    const first = await awaitRunner({ runnerId: disp.runnerId });
-    assert.equal(first.heartbeat, true);
-    // Later calls still work: point-in-time read, steer, re-await, cancel.
+    const first = await checkRunner({ runnerId: disp.runnerId });
+    assert.equal(first.status, "running");
+    assert.equal(first.stuckSuspect, false);
+    // Later calls still work: read, steer, read again, cancel, read terminal.
     const check = await checkRunner({ runnerId: disp.runnerId });
     assert.equal(check.status, "running");
     const runner = RUNNERS.get(disp.runnerId);
     runner.onSteer = () => {};
     assert.equal((await steerRunner({ runnerId: disp.runnerId, instruction: "keep going" })).ok, true);
-    const second = await awaitRunner({ runnerId: disp.runnerId });
+    const second = await checkRunner({ runnerId: disp.runnerId });
     assert.equal(second.status, "running");
     assert.equal((await cancelRunner({ runnerId: disp.runnerId })).status, "cancelled");
-    await assert.rejects(() => awaitRunner({ runnerId: disp.runnerId }), /was cancelled/);
+    assert.equal((await checkRunner({ runnerId: disp.runnerId })).status, "cancelled");
   } finally {
     delete globalThis.__QQ_TEST_WATCHDOG;
     delete globalThis.__QQ_TEST_RUNNER_HANDLER;
@@ -2873,7 +2923,8 @@ function makeStreamTestExecution() {
     process.env.QQ_SUBAGENT_BIN = join(fakeBin, "worker-double.sh");
 
     const disp = await dispatchExecution({ kind: "bounded", sessionId: streamSessId, cwd: pipeRepo });
-    const done = await awaitExecution({ id: disp.id });
+    await waitForExecution(disp.id);
+    const done = await checkExecution({ id: disp.id });
     assert.equal(done.status, "completed");
 
     const loggedArgs = readFileSync(argsLog, "utf8");
@@ -2882,6 +2933,7 @@ function makeStreamTestExecution() {
     assert.ok(loggedArgs.includes("--seat\nimplementer"), "the implementer seat is explicit");
     assert.ok(!loggedArgs.includes("--json"), "no provider-template flag may reach the worker");
 
+    await waitForExecution(disp.id);
     const check = await checkExecution({ id: disp.id });
     // 3 milestones + 30 tools + 3 closing milestones = 36 entries -> keep last 25.
     assert.equal(check.trajectory.length, 25);
@@ -2950,12 +3002,14 @@ function makeStreamTestExecution() {
       sessionId: codexSessId,
       cwd: pipeRepo,
     });
-    const done = await awaitExecution({ id: disp.id });
+    await waitForExecution(disp.id);
+    const done = await checkExecution({ id: disp.id });
     assert.equal(done.status, "completed");
 
     const loggedArgs = readFileSync(argsLog, "utf8");
     assert.ok(loggedArgs.includes("--seat\nimplementer"), "the implementer seat comes from the pipeline, not a provider argument");
 
+    await waitForExecution(disp.id);
     const check = await checkExecution({ id: disp.id });
     const actions = check.trajectory.map((t) => t.action);
     assert.ok(actions.includes("command_execution"));
@@ -3008,11 +3062,13 @@ function makeStreamTestExecution() {
       sessionId: textSessId,
       cwd: pipeRepo,
     });
-    const done = await awaitExecution({ id: disp.id });
+    await waitForExecution(disp.id);
+    const done = await checkExecution({ id: disp.id });
     assert.equal(done.status, "completed");
     assert.ok(done.result.implementerSummary.includes("Plain text implementation report."));
     assert.ok(done.result.implementerSummary.includes(longLine));
 
+    await waitForExecution(disp.id);
     const check = await checkExecution({ id: disp.id });
     const logs = check.trajectory.filter((t) => t.action === "log");
     assert.ok(logs.length >= 2, "text lines must be recorded as log entries");
@@ -3046,8 +3102,8 @@ function makeStreamTestExecution() {
   const dispatchTool = TOOLS.find((t) => t.name === "dispatch_runner");
   assert.deepEqual(dispatchTool.inputSchema.required, ["task"]);
   assert.equal(dispatchTool.inputSchema.properties.sessionId.type, "string");
-  assert.ok(TOOLS.some((t) => t.name === "await_runner"), "await_runner stays registered for Muse");
-  assert.ok(TOOLS.some((t) => t.name === "await_execution"), "await_execution stays registered for Muse");
+  assert.equal(TOOLS.some((t) => t.name === "await_runner"), false, "no blocking wait tool is registered");
+  assert.equal(TOOLS.some((t) => t.name === "await_execution"), false);
 }
 
 stopSuspicionSweeper();
@@ -3615,29 +3671,30 @@ DETECTED_CODEX_HOMES.delete("sess-detected");
 }
 
 // ============================================================================
-// Disabled tools: Astra dispatch-and-yield hides the await tools from its
-// callable schema via --disabled-tools / QQ_DISABLED_TOOLS.
+// Disabled tools: a client can hide callable tools from its schema via
+// --disabled-tools / QQ_DISABLED_TOOLS. This is a general mechanism; the wait
+// tools are not merely hidden, they no longer exist.
 // ============================================================================
 
 // D1. parseDisabledTools: CLI forms, env form, union + trim + dedupe.
 assert.deepEqual(parseDisabledTools([], {}), []);
-assert.deepEqual(parseDisabledTools(["--disabled-tools", "await_runner,await_execution"], {}), [
-  "await_runner",
-  "await_execution",
+assert.deepEqual(parseDisabledTools(["--disabled-tools", "steer_runner,cancel_runner"], {}), [
+  "steer_runner",
+  "cancel_runner",
 ]);
-assert.deepEqual(parseDisabledTools(["--disabled-tools=await_runner, await_execution"], {}), [
-  "await_runner",
-  "await_execution",
+assert.deepEqual(parseDisabledTools(["--disabled-tools=steer_runner, cancel_runner"], {}), [
+  "steer_runner",
+  "cancel_runner",
 ]);
-assert.deepEqual(parseDisabledTools([], { QQ_DISABLED_TOOLS: "await_runner,await_execution" }), [
-  "await_runner",
-  "await_execution",
+assert.deepEqual(parseDisabledTools([], { QQ_DISABLED_TOOLS: "steer_runner,cancel_runner" }), [
+  "steer_runner",
+  "cancel_runner",
 ]);
 assert.deepEqual(
-  parseDisabledTools(["--disabled-tools", "await_runner,, await_runner"], {
-    QQ_DISABLED_TOOLS: " await_execution ,await_runner",
+  parseDisabledTools(["--disabled-tools", "steer_runner,, steer_runner"], {
+    QQ_DISABLED_TOOLS: " cancel_runner ,steer_runner",
   }),
-  ["await_runner", "await_execution"],
+  ["steer_runner", "cancel_runner"],
 );
 assert.deepEqual(parseDisabledTools(["--disabled-tools"], {}), []);
 assert.deepEqual(parseDisabledTools([], { QQ_DISABLED_TOOLS: "  " }), []);
@@ -3647,32 +3704,43 @@ assert.equal(getDisabledTools([], {}).size, 0);
 
 // D2. tools/list filtering + tools/call rejection via explicit option.
 {
-  const disabled = ["await_runner", "await_execution"];
+  const disabled = ["steer_runner", "cancel_runner"];
   const list = await handleRpc("tools/list", {}, { disabledTools: disabled });
-  assert.equal(list.tools.length, 12);
+  assert.equal(list.tools.length, 10);
   const names = list.tools.map((t) => t.name);
-  assert.ok(!names.includes("await_runner"));
-  assert.ok(!names.includes("await_execution"));
+  assert.ok(!names.includes("steer_runner"));
+  assert.ok(!names.includes("cancel_runner"));
 
   const full = await handleRpc("tools/list", {}, { disabledTools: [] });
-  assert.equal(full.tools.length, 14);
+  assert.equal(full.tools.length, 12);
 
   await assert.rejects(
-    () => callTool("await_runner", { runnerId: "x" }, { disabledTools: disabled }),
-    /^Error: Tool 'await_runner' is disabled$/,
+    () => callTool("steer_runner", { runnerId: "x" }, { disabledTools: disabled }),
+    /^Error: Tool 'steer_runner' is disabled$/,
   );
   await assert.rejects(
-    () => callTool("await_execution", { id: "x" }, { disabledTools: disabled }),
-    /^Error: Tool 'await_execution' is disabled$/,
+    () => callTool("cancel_runner", { runnerId: "x" }, { disabledTools: disabled }),
+    /^Error: Tool 'cancel_runner' is disabled$/,
+  );
+
+  // A removed wait tool is unknown, not disabled: no "--disabled-tools" entry
+  // can bring it back.
+  await assert.rejects(
+    () => callTool("await_runner", { runnerId: "x" }, { disabledTools: [] }),
+    /^Error: Unknown tool: await_runner$/,
+  );
+  await assert.rejects(
+    () => callTool("await_execution", { id: "x" }, { disabledTools: [] }),
+    /^Error: Unknown tool: await_execution$/,
   );
 
   const rpcErr = await handleRpc(
     "tools/call",
-    { name: "await_runner", arguments: { runnerId: "x" } },
+    { name: "steer_runner", arguments: { runnerId: "x" } },
     { disabledTools: disabled },
   );
   assert.equal(rpcErr.isError, true);
-  assert.equal(rpcErr.content[0].text, "Tool 'await_runner' is disabled");
+  assert.equal(rpcErr.content[0].text, "Tool 'steer_runner' is disabled");
 
   // Non-disabled tools still dispatch (validation error, not a disabled error).
   const stillOk = await handleRpc(
@@ -3690,21 +3758,21 @@ assert.equal(getDisabledTools([], {}).size, 0);
   delete process.env.QQ_DISABLED_TOOLS;
   try {
     const full = await handleRpc("tools/list", {});
-    assert.equal(full.tools.length, 14);
+    assert.equal(full.tools.length, 12);
   } finally {
     if (savedDisabledEnv === undefined) delete process.env.QQ_DISABLED_TOOLS;
     else process.env.QQ_DISABLED_TOOLS = savedDisabledEnv;
   }
 
-  process.env.QQ_DISABLED_TOOLS = "await_runner,await_execution";
+  process.env.QQ_DISABLED_TOOLS = "steer_runner,cancel_runner";
   try {
     const list = await handleRpc("tools/list", {});
-    assert.equal(list.tools.length, 12);
-    assert.ok(!list.tools.some((t) => t.name === "await_runner" || t.name === "await_execution"));
-    await assert.rejects(() => callTool("await_execution", { id: "x" }), /Tool 'await_execution' is disabled/);
-    const rpcErr = await handleRpc("tools/call", { name: "await_execution", arguments: { id: "x" } });
+    assert.equal(list.tools.length, 10);
+    assert.ok(!list.tools.some((t) => t.name === "steer_runner" || t.name === "cancel_runner"));
+    await assert.rejects(() => callTool("cancel_runner", { runnerId: "x" }), /Tool 'cancel_runner' is disabled/);
+    const rpcErr = await handleRpc("tools/call", { name: "cancel_runner", arguments: { runnerId: "x" } });
     assert.equal(rpcErr.isError, true);
-    assert.equal(rpcErr.content[0].text, "Tool 'await_execution' is disabled");
+    assert.equal(rpcErr.content[0].text, "Tool 'cancel_runner' is disabled");
   } finally {
     if (savedDisabledEnv === undefined) delete process.env.QQ_DISABLED_TOOLS;
     else process.env.QQ_DISABLED_TOOLS = savedDisabledEnv;
@@ -3724,7 +3792,7 @@ assert.equal(getDisabledTools([], {}).size, 0);
           jsonrpc: "2.0",
           id: 2,
           method: "tools/call",
-          params: { name: "await_runner", arguments: { runnerId: "nope" } },
+          params: { name: "steer_runner", arguments: { runnerId: "nope" } },
         },
       ]
         .map((message) => JSON.stringify(message))
@@ -3745,28 +3813,28 @@ assert.equal(getDisabledTools([], {}).size, 0);
   // CLI arg alone filters the list and rejects the call.
   {
     const [listResp, callResp] = queryServer({
-      args: ["--disabled-tools", "await_runner,await_execution"],
+      args: ["--disabled-tools", "steer_runner,cancel_runner"],
       stripDisabledEnv: true,
     });
-    assert.equal(listResp.result.tools.length, 12);
-    assert.ok(!listResp.result.tools.some((t) => t.name === "await_runner" || t.name === "await_execution"));
+    assert.equal(listResp.result.tools.length, 10);
+    assert.ok(!listResp.result.tools.some((t) => t.name === "steer_runner" || t.name === "cancel_runner"));
     assert.equal(callResp.result.isError, true);
-    assert.equal(callResp.result.content[0].text, "Tool 'await_runner' is disabled");
+    assert.equal(callResp.result.content[0].text, "Tool 'steer_runner' is disabled");
   }
 
   // Env var alone filters the list and rejects the call.
   {
-    const [listResp, callResp] = queryServer({ env: { QQ_DISABLED_TOOLS: "await_runner,await_execution" } });
-    assert.equal(listResp.result.tools.length, 12);
-    assert.ok(!listResp.result.tools.some((t) => t.name === "await_runner" || t.name === "await_execution"));
+    const [listResp, callResp] = queryServer({ env: { QQ_DISABLED_TOOLS: "steer_runner,cancel_runner" } });
+    assert.equal(listResp.result.tools.length, 10);
+    assert.ok(!listResp.result.tools.some((t) => t.name === "steer_runner" || t.name === "cancel_runner"));
     assert.equal(callResp.result.isError, true);
-    assert.equal(callResp.result.content[0].text, "Tool 'await_runner' is disabled");
+    assert.equal(callResp.result.content[0].text, "Tool 'steer_runner' is disabled");
   }
 
-  // Neither: full Muse parity.
+  // Neither: the full surviving tool surface.
   {
     const [listResp] = queryServer({ stripDisabledEnv: true });
-    assert.equal(listResp.result.tools.length, 14);
+    assert.equal(listResp.result.tools.length, 12);
   }
 }
 
@@ -3857,18 +3925,18 @@ await new Promise((r) => setTimeout(r, 2000));
     assert.ok(runner.resultFile, "runner must have a dedicated resultFile configured");
     assert.equal(existsSync(runner.resultFile), false, "runner resultFile must not exist before complete_task");
 
-    const awaitRes = await awaitRunner({ runnerId: disp.runnerId });
-    assert.equal(awaitRes.status, "completed");
-    assert.ok(awaitRes.result);
+    await waitForRunnerTerminal(disp.runnerId);
+    const result = authoritativeResult(disp.runnerId);
+    assert.ok(result);
 
     // Parent must receive the EXACT unabridged report from transport, NOT the 512-char clipped telemetry!
-    assert.equal(awaitRes.result.response, unicodeReport, "parent must receive exact unabridged report");
-    assert.equal(awaitRes.result.response.length, unicodeReport.length);
-    assert.notEqual(awaitRes.result.response, unicodeReport.slice(0, 512) + "…", "parent must NOT fall back to clipped telemetry");
-    assert.deepEqual(awaitRes.result.data_points, testDataPoints, "parent must receive exact data_points");
+    assert.equal(result.response, unicodeReport, "parent must receive exact unabridged report");
+    assert.equal(result.response.length, unicodeReport.length);
+    assert.notEqual(result.response, unicodeReport.slice(0, 512) + "…", "parent must NOT fall back to clipped telemetry");
+    assert.deepEqual(result.data_points, testDataPoints, "parent must receive exact data_points");
 
     // check_runner reports health/delivery state, NOT findings; the exact full
-    // report stays deliverable via the terminal notification and await_runner.
+    // report stays deliverable through the terminal notification and transport.
     const checkRes = await checkRunner({ runnerId: disp.runnerId });
     assert.equal(checkRes.status, "completed");
     assert.equal(checkRes.result, undefined, "check_runner must NOT return the full report");
@@ -3948,19 +4016,21 @@ await new Promise((r) => setTimeout(r, 1000));
     assert.notEqual(disp1.runnerId, disp2.runnerId);
     assert.notEqual(RUNNERS.get(disp1.runnerId).resultFile, RUNNERS.get(disp2.runnerId).resultFile);
 
-    const [res1, res2] = await Promise.all([
-      awaitRunner({ runnerId: disp1.runnerId }),
-      awaitRunner({ runnerId: disp2.runnerId }),
-    ]);
+    const runner1 = await waitForRunnerTerminal(disp1.runnerId);
+    const runner2 = await waitForRunnerTerminal(disp2.runnerId);
+    const result1 = authoritativeResult(disp1.runnerId);
+    const result2 = authoritativeResult(disp2.runnerId);
 
-    assert.equal(res1.status, "completed");
-    assert.equal(res2.status, "completed");
+    assert.equal(runner1.status, "completed");
+    assert.equal(runner2.status, "completed");
+    assert.ok(result1, "each runner keeps its own authoritative result");
+    assert.ok(result2);
 
-    assert.equal(res1.result.response, "Report for runner " + disp1.runnerId + ": " + "X".repeat(1200));
-    assert.deepEqual(res1.result.data_points, ["dp-" + disp1.runnerId]);
+    assert.equal(result1.response, "Report for runner " + disp1.runnerId + ": " + "X".repeat(1200));
+    assert.deepEqual(result1.data_points, ["dp-" + disp1.runnerId]);
 
-    assert.equal(res2.result.response, "Report for runner " + disp2.runnerId + ": " + "X".repeat(1200));
-    assert.deepEqual(res2.result.data_points, ["dp-" + disp2.runnerId]);
+    assert.equal(result2.response, "Report for runner " + disp2.runnerId + ": " + "X".repeat(1200));
+    assert.deepEqual(result2.data_points, ["dp-" + disp2.runnerId]);
   } finally {
     if (prevRunnerBin !== undefined) process.env.QQ_RUNNER_BIN = prevRunnerBin;
     else delete process.env.QQ_RUNNER_BIN;
@@ -4144,10 +4214,11 @@ process.exit(0);
 
   try {
     const disp = await dispatchRunner({ task: "fast exit task", cwd: tmpdir() });
-    const awaitRes = await awaitRunner({ runnerId: disp.runnerId });
-    assert.equal(awaitRes.status, "completed");
-    assert.equal(awaitRes.result.response, "Early exit response");
-    assert.deepEqual(awaitRes.result.data_points, ["dp-early"]);
+    await waitForRunnerTerminal(disp.runnerId);
+    assert.equal((await checkRunner({ runnerId: disp.runnerId })).status, "completed");
+    const result = authoritativeResult(disp.runnerId);
+    assert.equal(result.response, "Early exit response");
+    assert.deepEqual(result.data_points, ["dp-early"]);
   } finally {
     if (prevRunnerBin !== undefined) process.env.QQ_RUNNER_BIN = prevRunnerBin;
     else delete process.env.QQ_RUNNER_BIN;
@@ -4335,10 +4406,7 @@ Duration: 4.5s
     };
 
     const disp = await dispatchExecution({ kind: "open", sessionId: sId, cwd: testRepo });
-    await assert.rejects(
-      () => awaitExecution({ id: disp.id }),
-      /Reviewer crashed with SIGSEGV/,
-    );
+    await waitForExecution(disp.id);
     const check = await checkExecution({ id: disp.id });
     assert.equal(check.status, "failed");
     assert.equal(check.phase, "reviewing");
@@ -4376,11 +4444,8 @@ Duration: 4.5s
     };
 
     const disp = await dispatchExecution({ kind: "bounded", sessionId: boundedSessId, cwd: noChangeRepo });
-    await assert.rejects(
-      () => awaitExecution({ id: disp.id }),
-      /Implementation produced no code changes or commits \(incomplete\)/,
-    );
 
+    await waitForExecution(disp.id);
     const check = await checkExecution({ id: disp.id });
     assert.equal(check.status, "failed");
     assert.equal(check.phase, "implementing");
@@ -4424,11 +4489,8 @@ Duration: 4.5s
     };
 
     const disp = await dispatchExecution({ kind: "open", sessionId: openSessId, cwd: noChangeRepo });
-    await assert.rejects(
-      () => awaitExecution({ id: disp.id }),
-      /Implementation produced no code changes or commits \(incomplete\)/,
-    );
 
+    await waitForExecution(disp.id);
     const check = await checkExecution({ id: disp.id });
     assert.equal(check.status, "failed");
     assert.equal(check.error.status, "incomplete");
@@ -4567,7 +4629,8 @@ Duration: 4.5s
 
   try {
     const disp = await dispatchExecution({ kind: "open", sessionId: execSess, cwd: ambientRepo });
-    const done = await awaitExecution({ id: disp.id });
+    await waitForExecution(disp.id);
+    const done = await checkExecution({ id: disp.id });
     assert.equal(done.status, "completed");
 
     const execObj = EXECUTIONS.get(disp.id);
@@ -4645,12 +4708,8 @@ Duration: 4.5s
 
   try {
     const disp = await dispatchExecution({ kind: "open", sessionId: sessId, cwd: waitRepo });
-    await assert.rejects(
-      () => awaitExecution({ id: disp.id }),
-      /Verification incomplete: reviewer exited without completed verdict \(missing_verdict\)/,
-      "waiting response must reject with verification incomplete error"
-    );
 
+    await waitForExecution(disp.id);
     const check = await checkExecution({ id: disp.id });
     assert.equal(check.status, "failed");
     assert.equal(check.phase, "reviewing");
@@ -4729,11 +4788,8 @@ Duration: 4.5s
 
   try {
     const disp = await dispatchExecution({ kind: "open", sessionId: sessId, cwd: conflictRepo });
-    await assert.rejects(
-      () => awaitExecution({ id: disp.id }),
-      /Verification incomplete: reviewer exited without completed verdict \(conflicting_verdict\)/,
-    );
 
+    await waitForExecution(disp.id);
     const check = await checkExecution({ id: disp.id });
     assert.equal(check.status, "failed");
     assert.equal(check.phase, "reviewing");
@@ -4786,10 +4842,12 @@ Duration: 4.5s
 
   try {
     const disp = await dispatchExecution({ kind: "open", sessionId: sessId, cwd: passRepo });
-    const done = await awaitExecution({ id: disp.id });
+    await waitForExecution(disp.id);
+    const done = await checkExecution({ id: disp.id });
     assert.equal(done.status, "completed");
     assert.equal(capturedSubagentCalls.length, 2);
 
+    await waitForExecution(disp.id);
     const check = await checkExecution({ id: disp.id });
     assert.equal(check.status, "completed");
     assert.ok(check.result.landingOutcome?.mergeSha, "landing merge commit must exist");
@@ -4845,11 +4903,8 @@ Duration: 4.5s
 
   try {
     const disp = await dispatchExecution({ kind: "open", sessionId: sessId, cwd: retryWaitRepo });
-    await assert.rejects(
-      () => awaitExecution({ id: disp.id }),
-      /Verification incomplete: second reviewer exited without completed verdict \(missing_verdict\)/,
-    );
 
+    await waitForExecution(disp.id);
     const check = await checkExecution({ id: disp.id });
     assert.equal(check.status, "failed");
     assert.equal(check.phase, "reviewing");
@@ -4907,11 +4962,8 @@ Duration: 4.5s
 
   try {
     const disp = await dispatchExecution({ kind: "open", sessionId: sessId, cwd: procErrRepo });
-    await assert.rejects(
-      () => awaitExecution({ id: disp.id }),
-      /Reviewer crashed with exit code 1/,
-    );
 
+    await waitForExecution(disp.id);
     const check = await checkExecution({ id: disp.id });
     assert.equal(check.status, "failed");
     assert.equal(check.phase, "reviewing");

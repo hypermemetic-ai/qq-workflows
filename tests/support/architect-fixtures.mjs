@@ -10,6 +10,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadPackagedTemplate } from "../../workflow/ticket.mjs";
+import { jobSummary, readJob } from "../../workflow/jobs.mjs";
 
 export function tempDir(prefix = "qq-architect-") {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -398,4 +399,33 @@ export function piRuntimeDouble({ idle = true, sessionFile = "/tmp/pi-session.js
   pi.pendingDrain = () => drainPromise;
   runtime.pi = pi;
   return pi;
+}
+
+// Wait for a dispatched job to reach its durable terminal record, then return
+// the same bounded summary view `list_jobs`/`check_runner` report.
+//
+// There is deliberately no wait tool in the workflow surface any more: an
+// Architect yields after dispatch and is woken by the completion notification.
+// Tests have no session to wake, so they read the durable record the same way
+// `check_runner` does - never by parking an await on the job.
+export async function waitForJobTerminal(stateDir, jobId, {
+  timeoutMs = 10_000,
+  requireDelivery = false,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+} = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const record = readJob(stateDir, jobId);
+    if (record?.terminal && (!requireDelivery || record.delivery !== undefined)) {
+      return { settled: true, ...jobSummary(record) };
+    }
+    if (Date.now() > deadline) {
+      return {
+        settled: false,
+        ...(record ? jobSummary(record) : { id: jobId, status: null, terminal: null }),
+        note: `timed out after ${timeoutMs}ms waiting for the durable terminal record of '${jobId}'`,
+      };
+    }
+    await sleep(10);
+  }
 }

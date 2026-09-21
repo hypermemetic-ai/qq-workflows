@@ -122,6 +122,7 @@ async function runWorker(seat, extraConfig = {}) {
   const label = extraConfig.reasoning_effort ?? "absent";
   const configFile = join(root, `worker-config-${label}.json`);
   writeFileSync(configFile, JSON.stringify({
+    harness: "codex",
     provider: "deepseek",
     model: "deepseek-flash",
     base_url: origin,

@@ -70,8 +70,7 @@ import {
   runnerSpawner,
   tempDir,
   tempRepo,
-  tickQueue,
-} from "./support/architect-fixtures.mjs";
+  tickQueue, waitForJobTerminal } from "./support/architect-fixtures.mjs";
 
 const { root, env } = await tempRepo({ agents: "Repository rule: keep changes in the worktree.\n" });
 const stateDir = join(root, ".architect", "state");
@@ -110,7 +109,7 @@ await callHandlers(busyPi, "session_start", { reason: "startup" }, busyPi.ctx);
 assert.equal(busyPi.ctx.isIdle(), false, "the operator's turn is active");
 const busyWorkflow = busy.extension.ensureWorkflow();
 const busyDispatch = busyWorkflow.dispatchRunner({ task: "busy receipt roundtrip" });
-const busySettled = await busyWorkflow.awaitRunner({ jobId: busyDispatch.jobId });
+const busySettled = await waitForJobTerminal(busyWorkflow.stateDir, busyDispatch.jobId, { requireDelivery: true });
 assert.equal(busySettled.status, "completed");
 const busyJob = readJob(stateDir, busyDispatch.jobId);
 const busyEventId = completedEventId(busyJob);
@@ -184,7 +183,7 @@ const race = buildExtension({ sessionKey: raceKey, pi: racePi, response: "RACE-F
 await callHandlers(racePi, "session_start", { reason: "startup" }, racePi.ctx);
 const raceWorkflow = race.extension.ensureWorkflow();
 const raceDispatch = raceWorkflow.dispatchRunner({ task: "race roundtrip" });
-const raceSettled = await raceWorkflow.awaitRunner({ jobId: raceDispatch.jobId });
+const raceSettled = await waitForJobTerminal(raceWorkflow.stateDir, raceDispatch.jobId, { requireDelivery: true });
 const raceJob = readJob(stateDir, raceDispatch.jobId);
 const raceEventId = completedEventId(raceJob);
 assert.equal(raceSettled.delivery.state, "queued", "the transport returns the volatile queue result");
@@ -258,7 +257,7 @@ const crashWorkflow = createWorkflow({
   spawnFn: runnerSpawner({ response: "CRASH-BEFORE-DRAIN-FINDINGS" }),
 });
 const crashDispatch = crashWorkflow.dispatchRunner({ task: "queued, then the process dies" });
-const crashSettled = await crashWorkflow.awaitRunner({ jobId: crashDispatch.jobId });
+const crashSettled = await waitForJobTerminal(crashWorkflow.stateDir, crashDispatch.jobId, { requireDelivery: true });
 const crashJob = readJob(stateDir, crashDispatch.jobId);
 const crashEventId = completedEventId(crashJob);
 assert.equal(crashJob.delivery.state, "queued");
@@ -298,7 +297,7 @@ const reconcileWorkflow = createWorkflow({
   spawnFn: runnerSpawner({ response: "CRASH-AFTER-INSERT-FINDINGS" }),
 });
 const reconcileDispatch = reconcileWorkflow.dispatchRunner({ task: "queued and consumed, then the process dies" });
-await reconcileWorkflow.awaitRunner({ jobId: reconcileDispatch.jobId });
+await waitForJobTerminal(reconcileWorkflow.stateDir, reconcileDispatch.jobId, { requireDelivery: true });
 const reconcileJob = readJob(stateDir, reconcileDispatch.jobId);
 const reconcileEventId = completedEventId(reconcileJob);
 assert.equal(reconcileJob.delivery.state, "queued", "the receipt was never written");
@@ -336,7 +335,7 @@ const driftWorkflow = createWorkflow({
   spawnFn: runnerSpawner({ response: "DRIFT-FINDINGS" }),
 });
 const driftDispatch = driftWorkflow.dispatchRunner({ task: "journal ahead of the projection" });
-await driftWorkflow.awaitRunner({ jobId: driftDispatch.jobId });
+await waitForJobTerminal(driftWorkflow.stateDir, driftDispatch.jobId, { requireDelivery: true });
 const driftJob = readJob(stateDir, driftDispatch.jobId);
 const driftEventId = completedEventId(driftJob);
 await acknowledgeDelivery({ stateDir, eventId: driftEventId, jobId: driftDispatch.jobId, receipt: { kind: "pi-session-entry", eventId: driftEventId, entryId: "entry-drift", sessionFile: "drift.jsonl" } });
@@ -373,7 +372,7 @@ const legacyWorkflow = createWorkflow({
   spawnFn: runnerSpawner({ response: "LEGACY-FINDINGS" }),
 });
 const legacyDispatch = legacyWorkflow.dispatchRunner({ task: "queued by an older release" });
-await legacyWorkflow.awaitRunner({ jobId: legacyDispatch.jobId });
+await waitForJobTerminal(legacyWorkflow.stateDir, legacyDispatch.jobId, { requireDelivery: true });
 const legacyJob = readJob(stateDir, legacyDispatch.jobId);
 // An older release recorded the queue acceptance without the event identity.
 writeJob(stateDir, {
@@ -462,7 +461,7 @@ const queuedWorkflow = createWorkflow({
   spawnFn: runnerSpawner({ response: "QUEUED-SIGNALS-FINDINGS" }),
 });
 const queuedDispatch = queuedWorkflow.dispatchRunner({ task: "queued behind the operator" });
-await queuedWorkflow.awaitRunner({ jobId: queuedDispatch.jobId });
+await waitForJobTerminal(queuedWorkflow.stateDir, queuedDispatch.jobId, { requireDelivery: true });
 const queuedEventId = completedEventId(readJob(stateDir, queuedDispatch.jobId));
 const queuedTransport = { name: "idle", delivered: [], async deliver(notification) { this.delivered.push(notification); return { state: "delivered" }; } };
 const queuedEvidence = { entries: [], sessionFile: "queued.jsonl", pendingMessages: true };
@@ -493,7 +492,7 @@ const exactWorkflow = createWorkflow({
   spawnFn: runnerSpawner({ response: "EXACT-INFLIGHT-FINDINGS" }),
 });
 const exactDispatch = exactWorkflow.dispatchRunner({ task: "exactly in flight" });
-await exactWorkflow.awaitRunner({ jobId: exactDispatch.jobId });
+await waitForJobTerminal(exactWorkflow.stateDir, exactDispatch.jobId, { requireDelivery: true });
 const exactEventId = completedEventId(readJob(stateDir, exactDispatch.jobId));
 const exactTransport = { name: "idle", delivered: [], async deliver(notification) { this.delivered.push(notification); return { state: "delivered" }; } };
 const exactEvidence = { entries: [], sessionFile: "exact.jsonl", pendingMessages: false, inFlight: [exactEventId] };
@@ -525,7 +524,7 @@ const foreignWorkflow = createWorkflow({
   spawnFn: runnerSpawner({ response: "FOREIGN-FINDINGS" }),
 });
 const foreignDispatch = foreignWorkflow.dispatchRunner({ task: "another session's work" });
-await foreignWorkflow.awaitRunner({ jobId: foreignDispatch.jobId });
+await waitForJobTerminal(foreignWorkflow.stateDir, foreignDispatch.jobId, { requireDelivery: true });
 const foreignTransport = { name: "idle", delivered: [], async deliver(notification) { this.delivered.push(notification); return { state: "delivered" }; } };
 const asOther = await recoverPendingDeliveries({ stateDir, sessionKey: legacyKey, transport: foreignTransport, allowUnverified: true });
 assert.ok(asOther.orphaned.some((entry) => entry.jobId === foreignDispatch.jobId && entry.owner === foreignKey));
@@ -543,7 +542,7 @@ await callHandlers(idlePi, "session_start", { reason: "startup" }, idlePi.ctx);
 assert.equal(idlePi.ctx.isIdle(), true, "an idle session is woken with a turn");
 const idleWorkflow = idle.extension.ensureWorkflow();
 const idleDispatch = idleWorkflow.dispatchRunner({ task: "idle wakeup" });
-const idleSettled = await idleWorkflow.awaitRunner({ jobId: idleDispatch.jobId });
+const idleSettled = await waitForJobTerminal(idleWorkflow.stateDir, idleDispatch.jobId, { requireDelivery: true });
 const idleJob = readJob(stateDir, idleDispatch.jobId);
 const idleEventId = completedEventId(idleJob);
 assert.equal(idleSettled.delivery.state, "delivered", "an idle session starts a turn");
@@ -573,7 +572,7 @@ const failingWorkflow = createWorkflow({
   spawnFn: runnerSpawner({ response: "FAILED-TRANSPORT-FINDINGS" }),
 });
 const failingDispatch = failingWorkflow.dispatchRunner({ task: "transport refuses" });
-await failingWorkflow.awaitRunner({ jobId: failingDispatch.jobId });
+await waitForJobTerminal(failingWorkflow.stateDir, failingDispatch.jobId, { requireDelivery: true });
 const failingJob = readJob(stateDir, failingDispatch.jobId);
 assert.equal(failingJob.delivery.state, "failed");
 assert.equal(failingJob.delivery.receipt, null, "a refusal is never dressed up as a receipt");
@@ -658,7 +657,7 @@ const inflight = buildExtension({ sessionKey: inflightKey, pi: inflightPi, respo
 await callHandlers(inflightPi, "session_start", { reason: "startup" }, inflightPi.ctx);
 const inflightWorkflow = inflight.extension.ensureWorkflow();
 const inflightDispatch = inflightWorkflow.dispatchRunner({ task: "still in the queue" });
-await inflightWorkflow.awaitRunner({ jobId: inflightDispatch.jobId });
+await waitForJobTerminal(inflightWorkflow.stateDir, inflightDispatch.jobId, { requireDelivery: true });
 const inflightJob = readJob(stateDir, inflightDispatch.jobId);
 const inflightEventId = completedEventId(inflightJob);
 assert.equal(inflightJob.delivery.state, "queued");
@@ -703,7 +702,7 @@ const reloadFirst = buildExtension({ sessionKey: reloadKey, pi: reloadPi, respon
 await callHandlers(reloadPi, "session_start", { reason: "startup" }, reloadPi.ctx);
 const reloadWorkflow = reloadFirst.extension.ensureWorkflow();
 const reloadDispatch = reloadWorkflow.dispatchRunner({ task: "queued across a reload" });
-await reloadWorkflow.awaitRunner({ jobId: reloadDispatch.jobId });
+await waitForJobTerminal(reloadWorkflow.stateDir, reloadDispatch.jobId, { requireDelivery: true });
 const reloadEventId = completedEventId(readJob(stateDir, reloadDispatch.jobId));
 assert.equal(reloadPi.queue.length, 1);
 
@@ -734,7 +733,7 @@ const stale = buildExtension({ sessionKey: staleKey, pi: stalePi, response: "STA
 await callHandlers(stalePi, "session_start", { reason: "startup" }, stalePi.ctx);
 const staleWorkflow = stale.extension.ensureWorkflow();
 const staleDispatch = staleWorkflow.dispatchRunner({ task: "the queue is discarded" });
-await staleWorkflow.awaitRunner({ jobId: staleDispatch.jobId });
+await waitForJobTerminal(staleWorkflow.stateDir, staleDispatch.jobId, { requireDelivery: true });
 assert.equal(stalePi.queue.length, 1);
 assert.equal(stale.extension.sessionEvidence(stalePi.ctx).inFlight.length, 1);
 
@@ -777,7 +776,7 @@ const upgradeWorkflow = createWorkflow({
   spawnFn: runnerSpawner({ response: "LEGACY-CONSUMED-FINDINGS" }),
 });
 const upgradeDispatch = upgradeWorkflow.dispatchRunner({ task: "consumed by the release that predates the identity metadata" });
-await upgradeWorkflow.awaitRunner({ jobId: upgradeDispatch.jobId });
+await waitForJobTerminal(upgradeWorkflow.stateDir, upgradeDispatch.jobId, { requireDelivery: true });
 const upgradeJob = readJob(stateDir, upgradeDispatch.jobId);
 const upgradeEventId = completedEventId(upgradeJob);
 const consumedText = defaultCompletionText(upgradeJob);
@@ -843,7 +842,7 @@ const rawShapeWorkflow = createWorkflow({
   spawnFn: runnerSpawner({ response: "LEGACY-RAW-SHAPE-FINDINGS" }),
 });
 const rawShapeDispatch = rawShapeWorkflow.dispatchRunner({ task: "consumed, reported in the raw entry shape" });
-await rawShapeWorkflow.awaitRunner({ jobId: rawShapeDispatch.jobId });
+await waitForJobTerminal(rawShapeWorkflow.stateDir, rawShapeDispatch.jobId, { requireDelivery: true });
 const rawShapeJob = readJob(stateDir, rawShapeDispatch.jobId);
 const rawShapeText = defaultCompletionText(rawShapeJob);
 const rawShapeTransport = { name: "idle", delivered: [], async deliver(notification) { this.delivered.push(notification.eventId); return { state: "delivered" }; } };
@@ -884,7 +883,7 @@ const copiesWorkflow = createWorkflow({
   spawnFn: runnerSpawner({ response: "LEGACY-DUPLICATE-FINDINGS" }),
 });
 const copiesDispatch = copiesWorkflow.dispatchRunner({ task: "retained twice by the old release" });
-await copiesWorkflow.awaitRunner({ jobId: copiesDispatch.jobId });
+await waitForJobTerminal(copiesWorkflow.stateDir, copiesDispatch.jobId, { requireDelivery: true });
 const copiesJob = readJob(stateDir, copiesDispatch.jobId);
 const copiesEventId = completedEventId(copiesJob);
 const copiesText = defaultCompletionText(copiesJob);
@@ -915,7 +914,7 @@ const partialWorkflow = createWorkflow({
   spawnFn: runnerSpawner({ response: "LEGACY-PARTIAL-FINDINGS" }),
 });
 const partialDispatch = partialWorkflow.dispatchRunner({ task: "partially retained by the old release" });
-await partialWorkflow.awaitRunner({ jobId: partialDispatch.jobId });
+await waitForJobTerminal(partialWorkflow.stateDir, partialDispatch.jobId, { requireDelivery: true });
 const partialJob = readJob(stateDir, partialDispatch.jobId);
 const partialEventId = completedEventId(partialJob);
 const partialText = defaultCompletionText(partialJob);
@@ -954,7 +953,7 @@ const foreignLegacyWorkflow = createWorkflow({
   spawnFn: runnerSpawner({ response: "LEGACY-FOREIGN-FINDINGS" }),
 });
 const foreignLegacyDispatch = foreignLegacyWorkflow.dispatchRunner({ task: "another agent's retained completion" });
-await foreignLegacyWorkflow.awaitRunner({ jobId: foreignLegacyDispatch.jobId });
+await waitForJobTerminal(foreignLegacyWorkflow.stateDir, foreignLegacyDispatch.jobId, { requireDelivery: true });
 const foreignLegacyJob = readJob(stateDir, foreignLegacyDispatch.jobId);
 const foreignLegacyEventId = completedEventId(foreignLegacyJob);
 const legacyForeignTransport = { name: "idle", delivered: [], async deliver(notification) { this.delivered.push(notification.eventId); return { state: "delivered" }; } };
@@ -984,7 +983,7 @@ const lostWorkflow = createWorkflow({
   spawnFn: runnerSpawner({ response: "LEGACY-LOST-FINDINGS" }),
 });
 const lostDispatch = lostWorkflow.dispatchRunner({ task: "never reached the session" });
-await lostWorkflow.awaitRunner({ jobId: lostDispatch.jobId });
+await waitForJobTerminal(lostWorkflow.stateDir, lostDispatch.jobId, { requireDelivery: true });
 const lostTransport = { name: "idle", delivered: [], async deliver(notification) { this.delivered.push(notification.eventId); return { state: "delivered" }; } };
 const lostRecovery = await lostWorkflow.recoverDeliveries({
   transport: lostTransport,
@@ -1018,7 +1017,7 @@ async function seedQueuedJob(id, response) {
     spawnFn: runnerSpawner({ response }),
   });
   const dispatch = wf.dispatchRunner({ task: `queued seed for ${id}` });
-  await wf.awaitRunner({ jobId: dispatch.jobId });
+  await waitForJobTerminal(wf.stateDir, dispatch.jobId, { requireDelivery: true });
   return { wf, dispatch, job: readJob(stateDir, dispatch.jobId) };
 }
 
@@ -1084,7 +1083,7 @@ const blockedWorkflow = createWorkflow({
   spawnFn: runnerSpawner({ response: "JOURNAL-BLOCKED-FINDINGS" }),
 });
 const blockedDispatch = blockedWorkflow.dispatchRunner({ task: "queued while the journal cannot be written" });
-await blockedWorkflow.awaitRunner({ jobId: blockedDispatch.jobId });
+await waitForJobTerminal(blockedWorkflow.stateDir, blockedDispatch.jobId, { requireDelivery: true });
 const blockedJob = readJob(stateDir, blockedDispatch.jobId);
 const blockedEventId2 = completedEventId(blockedJob);
 rmSync(notificationPath(stateDir, blockedEventId2), { force: true });
@@ -1128,7 +1127,7 @@ const unreadableWorkflow = createWorkflow({
   spawnFn: runnerSpawner({ response: "JOURNAL-UNREADABLE-FINDINGS" }),
 });
 const unreadableDispatch = unreadableWorkflow.dispatchRunner({ task: "queued while the journal is unreadable" });
-await unreadableWorkflow.awaitRunner({ jobId: unreadableDispatch.jobId });
+await waitForJobTerminal(unreadableWorkflow.stateDir, unreadableDispatch.jobId, { requireDelivery: true });
 const unreadableJob = readJob(stateDir, unreadableDispatch.jobId);
 const unreadableEventId = completedEventId(unreadableJob);
 rmSync(notificationPath(stateDir, unreadableEventId), { force: true });
@@ -1259,7 +1258,7 @@ const lostJournalWorkflow = createWorkflow({
   spawnFn: runnerSpawner({ response: "LOST-JOURNAL-FINDINGS" }),
 });
 const lostJournalDispatch = lostJournalWorkflow.dispatchRunner({ task: "consumed, then the record was lost" });
-await lostJournalWorkflow.awaitRunner({ jobId: lostJournalDispatch.jobId });
+await waitForJobTerminal(lostJournalWorkflow.stateDir, lostJournalDispatch.jobId, { requireDelivery: true });
 const lostJournalJob = readJob(stateDir, lostJournalDispatch.jobId);
 const lostJournalEventId = completedEventId(lostJournalJob);
 rmSync(notificationPath(stateDir, lostJournalEventId), { force: true });
@@ -1325,7 +1324,7 @@ staleTimer.registerTools(staleTimer.tools.map((tool) => tool.parameters));
 await callHandlers(staleTimerPi, "session_start", { reason: "startup" }, staleTimerPi.ctx);
 const staleTimerWorkflow = staleTimer.ensureWorkflow();
 const staleTimerDispatch = staleTimerWorkflow.dispatchRunner({ task: "consumed while busy" });
-await staleTimerWorkflow.awaitRunner({ jobId: staleTimerDispatch.jobId });
+await waitForJobTerminal(staleTimerWorkflow.stateDir, staleTimerDispatch.jobId, { requireDelivery: true });
 const staleTimerJob = readJob(stateDir, staleTimerDispatch.jobId);
 const staleTimerEventId = completedEventId(staleTimerJob);
 assert.equal(staleTimerJob.delivery.state, "queued");
@@ -1428,7 +1427,7 @@ defaultTimer.registerTools(defaultTimer.tools.map((tool) => tool.parameters));
 await callHandlers(defaultTimerPi, "session_start", { reason: "startup" }, defaultTimerPi.ctx);
 const defaultTimerWorkflow = defaultTimer.ensureWorkflow();
 const defaultTimerDispatch = defaultTimerWorkflow.dispatchRunner({ task: "consumed while busy (production timer)" });
-await defaultTimerWorkflow.awaitRunner({ jobId: defaultTimerDispatch.jobId });
+await waitForJobTerminal(defaultTimerWorkflow.stateDir, defaultTimerDispatch.jobId, { requireDelivery: true });
 const defaultTimerJob = readJob(stateDir, defaultTimerDispatch.jobId);
 const defaultTimerEventId = completedEventId(defaultTimerJob);
 assert.equal(defaultTimerJob.delivery.state, "queued");

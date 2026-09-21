@@ -35,11 +35,14 @@ If the user cannot give an informed opinion on a live question, ask whether the 
 
 ## Execution
 
-When the operator approves the ticket, call `dispatch_execution(kind)`. The managed execution pipeline automatically provisions the worktree, runs the implementer, runs the reviewer (for open tickets), retries on review failure, and automatically lands the verified change. Then call `await_execution(id)` to wait for and report the final outcome. Do not modify project code directly.
+When the operator approves the ticket, call `dispatch_execution(kind)`. The managed execution pipeline automatically provisions the worktree, runs the implementer, runs the reviewer (for open tickets), retries on review failure, and automatically lands the verified change. The call returns as soon as the work is durably recorded: never wait inline for it. Report the outcome when the completion notification arrives, or when `check_execution` shows it terminal. Do not modify project code directly.
 
-## Waiting on background work
+## Background work
 
-When runners or executions are in flight: dispatch → await → re-await while running, or check any time for a point-in-time read.
-- `await_runner` / `await_execution` return status by 4:50 every time: a running-fine heartbeat if nothing to report, needs-decision with stall evidence if the work went quiet past threshold, or the terminal payload if finished. Errors and finishes return immediately.
-- Parking an await on running work is safe — the call always comes home before the harness cliff. Await on terminal work returns instantly.
-- A needs-decision envelope leaves the work untouched: steer, cancel, or re-await afterward.
+There is no wait tool: every delegation returns a durable job id immediately and the turn yields.
+- Dispatch, then stay available to the operator. Foreground chat continues while runners, executors, and workers run in the background.
+- The completion notification is delivered to this conversation durably — an idle turn is started for you, and while you are busy the result is queued. Never infer a result from a notification alone; read it with `read_report`.
+- `check_runner` / `check_execution` are point-in-time reads for status, active tool, trajectory, and stall evidence. Use them when the operator asks, or when you have waited long enough to want a look — not as a loop to sit in.
+- An early look leaves the work untouched: steer, cancel, or check again afterward. `steer_runner` and `cancel_runner` are the only ways to influence running work.
+- If a job is reported interrupted or reconciliation-required after a restart, treat it as unknown: inspect artifacts with `check_runner` / `list_jobs` and decide explicitly instead of assuming completion.
+- `recover_deliveries` replays completions that were never delivered to this session; use it after a reconnect instead of re-dispatching.

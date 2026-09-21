@@ -10,6 +10,7 @@ import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  WORKER_HARNESS,
   WORKER_SEATS,
   buildWorkerLaunch,
   deepSeekMinimalRuntimeRoot,
@@ -41,6 +42,7 @@ import { resolveRunnerTransport } from "../prototype/deepseek-minimal/adapter/wo
 const root = mkdtempSync(join(tmpdir(), "qq-deepseek-minimal-"));
 const ADAPTER = WORKER_DEEPSEEK_ADAPTER;
 const BASE = {
+  harness: "deepseek-minimal",
   provider: "deepseek",
   model: "deepseek-flash",
   base_url: "https://api.deepseek.com",
@@ -55,21 +57,23 @@ function writeConfig(name, extra) {
   return file;
 }
 
-// 1. Harness selector: absence is codex (compatibility + rollback), the
-// deepseek-minimal selection is accepted, and anything else fails closed.
+// 1. Harness selector: the default is the one documented worker runtime (pi),
+// both legacy harnesses stay explicitly selectable for rollback, and anything
+// unknown fails closed.
 {
-  assert.equal(validateWorkerConfig(BASE).harness, "codex", "absence must remain codex");
+  assert.equal(WORKER_HARNESS, "pi", "pi is the documented default worker runtime");
+  assert.equal(validateWorkerConfig({ harness: "pi", provider: "meta", model: "muse-spark-1.3-contributor" }).harness, "pi");
   assert.equal(validateWorkerConfig({ ...BASE, harness: "codex" }).harness, "codex");
   assert.equal(validateWorkerConfig({ ...BASE, harness: " DeepSeek-Minimal " }).harness, "deepseek-minimal");
   assert.equal(validateWorkerConfig({ ...BASE, harness_type: "deepseek-minimal" }).harness, "deepseek-minimal");
   for (const bad of ["dsh", "minimal", "", 3, true]) {
     assert.throws(() => validateWorkerConfig({ ...BASE, harness: bad }), /harness/u, `harness ${JSON.stringify(bad)} must be rejected`);
   }
-  // Rollback gate: the default selection still emits the Codex argv verbatim.
+  // Rollback gate: the legacy Codex selection still emits the Codex argv.
   const env = { ...process.env, HOME: root, XDG_STATE_HOME: join(root, "state"), DEEPSEEK_API_KEY: "k" };
   for (const key of ["QQ_WORKER_CODEX_HOME", "QQ_SUBAGENT_BIN", "QQ_RUNNER_ID", "QQ_RUNNER_RESULT_FILE"]) delete env[key];
-  const codex = buildWorkerLaunch({ seat: "reviewer", cwd: root, prompt: "x", env, config: BASE });
-  assert.equal(codex.args[0], "exec", "the default harness must remain Codex");
+  const codex = buildWorkerLaunch({ seat: "reviewer", cwd: root, prompt: "x", env, config: { ...BASE, harness: "codex" } });
+  assert.equal(codex.args[0], "exec", "the legacy Codex harness keeps its argv");
   assert.ok(codex.args.join(" ").includes('model_provider="deepseek"'));
 }
 
@@ -134,6 +138,7 @@ function writeConfig(name, extra) {
 
 // 3. Output-token setting: optional, validated, never silently defaulted.
 {
+  assert.equal(validateWorkerConfig(BASE).harness, "deepseek-minimal", "BASE selects the legacy harness explicitly");
   assert.equal(validateWorkerConfig(BASE).maxOutputTokens, null, "unset must stay unset (upstream default applies)");
   assert.equal(validateWorkerConfig({ ...BASE, max_output_tokens: 2048 }).maxOutputTokens, 2048);
   assert.equal(validateWorkerConfig({ ...BASE, maxOutputTokens: WORKER_MAX_OUTPUT_TOKENS_MAX }).maxOutputTokens, WORKER_MAX_OUTPUT_TOKENS_MAX);

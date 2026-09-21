@@ -69,7 +69,11 @@ assert.match(architectContent, /The ticket is `\.architect\/tickets\/<sessionId>
 assert.match(architectContent, /## Teaching/);
 assert.match(architectContent, /teach until the user is informed enough to decide/);
 assert.match(architectContent, /call `dispatch_execution\(kind\)`/);
-assert.match(architectContent, /await_execution/);
+// The blocking wait tools are absent from the active instruction surface.
+assert.doesNotMatch(architectContent, /await_execution/);
+assert.doesNotMatch(architectContent, /await_runner/);
+assert.match(architectContent, /There is no wait tool/);
+assert.match(architectContent, /check_execution/);
 assert.match(architectContent, /dispatch_runner/);
 assert.match(architectContent, /Ask questions one at a time with recommendations\./);
 assert.match(architectContent, /Populate ticket and testing plan collaboratively with the operator\./);

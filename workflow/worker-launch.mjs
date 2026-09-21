@@ -33,6 +33,7 @@ import {
   WORKER_HARNESSES,
   WORKER_MESSAGES_BASE_URL,
   WORKER_MODEL,
+  WORKER_PI_ADAPTER,
   WORKER_PROVIDER,
   WORKER_SEATS,
   buildWorkerLaunch,
@@ -40,6 +41,7 @@ import {
   defaultWorkerConfigFile,
   loadWorkerConfig,
   validateWorkerConfig,
+  workerPiBin,
 } from "./worker-config.mjs";
 
 export {
@@ -62,8 +64,13 @@ export const UNSETTABLE_WORKER_EXEC_ENV = ["QQ_WORKER_EXEC"];
 
 export const DEFAULT_WORKER_CONFIG_PATH = defaultWorkerConfigFile();
 
-// The harness this checkout can execute with its own reviewed argv: the pinned
-// DeepSeek Minimal adapter. The operator's file selects it explicitly.
+// The one documented worker runtime interface: the Pi RPC adapter. Provider,
+// model, effort and context policy come from the operator's configuration and
+// pi's own registry, so a supported provider/model swap is a config change.
+export const PI_HARNESS = "pi";
+
+// Retained legacy harness (rollback while the operator activates the Pi worker
+// runtime). It is selected only by the same central config field.
 export const DEEPSEEK_MINIMAL_HARNESS = "deepseek-minimal";
 
 export function workerConfigPath(env = process.env) {
@@ -85,7 +92,7 @@ export function assertCentralWorkerConfig({ env = process.env, configFile = null
       : workerConfigPath(env));
   if (!exists(path)) {
     throw new Error(
-      `central worker configuration is missing at '${path}'; worker seats launch only the operator-configured harness and never fall back to agy, native Codex, or pi`,
+      `central worker configuration is missing at '${path}'; worker seats launch only the operator-configured harness and never fall back to another runtime`,
     );
   }
   return path;
@@ -139,6 +146,11 @@ export function resolveWorkerLaunchPlan({ role = "runner", env = process.env, co
     ? loadWorkerConfig({ env, file: path })
     : validateWorkerConfig(config, { configFile: configFile ?? undefined });
   const runtimeRoot = resolved.harness === DEEPSEEK_MINIMAL_HARNESS ? deepSeekMinimalRuntimeRoot(env) : null;
+  const adapter = resolved.harness === PI_HARNESS
+    ? WORKER_PI_ADAPTER
+    : resolved.harness === DEEPSEEK_MINIMAL_HARNESS
+      ? WORKER_DEEPSEEK_ADAPTER
+      : null;
   return {
     role,
     source: "central-config",
@@ -153,8 +165,10 @@ export function resolveWorkerLaunchPlan({ role = "runner", env = process.env, co
     max_output_tokens: resolved.maxOutputTokens,
     messages_base_url: resolved.messagesBaseUrl,
     harness: resolved.harness,
-    adapter: resolved.harness === DEEPSEEK_MINIMAL_HARNESS ? WORKER_DEEPSEEK_ADAPTER : null,
+    adapter,
     runtime_root: runtimeRoot,
+    context: resolved.context,
+    pi_bin: resolved.harness === PI_HARNESS ? workerPiBin(env) : null,
   };
 }
 
@@ -188,8 +202,17 @@ export function assertWorkerLaunchSource({ plan, env = process.env, exists = exi
   if (!plan) throw new Error("a launch plan is required");
   if (plan.configPath && !exists(plan.configPath)) {
     throw new Error(
-      `central worker configuration is missing at '${plan.configPath}'; worker seats launch only the operator-configured harness and never fall back to agy, native Codex, or pi`,
+      `central worker configuration is missing at '${plan.configPath}'; worker seats launch only the operator-configured harness and never fall back to another runtime`,
     );
+  }
+  if (plan.harness === PI_HARNESS) {
+    const adapter = plan.adapter ?? WORKER_PI_ADAPTER;
+    if (!exists(adapter)) {
+      throw new Error(
+        `configured harness '${PI_HARNESS}' has no adapter source at '${adapter}'; this installation is incomplete and no substitute runtime will be launched`,
+      );
+    }
+    return plan;
   }
   if (plan.harness !== DEEPSEEK_MINIMAL_HARNESS) return plan;
   const adapter = plan.adapter ?? WORKER_DEEPSEEK_ADAPTER;
@@ -226,10 +249,18 @@ export function buildCentralWorkerLaunch({ seat, cwd, prompt, env = process.env,
     ? loadWorkerConfig({ env, file: path })
     : validateWorkerConfig(config, { configFile: configFile ?? undefined });
   assertWorkerLaunchSource({
-    plan: { harness: resolved.harness, adapter: WORKER_DEEPSEEK_ADAPTER, runtime_root: deepSeekMinimalRuntimeRoot(env) },
+    plan: {
+      harness: resolved.harness,
+      adapter: resolved.harness === PI_HARNESS
+        ? WORKER_PI_ADAPTER
+        : resolved.harness === DEEPSEEK_MINIMAL_HARNESS
+          ? WORKER_DEEPSEEK_ADAPTER
+          : null,
+      runtime_root: resolved.harness === DEEPSEEK_MINIMAL_HARNESS ? deepSeekMinimalRuntimeRoot(env) : null,
+    },
     env,
   });
-  if (resolved.harness === DEEPSEEK_MINIMAL_HARNESS && path) {
+  if ((resolved.harness === DEEPSEEK_MINIMAL_HARNESS || resolved.harness === PI_HARNESS) && path) {
     // The adapter re-reads the central file itself, so the child must be told
     // which file this launch resolved: without it a non-default path could
     // diverge between parent and adapter (the adapter would silently fall back
@@ -273,6 +304,7 @@ export function planToSpawn(plan, { prompt, cwd = null, root = null, env = proce
       max_output_tokens: plan.max_output_tokens,
       messages_base_url: plan.messages_base_url,
       harness: plan.harness,
+      context: plan.context,
     },
     configFile: plan.configPath ?? undefined,
   });
@@ -285,7 +317,8 @@ export function planToSpawn(plan, { prompt, cwd = null, root = null, env = proce
       harness: plan.harness,
       source: "central-config",
       command: launch.bin,
-      adapter: launch.harness === DEEPSEEK_MINIMAL_HARNESS ? launch.args[0] : null,
+      adapter: launch.harness === DEEPSEEK_MINIMAL_HARNESS || launch.harness === PI_HARNESS ? launch.args[0] : null,
+      ...(launch.pi ? { pi: launch.pi.bin, pi_agent_dir: launch.pi.agentDir } : {}),
     },
   };
 }
