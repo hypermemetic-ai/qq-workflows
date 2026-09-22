@@ -320,13 +320,22 @@ export function markDelivery(
   return writeJob(stateDir, { ...current, delivery, updatedAt: now });
 }
 
+// The job projection tracks only its terminal notification. Progress/blocker
+// receipts live in their own journal entries and cannot satisfy completion.
+// Identity-less historical projections retain their uncertainty semantics.
+export function terminalDelivery(record) {
+  const delivery = record?.delivery ?? null;
+  if (delivery?.eventId && delivery.eventId !== `${record.role}:${record.id}:terminal`) return null;
+  return delivery;
+}
+
 // A pending completion is a terminal result whose notification is not confirmed
 // delivered: never attempted, refused, only accepted by a transport, or of
 // unprovable outcome. Cancellations are architect-initiated and need no wakeup.
 export function deliveryPending(stateDir, jobId) {
   const record = readJob(stateDir, jobId);
   if (!record?.terminal) return false;
-  const state = record.delivery?.state;
+  const state = terminalDelivery(record)?.state;
   if (state === "delivered") return false;
   if (state) return true;
   return record.terminal.status !== "cancelled";
