@@ -725,19 +725,19 @@ try {
       cwd: root,
       prompt: "x",
       env: { ...envWithBinding, QQ_WORKER_CONFIG_FILE: configFile },
-      mcpEnv: { QQ_RUNNER_ID: runnerId, QQ_RUNNER_RESULT_FILE: join(tmpdir(), "comm-result-launch.json") },
+      mcpEnv: { QQ_RUNNER_ID: runnerId, QQ_RUNNER_RESULT_FILE: join(tmpdir(), "comm-result-launch.json"), [COMMUNICATION_BINDING_ENV]:bindingJson },
     });
     assert.equal(piLaunch.harness, "pi");
     assert.equal(piLaunch.env[COMMUNICATION_BINDING_ENV], bindingJson, "the pi runner launch re-adds the exact binding");
-    // And a pi launch WITHOUT the env carries nothing (nothing is invented).
+    // Ambient bindings never opt a different launch into another attempt.
     const plainLaunch = buildWorkerLaunch({
       seat: "runner",
       cwd: root,
       prompt: "x",
-      env: { ...process.env, QQ_WORKER_CONFIG_FILE: configFile },
+      env: { ...envWithBinding, QQ_WORKER_CONFIG_FILE: configFile },
       mcpEnv: { QQ_RUNNER_ID: runnerId, QQ_RUNNER_RESULT_FILE: join(tmpdir(), "comm-result-launch2.json") },
     });
-    assert.equal(plainLaunch.env[COMMUNICATION_BINDING_ENV], undefined, "no binding env means no binding, also at the launch layer");
+    assert.equal(plainLaunch.env[COMMUNICATION_BINDING_ENV], undefined, "an inherited binding is scrubbed without an explicit per-launch binding");
   }
   pass("worker isolation: QQ_WORKFLOW_COMMUNICATION is scrubbed and re-added explicitly by the pi launch");
 
@@ -1044,7 +1044,13 @@ try {
       const hasEvent = submittedEvents.some((entry) => entry.payload?.amendmentId === outcome.amendmentId);
       assert.equal(hasEvent, outcome.accepted === true, `submitter ${outcome.amendmentId}: acceptance fact and record agree (${outcome.code ?? ""})`);
     }
-    assert.ok(submittedEvents.length >= 1, "at least one submission won the race");
+    // The scheduler may let a closer win before every submitter. That is a
+    // valid serialization, not a failed runtime. Both orderings are exercised
+    // deterministically above; this race verifies every reported fact against
+    // the committed order without requiring a particular winner.
+    const submitters = outcomes.filter(entry => entry.role === "submit");
+    assert.equal(submitters.length, 6);
+    assert.ok(submitters.every(entry => entry.ok), "every submitter returns a truthful accepted/refused result");
   }
   pass("concurrent-actor race: submissions serialize against closure; late ones are refused by the record itself");
 

@@ -523,22 +523,23 @@ function selectedModelView(model) {
 }
 
 /**
- * Resolve the runner communication launch context. Absent binding -> disabled
- * (the exact prior behavior). A binding on a seat other than the runner, or a
- * structurally malformed binding, refuses before any process is spawned; a
- * binding whose record does not name the attempt (or names it in a phase that
- * cannot be started) refuses before any provider traffic.
+ * Resolve the worker communication launch context. Absent binding -> disabled
+ * (the exact prior behavior). Explicit communication binding validation covers
+ * the implementer/reviewer seats ONLY when the binding role matches the actual
+ * seat exactly — a binding naming another seat or attempt is never inherited,
+ * and a structurally malformed binding, or any role/seat mismatch, refuses
+ * before any process is spawned; communication is never partially enabled.
  */
 function resolveCommunicationLaunch({ seat, env }) {
   const parsed = parseCommunicationBinding(env);
   if (!parsed.enabled) return { enabled: false };
-  if (seat !== "runner") {
+  const binding = parsed.binding;
+  if (!["runner", "implementer", "reviewer"].includes(seat) || binding.role !== seat) {
     throw Object.assign(
-      new Error(`a communication binding is only valid for the runner seat (got '${seat}'); refusing instead of partially enabling communication`),
+      new Error(`a communication binding is only valid when its role matches the actual seat (binding role '${binding.role}', seat '${seat}'); refusing instead of partially enabling communication`),
       { code: "binding_invalid_seat" },
     );
   }
-  const binding = parsed.binding;
   // Record-side preflight: the binding must name a real attempt that a launch
   // intent created and that has not already ended, so the observed session can
   // be bound against it before any delivery admission.

@@ -4,65 +4,160 @@
 // Requests/results are subordinate transport artifacts; workflow records and
 // report references remain authoritative. A host is launched only by an
 // explicit dispatch, never by recovery.
-import {readFileSync} from 'node:fs';
-import {resolve} from 'node:path';
-import {pathToFileURL} from 'node:url';
-import {readJob,writeJob,recordTerminal,processFingerprint} from './jobs.mjs';
-import {saveReport} from './reports.mjs';
+//
+// The host reconstructs and verifies its request against the AUTHORITATIVE
+// launch metadata in the one change record before any work starts (a forged or
+// edited request fails closed), records its observed process identity, writes
+// only guarded live telemetry (a stale write can never revive running/success
+// or erase a cancellation), and settles through the authoritative record:
+// validated outcome plus durable report/role-report references are persisted
+// BEFORE the compatibility projection and any notification. Late results after
+// a cancellation are linked as durable evidence without changing the cancelled
+// outcome; an interrupted/disappeared pipeline stays outcome-unknown, never a
+// known failed outcome.
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { readJob, writeJob, recordTerminal, updateRunningJob, processFingerprint } from "./jobs.mjs";
+import { saveReport } from "./reports.mjs";
+import {
+  managedExecutionPipelineHooks,
+  executionAuthorityMetadata,
+  managedExecutionView,
+  reconcileManagedExecution,
+  recordAttemptEvidence,
+  recordExecutionOutcome,
+  recordHostStarted,
+  verifyHostLaunch,
+} from "./execution-authority.mjs";
 
-export function publishExecutionResult({stateDir,jobId,result,now=Date.now()}) {
-  const job=readJob(stateDir,jobId);
-  if (!job || job.role !== 'execution') throw new Error('execution identity unavailable');
-  const text=JSON.stringify(result,null,2);
-  const report=saveReport(stateDir,{jobId,role:'execution',text,now});
-  const status=job.cancellation ? 'cancelled' : result.status === 'completed' && result.ok === true ? 'completed' : result.status === 'interrupted' ? 'interrupted' : 'failed';
-  return recordTerminal(stateDir,jobId,{status,summary:result.error?.message ?? `managed execution ${status}`,reportId:report.reportId,reportChars:report.chars,error:result.error ?? null,phase:result.phase,now});
+export function publishExecutionResult({ stateDir, jobId, result, now = Date.now() }) {
+  const job = readJob(stateDir, jobId);
+  if (!job || job.role !== "execution") throw new Error("execution identity unavailable");
+  const report = saveReport(stateDir, {jobId, role:"execution", text:JSON.stringify(result,null,2), now});
+  const meta = executionAuthorityMetadata({stateDir, executionId:jobId, job});
+  const view = meta ? managedExecutionView({stateDir, executionId:jobId}) : null;
+  let status = (meta ? view.execution.cancelIntent : job.cancellation) ? "cancelled"
+    : result.ok === true && result.status === "completed" ? "completed"
+    : result.status === "interrupted" ? "interrupted" : "failed";
+  const summary = result.error?.message ?? `managed execution ${status}`;
+  if (meta) {
+    if (status === "interrupted") {
+      recordAttemptEvidence({stateDir,executionId:jobId,jobId,attemptId:meta.attemptId,label:"pipeline-report",reportId:report.reportId,note:`pipeline interrupted; outcome unknown: ${summary}`,now});
+    } else {
+      const outcome = recordExecutionOutcome({stateDir,executionId:jobId,status,summary,
+        result:{ok:result.ok,status:result.status,phase:result.phase,childAttempts:result.childAttempts??[]},
+        reportId:report.reportId,childReports:result.childAttempts??[],now});
+      if (!outcome.ok) throw new Error(`managed result publication refused: ${outcome.reason}`);
+      status = outcome.status;
+      if (status === "cancelled" && result.status !== "cancelled") {
+        recordAttemptEvidence({stateDir,executionId:jobId,jobId,attemptId:meta.attemptId,label:"late-result",reportId:report.reportId,note:`result ${result.status} arrived after accepted cancellation; outcome remains cancelled`,now});
+      }
+    }
+    const recovered = reconcileManagedExecution({stateDir,executionId:jobId,now});
+    if (!recovered.ok) throw new Error(recovered.reason);
+  }
+  const settled = recordTerminal(stateDir,jobId,{status,summary,reportId:report.reportId,reportChars:report.chars,error:result.error??null,phase:result.phase,now});
+  // Phase is telemetry; it cannot replace the authoritative outcome or report.
+  if (result.phase && settled.phase !== result.phase) {
+    settled.phase = result.phase;
+    writeJob(stateDir,settled);
+  }
+  return settled.terminal?.reportId === report.reportId ? settled : {...settled,
+    lateEvidence:{reportId:report.reportId,reportChars:report.chars,at:now,resultStatus:result.status??null,outcomeUnchanged:settled.terminal?.status??null}};
 }
 
-export async function runExecutionHost(requestPath,{loadPipeline=()=>import('../bin/mcp-server.mjs')}={}) {
-  const request=JSON.parse(readFileSync(requestPath,'utf8'));
-  const {stateDir,jobId,owner,root,kind,phaseId,baseRef,launchId}=request;
-  const job=readJob(stateDir,jobId);
-  if (!job || job.role !== 'execution' || job.workflow?.sessionKey !== owner || job.workflow?.root !== root || job.executionHost?.launchId !== launchId || job.executionHost?.requestPath !== resolve(requestPath) || job.kind !== kind || job.phaseId !== phaseId || (job.baseRef ?? null) !== (baseRef ?? null)) throw new Error('execution host ownership mismatch');
+export async function runExecutionHost(requestPath, { loadPipeline = () => import("../bin/mcp-server.mjs") } = {}) {
+  const request = JSON.parse(readFileSync(requestPath, "utf8"));
+  const { stateDir, jobId, owner, root, kind, phaseId, baseRef, launchId } = request;
+  const job = readJob(stateDir, jobId);
+  if (!job || job.role !== "execution" || job.workflow?.sessionKey !== owner || job.workflow?.root !== root || job.executionHost?.launchId !== launchId || job.executionHost?.requestPath !== resolve(requestPath) || job.kind !== kind || job.phaseId !== phaseId || (job.baseRef ?? null) !== (baseRef ?? null)) throw new Error("execution host ownership mismatch");
   if (job.terminal || job.cancellation) return job;
+  // Authoritative verification: reconstruct the committed launch metadata and
+  // crosscheck every request field against it. A forged request whose cache
+  // fields happen to line up still fails closed against the record.
+  const meta = executionAuthorityMetadata({stateDir,executionId:jobId,job});
+  const hooks = meta ? managedExecutionPipelineHooks({ stateDir, executionId: jobId, owner }) : null;
+  if (meta) {
+    const verified = verifyHostLaunch({ stateDir, executionId: jobId, request, requestPath });
+    if (!verified.ok) throw new Error(`execution host ownership mismatch: ${verified.reason}`);
+  }
   // Spawn intent is durable before fork; do not run the pipeline until the
   // parent has published this host's observed process identity.
-  const deadline=Date.now()+5000;
+  const deadline = Date.now() + 5000;
   for (;;) {
-    const current=readJob(stateDir,jobId);
-    if(current?.terminal || current?.cancellation) return current;
-    if(current?.process?.pid===process.pid) break;
-    if(Date.now()>deadline) throw new Error('execution host process binding was not published');
-    await new Promise(done=>setTimeout(done,20));
+    const current = readJob(stateDir, jobId);
+    if (current?.terminal || current?.cancellation) return current;
+    if (current?.process?.pid === process.pid) break;
+    if (Date.now() > deadline) throw new Error("execution host process binding was not published");
+    await new Promise((done) => setTimeout(done, 20));
   }
-  const pipeline=await loadPipeline();
-  let pipelineId=null;
-  let cancelling=false;
-  const cancel=async signal=>{
-    if(cancelling)return;
-    cancelling=true;
+  if (meta?.attemptId) {
+    recordHostStarted({
+        stateDir,
+        executionId: jobId,
+        attemptId: meta.attemptId,
+        identity: { host: true, pid: process.pid, fingerprint: processFingerprint({ pid: process.pid }), launchId: meta.launch?.launchId ?? null },
+    });
+  }
+  const pipeline = await loadPipeline();
+  let pipelineId = null;
+  let cancelling = false;
+  const cancel = async (signal) => {
+    if (cancelling) return;
+    cancelling = true;
     // Only the host's exact active child is signalled by the existing pipeline.
     // An external signal is interruption, not an invented operator cancellation.
-    await pipeline.cancelExecution?.({id:pipelineId,reason:signal,interrupted:!readJob(stateDir,jobId)?.cancellation});
+    await pipeline.cancelExecution?.({ id: pipelineId, reason: signal, interrupted: !readJob(stateDir, jobId)?.cancellation });
   };
-  process.on('SIGTERM',cancel);process.on('SIGINT',cancel);
+  process.on("SIGTERM", cancel);
+  process.on("SIGINT", cancel);
   try {
-    const started=await pipeline.dispatchExecution({kind,cwd:root,sessionId:owner,phaseId,baseRef,notificationMode:'parent'});
-    pipelineId=started.id;
-    if(cancelling) await pipeline.cancelExecution?.({id:pipelineId,reason:'host interrupted',interrupted:!readJob(stateDir,jobId)?.cancellation});
+    const started = await pipeline.dispatchExecution({
+      kind,
+      cwd: root,
+      sessionId: owner,
+      phaseId,
+      baseRef,
+      notificationMode: "parent",
+      ...(hooks ? { authority: hooks } : {}),
+    });
+    pipelineId = started.id;
+    if (cancelling) await pipeline.cancelExecution?.({ id: pipelineId, reason: "host interrupted", interrupted: !readJob(stateDir, jobId)?.cancellation });
     for (;;) {
-      const view=await pipeline.checkExecution({id:pipelineId});
-      const current=readJob(stateDir,jobId);
-      if (!current) throw new Error('execution record disappeared');
-      if(current.cancellation && !cancelling) await cancel('cancellation intent');
-      if(!current.terminal) writeJob(stateDir,{...current,phase:view.phase,updatedAt:Date.now(),executionHost:{...current.executionHost,pipelineId},telemetry:{source:'execution-host',lastObservedAt:Date.now(),activeTool:view.activeTool ?? null,trajectory:(view.trajectory ?? []).slice(-8)}});
-      if(view.status !== 'running' && view.pipelineSettled !== false) return publishExecutionResult({stateDir,jobId,result:{ok:view.status==='completed',status:view.status,phase:view.phase,result:view.result,error:view.error,childAttempts:view.childAttempts ?? [],pipelineId}});
-      await new Promise(done=>setTimeout(done,500));
+      const view = await pipeline.checkExecution({ id: pipelineId });
+      const current = readJob(stateDir, jobId);
+      if (!current) throw new Error("execution record disappeared");
+      if (current.cancellation && !cancelling) await cancel("cancellation intent");
+      // Guarded live telemetry only: a cancellation or terminal that commits
+      // during this window wins and is never overwritten by this stale write.
+      if (!current.terminal) {
+        updateRunningJob(stateDir, jobId, (fresh) => ({
+          ...fresh,
+          phase: view.phase,
+          executionHost: { ...fresh.executionHost, pipelineId },
+          telemetry: { source: "execution-host", lastObservedAt: Date.now(), activeTool: view.activeTool ?? null, trajectory: (view.trajectory ?? []).slice(-8) },
+        }));
+      }
+      if (view.status !== "running" && view.pipelineSettled !== false) {
+        return publishExecutionResult({
+          stateDir,
+          jobId,
+          result: { ok: view.status === "completed", status: view.status, phase: view.phase, result: view.result, error: view.error, childAttempts: view.childAttempts ?? [], pipelineId },
+        });
+      }
+      await new Promise((done) => setTimeout(done, 500));
     }
-  } catch(error) {
-    return publishExecutionResult({stateDir,jobId,result:{ok:false,status:'failed',error:{message:error.message},pipelineId}});
-  } finally {process.off('SIGTERM',cancel);process.off('SIGINT',cancel);}
+  } catch (error) {
+    return publishExecutionResult({ stateDir, jobId, result: { ok: false, status: "failed", error: { message: error.message }, pipelineId } });
+  } finally {
+    process.off("SIGTERM", cancel);
+    process.off("SIGINT", cancel);
+  }
 }
-if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
-  runExecutionHost(process.argv[2]).catch(error=>{process.stderr.write(`execution host: ${error.message}\n`);process.exitCode=1;});
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  runExecutionHost(process.argv[2]).catch((error) => {
+    process.stderr.write(`execution host: ${error.message}\n`);
+    process.exitCode = 1;
+  });
 }

@@ -39,6 +39,10 @@ for (const key of Object.keys(env)) {
 }
 delete env.QQ_WORKFLOW_COMMUNICATION;
 delete env.QQ_RELAY_INSTALL_ROOT;
+// A managed seat result binding names one exact seat attempt and must never
+// reach a test child by inheritance (a foreign binding fails closed in the
+// adapter; tests never inherit another seat/attempt binding at all).
+delete env.QQ_WORKER_RESULT_BINDING;
 env.QQ_WORKFLOW_STATE_DIR = join(mkdtempSync(join(tmpdir(), 'qq-workflow-state-')), 'state');
 // Scrub live notification routing/thread env from test runs.
 // Targeted actual live routing values (preserve needed config: CODEX_HOME, CODEX_MODEL, CODEX_BIN).

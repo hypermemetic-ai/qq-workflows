@@ -31,7 +31,7 @@ export async function localPiProvider({respond}={}) {
   writeFileSync(configFile,JSON.stringify({harness:'pi',provider,model,reasoning_effort:'high',context:{enabled:true,reserve_tokens:8192,keep_recent_tokens:2000}}));
   const env={...process.env,QQ_WORKER_CONFIG_FILE:configFile,QQ_WORKER_PI_BIN:pi,QQ_WORKER_PI_AGENT_DIR:agentDir,PI_CODING_AGENT_DIR:agentDir,XDG_STATE_HOME:join(root,'xdg'),QQ_WORKFLOW_STATE_DIR:join(root,'state'),PI_SKIP_VERSION_CHECK:'1',PI_TELEMETRY:'0'};
   for(const key of Object.keys(env))if(key.startsWith('QQ_RUNNER_')||key.startsWith('QQ_ARCHITECT_')||key.startsWith('QQ_ZVEC_GREP_'))delete env[key];
-  delete env.QQ_WORKFLOW_COMMUNICATION;delete env.QQ_WORKER_SESSION_DIR;
+  delete env.QQ_WORKFLOW_COMMUNICATION;delete env.QQ_WORKER_SESSION_DIR;delete env.QQ_WORKER_RESULT_BINDING;
   return {root,env,pi,provider,model,get calls(){return calls;},stop:async()=>{
     server.closeAllConnections();await new Promise(done=>server.close(done));
     // A coordinator SIGKILL deliberately leaves an orphan relay. Reap only

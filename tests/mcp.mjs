@@ -170,9 +170,10 @@ async function waitForRunnerTerminal(runnerId, { timeoutMs = 20_000 } = {}) {
 }
 
 // 1. Tool schema checks
-assert.equal(TOOLS.length, 13);
+assert.equal(TOOLS.length, 15);
 const toolNames = TOOLS.map((t) => t.name).sort();
 assert.deepEqual(toolNames, [
+  "cancel_execution",
   "cancel_runner",
   "check_execution",
   "check_runner",
@@ -184,6 +185,7 @@ assert.deepEqual(toolNames, [
   "read_report",
   "read_ticket",
   "retry_runner_notification",
+  "steer_execution",
   "steer_runner",
   "update_ticket",
 ]);
@@ -361,6 +363,9 @@ try {
   assert.equal(boundedResult.kind, "bounded");
   assert.equal(boundedResult.branch, "architect/bounded/12345678");
   assert.equal(boundedResult.reviewRequired, false);
+  assert.equal(boundedResult.communication.supported, false, "manual preparation cannot imply managed communication");
+  assert.equal(boundedResult.communication.mode, "manual-worker");
+  assert.match(boundedResult.instructions, /Use dispatch_execution for managed implementer\/reviewer communication/);
   assert.equal(boundedResult.implementerProvider, "deepseek", "the seat provider is the centrally configured one");
   assert.ok(boundedResult.instructions.includes(`${WORKER_LAUNCHER_PATH} --seat implementer --cwd ${boundedResult.worktree}`));
   assert.doesNotMatch(boundedResult.instructions, /agy|muse exec|dsh --profile|codex exec --profile/);
@@ -1193,7 +1198,7 @@ const pingResp = await handleRpc("ping", {});
 assert.deepEqual(pingResp, {});
 
 const listResp = await handleRpc("tools/list", {});
-assert.equal(listResp.tools.length, 13);
+assert.equal(listResp.tools.length, 15);
 
 // tools/call with missing kind should return isError: true
 const errCallResp = await handleRpc("tools/call", {
@@ -1233,7 +1238,7 @@ assert.equal(responses[0].id, 1);
 assert.equal(responses[0].result.serverInfo.name, "qq-workflows");
 
 assert.equal(responses[1].id, 2);
-assert.equal(responses[1].result.tools.length, 13);
+assert.equal(responses[1].result.tools.length, 15);
 
 assert.equal(responses[2].id, 3);
 assert.deepEqual(responses[2].result, {});
@@ -3727,13 +3732,13 @@ assert.equal(getDisabledTools([], {}).size, 0);
 {
   const disabled = ["steer_runner", "cancel_runner"];
   const list = await handleRpc("tools/list", {}, { disabledTools: disabled });
-  assert.equal(list.tools.length, 11);
+  assert.equal(list.tools.length, 13);
   const names = list.tools.map((t) => t.name);
   assert.ok(!names.includes("steer_runner"));
   assert.ok(!names.includes("cancel_runner"));
 
   const full = await handleRpc("tools/list", {}, { disabledTools: [] });
-  assert.equal(full.tools.length, 13);
+  assert.equal(full.tools.length, 15);
 
   await assert.rejects(
     () => callTool("steer_runner", { runnerId: "x" }, { disabledTools: disabled }),
@@ -3779,7 +3784,7 @@ assert.equal(getDisabledTools([], {}).size, 0);
   delete process.env.QQ_DISABLED_TOOLS;
   try {
     const full = await handleRpc("tools/list", {});
-    assert.equal(full.tools.length, 13);
+    assert.equal(full.tools.length, 15);
   } finally {
     if (savedDisabledEnv === undefined) delete process.env.QQ_DISABLED_TOOLS;
     else process.env.QQ_DISABLED_TOOLS = savedDisabledEnv;
@@ -3788,7 +3793,7 @@ assert.equal(getDisabledTools([], {}).size, 0);
   process.env.QQ_DISABLED_TOOLS = "steer_runner,cancel_runner";
   try {
     const list = await handleRpc("tools/list", {});
-    assert.equal(list.tools.length, 11);
+    assert.equal(list.tools.length, 13);
     assert.ok(!list.tools.some((t) => t.name === "steer_runner" || t.name === "cancel_runner"));
     await assert.rejects(() => callTool("cancel_runner", { runnerId: "x" }), /Tool 'cancel_runner' is disabled/);
     const rpcErr = await handleRpc("tools/call", { name: "cancel_runner", arguments: { runnerId: "x" } });
@@ -3837,7 +3842,7 @@ assert.equal(getDisabledTools([], {}).size, 0);
       args: ["--disabled-tools", "steer_runner,cancel_runner"],
       stripDisabledEnv: true,
     });
-    assert.equal(listResp.result.tools.length, 11);
+    assert.equal(listResp.result.tools.length, 13);
     assert.ok(!listResp.result.tools.some((t) => t.name === "steer_runner" || t.name === "cancel_runner"));
     assert.equal(callResp.result.isError, true);
     assert.equal(callResp.result.content[0].text, "Tool 'steer_runner' is disabled");
@@ -3846,7 +3851,7 @@ assert.equal(getDisabledTools([], {}).size, 0);
   // Env var alone filters the list and rejects the call.
   {
     const [listResp, callResp] = queryServer({ env: { QQ_DISABLED_TOOLS: "steer_runner,cancel_runner" } });
-    assert.equal(listResp.result.tools.length, 11);
+    assert.equal(listResp.result.tools.length, 13);
     assert.ok(!listResp.result.tools.some((t) => t.name === "steer_runner" || t.name === "cancel_runner"));
     assert.equal(callResp.result.isError, true);
     assert.equal(callResp.result.content[0].text, "Tool 'steer_runner' is disabled");
@@ -3855,7 +3860,7 @@ assert.equal(getDisabledTools([], {}).size, 0);
   // Neither: the full surviving tool surface.
   {
     const [listResp] = queryServer({ stripDisabledEnv: true });
-    assert.equal(listResp.result.tools.length, 13);
+    assert.equal(listResp.result.tools.length, 15);
   }
 }
 

@@ -639,7 +639,9 @@ function stubRelay({ status = "pending" } = {}) {
   const body = "0123456789".repeat(120); // 1200 chars
   const saved = saveReport(stateDir, { jobId: "job-report", role: "runner", text: body });
   const previous = process.env.QQ_WORKFLOW_STATE_DIR;
+  const previousOwner = process.env.QQ_WORKFLOW_SESSION_ID;
   process.env.QQ_WORKFLOW_STATE_DIR = stateDir;
+  process.env.QQ_WORKFLOW_SESSION_ID = sessionId(9);
   try {
     const first = await callTool("read_report", { reportId: saved.reportId, limit: 500 });
     assert.equal(first.ok, true);
@@ -664,6 +666,8 @@ function stubRelay({ status = "pending" } = {}) {
   } finally {
     if (previous === undefined) delete process.env.QQ_WORKFLOW_STATE_DIR;
     else process.env.QQ_WORKFLOW_STATE_DIR = previous;
+    if (previousOwner === undefined) delete process.env.QQ_WORKFLOW_SESSION_ID;
+    else process.env.QQ_WORKFLOW_SESSION_ID = previousOwner;
   }
   // Cold-process recovery: a fresh server process serves the same durable
   // report through the tool dispatcher with no in-memory state at all.
@@ -671,7 +675,7 @@ function stubRelay({ status = "pending" } = {}) {
   const cold = spawnSync(process.execPath, [fileURLToPath(new URL("../bin/mcp-server.mjs", import.meta.url))], {
     input: request,
     encoding: "utf8",
-    env: { ...process.env, QQ_WORKFLOW_STATE_DIR: stateDir },
+    env: { ...process.env, QQ_WORKFLOW_STATE_DIR: stateDir, QQ_WORKFLOW_SESSION_ID: sessionId(9) },
     timeout: 15_000,
   });
   assert.equal(cold.status, 0, `cold server failed: ${cold.stderr}`);

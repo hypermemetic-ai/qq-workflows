@@ -18,7 +18,7 @@ createJob({stateDir,id:'survive',role:'execution',kind:'open',workflow:{sessionK
 writeJob(stateDir,{...readJob(stateDir,'survive'),phaseId:'phase'});
 const driver=join(root,'parent.mjs');
 writeFileSync(driver,`import {spawn} from 'node:child_process';import {launchExecutionHost} from ${JSON.stringify(supervisor)};
-launchExecutionHost({stateDir:${JSON.stringify(stateDir)},root:${JSON.stringify(root)},jobId:'survive',owner:'coordinator',kind:'open',phaseId:'phase',spawnFn:(bin,args,options)=>spawn(bin,['--input-type=module','-e',\`import {runExecutionHost} from ${JSON.stringify(host)}; await runExecutionHost(\${JSON.stringify(args[1])},{loadPipeline:()=>import(${JSON.stringify(pathToFileURL(pipeline).href)})});\`],options)});setTimeout(()=>process.exit(0),100);`);
+launchExecutionHost({stateDir:${JSON.stringify(stateDir)},root:${JSON.stringify(root)},jobId:'survive',owner:'coordinator',kind:'open',phaseId:'phase',constraints:'Exercise the owned host with a deterministic pipeline.',spawnFn:(bin,args,options)=>spawn(bin,['--input-type=module','-e',\`import {runExecutionHost} from ${JSON.stringify(host)}; await runExecutionHost(\${JSON.stringify(args[1])},{loadPipeline:()=>import(${JSON.stringify(pathToFileURL(pipeline).href)})});\`],options)});setTimeout(()=>process.exit(0),100);`);
 const parent=spawnSync(process.execPath,[driver],{encoding:'utf8',timeout:10000});
 assert.equal(parent.status,0,parent.stderr);
 const deadline=Date.now()+10000;

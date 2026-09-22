@@ -160,6 +160,36 @@ export function updateJob(stateDir, jobId, patch, { now = Date.now() } = {}) {
   return next;
 }
 
+// Guarded read-modify-write for LIVE telemetry/phase updates from a host or a
+// watcher. A record that carries a terminal outcome or a cancellation
+// tombstone is returned UNCHANGED: a stale in-flight write can never revive
+// running/success state, erase a cancellation, or re-open settled work. The
+// authoritative change record remains the backstop that reconstructs truth
+// even if a raw stale write ever lands (see workflow/execution-authority.mjs).
+export function updateRunningJob(stateDir, jobId, mutate, { now = Date.now() } = {}) {
+  const current = readJob(stateDir, jobId);
+  if (!current) return null;
+  if (current.terminal || current.cancellation) return current;
+  const patch = typeof mutate === "function" ? mutate(current) : mutate;
+  if (!patch || typeof patch !== "object") return current;
+  const next = {
+    ...current,
+    ...patch,
+    id: current.id,
+    role: current.role,
+    status: current.status,
+    cancellation: current.cancellation,
+    terminal: current.terminal,
+    finishedAt: current.finishedAt,
+    updatedAt: now,
+  };
+  // A cancellation or terminal that committed during this write window wins:
+  // re-read and refuse to overwrite it.
+  const latest = readJob(stateDir, jobId) ?? current;
+  if (latest.terminal || latest.cancellation) return latest;
+  return writeJob(stateDir, next);
+}
+
 export function appendJobEvent(stateDir, jobId, event, { now = Date.now(), limit = 40 } = {}) {
   const current = readJob(stateDir, jobId);
   if (!current) throw new Error(`unknown job '${jobId}'`);

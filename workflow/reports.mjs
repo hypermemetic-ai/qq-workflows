@@ -20,6 +20,9 @@ export function reportsDir(stateDir) {
 }
 
 export function reportPath(stateDir, reportId) {
+  if (typeof reportId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(reportId)) {
+    throw new Error("invalid report reference: expected a retained report ID, not a path");
+  }
   return join(reportsDir(stateDir), `${reportId}.txt`);
 }
 

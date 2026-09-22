@@ -39,6 +39,22 @@
 // retention, never absence) or retained as `unknown` for an explicit decision.
 // Nothing claims exactly-once across transactions the runtime does not offer: the
 // receipt boundary is documented in the README.
+//
+// Every DELIVERY ATTEMPT is journaled as durable intent BEFORE the transport is
+// invoked, and settled with the transport's result afterwards. This closes the
+// crash window between an external transport accepting the message and its
+// callback reaching the journal: without the intent, a crash there leaves
+// nothing (or — for a completion an internal execution-host handoff queued for
+// this session to send — a bare `queued` record that looks like a never-sent
+// internal handoff), and the next pass would blindly send the event again. With
+// it, the journal proves an attempt was in flight, and an attempt whose callback
+// never settled is outcome-UNKNOWN: nothing is sent behind a lost callback until
+// the owning session's evidence resolves it (retention acknowledges it, proven
+// absence replays the same event), while an explicit refusal the callback DID
+// prove settles the attempt and stays retryable. This is deliberately NOT an
+// exactly-once claim for an external queue without receipts: an accepted message
+// may still be in the queue when the session evidence is read, so the receipt
+// boundary stays exactly where the README documents it.
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -73,6 +89,10 @@ export const RECEIPT_KINDS = [
   "session-entry-content-correspondence",
   "unspecified",
 ];
+
+// How many settled/superseded attempts a record keeps beside the current one.
+// Bounded like every other history in the journal.
+const ATTEMPT_HISTORY_LIMIT = 12;
 
 export function notificationsDir(stateDir) {
   return join(stateDir, "notifications");
@@ -211,14 +231,100 @@ export function completedEventId(job) {
 // Durable acknowledgement.
 // ---------------------------------------------------------------------------
 
+// Durable delivery-attempt INTENT, written BEFORE the transport is invoked.
+//
+// The crash window this closes: the external transport accepted the message and
+// the process died before its callback could be journaled. Without a durable
+// intent that event looks exactly like one that was never sent — nothing
+// recorded, or (for the internal execution-host handoff) a bare `queued` record
+// the owning coordinator still owes an external send — and the next pass blindly
+// sends it again. With it, the journal proves an attempt was in flight, and an
+// attempt whose callback never settled is outcome-unknown until the owning
+// session's evidence resolves it.
+//
+// The write is MERGED, never a replacement: it adds the attempt (moving the
+// previous attempt into a bounded history) and preserves everything else the
+// record holds — an earlier receipt, the queued/accepted history of an internal
+// handoff, and the report reference (an earlier report pointer wins; an intent
+// never re-points a record away from the report it already has). It deliberately
+// does NOT advance `seq`: the sequence counts recorded results, and an intent is
+// not a result — it has its own `count` and timestamps.
+function writeAttemptIntent(stateDir, eventId, { transport = null, now = Date.now(), seed = null } = {}) {
+  const previous = readNotification(stateDir, eventId);
+  const priorAttempt = previous?.attempt ?? null;
+  const attempt = {
+    count: (priorAttempt?.count ?? 0) + 1,
+    at: now,
+    transport: transport ?? null,
+    settled: false,
+    settledAt: null,
+    settledBy: null,
+    result: null,
+    reason: null,
+  };
+  const attemptHistory = [
+    ...(previous?.attemptHistory ?? []),
+    ...(priorAttempt ? [priorAttempt] : []),
+  ].slice(-ATTEMPT_HISTORY_LIMIT);
+  const record = previous
+    ? {
+        ...previous,
+        reportId: previous.reportId ?? seed?.reportId ?? null,
+        reportChars: previous.reportId ? previous.reportChars : seed?.reportChars ?? 0,
+        resultAvailable: previous.resultAvailable || Boolean(seed?.reportId),
+        truncated: previous.truncated || Boolean(seed?.truncated),
+        attempt,
+        attemptHistory,
+      }
+    : {
+        schema: 1,
+        eventId,
+        jobId: seed?.jobId ?? null,
+        role: seed?.role ?? null,
+        workflow: seed?.workflow ?? null,
+        // A record that holds only an intent claims no result yet.
+        state: "pending",
+        transport: null,
+        reason: null,
+        messageId: null,
+        via: null,
+        reportId: seed?.reportId ?? null,
+        reportChars: seed?.reportChars ?? 0,
+        resultAvailable: Boolean(seed?.reportId),
+        truncated: Boolean(seed?.truncated),
+        deliveredTextChars: 0,
+        deliveryAt: null,
+        stateAt: now,
+        receipt: null,
+        receiptAt: null,
+        acknowledgedAt: null,
+        seq: 0,
+        attempt,
+        attemptHistory,
+      };
+  writeJsonAtomic(notificationPath(stateDir, eventId), record);
+  return { record, previous, fresh: !previous };
+}
+
 // Apply a notification-record update with the same monotonic rule the job
 // projection uses: a later queued/failed result can never overwrite a receipt,
-// and the acceptance facts an earlier attempt recorded stay in the record.
+// and the acceptance facts an earlier attempt recorded stay in the record. The
+// state is re-read here (not carried in from a caller's earlier read), so a
+// later weak result from ANOTHER process cannot erase strong evidence a
+// concurrent writer already persisted either.
+//
+// `patch.settleAttempt` closes the attempt the record carries: the callback
+// landed (its result is `requested`, applied or suppressed) or a receipt
+// resolved it. A suppressed late callback settles nothing new — the attempt it
+// belongs to is already closed by whatever wrote first.
 function applyNotificationState(stateDir, eventId, patch) {
   const previous = readNotification(stateDir, eventId);
   if (!previous) return null;
   const requested = patch.state ?? null;
-  const next = requested ? nextDeliveryState(previous.state ?? null, requested) : previous.state ?? null;
+  // A `pending` record holds an intent, not a result: it must never swallow the
+  // result that settles it (an explicit refusal has to land as `failed`).
+  const priorState = previous.state === "pending" ? null : previous.state ?? null;
+  const next = requested ? nextDeliveryState(priorState, requested) : previous.state ?? null;
   const applied = requested ? next === requested : false;
   const transitioned = applied && (previous.state ?? null) !== next;
   const record = {
@@ -245,6 +351,18 @@ function applyNotificationState(stateDir, eventId, patch) {
     // A suppressed result is still history: the transport/observation happened,
     // it just did not become the record's state.
     lastResult: applied ? previous.lastResult ?? null : { state: requested, at: patch.now ?? Date.now(), reason: patch.reason ?? null, applied: false },
+    attempt:
+      patch.settleAttempt && previous.attempt && previous.attempt.settled !== true
+        ? {
+            ...previous.attempt,
+            settled: true,
+            settledAt: patch.now ?? Date.now(),
+            settledBy: patch.settleAttempt.by ?? "callback",
+            result: patch.settleAttempt.result ?? null,
+            reason: patch.settleAttempt.reason ?? null,
+          }
+        : previous.attempt ?? null,
+    attemptHistory: previous.attemptHistory ?? [],
     seq: (previous.seq ?? 0) + 1,
   };
   writeJsonAtomic(notificationPath(stateDir, eventId), record);
@@ -376,6 +494,9 @@ export function acknowledgeDelivery({
       receiptAt: confirmed.at ?? now,
       acknowledgedAt: now,
       reason,
+      // A receipt RESOLVES an attempt whose callback never settled: the outcome
+      // is no longer unknown — the session provably retained the event.
+      settleAttempt: { result: "delivered", by: "receipt", reason },
       now,
     });
   } catch (err) {
@@ -467,6 +588,10 @@ async function routeNotificationOnce({
   cap,
   dedupe = "durable",
   persistJob = false,
+  // The caller resolved an outcome-unknown attempt first: owning-session
+  // evidence proved the event absent, or the operator explicitly decided a
+  // retry. Without it, a lost callback is never silently resent.
+  resolveUnknownOutcome = false,
   now = Date.now(),
 } = {}) {
   if (!transport || typeof transport.deliver !== "function") {
@@ -495,6 +620,18 @@ async function routeNotificationOnce({
     }
   }
 
+  // A previous attempt whose callback never settled is outcome-unknown: the
+  // external transport may have accepted the message before the crash, so
+  // sending again could duplicate it — and a journal that still shows only the
+  // internal handoff's `queued` would make that look like a first send. Nothing
+  // is sent behind a lost callback unless the caller resolved the uncertainty
+  // first (the owning session's evidence proved the event absent, or the
+  // operator explicitly decided a retry).
+  const prior = journalState.status === "ok" ? journalState.record : null;
+  if (prior?.attempt && prior.attempt.settled !== true && !resolveUnknownOutcome) {
+    return { ok: false, eventId, state: "unknown", reason: "delivery-attempt-outcome-unknown", delivery: prior, attempt: prior.attempt, report: null };
+  }
+
   let report = reportId ? { reportId, chars: reportChars } : null;
   const body = typeof reportText === "string" ? reportText : typeof text === "string" ? text : "";
   if (!report && body) {
@@ -507,6 +644,27 @@ async function routeNotificationOnce({
     reportId: report?.reportId ?? null,
     label: "record",
   });
+
+  // The attempt is durable BEFORE the transport is invoked (report-before-notify
+  // intact: the report above is already saved). An intent that cannot be written
+  // means the attempt must not start: an external send whose intent was lost is
+  // exactly the blind-duplicate window this closes.
+  try {
+    writeAttemptIntent(stateDir, eventId, {
+      transport: transport.name ?? "unknown",
+      now,
+      seed: {
+        jobId,
+        role,
+        workflow,
+        reportId: report?.reportId ?? null,
+        reportChars: report?.chars ?? 0,
+        truncated: bounded.truncated,
+      },
+    });
+  } catch (err) {
+    return { ok: false, eventId, state: "failed", reason: "delivery-intent-write-failed", error: err?.message || String(err), delivery: null, report };
+  }
 
   let result;
   try {
@@ -546,39 +704,25 @@ async function routeNotificationOnce({
     deliveryAt: now,
     receipt,
     receiptAt: receipt?.at ?? null,
+    // The callback settled the attempt: its result is recorded on the attempt
+    // itself (applied or not), so a lost callback stays distinguishable from a
+    // refusal the callback explicitly proved.
+    settleAttempt: { result: reported, reason: result?.reason ?? null },
     now,
   };
-  const previous = readNotification(stateDir, eventId);
-  let record;
-  if (previous) {
-    record = applyNotificationState(stateDir, eventId, patch).record;
-  } else {
-    const state = nextDeliveryState(null, reported);
-    record = {
-      schema: 1,
-      eventId,
-      jobId,
-      role,
-      workflow: workflow ?? null,
-      state,
+  let applied = applyNotificationState(stateDir, eventId, patch);
+  if (!applied) {
+    // The intent record was lost mid-attempt (a concurrent cleanup, a foreign
+    // writer): rebuild it around the result that actually came back, so the
+    // attempt is never recorded as one that never happened.
+    writeAttemptIntent(stateDir, eventId, {
       transport: patch.transport,
-      reason: patch.reason,
-      messageId: patch.messageId,
-      via: patch.via,
-      reportId: patch.reportId,
-      reportChars: patch.reportChars,
-      resultAvailable: patch.resultAvailable,
-      truncated: patch.truncated,
-      deliveredTextChars: patch.deliveredTextChars,
-      deliveryAt: now,
-      stateAt: now,
-      receipt,
-      receiptAt: receipt?.at ?? null,
-      acknowledgedAt: null,
-      seq: 1,
-    };
-    writeJsonAtomic(notificationPath(stateDir, eventId), record);
+      now,
+      seed: { jobId, role, workflow, reportId: patch.reportId, reportChars: patch.reportChars, truncated: patch.truncated },
+    });
+    applied = applyNotificationState(stateDir, eventId, patch);
   }
+  const record = applied.record;
   // The process-scoped confirmation exists for the process-dedupe adapter; a
   // durable-mode route is governed by the durable record alone.
   if (dedupe !== "durable") markProcessSeen(eventId, record.state);
@@ -616,7 +760,7 @@ export function defaultCompletionText(job, { cap = 4000 } = {}) {
 
 // Terminal completion delivery for one durable job: ensures the job's terminal
 // record points at the persisted report before routing the notification.
-export async function deliverCompletion({ stateDir, job, transport, text = null, reportText = null, role = null, now = Date.now(), cap } = {}) {
+export async function deliverCompletion({ stateDir, job, transport, text = null, reportText = null, role = null, now = Date.now(), cap, resolveUnknownOutcome = false } = {}) {
   if (!stateDir) throw new Error("stateDir is required");
   if (!job?.id) throw new Error("job is required");
   const body = typeof reportText === "string" ? reportText : text ?? job.terminal?.summary ?? "";
@@ -649,6 +793,7 @@ export async function deliverCompletion({ stateDir, job, transport, text = null,
     terminal: job.terminal ?? null,
     cap,
     persistJob: true,
+    resolveUnknownOutcome,
     now,
   });
 }
@@ -844,12 +989,19 @@ export function matchLegacyEvidence({ job, evidence, claimants = new Map() } = {
 // proven absent", and the next pass would auto-replay it. `markDelivery` matches
 // on that identity, so the acceptance evidence (transport, queue time, message
 // id, attempt count) is preserved as well.
+//
+// `eventId` is the identity the projection's delivery slot is matched and
+// written on (see `projectionIdentity` in the recovery pass). The identity-less
+// form is reserved for a delivery record that EXISTS without an event ID; a
+// projection that never held a delivery record is written under the event's own
+// identity, because that identity is known — a `null` there would fabricate the
+// pre-metadata shape and keep a merely uncertain event unprovable forever.
 function markOutcomeUnknown(stateDir, job, { eventId, reason, now, detail = null }) {
   const identity = job.delivery?.eventId ?? null;
   const recordId = identity ?? eventId ?? completedEventId(job);
   let delivery = null;
   try {
-    delivery = markDelivery(stateDir, job.id, { eventId: identity, state: "unknown", reason, now });
+    delivery = markDelivery(stateDir, job.id, { eventId: eventId ?? null, state: "unknown", reason, now });
   } catch {
     delivery = null;
   }
@@ -950,6 +1102,11 @@ function reportReconciliation(summary, { job, eventId, state, converged, receipt
 //     duplicate it;
 //   * a volatile (accepted/queued) event absent from the session, with no queued
 //     messages left → replay: the crash happened before the drain;
+//   * an event with an UNSETTLED delivery attempt (the transport was invoked and
+//     its callback never landed) is outcome-unknown like a volatile event: it is
+//     resolved by the evidence above — retention acknowledges it, proven absence
+//     replays the SAME event — and with no evidence it is retained as unknown
+//     instead of being blindly duplicated behind a lost callback;
 //   * a volatile event that cannot be resolved (no identity, or no evidence
 //     source) → retained as outcome-unknown and reported, never blindly
 //     duplicated;
@@ -971,6 +1128,7 @@ export async function recoverPendingDeliveries({
   cap,
   evidence = null,
   allowUnverified = false,
+  ownsJob = null,
 } = {}) {
   if (!stateDir) throw new Error("stateDir is required");
   const summary = {
@@ -990,6 +1148,7 @@ export async function recoverPendingDeliveries({
   const claimants = new Map();
   for (const job of jobs) {
     if ((job.workflow?.sessionKey ?? null) !== sessionKey) continue;
+    if(ownsJob&&!ownsJob(job))continue;
     for (const text of completionTextForms(job)) {
       const list = claimants.get(text) ?? [];
       if (!list.includes(job.id)) list.push(job.id);
@@ -1001,15 +1160,21 @@ export async function recoverPendingDeliveries({
     // Ignore that foreign event for completion recovery; preserve its journal.
     const job = { ...persistedJob, delivery: terminalDelivery(persistedJob) };
     const owner = job.workflow?.sessionKey ?? null;
-    if (owner !== sessionKey) {
+    if (owner !== sessionKey || (ownsJob&&!ownsJob(job))) {
       summary.orphaned.push({ jobId: job.id, owner, requested: sessionKey ?? null });
       continue;
     }
     const state = job.delivery?.state ?? null;
     const identity = job.delivery?.eventId ?? null;
     const eventId = identity ?? completedEventId(job);
-    const unverified = UNVERIFIED_DELIVERY_STATES.includes(state ?? "");
     const identityMissing = Boolean(job.delivery && !identity);
+    // The identity the projection's delivery slot is matched and written on. A
+    // pre-metadata projection (a delivery record that EXISTS without an event
+    // ID) keeps that identity-less form verbatim; a projection that never held
+    // a delivery record is written under this event's own identity, which is
+    // known — fabricating identity-less-ness there would keep a merely
+    // uncertain event unprovable on every later pass.
+    const projectionIdentity = identity ?? (job.delivery ? null : eventId);
     // 1. The owning session already retained this exact event, or the journal
     //    (which is written before the projection) already holds its receipt:
     //    acknowledge it instead of sending anything again.
@@ -1017,9 +1182,21 @@ export async function recoverPendingDeliveries({
     const journalState = readNotificationState(stateDir, eventId);
     const journal = journalState.status === "ok" ? journalState.record : null;
     const journalDelivered = journal?.state === "delivered";
+    // An UNSETTLED delivery attempt is a lost callback: the transport was
+    // invoked (its intent is durable) and no result ever came back, so the
+    // outcome is unknown even when the projection still looks like a
+    // never-sent internal handoff or recorded no delivery at all. It is decided
+    // by the same evidence rules as a volatile state below — retention
+    // acknowledges it, proven absence replays the same event, and no evidence
+    // keeps the uncertainty instead of duplicating a possibly-accepted send.
+    const unsettled = Boolean(journal?.attempt && journal.attempt.settled !== true);
+    // The journal is written before the job projection. A crash between those
+    // writes cannot turn a durably queued send into an apparently unsent one.
+    const unverified = unsettled || UNVERIFIED_DELIVERY_STATES.includes(state ?? "")
+      || UNVERIFIED_DELIVERY_STATES.includes(journal?.state ?? "");
     if (proven || journalDelivered) {
       const receipt = proven ? receiptFromEvidence(eventId, proven, known, now) : journal.receipt ?? null;
-      const converged = reconcileDelivery({ stateDir, job, eventId, projectionEventId: identity, receipt, journalRecord: journal, now });
+      const converged = reconcileDelivery({ stateDir, job, eventId, projectionEventId: projectionIdentity, receipt, journalRecord: journal, now });
       reportReconciliation(summary, {
         job,
         eventId,
@@ -1046,14 +1223,14 @@ export async function recoverPendingDeliveries({
         copies: legacy.copies,
         textChars: legacy.text.length,
       };
-      const converged = reconcileDelivery({ stateDir, job, eventId, projectionEventId: identity, receipt, journalRecord: journal, now });
+      const converged = reconcileDelivery({ stateDir, job, eventId, projectionEventId: projectionIdentity, receipt, journalRecord: journal, now });
       reportReconciliation(summary, { job, eventId, state, converged, receipt, evidence: "legacy-content-correspondence" });
       continue;
     }
     if (legacy.state !== "none" && !allowUnverified) {
       summary.uncertain.push(
         markOutcomeUnknown(stateDir, job, {
-          eventId: identity,
+          eventId: projectionIdentity,
           reason: legacy.reason,
           now,
           detail: { state: legacy.state, candidates: legacy.candidates ?? legacy.copies ?? null, claimants: legacy.claimants ?? null },
@@ -1082,7 +1259,7 @@ export async function recoverPendingDeliveries({
     if (!allowUnverified && (identityMissing || (unverified && !known.known))) {
       summary.uncertain.push(
         markOutcomeUnknown(stateDir, job, {
-          eventId: identity,
+          eventId: projectionIdentity,
           reason: identityMissing ? "missing-event-identity" : "no-session-evidence",
           now,
         }),
@@ -1126,7 +1303,12 @@ export async function recoverPendingDeliveries({
     }
     let result;
     try {
-      result = await deliverCompletion({ stateDir, job, transport, now, cap });
+      // Reaching this point IS the resolution of the uncertainty: nothing was
+      // recorded, the attempt settled with a refusal the callback proved, or the
+      // evidence above proved the event absent (or the operator explicitly
+      // decided a retry). The router is told so it may send behind a lost
+      // callback — the exact same event ID, never a new one.
+      result = await deliverCompletion({ stateDir, job, transport, now, cap, resolveUnknownOutcome: true });
     } catch (err) {
       // A replay that could not even be recorded (an unwritable journal) is
       // reported: recovery never loses the event, and never claims it was sent.

@@ -140,11 +140,32 @@ The Architect then yields:
   and `recover_deliveries` replays completions that were never consumed;
 - `check_runner` / `check_execution` report status, active tool, trajectory, and
   stall evidence without touching the work;
-- `steer_runner` / `cancel_runner` are the only ways to influence a running job;
-  cancellation is tombstoned so recovery never restarts or revives it;
+- use `steer_runner` / `cancel_runner` for runners and `steer_execution` /
+  `cancel_execution` for managed implementer/reviewer work. An update is first
+  submitted, then received, then acknowledged by its exact worker attempt;
+  only a successful result covering that acknowledged revision fulfills it.
+  Cancellation intent is recorded before signalling the owned process;
+- retrieve full durable findings with `read_report`. A model's final answer
+  alone is not proof of managed completion. Missing telemetry means unavailable
+  evidence, not idle work; unknown exits remain interrupted with unknown outcome;
 - there is no `await_runner` / `await_execution`: the blocking wait tools were
   deleted from the executable surface, the prompts, and the launchers, because
   parking a turn on a long job is what made the Paseo Architect unresponsive.
+
+After a coordinator reload, call `recover_deliveries` to reconstruct pending
+progress and completion obligations and inspect the actual loaded module paths.
+Recovery never relaunches a worker. An uncertain delivery stays uncertain until
+owning-session evidence resolves it; queue acceptance is not a receipt.
+
+To continue an existing phase, pass its `phaseId` to `dispatch_execution` while
+retaining the current coordinating session. The phase selects the preserved
+ticket/worktree; the coordinator owns notifications. A new phase selects its
+base explicitly or from fresh remote main. Never substitute a stale root HEAD.
+
+See [managed execution communication](docs/execution-communication.md) for
+attempt isolation, pending updates, cancellation, reports, and unsupported
+legacy/manual communication. Updates that arrive too late remain visible for
+an explicit follow-up decision; they are never silently marked incorporated.
 
 ## Retained legacy harness (rollback only)
 
@@ -163,9 +184,13 @@ is Pi.
 npm test
 ```
 
-The suite is offline and hermetic: temporary repositories and state
-directories, fake pi RPC runtimes and worker doubles, no provider calls, no
-operator configuration writes. `tests/pi-worker.mjs` covers the worker runtime
+The suite uses temporary repositories and state directories and does not change
+operator configuration or call external model providers. Unit tests use worker
+doubles; functional tests drive installed Pi, the real adapter/relay, production
+MCP entrypoints, and installed Paseo close semantics against a deterministic
+localhost provider. Missing required installations are reported as skips, not
+proof of those scenarios. Simulated notification sinks prove transport
+submission only; separate actual Architect tests prove idle wake and receipt. `tests/pi-worker.mjs` covers the worker runtime
 contract (capability validation, context policy, selection confirmation, tool
 binding, result transport, failure/cancellation) without a live model, and
 `tests/pi-runtime-wire.mjs` drives the installed pi runtime through the real

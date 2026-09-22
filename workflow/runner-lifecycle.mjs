@@ -68,7 +68,6 @@ import {
   COMMUNICATION_BINDING_SCHEMA,
   DEFAULT_DRAIN_MS,
   PI_SESSION_ID_PATTERN,
-  acquireRelayRuntime,
   projectSlugForChange,
   pushedUpdateText,
   relaySocketPath,
@@ -78,9 +77,11 @@ import {
   transportStatusOf,
   validateCommunicationBinding,
 } from "./communication.mjs";
+import {acquireWorkflowRelayRuntime as acquireRelayRuntime} from "./relay-placement.mjs";
+import {forwardRoleProgress,readLaunchMetadata} from "./execution-authority.mjs";
 import { deliveryGuard, parseMessage } from "./communication-receiver.mjs";
 import { readJob, reconcileJob, recordTerminal, writeJob } from "./jobs.mjs";
-import { readNotification, routeNotification } from "./notify.mjs";
+import { readNotification, routeNotification, normalizeEvidence, acknowledgeDelivery } from "./notify.mjs";
 import { acceptRunnerResult, renderRunnerFindings } from "./results.mjs";
 import { saveReport } from "./reports.mjs";
 
@@ -182,6 +183,45 @@ export function progressNotificationText({ jobId, kind, seq, attemptId, message 
 /** Deterministic progress notification id: change/job/attempt/sequence. */
 export function progressNotificationEventId({ changeId, jobId, attemptId, seq }) {
   return `runner:${jobId}:progress:${changeId}:${attemptId}:${seq}`;
+}
+
+// Relay receipt may transfer responsibility to a queued notification before
+// the coordinator exits. Reconstruct those obligations from the change record
+// even when the relay event has already been acknowledged. Replay requires
+// owning-session evidence; queue acceptance by itself never proves receipt.
+export async function recoverRunnerProgress({stateDir,communication,workflow,transport,evidence=null,now=Date.now()}) {
+  const {changeId,jobId}=communication;
+  const state=openChange({stateDir,changeId}).state,views=viewsFor(state),job=views.job(jobId);
+  if(job.role!=="runner")throw fail("invalid-arguments","runner progress recovery requires a runner job");
+  const known=normalizeEvidence(evidence),results=[];
+  for(const attemptId of job.attemptOrder) {
+    const attempt=views.attempt(jobId,attemptId);
+    if(attempt.launchIntent.owner!==workflow?.sessionKey)throw fail("not-owned","runner progress belongs to another coordinating session");
+    for(const [kind,entries] of [["progress",attempt.progress],["blocker",attempt.blockers]])for(const entry of entries) {
+      if(!entry.complete)continue;
+      const eventId=progressNotificationEventId({changeId,jobId,attemptId,seq:entry.seq});
+      const text=progressNotificationText({jobId,attemptId,kind,seq:entry.seq,message:entry.note});
+      const existing=readNotification(stateDir,eventId);
+      if(existing?.state==="delivered")continue;
+      const localHandoff=existing?.state==="queued"&&existing.transport==="execution-host-handoff"&&existing.reason==="awaiting owning coordinator readiness"&&existing.attempt?.settled!==false;
+      let resolveUnknownOutcome=false;
+      if(existing?.state&&existing.state!=="failed"&&!localHandoff) {
+        const retained=known.byEventId.get(eventId)??known.userMessages.find(item=>item.text===text);
+        if(retained) {
+          const receipt={kind:retained.kind??"pi-session-entry",eventId,entryId:retained.entryId??null,
+            sessionFile:retained.sessionFile??known.sessionFile,at:retained.at??null,observedAt:now};
+          results.push(acknowledgeDelivery({stateDir,eventId,receipt,now}));continue;
+        }
+        if(!known.known||known.inFlight.has(eventId)||known.pendingMessages!==false) {
+          results.push({eventId,state:existing.attempt?.settled===false?"unknown":existing.state,deferred:true});continue;
+        }
+        resolveUnknownOutcome=true; // owning-session evidence proves absence
+      }
+      if(!transport){results.push({eventId,state:"unavailable"});continue;}
+      results.push(await routeNotification({stateDir,eventId,jobId,role:"runner",workflow,text,reportText:entry.note,transport,now,resolveUnknownOutcome}));
+    }
+  }
+  return results;
 }
 
 // ---------------------------------------------------------------------------
@@ -435,7 +475,17 @@ export function createParentProgressConsumer({
       await client.block({ ...guard, reason: `unverified progress envelope: ${clampText(error.message, 200)}` });
       return { handled: "blocked", reason: error.code };
     }
-    if (typeof ownsChange === "function" && !ownsChange({ changeId: refs.changeId, jobId: refs.jobId })) {
+    let owned = typeof ownsChange !== "function" || ownsChange({changeId:refs.changeId,jobId:refs.jobId});
+    if (!owned && verification.jobRole !== "runner") {
+      // A shared owner consumer may receive a role whose compatibility job is
+      // the parent execution. Verify the authoritative parent identity rather
+      // than rejecting the child merely because it has no jobs.json entry.
+      try {
+        const parent=readLaunchMetadata({stateDir,executionId:refs.changeId});
+        owned=Boolean(parent?.owner===workflowRouting?.sessionKey && parent?.launch?.root===workflowRouting?.root);
+      } catch {owned=false;}
+    }
+    if (!owned) {
       await client.block({ ...guard, reason: "the referenced job is not owned by this workflow consumer" });
       return { handled: "blocked", reason: "not-owned" };
     }
@@ -451,7 +501,10 @@ export function createParentProgressConsumer({
     const eventId = progressNotificationEventId({ changeId: refs.changeId, jobId: refs.jobId, attemptId: refs.attemptId, seq: refs.seq });
     let result;
     try {
-      result = await routeOnce({ eventId, jobId: refs.jobId, text });
+      result = verification.jobRole === "runner"
+        ? await routeOnce({ eventId, jobId: refs.jobId, text })
+        : await forwardRoleProgress({stateDir,executionId:refs.changeId,jobId:refs.jobId,attemptId:refs.attemptId,seq:refs.seq,
+          transport,journalDir:resolvedJournalDir,workflow:workflowRouting,owner:workflowRouting?.sessionKey,cap,now:now()});
     } catch (error) {
       result = { state: "failed", duplicate: false, reason: clampText(error?.message ?? String(error), 200) };
     }
@@ -799,7 +852,7 @@ export async function prepareRunnerCommunication({
       runtimeActorId: resolvedRuntimeActorId,
       role: "runner",
       recipientAgent: `agents/${consumer.consumerId}`,
-      socketPath: relaySocketPath(stateDir),
+      socketPath: consumer.relay.socketPath,
       ...(install.root ? { installRoot: install.root } : {}),
       ...(drainMs !== DEFAULT_DRAIN_MS ? { drainMs } : {}),
     });
@@ -1282,7 +1335,7 @@ export function reconcileRunnerJob({ stateDir, jobId, now = Date.now() } = {}) {
   const before = readJob(stateDir, jobId);
   if (!before) return { record: null, outcome: null };
   const communication = before.communication;
-  if (!communication?.enabled || !communication.changeId) {
+  if (before.role !== "runner" || !communication?.enabled || !communication.changeId) {
     return { record: reconcileJob(stateDir, jobId, { now: nowMs }), outcome: null };
   }
   const commStateDir = communication.stateDir ?? stateDir;
