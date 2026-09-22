@@ -9,7 +9,7 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -20,16 +20,20 @@ import {
   listJobs,
   processFingerprint,
   readJob,
-  reconcileAll,
   reconcileJob,
   recordCancellation,
   recordTerminal,
   RUNNING,
   TERMINAL_STATUSES,
+  updateRunningJob,
   writeJob,
 } from "./jobs.mjs";
-import { acknowledgeDelivery, defaultCompletionText, deliverCompletion, recoverPendingDeliveries } from "./notify.mjs";
-import { openChange, viewsFor } from "./change-record.mjs";
+import { reconcileManagedExecution, readLaunchMetadata, reconstructOwnedExecutions, pendingRoleProgress, forwardRoleProgress } from "./execution-authority.mjs";
+import {changeRecordPath,openChange,viewsFor} from "./change-record.mjs";
+import { cancelExecutionHost } from "./execution-supervisor.mjs";
+import {steerManagedRoleCommunication} from "./execution-communication.mjs";
+import {recoverRunnerProgress} from "./runner-lifecycle.mjs";
+import { acknowledgeDelivery, defaultCompletionText, deliverCompletion, readNotification, recoverPendingDeliveries } from "./notify.mjs";
 import { readReport, saveReport } from "./reports.mjs";
 import { acceptRunnerResult, cleanupRunnerFiles, renderRunnerFindings } from "./results.mjs";
 import { COMMUNICATION_BINDING_ENV } from "./communication.mjs";
@@ -65,6 +69,8 @@ export const WORKFLOW_TOOL_NAMES = [
   "recover_deliveries",
   "dispatch_execution",
   "check_execution",
+  "steer_execution",
+  "cancel_execution",
 ];
 
 export const WORKFLOW_TOOLS = [
@@ -156,8 +162,38 @@ export const WORKFLOW_TOOLS = [
   {
     name: "check_execution",
     label: "Check execution",
-    description: "Point-in-time status of a managed execution, including its phase and report reference.",
+    description:
+      "Point-in-time status of a managed execution: its phase and report references plus bounded role/job/attempt/revision/update/report state rebuilt from the authoritative change record. Update states stay distinct — submitted (recorded), transport-received (the attempt's receiver accepted delivery), worker-acknowledged (incorporated), fulfilled (an acknowledged update covered by a successful result). The outcome is reported known or unknown; a disappeared execution is never a known failed outcome.",
     parameters: { type: "object", properties: { jobId: { type: "string" } }, required: ["jobId"], additionalProperties: false },
+  },
+  {
+    name: "steer_execution",
+    label: "Steer execution",
+    description:
+      "Submit an additional instruction as an assignment update to the exact currently intended active implementer/reviewer attempt of a managed execution. The target is bound before submission; a phase or attempt change races to a truthful refusal and is never silently retargeted. The response reports the update as recorded (submitted); transport-received, worker-acknowledged and fulfilled are later separate facts reported by check_execution.",
+    parameters: {
+      type: "object",
+      properties: {
+        jobId: { type: "string" },
+        message: { type: "string" },
+        expectAttemptId: { type: "string", description: "The attempt id you believe is currently active; a mismatch refuses instead of retargeting." },
+        expectJobId: { type: "string", description: "The role job id you believe is currently active; a mismatch refuses instead of retargeting." },
+      },
+      required: ["jobId", "message"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "cancel_execution",
+    label: "Cancel execution",
+    description:
+      "Cancel a managed execution. The authoritative cancellation intent is recorded before any fingerprint-matched owned process is signalled; repeated cancellation is idempotent and never restarts work. If irreversible landing has already been admitted the call refuses truthfully and preserves the landing evidence; a cancelled execution is never relabelled as success.",
+    parameters: {
+      type: "object",
+      properties: { jobId: { type: "string" }, reason: { type: "string" } },
+      required: ["jobId"],
+      additionalProperties: false,
+    },
   },
   {
     name: "read_report",
@@ -263,13 +299,35 @@ export function createWorkflow({
 
   function requireJob(jobId) {
     if (!jobId) throw new Error("jobId is required");
-    const record = readJob(stateDir, jobId);
-    if (!record) throw new Error(`unknown job '${jobId}'`);
+    let record = readJob(stateDir, jobId);
     const association = session();
+    if(existsSync(changeRecordPath(stateDir,jobId))) {
+      let metadata;
+      try{metadata=readLaunchMetadata({stateDir,executionId:jobId});}
+      catch(error){if(!record)throw error;}
+      if(metadata?.launch) {
+        const recovered=reconcileManagedExecution({stateDir,executionId:jobId,expectedOwner:association.sessionKey,expectedRoot:root,now:now()});
+        if(!recovered.ok)throw new Error(recovered.reason);
+        record=recovered.projection;
+      }
+    }
+    if (!record) throw new Error(`unknown job '${jobId}'`);
     if (record.workflow?.sessionKey !== association.sessionKey) {
       throw new Error(`job '${jobId}' belongs to another workflow session; refusing to operate on it`);
     }
+    if (record.workflow?.root && record.workflow.root !== root) {
+      throw new Error(`job '${jobId}' belongs to another workflow repository; refusing to operate on it`);
+    }
     return record;
+  }
+
+  function ownsJob(record) {
+    const owner=session().sessionKey;
+    try {
+      const metadata=existsSync(changeRecordPath(stateDir,record.id))?readLaunchMetadata({stateDir,executionId:record.id}):null;
+      if(metadata?.launch)return metadata.launch.owner===owner&&metadata.launch.root===root;
+      return record.workflow?.sessionKey===owner&&(!record.workflow?.root||record.workflow.root===root);
+    }catch{return false;}
   }
 
   // Persist the complete report + record the AUTHORITATIVE outcome + terminal
@@ -390,7 +448,14 @@ export function createWorkflow({
 
   function jobsView({ role = null, scope = "session" } = {}) {
     const association = session();
-    return listJobs(stateDir, { sessionKey: scope === "all" ? null : association.sessionKey, role }).map(jobSummary);
+    reconstructOwnedExecutions({stateDir,owner:association.sessionKey,root,now:now()});
+    return listJobs(stateDir, { sessionKey: scope === "all" ? null : association.sessionKey, role }).filter(record=>scope==="all"||ownsJob(record)).map(record => {
+      if (record.role === "execution" && record.workflow?.sessionKey === association.sessionKey && (!record.workflow?.root || record.workflow.root === root)) {
+        if (!live.has(record.id)) reconcileJob(stateDir, record.id);
+        record = reconcileManagedExecution({stateDir,executionId:record.id,now:now()}).projection ?? record;
+      }
+      return jobSummary(record);
+    });
   }
 
   // ------------------------------------------------------------------ tickets
@@ -589,7 +654,8 @@ export function createWorkflow({
         prompt,
         env: spawnEnv,
         cwd,
-        mcpEnv: { QQ_RUNNER_ID: id, QQ_RUNNER_RESULT_FILE: resultFile },
+        mcpEnv: { QQ_RUNNER_ID: id, QQ_RUNNER_RESULT_FILE: resultFile,
+          ...(communication?.enabled ? {[COMMUNICATION_BINDING_ENV]:spawnEnv[COMMUNICATION_BINDING_ENV]} : {}) },
       });
     } catch (err) {
       // finishJob records the honest terminal failure in BOTH the compatibility
@@ -1027,9 +1093,10 @@ export function createWorkflow({
           baseRef,
           workflow: association,
           onPhase: (phase, detail = null) => {
-            const current = readJob(stateDir, id);
-            if (!current || current.terminal) return;
-            writeJob(stateDir, { ...current, phase: phase ?? current.phase, updatedAt: now() });
+            // Guarded telemetry only: the host owns phase publication and a
+            // stale parent write can never revive running state or erase a
+            // cancellation or terminal outcome.
+            updateRunningJob(stateDir, id, (fresh) => ({ ...fresh, phase: phase ?? fresh.phase }));
             appendJobEvent(stateDir, id, { action: "phase", phase: phase ?? null, detail: detail ? clamp(String(detail), 200) : null }, { now: now() });
             const state = live.get(id);
             if (state) state.phase = phase ?? state.phase;
@@ -1037,6 +1104,12 @@ export function createWorkflow({
         });
         const current = readJob(stateDir, id);
         if (!current || current.terminal) return;
+        if (current.executionHost?.authority || current.communication?.enabled) {
+          // The owned host publishes through the change record. A launcher
+          // returning (including interrupted/unknown) is not another result.
+          reconcileManagedExecution({stateDir,executionId:id,now:now()});
+          return;
+        }
         const failed = result?.ok === false || result?.status === "failed" || result?.status === "cancelled";
         const findings = typeof result === "string" ? result : JSON.stringify(result ?? {}, null, 2);
         void finishJob(current, {
@@ -1050,11 +1123,18 @@ export function createWorkflow({
       } catch (err) {
         const current = readJob(stateDir, id);
         if (!current || current.terminal) return;
+        if (current.executionHost?.authority || current.communication?.enabled) {
+          reconcileJob(stateDir,id);
+          reconcileManagedExecution({stateDir,executionId:id,now:now()});
+          return;
+        }
         void finishJob(current, {
           status: "failed",
           phase: current.phase,
           error: { message: err?.message || String(err), phase: current.phase },
         }).catch(() => {});
+      } finally {
+        live.delete(id);
       }
     })();
     return { ok: true, jobId: id, executionId: id, status: RUNNING, kind, phaseId: targetPhase, sessionKey: association.sessionKey };
@@ -1063,7 +1143,46 @@ export function createWorkflow({
   function checkExecutionOp({ jobId } = {}) {
     const record = requireJob(jobId);
     if (record.role !== "execution") throw new Error(`job '${jobId}' is not a managed execution`);
-    return checkRunnerOp({ jobId });
+    // Process reconciliation first (a disappeared host is interrupted with an
+    // UNKNOWN outcome, never a known failure), then reconstruction from the
+    // ONE append-only record: a stale cross-process cache write can never
+    // revive running/success after a recorded cancellation or validated
+    // outcome.
+    if (!live.has(jobId)) reconcileJob(stateDir, jobId);
+    const reconstructed = reconcileManagedExecution({ stateDir, executionId: jobId, now: now() });
+    const authority = reconstructed.ok ? reconstructed.view : {enabled:true,recordUnavailable:reconstructed.reason};
+    const fresh = readJob(stateDir, jobId) ?? record;
+    const base = checkRunnerOp({ jobId });
+    const terminal = fresh.terminal ?? null;
+    return {
+      ...base,
+      ...(reconstructed.ok ? {} : {ok:false,status:"reconciliation-required"}),
+      authority,
+      // Gap contract: disappearance is outcome-UNKNOWN, never a known failed
+      // outcome. Known outcomes come from the authoritative record.
+      outcomeKnown: !reconstructed.ok ? false : authority?.execution ? authority.execution.outcomeKnown : Boolean(terminal && terminal.status !== "interrupted"),
+      outcomeSource: authority?.execution ? "change-record" : terminal ? "compatibility-record" : null,
+    };
+  }
+
+  async function steerExecutionOp({ jobId, message, expectAttemptId = null, expectJobId = null } = {}) {
+    const record = requireJob(jobId);
+    if (record.role !== "execution") throw new Error(`job '${jobId}' is not a managed execution`);
+    if (typeof message !== "string" || !message.trim()) throw new Error("message is required");
+    if (record.terminal || record.cancellation) {
+      return { ok: false, jobId, code: "refused", status: "unresolved", reason: "the execution is settled or cancelled; updates are no longer admitted" };
+    }
+    try {
+      return { jobId, ...(await steerManagedRoleCommunication({ stateDir, executionId: jobId, message, expectAttemptId, expectJobId, env, now: now() })) };
+    } catch (error) {
+      return { ok: false, jobId, code: error?.code ?? "refused", status: "unresolved", reason: error.message };
+    }
+  }
+
+  function cancelExecutionOp({ jobId, reason = "cancelled by architect" } = {}) {
+    const record = requireJob(jobId);
+    if (record.role !== "execution") throw new Error(`job '${jobId}' is not a managed execution`);
+    return { jobId, ...cancelExecutionHost({ stateDir, jobId, by: session().sessionKey, reason, now: now() }) };
   }
 
   function readReportOp({ reportId, offset = 0, limit } = {}) {
@@ -1071,17 +1190,37 @@ export function createWorkflow({
   }
 
   function reconcileOp() {
-    return { jobs: reconcileAll(stateDir).map(jobSummary) };
+    // Reconstruct owned execution authority after process reconciliation.
+    // Merely observing another session never mutates its records.
+    const association=session();
+    for(const record of listJobs(stateDir,{sessionKey:association.sessionKey})) {
+      if(record.workflow?.root && record.workflow.root !== root) continue;
+      if(!live.has(record.id)) reconcileJob(stateDir,record.id);
+    }
+    return { jobs: jobsView() };
   }
 
   async function recoverDeliveriesOp({ transport = notifierTransport, evidence = null, allowUnverified = false } = {}) {
     const association = session();
-    // Reload recovery: ingest explicit results and mirror authoritative
-    // outcomes BEFORE interpreting any lost process, session-scoped.
-    const jobs = listJobs(stateDir, { sessionKey: association.sessionKey })
-      .map((record) => (live.has(record.id) ? record : reconcileRunnerJob({ stateDir, jobId: record.id, now: now() }).record))
-      .filter(Boolean)
-      .map(jobSummary);
+    const reconstruction=reconstructOwnedExecutions({stateDir,owner:association.sessionKey,root,now:now()});
+    const progress = {recovered:[],errors:[]};
+    for (const record of listJobs(stateDir,{sessionKey:association.sessionKey})) {
+      if(!ownsJob(record))continue;
+      if(record.role==="runner"&&record.communication?.enabled) {
+        try {progress.recovered.push(...await recoverRunnerProgress({stateDir,communication:record.communication,workflow:record.workflow,transport,evidence,now:now()}));}
+        catch(error){progress.errors.push({jobId:record.id,error:String(error?.message??error)});}
+      }
+      if (record.role !== "execution") continue;
+      const reconstructed = reconcileManagedExecution({stateDir,executionId:record.id,expectedOwner:association.sessionKey,expectedRoot:root,now:now()});
+      if (reconstructed.ok && reconstructed.view) {
+        for (const entry of pendingRoleProgress({stateDir,executionId:record.id})) {
+          if (entry.forwarded === "delivered") continue;
+          await forwardRoleProgress({stateDir,executionId:record.id,...entry,transport,workflow:record.workflow,owner:association.sessionKey,evidence,now:now()});
+        }
+      }
+    }
+    const jobs = listJobs(stateDir, { sessionKey: association.sessionKey }).filter(ownsJob).map((record) =>
+      live.has(record.id) ? record : record.role === "runner" ? reconcileRunnerJob({stateDir,jobId:record.id,now:now()}).record : reconcileJob(stateDir, record.id)).filter(Boolean).map(jobSummary);
     const delivery = await recoverPendingDeliveries({
       stateDir,
       sessionKey: association.sessionKey,
@@ -1089,6 +1228,7 @@ export function createWorkflow({
       now: now(),
       evidence,
       allowUnverified,
+      ownsJob,
     });
     // Runner communication recovery: recorded-but-unsent assignment updates for
     // this session's runners are re-pushed here (never re-recorded), and a
@@ -1100,6 +1240,8 @@ export function createWorkflow({
       ok: true,
       sessionKey: association.sessionKey,
       runtime: { operationsModule: import.meta.url, pid: process.pid, ...runtimeContext },
+      progress,
+      reconstruction,
       jobs,
       delivery,
       communication,
@@ -1212,6 +1354,10 @@ export function createWorkflow({
         return dispatchExecutionOp(args ?? {});
       case "check_execution":
         return checkExecutionOp(args ?? {});
+      case "steer_execution":
+        return steerExecutionOp(args ?? {});
+      case "cancel_execution":
+        return cancelExecutionOp(args ?? {});
       case "list_jobs":
         return { jobs: jobsView({ role: args?.role ?? null, scope: args?.scope === "all" ? "all" : "session" }) };
       case "recover_deliveries":
@@ -1242,6 +1388,8 @@ export function createWorkflow({
     readReport: readReportOp,
     dispatchExecution: dispatchExecutionOp,
     checkExecution: checkExecutionOp,
+    steerExecution: steerExecutionOp,
+    cancelExecution: cancelExecutionOp,
     _live: live,
   };
 }

@@ -185,6 +185,18 @@ export const EVENT_KINDS = Object.freeze([
   // successful delivery. Records written before this kind existed replay
   // unchanged (the kind simply never appears in them).
   "attempt.admission_closed",
+  // Landing admission (managed executions): the serialized irreversible
+  // landing boundary. Once committed for an attempt, a cancellation intent for
+  // that attempt is refused (truthful refusal — landing cannot be implied
+  // rolled back) and no further pipeline stage is admitted before it. The
+  // record serializes this boundary with cancellation and update state through
+  // its own writer lock; there is no second authority.
+  "attempt.landing_admitted",
+  // Durable evidence link (reports, late results, role findings) for an
+  // attempt at ANY phase — including after cancellation or a validated
+  // outcome. Evidence never changes the outcome: a cancelled attempt stays
+  // cancelled while its late report/landing evidence stays retrievable.
+  "attempt.evidence",
   "attempt.outcome",
   "amendment.submitted",
   // Transport-push bookkeeping for one admitted amendment: the relay event id
@@ -234,6 +246,8 @@ export const LARGE_TEXT_FIELDS = Object.freeze({
   "worker.progress": ["note"],
   "worker.blocker": ["note"],
   "attempt.cancel_intent": ["reason"],
+  "attempt.landing_admitted": ["note"],
+  "attempt.evidence": ["note"],
   "attempt.outcome": ["summary", "result"],
   "amendment.submitted": ["note"],
   "amendment.pushed": [],
@@ -253,6 +267,8 @@ const KIND_ID_REQUIREMENTS = Object.freeze({
   "worker.blocker": { jobId: true, attemptId: true },
   "attempt.cancel_intent": { jobId: true, attemptId: true },
   "attempt.admission_closed": { jobId: true, attemptId: true },
+  "attempt.landing_admitted": { jobId: true, attemptId: true },
+  "attempt.evidence": { jobId: true, attemptId: true },
   "attempt.outcome": { jobId: true, attemptId: true },
   "amendment.submitted": { jobId: true, attemptId: true },
   "amendment.pushed": { jobId: true, attemptId: true },
@@ -275,6 +291,8 @@ const KIND_ACTORS = Object.freeze({
   "worker.blocker": ["worker"],
   "attempt.cancel_intent": ["runtime", "operator"],
   "attempt.admission_closed": ["runtime", "operator"],
+  "attempt.landing_admitted": ["runtime", "operator"],
+  "attempt.evidence": ["runtime", "operator"],
   "attempt.outcome": ["runtime", "operator"],
   "amendment.submitted": ["runtime", "operator"],
   "amendment.pushed": ["runtime", "operator"],
@@ -711,9 +729,24 @@ function applyEvent(state, env) {
         if (!state.jobs[scope.jobId]) {
           throw fail("invalid-transition", `assignment revision targets unknown job '${scope.jobId}'`);
         }
+        // Serialize a role update against the execution's irreversible landing
+        // boundary under this same append lock, including direct callers.
+        if (state.jobs[scope.jobId].role !== "execution") {
+          for (const execution of Object.values(state.jobs).filter(job => job.role === "execution")) {
+            if (Object.values(execution.attempts).some(attempt => attempt.landingAdmitted || attempt.cancelIntent || attempt.outcome)) {
+              throw fail("invalid-transition", "execution is closed to assignment updates after landing admission, cancellation, or outcome");
+            }
+          }
+        }
       }
       if (!payload.assignment || typeof payload.assignment !== "object" || Array.isArray(payload.assignment)) {
         throw fail("invalid-event", "assignment.revised requires a payload.assignment object");
+      }
+      // Optional raw coordinator instruction retained verbatim alongside the
+      // composed full assignment (records written before this field existed
+      // replay unchanged; it is simply absent).
+      if (payload.note !== undefined && payload.note !== null && typeof payload.note !== "string") {
+        throw fail("invalid-event", "assignment.revised payload.note must be a string or null");
       }
       // A revision is always the FULL assignment content, never a delta.
       state.revisions.push({
@@ -770,8 +803,10 @@ function applyEvent(state, env) {
       }
       // Launch context retention (optional, additive): the original working
       // directory, owner/session routing and target paths the launch was
-      // intended for. Records written before these fields existed replay
-      // unchanged (they are simply absent).
+      // intended for, plus the managed-execution launch metadata (kind, phase,
+      // base, root/owner identity, launch id, request path) a host request is
+      // later reconstructed and verified against. Records written before these
+      // fields existed replay unchanged (they are simply absent).
       for (const field of ["cwd", "owner"]) {
         if (payload[field] !== undefined && payload[field] !== null && typeof payload[field] !== "string") {
           throw fail("invalid-event", `attempt.launch_intent payload.${field} must be a string or null`);
@@ -780,6 +815,10 @@ function applyEvent(state, env) {
       if (payload.targetPaths !== undefined && payload.targetPaths !== null
         && (!Array.isArray(payload.targetPaths) || payload.targetPaths.some((entry) => typeof entry !== "string"))) {
         throw fail("invalid-event", "attempt.launch_intent payload.targetPaths must be an array of strings or null");
+      }
+      if (payload.launch !== undefined && payload.launch !== null
+        && (typeof payload.launch !== "object" || Array.isArray(payload.launch))) {
+        throw fail("invalid-event", "attempt.launch_intent payload.launch must be a plain object or null");
       }
       // Launch intent is explicitly UNRESOLVED until an observed start. The
       // reducer never repeats or assumes any external effect.
@@ -794,6 +833,7 @@ function applyEvent(state, env) {
           cwd: payload.cwd ?? null,
           owner: payload.owner ?? null,
           targetPaths: payload.targetPaths ?? null,
+          launch: payload.launch ?? null,
         },
         started: null,
         activity: [],
@@ -801,6 +841,8 @@ function applyEvent(state, env) {
         blockers: [],
         cancelIntent: null,
         admissionClosed: null,
+        landingAdmitted: null,
+        evidence: [],
         outcome: null,
         acknowledgements: [],
       };
@@ -847,8 +889,82 @@ function applyEvent(state, env) {
       if (attempt.cancelIntent) {
         throw fail("invalid-transition", `attempt '${env.attemptId}' already carries a cancellation intent`);
       }
+      // Landing has already been admitted (irreversible): a cancellation can
+      // never be recorded as accepted here, because accepting it would imply a
+      // rollback the world cannot perform. The caller reports the truthful
+      // refusal and the landing evidence stays preserved.
+      if (attempt.landingAdmitted) {
+        throw fail(
+          "invalid-transition",
+          `landing for attempt '${env.attemptId}' was already admitted at seq ${attempt.landingAdmitted.seq}; cancellation cannot undo it`,
+        );
+      }
       const reason = requirePayloadString(payload, "reason", env.kind);
       attempt.cancelIntent = { at: env.at, seq: env.seq, reason };
+      break;
+    }
+
+    case "attempt.landing_admitted": {
+      const attempt = requireAttempt(state, env.jobId, env.attemptId, env.kind);
+      if (attempt.phase !== "started") {
+        throw fail("invalid-transition", `landing admission requires a started attempt ('${env.attemptId}' is '${attempt.phase}')`);
+      }
+      if (attempt.cancelIntent) {
+        throw fail(
+          "invalid-transition",
+          `cancellation was intented for attempt '${env.attemptId}'; landing is not admitted after an accepted cancellation`,
+        );
+      }
+      if (attempt.landingAdmitted) {
+        throw fail("invalid-transition", `landing for attempt '${env.attemptId}' is already admitted at seq ${attempt.landingAdmitted.seq}`);
+      }
+      if (attempt.outcome) {
+        throw fail("invalid-transition", `attempt '${env.attemptId}' already carries a validated outcome; landing admission precedes it`);
+      }
+      // This check belongs inside the reducer: an outside preflight can race
+      // an amendment committed by another process before we take the lock.
+      for (const roleJob of Object.values(state.jobs).filter(job => job.role !== "execution")) {
+        for (const amendment of Object.values(roleJob.amendments)) {
+          if (!amendmentAcknowledgedBy(state, roleJob.id, amendment)) {
+            throw fail("pending-update", `unacknowledged assignment update for job '${roleJob.id}' prevents landing`);
+          }
+        }
+        for (const revision of state.revisions.filter(entry => entry.scope.kind === "job" && entry.scope.jobId === roleJob.id)) {
+          const launched = Object.values(roleJob.attempts).some(entry => entry.launchIntent.revision === revision.revision);
+          const submitted = Object.values(roleJob.amendments).some(entry => entry.revision === revision.revision);
+          if (!launched && !submitted) throw fail("pending-update", `unresolved assignment revision ${revision.revision} prevents landing`);
+        }
+      }
+      if (payload.note !== undefined && payload.note !== null && typeof payload.note !== "string") {
+        throw fail("invalid-event", "attempt.landing_admitted payload.note must be a string or null");
+      }
+      attempt.landingAdmitted = { at: env.at, seq: env.seq, note: payload.note ?? null };
+      break;
+    }
+
+    case "attempt.evidence": {
+      const attempt = requireAttempt(state, env.jobId, env.attemptId, env.kind);
+      // Evidence is recordable at ANY attempt phase — including after a
+      // cancellation or a validated outcome. It never alters the phase, the
+      // cancellation, or the outcome; it only keeps the referenced artifact
+      // durably linked and retrievable.
+      if (typeof payload.label !== "string" || payload.label.trim() === "") {
+        throw fail("invalid-event", "attempt.evidence requires a non-empty payload.label");
+      }
+      if (payload.reportId !== undefined && payload.reportId !== null && typeof payload.reportId !== "string") {
+        throw fail("invalid-event", "attempt.evidence payload.reportId must be a string or null");
+      }
+      if (payload.note !== undefined && payload.note !== null && typeof payload.note !== "string") {
+        throw fail("invalid-event", "attempt.evidence payload.note must be a string or null");
+      }
+      attempt.evidence.push({
+        at: env.at,
+        seq: env.seq,
+        label: payload.label,
+        reportId: payload.reportId ?? null,
+        payload,
+        splits: payload.textContinuation ?? null,
+      });
       break;
     }
 
@@ -868,10 +984,7 @@ function applyEvent(state, env) {
     case "attempt.outcome": {
       const attempt = requireAttempt(state, env.jobId, env.attemptId, env.kind);
       if (attempt.phase === "terminal") {
-        throw fail(
-          "invalid-transition",
-          `attempt '${env.attemptId}' already carries a validated outcome`,
-        );
+        throw fail("invalid-transition", `attempt '${env.attemptId}' already carries a validated outcome`);
       }
       const { status } = payload;
       if (!OUTCOME_STATUSES.includes(status)) {
@@ -891,14 +1004,23 @@ function applyEvent(state, env) {
       if (attempt.cancelIntent && status === "completed") {
         throw fail("invalid-transition", `cancellation intent on attempt '${env.attemptId}' forbids a completed outcome`);
       }
+      if (status === "completed" && state.jobs[env.jobId].role !== "execution") {
+        for (const execution of Object.values(state.jobs).filter(job => job.role === "execution")) {
+          if (Object.values(execution.attempts).some(entry => entry.cancelIntent)) {
+            throw fail("invalid-transition", "parent execution cancellation intent forbids a later completed role outcome");
+          }
+        }
+      }
       if (payload.revision !== undefined && !Number.isInteger(payload.revision)) {
         throw fail("invalid-event", "attempt.outcome payload.revision must be an integer");
       }
       // The result is pinned to the revision this attempt actually worked
-      // against: the last acknowledged revision, else the job's pin. A result
-      // against an old revision retains that revision; it can never silently
-      // satisfy a newer targeted amendment.
-      const derivedRevision = attempt.acknowledgements.at(-1)?.revision ?? state.jobs[env.jobId].pinnedRevision;
+      // against: the last acknowledged revision, else the revision its launch
+      // intent pinned (for single-attempt jobs that is the job's pinned
+      // revision — identical behavior), never whatever revision happens to be
+      // latest. A result against an old revision retains that revision; it can
+      // never silently satisfy a newer targeted amendment.
+      const derivedRevision = attempt.acknowledgements.at(-1)?.revision ?? attempt.launchIntent.revision ?? state.jobs[env.jobId].pinnedRevision;
       if (payload.revision !== undefined && payload.revision !== derivedRevision) {
         throw fail(
           "invalid-transition",
@@ -920,6 +1042,13 @@ function applyEvent(state, env) {
     case "amendment.submitted": {
       const job = requireJob(state, env.jobId);
       const attempt = requireAttempt(state, env.jobId, env.attemptId, env.kind);
+      if (job.role !== "execution") {
+        for (const execution of Object.values(state.jobs).filter(entry => entry.role === "execution")) {
+          if (Object.values(execution.attempts).some(entry => entry.landingAdmitted || entry.cancelIntent || entry.outcome)) {
+            throw fail("invalid-transition", "execution is closed to assignment updates after landing admission, cancellation, or outcome");
+          }
+        }
+      }
       const { amendmentId, revision } = payload;
       // Delivery admission is serialized with receiver closure in THIS record:
       // once admission is closed the submission is refused, so a late accepted
@@ -953,11 +1082,14 @@ function applyEvent(state, env) {
       // payload is retained (with its split markers) so the coordinator's raw
       // instruction stays recoverable for assignment composition and
       // post-restart inspection.
+      if (payload.note !== undefined && payload.note !== null && typeof payload.note !== "string") {
+        throw fail("invalid-event", "amendment.submitted payload.note must be a string or null");
+      }
       job.amendments[amendmentId] = {
         amendmentId,
         revision,
         targetedAttemptId: env.attemptId,
-        submitted: { at: env.at, seq: env.seq, transport: payload.transport ?? null, note: payload.note ?? null, splits: payload.textContinuation ?? null },
+        submitted: { at: env.at, seq: env.seq, transport: payload.transport ?? null, note: payload.note ?? null, splits: payload.textContinuation ?? null, payload },
         pushes: [],
         accepted: null,
       };
@@ -1178,7 +1310,7 @@ function amendmentAcknowledgedBy(state, jobId, amendment) {
 function amendmentView(state, jobId, amendment) {
   const acknowledged = amendmentAcknowledgedBy(state, jobId, amendment);
   const submitted = amendment.submitted ?? {};
-  const note = resolveSplits(state, { note: submitted.note ?? null }, submitted.splits ?? null);
+  const note = resolveSplits(state, submitted.payload ?? { note: submitted.note ?? null }, submitted.splits ?? null);
   return {
     jobId,
     amendmentId: amendment.amendmentId,
@@ -1212,8 +1344,19 @@ function attemptView(state, job, attempt) {
       cwd: attempt.launchIntent.cwd ?? null,
       owner: attempt.launchIntent.owner ?? null,
       targetPaths: attempt.launchIntent.targetPaths ?? null,
+      launch: attempt.launchIntent.launch ?? null,
     },
     started: attempt.started ? { at: attempt.started.at, seq: attempt.started.seq, identity: attempt.started.identity } : null,
+    landingAdmitted: attempt.landingAdmitted
+      ? { at: attempt.landingAdmitted.at, seq: attempt.landingAdmitted.seq, note: attempt.landingAdmitted.note ?? null }
+      : null,
+    evidence: attempt.evidence.map((entry) => ({
+      seq: entry.seq,
+      at: entry.at,
+      label: entry.label,
+      reportId: entry.reportId,
+      note: resolveSplits(state, entry.payload, entry.splits).value.note ?? null,
+    })),
     activity: attempt.activity.map((entry) => textEntryView(state, entry, "note")),
     progress,
     latestProgress: progress.length ? progress[progress.length - 1] : null,
@@ -2004,6 +2147,24 @@ function checkExpectations(state, ctx, expect) {
     if (!attempt) throw fail("expectation-failed", `expected attempt '${ctx.attemptId}' does not exist`);
     if (attempt.phase !== expect.attemptPhase) {
       throw fail("expectation-failed", `expected attempt '${ctx.attemptId}' phase '${expect.attemptPhase}' but it is '${attempt.phase}'`);
+    }
+  }
+  // The "still the intended active attempt" expectation used by execution
+  // updates: the attempt must still be the job's newest attempt and must not
+  // have settled. A phase/attempt change racing an update is then a truthful
+  // refusal under the writer lock — never a silent retarget.
+  if (expect.attemptActive !== undefined) {
+    if (!ctx.attemptId) throw fail("invalid-context", "expect.attemptActive requires context.attemptId");
+    const job = state.jobs[ctx.jobId];
+    const attempt = job?.attempts[ctx.attemptId];
+    if (!attempt) throw fail("expectation-failed", `expected attempt '${ctx.attemptId}' does not exist`);
+    const latest = job.attemptOrder[job.attemptOrder.length - 1] ?? null;
+    const active = latest === ctx.attemptId && !attempt.outcome && attempt.phase !== "terminal";
+    if (expect.attemptActive !== active) {
+      throw fail(
+        "expectation-failed",
+        `attempt '${ctx.attemptId}' is ${active ? "" : "no longer "}the intended active attempt of job '${ctx.jobId}'`,
+      );
     }
   }
 }

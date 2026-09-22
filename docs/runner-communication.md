@@ -1,4 +1,4 @@
-# Runner communication (phase 2a)
+# Runner communication
 
 Production components for communication between the workflow coordinator and a
 runner worker's live Pi session: a shared runtime API
@@ -41,8 +41,8 @@ A present but malformed binding throws `binding-invalid` — the adapter refuses
 enabled. `workerIsolationEnv` scrubs the variable so it can never be
 inherited by a launch that did not explicitly opt in;
 `buildPiWorkerLaunch` re-adds it deliberately. The adapter re-validates and
-additionally refuses a binding on any seat other than the runner
-(`binding_invalid_seat`), an attempt the record does not name
+additionally refuses a binding whose role does not match the actual runner,
+implementer, or reviewer seat (`binding_invalid_seat`), an attempt the record does not name
 (`binding_attempt_unknown`), an attempt whose phase cannot be started
 (`binding_attempt_not_launchable`), and a record that cannot be opened
 (`binding_record_unavailable`) — all before any provider traffic.

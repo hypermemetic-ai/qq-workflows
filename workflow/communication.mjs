@@ -801,21 +801,30 @@ export async function submitAmendment({
   changeId,
   jobId,
   attemptId,
-  instructions,
+  instructions = null,
   composeInstructions = null,
   note = null,
   amendmentId = null,
   actor = null,
   relay = null,
   now,
+  expect = null,
 } = {}) {
   assertIdentifier(changeId, "changeId");
   assertIdentifier(jobId, "jobId");
   assertIdentifier(attemptId, "attemptId");
-  if (typeof instructions !== "string" || instructions.trim() === "") {
-    if (typeof composeInstructions !== "function") {
+  // The full assignment revision content: either supplied verbatim, or
+  // composed per revision attempt (`composeInstructions(revision)`) so a
+  // revision race never bakes in a stale committed revision label.
+  const instructionsFor = (revision, currentState) => {
+    const text = typeof composeInstructions === "function" ? composeInstructions(revision, currentState) : instructions;
+    if (typeof text !== "string" || text.trim() === "") {
       throw fail("invalid-arguments", "instructions (the full assignment revision content) is required");
     }
+    return text;
+  };
+  if (typeof composeInstructions !== "function" && (typeof instructions !== "string" || instructions.trim() === "")) {
+    throw fail("invalid-arguments", "instructions (the full assignment revision content) is required");
   }
   if (note !== null && (typeof note !== "string" || note.trim() === "")) {
     throw fail("invalid-arguments", "note (the raw coordinator instruction) must be a nonempty string when given");
@@ -895,7 +904,7 @@ export async function submitAmendment({
     // `composeInstructions` is recomputed under the record's writer lock for
     // each race attempt, so the committed revision is always the one the text
     // names.
-    const resolvedInstructions = composeInstructions ? String(composeInstructions(revision)) : instructions;
+    const resolvedInstructions = instructionsFor(revision, currentState);
     if (typeof resolvedInstructions !== "string" || resolvedInstructions.trim() === "") {
       throw fail("invalid-arguments", "the composed assignment revision content is required");
     }
@@ -926,8 +935,14 @@ export async function submitAmendment({
           amendmentId: resolvedAmendmentId,
           revision,
           transport: { relay: { kind: RELAY_MESSAGE_KIND, recipient: currentBinding.recipient } },
+          note: note ?? null,
         },
-        { context: { actor: resolvedActor, jobId, attemptId }, commandId: `submit-${resolvedAmendmentId}`, now },
+        // `expect` binds the submission to the exact attempt that was the
+        // intended target when the caller bound it: a phase/attempt change
+        // racing the submission refuses here (the recorded revision, if any,
+        // stays in the record as an unresolved update) and is never silently
+        // retargeted.
+        { context: { actor: resolvedActor, jobId, attemptId }, commandId: `submit-${resolvedAmendmentId}`, now, ...(expect ? { expect } : {}) },
       );
       revised = revisedAttempt;
     } catch (error) {

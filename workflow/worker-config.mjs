@@ -14,8 +14,9 @@
 // nothing here ever substitutes another provider, model, or effort level. A
 // missing or unusable selection is an error before a process is spawned.
 
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -599,8 +600,16 @@ export function ensurePiWorkerSettings(env = process.env, config = null) {
       keepRecentTokens: policy.keepRecentTokens,
     },
   };
+  // Several seats can launch concurrently using this same worker directory.
+  // Publish whole files/references atomically: another adapter must never read
+  // a truncated settings file or observe a registry link between rm and symlink.
+  const replace = (path, write) => {
+    const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    try { write(temporary); renameSync(temporary, path); }
+    finally { rmSync(temporary, { force: true }); }
+  };
   const settingsFile = join(dir, "settings.json");
-  writeFileSync(settingsFile, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+  replace(settingsFile, path => writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`, "utf8"));
 
   const source = piAgentDir(env);
   const linked = [];
@@ -614,8 +623,7 @@ export function ensurePiWorkerSettings(env = process.env, config = null) {
     const to = join(dir, name);
     if (resolvePath(from) === resolvePath(to)) continue;
     try {
-      rmSync(to, { force: true });
-      symlinkSync(from, to);
+      replace(to, path => symlinkSync(from, path));
       linked.push(name);
     } catch (err) {
       throw new Error(`worker pi registry file '${name}' could not be referenced at '${to}': ${err.message}`);
@@ -884,13 +892,10 @@ function buildPiWorkerLaunch({ seat, cwd, prompt, env, resolved, mcpEnv }) {
     childEnv.QQ_RUNNER_ID = String(runnerId);
     childEnv.QQ_RUNNER_RESULT_FILE = String(resultFile);
   }
-  // Runner communication is re-added explicitly, never inherited: presence
-  // alone does not enable anything. The adapter performs the authoritative
-  // validation (a malformed binding, or a binding on a seat other than the
-  // runner, refuses with exit 2 before any process is spawned or any provider
-  // traffic happens).
-  if (typeof env.QQ_WORKFLOW_COMMUNICATION === "string" && env.QQ_WORKFLOW_COMMUNICATION.trim() !== "") {
-    childEnv.QQ_WORKFLOW_COMMUNICATION = env.QQ_WORKFLOW_COMMUNICATION;
+  // Only the caller's explicit per-worker binding crosses isolation. Ambient
+  // bindings belong to another attempt and must never leak to a new seat.
+  if (typeof mcpEnv.QQ_WORKFLOW_COMMUNICATION === "string" && mcpEnv.QQ_WORKFLOW_COMMUNICATION.trim() !== "") {
+    childEnv.QQ_WORKFLOW_COMMUNICATION = mcpEnv.QQ_WORKFLOW_COMMUNICATION;
   }
   const { key } = resolveWorkerApiKey(resolved, { env });
   if (key) childEnv[resolved.envKey] = key;

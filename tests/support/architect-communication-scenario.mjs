@@ -6,10 +6,14 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {localPiProvider} from './local-pi-provider.mjs';
 import {PiRpcClient} from '../../workflow/pi-worker/rpc.mjs';
+import {loadPaseoRpcClient} from './paseo-rpc.mjs';
+const paseoReload=process.env.QQ_TEST_PASEO_RELOAD==='1';
+const RpcClient=paseoReload?await loadPaseoRpcClient():PiRpcClient;
+if(!RpcClient){console.log('SKIP Architect Paseo reload: installed Paseo unavailable');process.exit(0);}
 import {listJobs,processFingerprint} from '../../workflow/jobs.mjs';
 import {openChange,viewsFor} from '../../workflow/change-record.mjs';
 const owner='8363815a-d0b2-4fd9-ab52-6e82258871a1';
-for(const reload of [false,true]) {
+for(const reload of (paseoReload?[true]:[false,true])) {
  let architectCalls=0,workerCalls=0,readSeen=false,updateReturned=false;
  let beginWorker,finishWorker;const workerGate=new Promise(done=>beginWorker=done),updateGate=new Promise(done=>finishWorker=done);
  let fixture;
@@ -45,20 +49,20 @@ for(const reload of [false,true]) {
  if(!fixture){console.log('SKIP Architect communication live: installed Pi unavailable');break;}
  writeFileSync(join(fixture.env.PI_CODING_AGENT_DIR,'settings.json'),JSON.stringify({compaction:{enabled:false,reserveTokens:16384,keepRecentTokens:20000}}));
  const sessionFile=join(fixture.root,'architect.jsonl'),clients=[];
- const launch=()=>{const client=new PiRpcClient({bin:fixture.pi,cwd:fixture.root,env:{...fixture.env,QQ_WORKFLOW_SESSION_ID:owner,PASEO_AGENT_ID:owner},args:['--mode','rpc','--provider',fixture.provider,'--model',fixture.model,'--session',sessionFile,'--no-extensions','--extension',fileURLToPath(new URL('../../pi-extension/qq-architect.mjs',import.meta.url)),'--no-approve']});clients.push(client);client.start();return client;};
+ const launch=()=>{const client=new RpcClient({bin:fixture.pi,cwd:fixture.root,env:{...fixture.env,QQ_WORKFLOW_SESSION_ID:owner,PASEO_AGENT_ID:owner},args:['--mode','rpc','--provider',fixture.provider,'--model',fixture.model,'--session',sessionFile,'--no-extensions','--extension',fileURLToPath(new URL('../../pi-extension/qq-architect.mjs',import.meta.url)),'--no-approve']});clients.push(client);client.start();return client;};
  const wait=async(predicate,ms=90000)=>{const until=Date.now()+ms;while(Date.now()<until){if(await predicate())return;await new Promise(done=>setTimeout(done,100));}throw new Error(`Architect communication timeout (reload=${reload}, architect=${architectCalls}, worker=${workerCalls}): ${clients.at(-1)?.stderrTail}`);};
  try {
   let client=launch();await client.request({type:'get_state'});
   await client.request({type:'prompt',message:'Dispatch the isolated proof runner and wait for pushed progress. Submit the requested amendment when it reports progress, then wait for completion and read the report.'});
   await wait(async()=>architectCalls===2&&(await client.request({type:'get_state'})).isStreaming===false);beginWorker();
   await wait(async()=>updateReturned&&(await client.request({type:'get_state'})).isStreaming===false);
-  if(reload){process.kill(client.pid,'SIGKILL');await client.waitForExit();client=launch();await client.request({type:'get_state'});}
+  if(reload){if(paseoReload)await client.close();else process.kill(client.pid,'SIGKILL');await client.waitForExit();client=launch();await client.request({type:'get_state'});}
   finishWorker();await wait(()=>readSeen);
   await wait(()=>job()?.delivery?.state==='delivered');
   const entries=readFileSync(sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));
   for(const name of ['dispatch_runner','steer_runner','read_report']){const found=entries.filter(e=>e.message?.role==='toolResult'&&e.message?.toolName===name);assert.equal(found.length,1,name);assert.equal(found[0].message.isError,false,name);}
   assert.equal(workerCalls,6);assert.equal(architectCalls,6);
-  console.log(`PASS actual Architect Pi ${reload?'reopened after amendment':'idle'}: pushed committed progress wakes Architect, native update distinguishes submission from acknowledgement, worker reads/acks revision2, automatic completion and durable read_report`);
+  console.log(`PASS actual Architect Pi ${paseoReload?'Paseo close/reopen after amendment':reload?'reopened after amendment':'idle'}: pushed committed progress wakes Architect, native update distinguishes submission from acknowledgement, worker reads/acks revision2, automatic completion and durable read_report`);
  }finally {
   beginWorker();finishWorker();for(const client of clients)try{process.kill(client.pid,'SIGTERM');}catch{}
   await Promise.all(clients.map(client=>client.waitForExit()));

@@ -392,7 +392,7 @@ await assert.rejects(() => wfA.callTool("await_execution", { jobId: execDispatch
 
 for (const name of WORKFLOW_TOOL_NAMES) {
   if (name === "recover_deliveries") continue;
-  if (["dispatch_runner", "dispatch_execution", "check_execution"].includes(name)) continue;
+  if (["dispatch_runner", "dispatch_execution", "check_execution", "steer_execution", "cancel_execution"].includes(name)) continue;
   const args = {
     read_ticket: {},
     update_ticket: { content: "# Ticket\n" },
@@ -409,6 +409,16 @@ const execCheck = await execWorkflow.callTool("check_execution", { jobId: execDi
 assert.equal(execCheck.role, "execution");
 assert.equal(execCheck.status, "completed");
 assert.equal(execCheck.kind, "bounded");
+// The scoped execution surfaces dispatch on the owning session: a settled
+// execution refuses steering truthfully and repeated cancellation is an
+// idempotent no-op (nothing is relabelled and nothing is signalled again).
+const execSteer = await execWorkflow.callTool("steer_execution", { jobId: execDispatch.jobId, message: "extra instruction" });
+assert.equal(execSteer.ok, false, "steering a settled execution refuses truthfully");
+assert.match(execSteer.reason, /settled or cancelled/);
+const execCancel = await execWorkflow.callTool("cancel_execution", { jobId: execDispatch.jobId });
+assert.equal(execCancel.ok, true, "cancel_execution dispatches");
+assert.equal(execCancel.alreadyTerminal, true, "repeated cancellation is idempotent");
+assert.equal(execCheck.status, "completed", "the completed outcome is never relabelled by a later cancellation");
 const jobsListed = await wfA.callTool("list_jobs", {});
 assert.ok(jobsListed.jobs.some((job) => job.id === dispatchA.jobId));
 assert.ok(jobsListed.jobs.every((job) => job.sessionKey === "cross-A"), "list_jobs is session-scoped by default");

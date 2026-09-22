@@ -42,7 +42,8 @@ import {
   renderRunnerFindings,
   readSeatResult,
 } from "../workflow/results.mjs";
-import { routeNotification } from "../workflow/notify.mjs";
+import { readNotification, routeNotification } from "../workflow/notify.mjs";
+import { COMMUNICATION_BINDING_ENV } from "../workflow/communication.mjs";
 import { readReport, saveReport } from "../workflow/reports.mjs";
 import { createJob, processFingerprint, readJob, recordCancellation, writeJob } from "../workflow/jobs.mjs";
 import { openChange, viewsFor } from "../workflow/change-record.mjs";
@@ -57,6 +58,10 @@ import {
   runnerCommunicationView,
   steerRunnerLifecycle,
 } from "../workflow/runner-lifecycle.mjs";
+import { steerRoleAttempt } from "../workflow/execution-authority.mjs";
+import {prepareManagedRoleCommunication} from "../workflow/execution-communication.mjs";
+import {createMcpExecutionSurface} from "../workflow/mcp-executions.mjs";
+import { cancelExecutionHost } from "../workflow/execution-supervisor.mjs";
 import { stateDirFor } from "../workflow/session.mjs";
 import {
   CANONICAL_PROVIDERS,
@@ -219,25 +224,8 @@ export const TOOLS = [
   },
   {
     name: "read_report",
-    description: "Read a persisted terminal report in bounded chunks. Continue with nextOffset; complete=true means the whole report was returned.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        reportId: {
-          type: "string",
-          description: "Report reference returned by check_runner (terminal reportId)",
-        },
-        offset: {
-          type: "number",
-          description: "Character offset to continue from (default 0)",
-        },
-        limit: {
-          type: "number",
-          description: "Maximum characters to return in this chunk",
-        },
-      },
-      required: ["reportId"],
-    },
+    description: "Read a durable workflow report by reportId. Large reports are paged; continue from nextOffset until complete is true.",
+    inputSchema: {type:"object",properties:{reportId:{type:"string"},offset:{type:"integer",minimum:0},limit:{type:"integer",minimum:1},cwd:{type:"string"}},required:["reportId"]},
   },
   {
     name: "dispatch_execution",
@@ -266,14 +254,43 @@ export const TOOLS = [
   },
   {
     name: "check_execution",
-    description: "Check progress, active phase, telemetry, and status of an execution pipeline. Point-in-time read; surfaces the stuck-suspicion flag with evidence when silent past threshold.",
+    description: "Check progress, active phase, telemetry, and status of an execution pipeline, plus bounded role/job/attempt/revision/update/report state rebuilt from the authoritative change record. Update states stay distinct — submitted (recorded), transport-received (the attempt's receiver accepted delivery), worker-acknowledged (incorporated), fulfilled (an acknowledged update covered by a successful result). The outcome is reported known or unknown; a disappeared execution is never a known failed outcome.",
     inputSchema: {
       type: "object",
       properties: {
+        cwd: {type:"string",description:"Repository directory used at dispatch; defaults to this MCP server's repository."},
         id: {
           type: "string",
           description: "Tracking ID of the execution",
         },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "steer_execution",
+    description: "Submit an additional instruction as an assignment update to the exact currently intended active implementer/reviewer attempt of a managed execution. The target is bound before submission; a phase or attempt change refuses truthfully instead of retargeting. The reply reports the update as recorded (submitted); transport-received, worker-acknowledged and fulfilled are later separate facts reported by check_execution. A legacy harness execution without workflow communication reports unsupported explicitly instead of pretending delivery.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: {type:"string",description:"Repository directory used at dispatch; defaults to this MCP server's repository."},
+        id: { type: "string", description: "Tracking ID of the execution (or its durable job id)" },
+        message: { type: "string", description: "The additional instruction (an assignment update, never a replacement of the task)" },
+        expectAttemptId: { type: "string", description: "The attempt id you believe is currently active; a mismatch refuses instead of retargeting" },
+        expectJobId: { type: "string", description: "The role job id you believe is currently active; a mismatch refuses instead of retargeting" },
+      },
+      required: ["id", "message"],
+    },
+  },
+  {
+    name: "cancel_execution",
+    description: "Cancel a managed execution. The authoritative cancellation intent is recorded before any fingerprint-matched owned process is signalled; repeated cancellation is idempotent and never restarts work. If irreversible landing has already been admitted the call refuses truthfully and preserves the landing evidence; a cancelled execution is never relabelled as success.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: {type:"string",description:"Repository directory used at dispatch; defaults to this MCP server's repository."},
+        id: { type: "string", description: "Tracking ID of the execution (or its durable job id)" },
+        reason: { type: "string" },
       },
       required: ["id"],
     },
@@ -384,6 +401,17 @@ export async function resolveSessionId(root, explicitId) {
   }
   return resolved;
 }
+
+const managedExecutionSurface=createMcpExecutionSurface({
+  notify:(...args)=>notifySession(...args),
+  resolveContext:async(args={})=>{
+    const root=await mainRepoRoot(args.cwd??process.cwd());
+    const trusted=process.env.QQ_WORKFLOW_SESSION_ID||process.env.PASEO_AGENT_ID||process.env.CODEX_THREAD_ID||findCodexThreadFromProc();
+    if(trusted&&args.sessionId&&args.sessionId!==trusted)throw new Error("execution belongs to another coordinating session");
+    const owner=trusted||await resolveSessionId(root,args.sessionId);
+    return {root,owner};
+  },
+});
 
 // Legacy provider-selection keys. `researcherProvider` / `QQ_RESEARCHER_PROVIDER`
 // are retained ONLY as fail-closed compatibility defenses: research is ordinary
@@ -584,10 +612,15 @@ Next steps:
     sessionId,
     ticketSource,
     childSessionId,
+    communication: {
+      supported: false,
+      mode: "manual-worker",
+      reason: "Preparing a worktree does not register a managed worker. The manual worker-exec command has no managed communication or recovery obligations; use dispatch_execution for those guarantees.",
+    },
     implementerPrompt,
     implementerProvider,
     ...(reviewRequired ? { reviewerPrompt, reviewerSessionId, reviewerProvider } : {}),
-    instructions,
+    instructions: `${instructions}\n\nThese manual worker-exec launches have no managed assignment updates, pushed progress, durable workflow report registration, or coordinator recovery. Use dispatch_execution for managed implementer/reviewer communication.`,
   };
 }
 
@@ -1209,13 +1242,27 @@ export async function notifyTerminal(tracker, kind) {
     // a bounded delivery, never the only copy of the result.
     const report = persistTrackerReport(tracker, kind);
     const stateDir = trackerStateDir(tracker);
-    const sessionDir = join(stateDir, kind === "execution" ? "executions" : "runners");
+    // New communication runners share the native recovery journal. Separate
+    // journals would let the ordinary callback and recovery each send the
+    // same terminal event; genuinely legacy trackers keep their old namespace.
+    const sessionDir = kind === "runner" && tracker.communication?.enabled
+      ? stateDir : join(stateDir, kind === "execution" ? "executions" : "runners");
     // The change record is the authoritative outcome for a communication-enabled
     // runner: the validated outcome (pinned to the revision the attempt actually
     // worked against) is recorded — and its acceptance checked — before any
     // notification bookkeeping is reported. One shared implementation with the
     // cleanup choke point below.
     if (kind === "runner") finalizeRunnerOutcome(tracker);
+    if (tracker.status !== "completed" && tracker.status !== "failed") return {notified:false,reason:"outcome-not-published"};
+    if (kind === "runner" && tracker.communication?.enabled) {
+      const prior = readNotification(sessionDir, `runner:${trackerRef(tracker)}:terminal`);
+      if (prior?.state && prior.state !== "failed") {
+        // Callback and coordinator recovery share this exact obligation. An
+        // accepted/uncertain send needs session evidence, not another send.
+        return {notified:false,reason:prior.state === "delivered" ? "already-notified" : "prior-delivery-unverified",
+          eventId:prior.eventId,reportId:prior.reportId,deliveryState:prior.state};
+      }
+    }
     const attempt = (async () => {
       const message = kind === "execution"
         ? buildExecutionTerminalMessage(tracker)
@@ -1257,7 +1304,7 @@ export async function notifyTerminal(tracker, kind) {
         // and a process-scoped dedupe, so a durable record from an earlier,
         // unrelated process can never swallow a fresh delivery. The durable
         // record itself is still written and stays inspectable.
-        dedupe: "process",
+        dedupe: kind === "runner" && tracker.communication?.enabled ? "durable" : "process",
         cap: MCP_NOTIFY_CAP,
       });
       if (routed.state === "duplicate") {
@@ -1406,6 +1453,7 @@ export function startSuspicionSweeper({ intervalMs } = {}) {
   const ms = typeof intervalMs === "number" && intervalMs > 0 ? intervalMs : sweepIntervalMs();
   const timer = setInterval(() => {
     void sweepNotifications().catch(() => {});
+    void managedExecutionSurface.recover().catch(() => {});
   }, ms);
   if (typeof timer.unref === "function") timer.unref();
   return timer;
@@ -1599,8 +1647,7 @@ function finalizeRunnerOutcome(runner) {
   if (runner.status !== "completed" && runner.status !== "failed" && runner.status !== "cancelled") return null;
   const report = persistTrackerReport(runner, "runner");
   if (runner.communication.outcomeRecorded) return report;
-  runner.communication.outcomeRecorded = true;
-  const outcome = recordRunnerOutcome({
+  const outcome = report ? recordRunnerOutcome({
     stateDir: runner.communication.stateDir ?? trackerStateDir(runner),
     changeId: runner.communication.changeId,
     jobId: trackerRef(runner),
@@ -1611,8 +1658,22 @@ function finalizeRunnerOutcome(runner) {
       : runner.status === "cancelled" ? "cancelled by architect" : "completed",
     reportId: report?.reportId ?? null,
     actor: { kind: "runtime", id: runner.communication.runtimeActorId ?? "qq-workflows-runtime" },
-  });
-  if (!outcome.ok && outcome.code === "cancelled") {
+  }) : {ok:false,code:"report-unavailable",reason:"the full findings report could not be persisted"};
+  runner.communication.outcomeRecorded = outcome.ok || outcome.code === "cancelled";
+  if (outcome.ok) delete runner.communication.publicationRefused;
+  if (!outcome.ok && outcome.code !== "cancelled") {
+    // Refused publication is an unknown managed outcome, never a successful
+    // tracker. Preserve both useful findings and raw transport for inspection.
+    runner.status = "interrupted";
+    runner.error = {message:`managed outcome publication refused: ${outcome.reason ?? outcome.code}`,phase:"reconciliation-required"};
+    runner.communication.publicationRefused = runner.error.message;
+    const stateDir = runner.communication.stateDir ?? trackerStateDir(runner);
+    const cached = readJob(stateDir, trackerRef(runner));
+    if (cached) writeJob(stateDir, {...cached,status:"interrupted",finishedAt:Date.now(),
+      terminal:{status:"interrupted",ok:false,at:Date.now(),summary:runner.error.message,error:runner.error,
+        reportId:report?.reportId ?? null,reportChars:report?.chars ?? 0,resultAvailable:Boolean(report)},
+      recovery:{verdict:"reconciliation-required",detail:runner.error.message}});
+  } else if (!outcome.ok && outcome.code === "cancelled") {
     runner.status = "cancelled";
     runner.result = null;
     runner.completionRejected = outcome.reason;
@@ -1641,6 +1702,7 @@ export function cleanupRunnerFiles(runner) {
   // authoritative change-record outcome is recorded before anything below
   // removes the only other copy.
   finalizeRunnerOutcome(runner);
+  if (runner.communication?.publicationRefused) return;
   // Single choke point for terminal transitions: every path sets
   // status/result/error and then calls this, so retaining here is what makes
   // BOTH completed and failed terminal outcomes durable BEFORE the transient
@@ -2188,6 +2250,7 @@ function startRunnerProcess(runner, { spawnEnv = process.env, communication = nu
       mcpEnv: {
         QQ_RUNNER_ID: runner.runnerId,
         QQ_RUNNER_RESULT_FILE: runner.resultFile,
+        ...(runner.communication?.enabled ? {[COMMUNICATION_BINDING_ENV]:spawnEnv[COMMUNICATION_BINDING_ENV]} : {}),
       },
     });
   } catch (err) {
@@ -3056,7 +3119,14 @@ export function evaluateReviewPassed(outputOrResult, explicitExitCode) {
 // through the central operator configuration; the per-call `provider` is
 // ignored here (and rejected at the public entry points) and is kept only for
 // the test-handler signature below.
-export async function runChildSubagent(execution, { role, cwd, prompt, provider }) {
+export async function runChildSubagent(execution, { role, cwd, prompt, provider, roleJobId = null }) {
+  // The parent's authoritative cancellation intent is checked BEFORE each role
+  // spawn: after an accepted cancellation no further role may start.
+  try {
+    execution.authority?.assertRoleSpawnAllowed?.({ role });
+  } catch (err) {
+    return { ok: false, error: { message: `role spawn refused: ${err.message}` } };
+  }
   assertExecutionActive(execution);
   if (globalThis.__QQ_TEST_SUBAGENT_HANDLER) {
     try {
@@ -3068,20 +3138,50 @@ export async function runChildSubagent(execution, { role, cwd, prompt, provider 
   }
 
   const seatAttemptId=randomUUID();
-  const seatJobId=randomUUID();
+  const seatJobId=roleJobId ?? randomUUID();
   const seatResultDir=join(trackerStateDir(execution,{cwd}),"seat-results");
   mkdirSync(seatResultDir,{recursive:true,mode:0o700});
   const seatBinding={schema:1,role,jobId:seatJobId,attemptId:seatAttemptId,path:join(seatResultDir,`${seatJobId}-${seatAttemptId}.json`)};
   const attempt={role,jobId:seatJobId,attemptId:seatAttemptId,resultFile:seatBinding.path,startedAt:Date.now(),status:"running"};
   execution.childAttempts ??= [];
   execution.childAttempts.push(attempt);
+  // Child role/job/attempt identity and its assignment revision land in the
+  // same authoritative change record BEFORE the seat exists (fail closed).
+  try {
+    const registered = execution.authority?.registerRoleAttempt?.({ role, jobId: seatJobId, attemptId: seatAttemptId, prompt, retryOfJobId: roleJobId, cwd });
+    if (registered?.instructions) prompt = registered.instructions;
+  } catch (err) {
+    attempt.status = "failed";
+    return { ok: false, exitCode: 1, error: { message: `role attempt refused by the authoritative record: ${err.message}`, exitCode: 1 } };
+  }
   let launch;
+  let roleCommunication = null;
   try {
     launch = buildCentralWorkerLaunch({ seat: role, cwd, prompt, env: process.env,mcpEnv:{QQ_WORKER_RESULT_BINDING:JSON.stringify(seatBinding)} });
+    if(execution.authority?.recordEvidence) {
+      const capability={supported:launch.config.harness==="pi",harness:launch.config.harness,
+        reason:launch.config.harness==="pi"?null:`assignment updates and progress push are unsupported for harness '${launch.config.harness}'`};
+      const registered=execution.authority.recordEvidence({jobId:seatJobId,attemptId:seatAttemptId,label:"communication-capability",note:JSON.stringify(capability)});
+      if(!registered.ok)throw new Error(`role communication capability could not be recorded: ${registered.reason}`);
+    }
+    if (execution.authority && launch.config.harness === "pi") {
+      roleCommunication = await prepareManagedRoleCommunication({stateDir:execution.authority.stateDir,executionId:execution.authority.executionId,
+        jobId:seatJobId,attemptId:seatAttemptId,role});
+      launch = buildCentralWorkerLaunch({seat:role,cwd,prompt,env:process.env,config:launch.config,
+        mcpEnv:{QQ_WORKER_RESULT_BINDING:JSON.stringify(seatBinding),...roleCommunication.bindingEnv}});
+    }
   } catch (err) {
+    await roleCommunication?.release();
+    const report = saveReport(trackerStateDir(execution,{cwd}),{jobId:seatJobId,role,text:`Worker launch rejected: ${err.message}`});
+    Object.assign(attempt,{status:"failed",reportId:report.reportId,reportChars:report.chars});
+    try {
+      const outcome=execution.authority?.recordRoleOutcome?.({jobId:seatJobId,attemptId:seatAttemptId,status:"failed",summary:err.message,reportId:report.reportId});
+      if(outcome&&!outcome.ok)attempt.authorityError=outcome.reason;
+    } catch(error){attempt.authorityError=String(error?.message??error);}
     return {
       ok: false,
       exitCode: 1,
+      reportId:report.reportId,
       error: { message: `Worker launch rejected: ${err.message}`, exitCode: 1 },
     };
   }
@@ -3149,24 +3249,77 @@ export async function runChildSubagent(execution, { role, cwd, prompt, provider 
       return clean;
     }
 
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
       execution.activeChild = null;
       execution.activeTool = null;
       const finalOutput = finishCleanOutput();
+      const cancelled = Boolean(execution.cancellation);
+      // Failure diagnostics keep the same durable weight as success findings:
+      // a failed or cancelled role stays diagnosable after any restart.
+      const failureReport = (text) => {
+        try {
+          return saveReport(trackerStateDir(execution, { cwd }), {
+            jobId: seatJobId,
+            role,
+            text: text || `# ${role} failure diagnostics\n\n${JSON.stringify({ code, stderr: stderr.trim() }, null, 2)}`,
+          });
+        } catch { return null; }
+      };
+      const settleAuthority = (status, { summary = "", reportId = null, claimedRevision = null } = {}) => {
+        try {
+          const outcome = execution.authority?.recordRoleOutcome?.({
+            role, jobId: seatJobId, attemptId: seatAttemptId, status, summary, reportId, claimedRevision,
+            identity: { seat: role, resultBinding: { jobId: seatJobId, attemptId: seatAttemptId, role } },
+          });
+          if (outcome && (!outcome.ok || outcome.status !== status)) throw new Error(outcome.reason ?? `authority retained ${outcome.status}, not ${status}`);
+          return outcome ?? {ok:true,status};
+        } catch (err) {
+          attempt.authorityError = String(err?.message ?? err);
+          return {ok:false,reason:attempt.authorityError};
+        }
+      };
       if (code === 0 && launch.config.harness === "pi") {
         const result=readSeatResult(seatBinding);
-        if(!result.ok){attempt.status="failed";resolvePromise({ok:false,output:finalOutput,error:{message:result.error,exitCode:code}});return;}
+        if(!result.ok){
+          attempt.status= cancelled ? "cancelled" : "failed";
+          const report = failureReport(finalOutput || result.error);
+          Object.assign(attempt, { reportId: report?.reportId ?? null, reportChars: report?.chars ?? 0 });
+          settleAuthority(cancelled ? "cancelled" : "failed", { summary: result.error, reportId: report?.reportId ?? null });
+          resolvePromise({ok:false,output:finalOutput,error:{message:result.error,exitCode:code}});return;
+        }
         const report=saveReport(trackerStateDir(execution,{cwd}),{jobId:seatJobId,role,text:result.response});
-        Object.assign(attempt,{status:"completed",revision:result.revision,reportId:report.reportId,reportChars:report.chars});
+        Object.assign(attempt,{status: cancelled ? "cancelled" : "completed", revision:result.revision, reportId:report.reportId, reportChars:report.chars});
+        // The validated result revision is the acknowledged/pinned revision the
+        // record enforces — never whatever revision happens to exist later.
+        const accepted = settleAuthority(cancelled ? "cancelled" : "completed", { summary: result.response.slice(0, 400), reportId: report.reportId, claimedRevision: result.revision ?? null });
+        if (!accepted.ok || cancelled) {
+          attempt.status = cancelled ? "cancelled" : "reconciliation-required";
+          resolvePromise({ok:false,status:attempt.status,output:result.response,reportId:report.reportId,error:{message:accepted.reason??"role was cancelled before result publication"}});return;
+        }
         resolvePromise({ok:true,output:result.response,reportId:report.reportId,revision:result.revision,jobId:seatJobId,attemptId:seatAttemptId});
       } else if (code === 0) {
-        attempt.status="completed";
-        resolvePromise({ ok: true, output: finalOutput });
+        attempt.status= cancelled ? "cancelled" : "completed";
+        const report=saveReport(trackerStateDir(execution,{cwd}),{jobId:seatJobId,role,text:finalOutput||`${role} exited with code 0 without a text report.`});
+        Object.assign(attempt,{reportId:report.reportId,reportChars:report.chars});
+        const accepted=settleAuthority(attempt.status,{summary:cancelled?"cancelled before the seat result settled":finalOutput.slice(0,400),reportId:report.reportId});
+        if(!accepted.ok||cancelled) {
+          attempt.status=cancelled?"cancelled":"reconciliation-required";
+          resolvePromise({ok:false,status:attempt.status,output:finalOutput,reportId:report.reportId,error:{message:accepted.reason??"role was cancelled before result publication"}});return;
+        }
+        resolvePromise({ ok: true, output: finalOutput, reportId:report.reportId, jobId:seatJobId, attemptId:seatAttemptId });
       } else {
+        attempt.status= cancelled ? "cancelled" : "failed";
+        // A strict result written before a later adapter failure is useful
+        // evidence, not a successful managed attempt. Preserve its full text.
+        const durable=launch.config.harness==="pi"?readSeatResult(seatBinding):null;
+        const report = failureReport(durable?.ok?durable.response:finalOutput);
+        Object.assign(attempt, { reportId: report?.reportId ?? null, reportChars: report?.chars ?? 0 });
+        const exitReason=signal?`terminated by ${signal}`:`exited with code ${code}`;
+        settleAuthority(cancelled ? "cancelled" : "failed", { summary: exitReason, reportId: report?.reportId ?? null });
         resolvePromise({
           ok: false,
           output: finalOutput,
-          error: { message: `Child process exited with code ${code}`, exitCode: code, stderr: stderr.trim() },
+          error: { message: `Child process ${exitReason}`, exitCode: code, signal, stderr: stderr.trim() },
         });
       }
     });
@@ -3176,11 +3329,23 @@ export async function runChildSubagent(execution, { role, cwd, prompt, provider 
       execution.activeTool = null;
       delete execution._cleanOutput;
       delete execution._musePendingTools;
+      attempt.status = execution.cancellation ? "cancelled" : "failed";
+      try {
+        execution.authority?.recordRoleOutcome?.({
+          role, jobId: seatJobId, attemptId: seatAttemptId, status: attempt.status, summary: `process error: ${err.message}`,
+          identity: { seat: role, resultBinding: { jobId: seatJobId, attemptId: seatAttemptId, role } },
+        });
+      } catch (recordErr) {
+        attempt.authorityError = String(recordErr?.message ?? recordErr);
+      }
       resolvePromise({
         ok: false,
         error: { message: err.message, stderr: stderr.trim() },
       });
     });
+  }).finally(async()=>{
+    try {await roleCommunication?.release();}
+    catch(error){attempt.cleanupError=String(error?.message??error);}
   });
 }
 
@@ -3364,6 +3529,13 @@ async function runExecutionPipeline(execution) {
   assertExecutionActive(execution);
   execution.worktree = wt.cwd;
   execution.branch = wt.branch;
+  execution.baseSelection = wt.baseSelection ?? {ref:args.baseRef??wt.branch,sha:(await git(wt.cwd,["rev-parse","HEAD"])).trim(),source:wt.reused?"reused-worktree":"local-branch"};
+  if(execution.authority?.recordEvidence) {
+    const parent=execution.authority.view().execution;
+    const recorded=execution.authority.recordEvidence({jobId:parent.jobId,attemptId:parent.attemptId,label:"worktree-base",
+      note:JSON.stringify({worktree:wt.cwd,branch:wt.branch,baseSelection:execution.baseSelection})});
+    if(!recorded.ok)throw new Error(`worktree base provenance could not be recorded: ${recorded.reason}`);
+  }
   touchActivity(execution);
   addTrajectory(execution, {
     action: "worktree_ready",
@@ -3464,6 +3636,10 @@ async function runExecutionPipeline(execution) {
         cwd: wt.cwd,
         prompt: retryPrompt,
         provider: implementerProvider,
+        // A retry is a NEW attempt on the same role job: it retains the
+        // original constraints and applicable acknowledged instructions;
+        // unresolved old-attempt obligations never migrate here.
+        roleJobId: execution.childAttempts?.find((entry) => entry.role === "implementer")?.jobId ?? null,
       });
       touchActivity(execution);
 
@@ -3490,6 +3666,7 @@ async function runExecutionPipeline(execution) {
         cwd: wt.cwd,
         prompt: reviewerPrompt,
         provider: reviewerProvider,
+        roleJobId: execution.childAttempts?.find((entry) => entry.role === "reviewer")?.jobId ?? null,
       });
       touchActivity(execution);
 
@@ -3586,6 +3763,35 @@ async function runExecutionPipeline(execution) {
     return;
   }
 
+  // The landing-admission boundary is serialized with cancellation and update
+  // state through the authoritative record: an accepted cancellation or a
+  // pending unacknowledged update newer than the validated result BLOCKS
+  // automatic landing (the obligation stays visible for an explicit decision),
+  // and landing evidence is preserved either way. Landing is never implied
+  // rolled back once admitted.
+  if (execution.authority?.admitLanding) {
+    const resultRevision = (execution.childAttempts ?? [])
+      .map((entry) => entry.revision ?? null)
+      .filter((entry) => Number.isInteger(entry))
+      .sort((a, b) => a - b)
+      .pop() ?? null;
+    const admission = await execution.authority.admitLanding({ resultRevision, note: `landing ${wt.branch}` });
+    if (!admission.ok) {
+      execution.status = "failed";
+      execution.error = {
+        phase: "landing",
+        status: "landing-refused",
+        code: admission.code ?? null,
+        message: `Landing refused: ${admission.reason}`,
+        pending: admission.pending ?? null,
+        landingEvidence: admission.landingEvidence ?? null,
+      };
+      addTrajectory(execution, { action: "landing_refused", reason: admission.reason, timestamp: Date.now() });
+      await notifyTerminal(execution, "execution");
+      return;
+    }
+  }
+
   execution.phase = "landing";
   addTrajectory(execution, {
     action: "landing_started",
@@ -3604,6 +3810,7 @@ async function runExecutionPipeline(execution) {
   execution.phase = "completed";
   if (!execution.cancellation) execution.status = "completed";
   execution.result = {
+    baseSelection: execution.baseSelection,
     verifiedStory: `Worktree ${wt.branch} successfully verified and landed.`,
     landingOutcome: landResult,
     childAttempts: execution.childAttempts ?? [],
@@ -3690,6 +3897,10 @@ export async function dispatchExecution(args = {}) {
     result: null,
     error: null,
     activeChild: null,
+    // The authoritative change-record hooks (supplied by the owned host for
+    // host-managed executions). No second authority: these only append to or
+    // read the ONE change record.
+    authority: args.authority ?? null,
   };
   EXECUTIONS.set(id, execution);
 
@@ -3708,6 +3919,86 @@ export async function dispatchExecution(args = {}) {
   return { ok: true, id, status: "running", phase: "implementing" };
 }
 
+// The bounded authoritative projection check_execution exposes. A legacy
+// harness execution without workflow communication says so explicitly — it
+// never pretends assignment updates or progress are supported.
+export function executionAuthorityView(exec) {
+  if (exec?.authority?.view) {
+    try {
+      return exec.authority.view();
+    } catch (error) {
+      return { enabled: true, supported: true, recordUnavailable: String(error?.message ?? error).slice(0, 200) };
+    }
+  }
+  return {
+    enabled: false,
+    supported: false,
+    reason:
+      "no authoritative change record is attached to this execution; assignment updates and progress are unsupported for this legacy harness execution",
+  };
+}
+
+// Submit an assignment update to the EXACT currently intended active
+// implementer/reviewer attempt. The target is bound before submission; a
+// phase/attempt change races to a truthful refusal, never a silent retarget.
+export async function steerExecutionTool(args = {}) {
+  const id = args.id || args.jobId || args.executionId;
+  const message = args.message;
+  if (!id) throw new Error("id is required");
+  if (typeof message !== "string" || !message.trim()) throw new Error("message is required");
+  const target = { message, expectAttemptId: args.expectAttemptId ?? null, expectJobId: args.expectJobId ?? null };
+  const exec = EXECUTIONS.get(id) ?? null;
+  if (exec?.authority?.steer) return exec.authority.steer(target);
+  try {
+    const root = await mainRepoRoot(args.cwd || process.cwd());
+    const stateDir = stateDirFor(root);
+    const job = readJob(stateDir, id);
+    if (job?.role === "execution") return await steerRoleAttempt({ stateDir, executionId: id, ...target });
+  } catch (error) {
+    return { ok: false, code: error?.code ?? "refused", status: "unresolved", reason: error.message, supported: false };
+  }
+  return {
+    ok: false,
+    code: "unsupported",
+    status: "refused",
+    supported: false,
+    reason:
+      "steering requires workflow communication with a recorded receiver binding; this legacy harness execution reports communication as unsupported instead of pretending delivery",
+  };
+}
+
+// Cancel one managed execution: authoritative cancellation intent BEFORE any
+// fingerprint-matched owned-process signal; idempotent; never restarts work;
+// a begun landing refuses truthfully and keeps its evidence.
+export async function cancelExecutionTool(args = {}) {
+  const id = args.id || args.jobId || args.executionId;
+  const reason = args.reason || "cancelled by architect";
+  if (!id) throw new Error("id is required");
+  const exec = EXECUTIONS.get(id) ?? null;
+  if (exec?.authority?.recordCancelIntent) {
+    const intent = exec.authority.recordCancelIntent({ reason });
+    if (!intent.ok) {
+      return { ...intent, id, signalled: false, note: "cancellation refused truthfully; landing evidence is preserved and no outcome is relabelled" };
+    }
+  }
+  if (exec) {
+    const cancelled = await cancelExecution({ id, reason, interrupted: false });
+    return { ok: true, id, ...cancelled, authoritative: Boolean(exec.authority) };
+  }
+  try {
+    const root = await mainRepoRoot(args.cwd || process.cwd());
+    const stateDir = stateDirFor(root);
+    const job = readJob(stateDir, id);
+    if (job?.role === "execution") {
+      const cancelled = cancelExecutionHost({ stateDir, jobId: id, by: "mcp", reason });
+      return { id, ...cancelled };
+    }
+  } catch (error) {
+    return { ok: false, code: error?.code ?? "refused", reason: error.message, signalled: false };
+  }
+  return { ok: false, code: "unknown-execution", reason: `no managed execution '${id}' is running here or recorded in the workflow state`, signalled: false };
+}
+
 export async function checkExecution(args = {}) {
   const id = args.id || args.executionId;
   if (!id) throw new Error("id is required");
@@ -3717,6 +4008,7 @@ export async function checkExecution(args = {}) {
   const now = Date.now();
   const elapsedSeconds = Math.round((now - exec.startedAt) / 1000);
   const activeTool = activeToolView(exec.activeTool, now);
+  const authority = executionAuthorityView(exec);
 
   if (exec.status !== "running") {
     return {
@@ -3732,6 +4024,7 @@ export async function checkExecution(args = {}) {
       result: exec.result,
       error: exec.error,
       childAttempts: exec.childAttempts ?? [],
+      authority,
     };
   }
 
@@ -3748,6 +4041,7 @@ export async function checkExecution(args = {}) {
     trajectory: [...exec.trajectory],
     suspicion,
     stuckSuspect: suspicion !== null,
+    authority,
   };
 }
 
@@ -4004,14 +4298,19 @@ export async function callTool(name, args = {}, options = {}) {
     // thread/session and ownership is verified against trusted runtime context.
     return replayRetainedRunnerFindings(args.runnerId);
   }
-  if (name === "read_report") {
-    return readRunnerReport(args);
-  }
+  if (name === "read_report") return managedExecutionSurface.readReport(args);
   if (name === "dispatch_execution") {
-    return dispatchExecution(args);
+    assertNoProviderOverrides(args);
+    return managedExecutionSurface.dispatch(args);
   }
   if (name === "check_execution") {
-    return checkExecution(args);
+    return EXECUTIONS.has(args.id??args.jobId) ? checkExecution(args) : managedExecutionSurface.check(args);
+  }
+  if (name === "steer_execution") {
+    return EXECUTIONS.has(args.id??args.jobId) ? steerExecutionTool(args) : managedExecutionSurface.steer(args);
+  }
+  if (name === "cancel_execution") {
+    return EXECUTIONS.has(args.id??args.jobId) ? cancelExecutionTool(args) : managedExecutionSurface.cancel(args);
   }
   if (name === "read_ticket") {
     return readTicket(args);
@@ -4121,6 +4420,7 @@ export function startMcpServer({ stdin = process.stdin, stdout = process.stdout,
   // Reactive Codex wakeups: the sweeper is unref'd, so stdio servers still
   // exit cleanly on SIGTERM or stdin EOF.
   ensureSuspicionSweeperStarted();
+  void managedExecutionSurface.recover().catch(() => {});
   // Snapshot the exclusion set once: CLI arg + env at server start.
   const disabled = resolveDisabledTools(disabledTools);
   const rl = createInterface({ input: stdin });
