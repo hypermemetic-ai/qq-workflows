@@ -62,6 +62,26 @@ Declared adaptations (each marked `A1`–`A5` in the fixture header):
    absent. These are NOT production surface; no production tool or prompt was
    defined or modified.
 
+### Session-id validation deviation (fixture vs source, exact comparison)
+
+The fixture's `validSessionId` is NOT the source's regex. Exact strings:
+
+* source (`qq-monolith` `extensions/agent-messages.ts` @`2b4b989`):
+  `/^session-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/`
+* fixture:
+  `/^session-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/`
+
+The fixture dropped the UUID version-nibble anchor (`4`) and the variant anchor
+(`[89ab]`), so it accepts ids the source would refuse. The proof never
+exercises that loosening: its U-test DSH session id
+`session-4b70f906-1111-4222-8333-444455556666` has version `4` and variant `8`,
+which satisfies BOTH regexes, so every acceptance the proof observes is one the
+stricter source regex would also accept. Production does not inherit the
+loosened regex: `workflow/communication.mjs` accepts a bare Pi session UUID
+only (`PI_SESSION_ID_PATTERN`), refuses the `session-` DSH prefix explicitly
+(`assertPiSessionId`), and derives every recipient from the runtime's observed
+session id — never from a model-supplied or filename-guessed value.
+
 The `agent_messages` tool's model-facing description is the historical wrapper
 text from the source revision (minus the removed `list` clause) — historical
 test provenance, not approved production copy. All fixture-only model-facing

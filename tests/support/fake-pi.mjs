@@ -17,6 +17,19 @@
 //   QQ_FAKE_PI_MODEL/PROVIDER  override the selection reported by get_state
 //                              (default: the --model/--provider it was launched
 //                              with, like the real runtime)
+//   QQ_FAKE_PI_SESSION_ID      sessionId reported by get_state (default
+//                              "fake-session"; set a bare UUID for the
+//                              communication-binding tests)
+//   QQ_FAKE_PI_INJECT_TURN_DELAY_MS
+//                              after the FIRST turn settles, start a second
+//                              agent run after this many milliseconds (0 =
+//                              off) - models the receiver's idle injection
+//                              during the drain window
+//   QQ_FAKE_PI_INJECT_TURN_SETTLES  "true" (default) = the injected run emits
+//                              message_end + agent_settled with
+//                              QQ_FAKE_PI_SECOND_ANSWER; "false" = it starts
+//                              and never settles (drain-deadline refusal path)
+//   QQ_FAKE_PI_SECOND_ANSWER   final text of the injected run (default "UPDATED")
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -29,6 +42,10 @@ const capacity = Number(env.QQ_FAKE_PI_CAPACITY ?? 1_048_576);
 const commandLog = env.QQ_FAKE_PI_COMMAND_LOG ?? null;
 const stopReason = env.QQ_FAKE_PI_STOP_REASON ?? "stop";
 const errorMessage = env.QQ_FAKE_PI_ERROR_MESSAGE ?? null;
+const sessionId = env.QQ_FAKE_PI_SESSION_ID ?? "fake-session";
+const injectTurnDelayMs = Number(env.QQ_FAKE_PI_INJECT_TURN_DELAY_MS ?? 0);
+const injectTurnSettles = String(env.QQ_FAKE_PI_INJECT_TURN_SETTLES ?? "true") === "true";
+const secondAnswer = env.QQ_FAKE_PI_SECOND_ANSWER ?? "UPDATED";
 
 // The real runtime reports the model it resolved from the launch selection, so
 // the fake does the same unless a test overrides it to prove a refusal path.
@@ -45,6 +62,32 @@ const respond = (command, success = true, data = undefined) =>
 
 let compactionState = compactionEnabled;
 let streaming = false;
+let firstTurnSettled = false;
+let injectedTurn = false;
+
+// Simulates the communication receiver's idle injection: after the first turn
+// settles, a NEW agent run starts (agent_start ... agent_settled). The adapter's
+// drain window must postpone final-result selection until this run settles, so
+// the post-update answer - not the stale pre-injection one - is the outcome.
+function maybeInjectTurn() {
+  if (firstTurnSettled === false || injectedTurn === true || injectTurnDelayMs <= 0) return;
+  injectedTurn = true;
+  setTimeout(() => {
+    write({ type: "agent_start" });
+    if (!injectTurnSettles) return;
+    write({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: secondAnswer }],
+        stopReason,
+        ...(errorMessage === null ? {} : { errorMessage }),
+      },
+    });
+    write({ type: "agent_end", messages: [], willRetry: false });
+    write({ type: "agent_settled" });
+  }, injectTurnDelayMs);
+}
 
 const rl = createInterface({ input: process.stdin, terminal: false });
 rl.on("line", (line) => {
@@ -71,7 +114,7 @@ rl.on("line", (line) => {
         isStreaming: streaming,
         isCompacting: false,
         autoCompactionEnabled: compactionState,
-        sessionId: "fake-session",
+        sessionId,
         messageCount: 0,
       });
       return;
@@ -130,6 +173,10 @@ rl.on("line", (line) => {
         write({ type: "turn_end", message: { role: "assistant", content: [{ type: "text", text: answer }] }, toolResults: [] });
         write({ type: "agent_end", messages: [], willRetry: false });
         write({ type: "agent_settled" });
+        streaming = false;
+        firstTurnSettled = true;
+        maybeInjectTurn();
+        return;
       }
       streaming = false;
       return;

@@ -178,6 +178,13 @@ export const EVENT_KINDS = Object.freeze([
   "worker.progress",
   "worker.blocker",
   "attempt.cancel_intent",
+  // Receiver admission closure (runner communication runtime): after this
+  // event the attempt's relay receiver no longer admits new amendment
+  // deliveries. Serialization is the point: a submission appended after the
+  // closure is refused, so a late accepted submission can never disappear as a
+  // successful delivery. Records written before this kind existed replay
+  // unchanged (the kind simply never appears in them).
+  "attempt.admission_closed",
   "attempt.outcome",
   "amendment.submitted",
   "amendment.accepted",
@@ -235,6 +242,7 @@ const KIND_ID_REQUIREMENTS = Object.freeze({
   "worker.progress": { jobId: true, attemptId: true },
   "worker.blocker": { jobId: true, attemptId: true },
   "attempt.cancel_intent": { jobId: true, attemptId: true },
+  "attempt.admission_closed": { jobId: true, attemptId: true },
   "attempt.outcome": { jobId: true, attemptId: true },
   "amendment.submitted": { jobId: true, attemptId: true },
   "amendment.accepted": { jobId: true, attemptId: true },
@@ -255,6 +263,7 @@ const KIND_ACTORS = Object.freeze({
   "worker.progress": ["worker"],
   "worker.blocker": ["worker"],
   "attempt.cancel_intent": ["runtime", "operator"],
+  "attempt.admission_closed": ["runtime", "operator"],
   "attempt.outcome": ["runtime", "operator"],
   "amendment.submitted": ["runtime", "operator"],
   "amendment.accepted": ["runtime", "operator"],
@@ -282,7 +291,10 @@ export function assertIdentifier(value, name) {
   return value;
 }
 
-function assertActorId(value) {
+// Exported for the communication runtime's binding validation: the same actor
+// identity contract applies to trusted contexts supplied through environment
+// bindings, not only to append-time contexts.
+export function assertActorId(value) {
   if (typeof value !== "string" || !ACTOR_ID_PATTERN.test(value)) {
     throw fail("invalid-identifier", `actor id must match ${ACTOR_ID_PATTERN}`);
   }
@@ -756,6 +768,7 @@ function applyEvent(state, env) {
         progress: [],
         blockers: [],
         cancelIntent: null,
+        admissionClosed: null,
         outcome: null,
         acknowledgements: [],
       };
@@ -807,6 +820,19 @@ function applyEvent(state, env) {
       break;
     }
 
+    case "attempt.admission_closed": {
+      const attempt = requireAttempt(state, env.jobId, env.attemptId, env.kind);
+      if (attempt.admissionClosed) {
+        throw fail("invalid-transition", `receiver admission on attempt '${env.attemptId}' is already closed`);
+      }
+      // A closure is a lifecycle fact of the attempt's relay receiver, not a
+      // validated outcome: worker acknowledgements remain recordable after it
+      // (drain-delivered amendments may still be incorporated), and an outcome
+      // may still be recorded for the work the attempt finished.
+      attempt.admissionClosed = { at: env.at, seq: env.seq };
+      break;
+    }
+
     case "attempt.outcome": {
       const attempt = requireAttempt(state, env.jobId, env.attemptId, env.kind);
       if (attempt.phase !== "started") {
@@ -850,8 +876,19 @@ function applyEvent(state, env) {
 
     case "amendment.submitted": {
       const job = requireJob(state, env.jobId);
-      requireAttempt(state, env.jobId, env.attemptId, env.kind);
+      const attempt = requireAttempt(state, env.jobId, env.attemptId, env.kind);
       const { amendmentId, revision } = payload;
+      // Delivery admission is serialized with receiver closure in THIS record:
+      // once admission is closed the submission is refused, so a late accepted
+      // submission cannot disappear as a successful delivery. The revision, if
+      // one was already recorded for it, remains in the record and the caller
+      // reports the refusal honestly.
+      if (attempt.admissionClosed) {
+        throw fail(
+          "invalid-transition",
+          `receiver admission on attempt '${env.attemptId}' is closed; amendment '${amendmentId}' cannot be admitted for delivery there`,
+        );
+      }
       assertIdentifier(amendmentId, "payload.amendmentId");
       if (!Number.isInteger(revision)) throw fail("invalid-event", "amendment.submitted requires an integer payload.revision");
       if (job.amendments[amendmentId]) {
@@ -1091,6 +1128,7 @@ function attemptView(state, job, attempt) {
       fatal: entry.payload.fatal === true,
     })),
     cancelIntent: attempt.cancelIntent ? { at: attempt.cancelIntent.at, seq: attempt.cancelIntent.seq, reason: attempt.cancelIntent.reason } : null,
+    admissionClosed: attempt.admissionClosed ? { at: attempt.admissionClosed.at, seq: attempt.admissionClosed.seq } : null,
     outcome: attempt.outcome ? outcomeView(state, attempt.outcome) : null,
     acknowledgements: attempt.acknowledgements.map((ack) => ({ revision: ack.revision, at: ack.at, seq: ack.seq })),
   };

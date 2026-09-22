@@ -786,6 +786,11 @@ function workerIsolationEnv(env) {
   // still scrubbed defensively so an inherited value cannot reach a worker.
   delete childEnv.QQ_RESEARCHER_PROVIDER;
   delete childEnv.QQ_WORKFLOW_PROVIDER;
+  // Runner communication binding: scrubbed so an inherited value can never
+  // enable communication for a launch that did not explicitly opt in (the
+  // binding names an exact attempt; inheriting it across launches would bind
+  // the wrong session). buildPiWorkerLaunch re-adds it deliberately.
+  delete childEnv.QQ_WORKFLOW_COMMUNICATION;
   return childEnv;
 }
 
@@ -876,6 +881,14 @@ function buildPiWorkerLaunch({ seat, cwd, prompt, env, resolved, mcpEnv }) {
   if (seat === "runner") {
     childEnv.QQ_RUNNER_ID = String(runnerId);
     childEnv.QQ_RUNNER_RESULT_FILE = String(resultFile);
+  }
+  // Runner communication is re-added explicitly, never inherited: presence
+  // alone does not enable anything. The adapter performs the authoritative
+  // validation (a malformed binding, or a binding on a seat other than the
+  // runner, refuses with exit 2 before any process is spawned or any provider
+  // traffic happens).
+  if (typeof env.QQ_WORKFLOW_COMMUNICATION === "string" && env.QQ_WORKFLOW_COMMUNICATION.trim() !== "") {
+    childEnv.QQ_WORKFLOW_COMMUNICATION = env.QQ_WORKFLOW_COMMUNICATION;
   }
   const { key } = resolveWorkerApiKey(resolved, { env });
   if (key) childEnv[resolved.envKey] = key;
