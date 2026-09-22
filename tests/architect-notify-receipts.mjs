@@ -272,8 +272,8 @@ assert.equal(crashRecovery.delivery.replayed[0].reason, "receipt-absent");
 assert.equal(crashRecovery.delivery.replayed[0].previousState, "queued");
 assert.equal(crashRecovery.delivery.uncertain.length, 0);
 assert.equal(crashRecovery.delivery.deferred.length, 0);
-assert.equal(readJob(stateDir, crashDispatch.jobId).delivery.state, "delivered", "the idle replay starts a turn");
-assert.equal(readNotification(stateDir, crashEventId).state, "delivered");
+assert.equal(readJob(stateDir, crashDispatch.jobId).delivery.state, "queued", "idle replay awaits a session receipt");
+assert.equal(readNotification(stateDir, crashEventId).state, "queued");
 assert.equal(crashPi.sent.filter((entry) => entry.kind === "user").length, 1, "the reopened session is woken once");
 assert.ok(crashPi.sent.find((entry) => entry.kind === "user").content.includes("CRASH-BEFORE-DRAIN-FINDINGS"));
 assert.ok(readReport(stateDir, crashJob.terminal.reportId).text.includes("CRASH-BEFORE-DRAIN-FINDINGS"), "the report survives the crash");
@@ -532,8 +532,8 @@ assert.equal(foreignTransport.delivered.some((notification) => notification.jobI
 assert.equal(readJob(stateDir, foreignDispatch.jobId).delivery.state, "queued", "a foreign record is not mutated either");
 
 // ---------------------------------------------------------------------------
-// R6. The idle branch is unchanged: a turn is started, the record says delivered
-//     with the turn-start receipt, and the exact session entry confirms it.
+// R6. Idle wake invocation remains queued until an exact session entry proves
+//     retention. A void API call cannot establish a turn-start receipt.
 // ---------------------------------------------------------------------------
 const idleKey = "agent-receipts-idle";
 const idlePi = piRuntimeDouble({ idle: true, sessionFile: join(root, "pi-idle.jsonl") });
@@ -545,10 +545,10 @@ const idleDispatch = idleWorkflow.dispatchRunner({ task: "idle wakeup" });
 const idleSettled = await waitForJobTerminal(idleWorkflow.stateDir, idleDispatch.jobId, { requireDelivery: true });
 const idleJob = readJob(stateDir, idleDispatch.jobId);
 const idleEventId = completedEventId(idleJob);
-assert.equal(idleSettled.delivery.state, "delivered", "an idle session starts a turn");
+assert.equal(idleSettled.delivery.state, "queued", "idle invocation waits for its durable receipt");
 const idleRecord = readNotification(stateDir, idleEventId);
-assert.equal(idleRecord.state, "delivered");
-assert.equal(idleRecord.receipt.kind, "turn-started", "the idle receipt names its basis instead of implying consumption");
+assert.equal(idleRecord.state, "queued");
+assert.equal(idleRecord.receipt, null, "invoking the fire-and-forget API is not a receipt");
 const wakeText = idlePi.sent.find((entry) => entry.kind === "user").content;
 assert.ok(wakeText.includes("IDLE-RECEIPT-FINDINGS"));
 
@@ -556,7 +556,7 @@ assert.ok(wakeText.includes("IDLE-RECEIPT-FINDINGS"));
 await idlePi.wakeUser(wakeText);
 await idle.ticks.flush();
 const confirmed = readNotification(stateDir, idleEventId);
-assert.equal(confirmed.state, "delivered", "confirmation never changes a delivered state");
+assert.equal(confirmed.state, "delivered", "the observed session entry advances queued to delivered");
 assert.equal(confirmed.receipt.kind, "session-user-message");
 assert.equal(confirmed.receipt.entryId, idlePi.entries.at(-1).id);
 assert.equal(confirmed.acknowledgedAt >= confirmed.deliveryAt, true);
@@ -870,7 +870,7 @@ assert.deepEqual(rawShapeRecovery.delivery.replayed, [], "a raw completion entry
 assert.equal(rawShapeRecovery.delivery.reconciled.length, 1);
 assert.equal(rawShapeRecovery.delivery.reconciled[0].evidence, "legacy-content-correspondence");
 assert.equal(readJob(stateDir, rawShapeDispatch.jobId).delivery.state, "delivered");
-assert.equal(readNotification(stateDir, completedEventId(rawShapeJob)).receipt.copies, 1, "a user message is not completion evidence");
+assert.equal(readNotification(stateDir, completedEventId(rawShapeJob)).receipt.copies, 1, "ordinary user text does not add copies to labelled completion evidence");
 assert.equal(rawShapeTransport.delivered.length, 0);
 
 // job B: the same completion was retained twice (the old release replayed its own
@@ -1443,3 +1443,43 @@ assert.equal(readJob(stateDir, defaultTimerDispatch.jobId).delivery.state, "queu
 assert.equal(defaultTimerPi.sent.filter((entry) => entry.kind === "user" || entry.kind === "message").length, 1);
 
 console.log("architect completion receipt + recovery tests passed");
+
+// Idle crash gap, including an old release's explicit confirmed:false receipt.
+// This is a runtime double of the API acceptance boundary; installed-Pi tests
+// separately prove the real ordinary/reopened wake and report path.
+for (const legacyUnconfirmed of [false, true]) {
+  const key = `idle-gap-${legacyUnconfirmed}`;
+  const beforePi = piRuntimeDouble({ idle: true, sessionFile: join(root, `${key}.jsonl`) });
+  const before = buildExtension({ sessionKey: key, pi: beforePi, response: 'IDLE-GAP-FINDINGS' });
+  await callHandlers(beforePi, 'session_start', { reason: 'startup' }, beforePi.ctx);
+  const wf = before.extension.ensureWorkflow();
+  const dispatched = wf.dispatchRunner({ task: 'idle acceptance crash gap' });
+  await waitForJobTerminal(stateDir, dispatched.jobId, { requireDelivery: true });
+  const job = readJob(stateDir, dispatched.jobId), eventId = completedEventId(job);
+  assert.equal(job.delivery.state, 'queued');
+  assert.equal(acknowledgeDelivery({stateDir,eventId,jobId:job.id,receipt:{confirmed:false}}).reason, 'unconfirmed-receipt');
+  assert.equal(beforePi.entries.length, 0, 'the void API return has no durable entry');
+  if (legacyUnconfirmed) {
+    const receipt = { kind: 'turn-started', eventId, confirmed: false, at: Date.now() };
+    writeJob(stateDir, { ...job, delivery: { ...job.delivery, state: 'delivered', receipt } });
+    const path = notificationPath(stateDir, eventId);
+    const raw = JSON.parse(readFileSync(path, 'utf8'));
+    writeFileSync(path, JSON.stringify({ ...raw, state: 'delivered', receipt }));
+    assert.equal(readNotification(stateDir, eventId).state, 'queued', 'legacy unconfirmed receipt is not delivery');
+  }
+  const afterPi = piRuntimeDouble({ idle: true, sessionFile: join(root, `${key}.jsonl`) });
+  const after = buildExtension({ sessionKey: key, pi: afterPi });
+  await callHandlers(afterPi, 'session_start', { reason: 'startup' }, afterPi.ctx);
+  await after.ticks.flush();
+  const recovered = await after.extension.whenReady();
+  assert.equal(recovered.delivery.replayed.filter(entry => entry.jobId === job.id).length, 1);
+  assert.equal(afterPi.sent.filter(entry => entry.kind === 'user').length, 1);
+  const repeat = await after.extension.ensureWorkflow().recoverDeliveries({ transport: after.extension.transport, evidence: after.extension.sessionEvidence(afterPi.ctx) });
+  assert.equal(repeat.delivery.replayed.length, 0, 'pending live invocation is not duplicated');
+  await afterPi.wakeUser(afterPi.sent.find(entry => entry.kind === 'user').content);
+  await after.ticks.flush();
+  assert.equal(readJob(stateDir, job.id).delivery.state, 'delivered');
+  assert.equal(readNotification(stateDir, eventId).receipt.kind, 'session-user-message');
+  if (legacyUnconfirmed) assert.equal(readNotification(stateDir, eventId).legacyUnconfirmedReceipt.confirmed, false, 'historical evidence retained');
+}
+console.log('PASS idle wake crash gap: invocation is not a receipt; fresh and legacy unconfirmed events recover once and acknowledge from session evidence');

@@ -367,8 +367,8 @@ await callHandlers(deliveryPi, "session_start", { reason: "startup" }, idleCtx);
 await callHandlers(deliveryPi, "message_end", { message: { role: "user" } }, idleCtx);
 
 const idleDelivery = await deliveryExtension.transport.deliver({ eventId: "runner:1:terminal", text: "runner finished" });
-assert.equal(idleDelivery.state, "delivered");
-assert.equal(idleDelivery.receipt.kind, "turn-started", "the idle receipt names its basis: pi started a turn for this text");
+assert.equal(idleDelivery.state, "queued", "idle invocation has no receipt yet");
+assert.equal(idleDelivery.receipt, undefined, "a void Pi call is not evidence of a retained message");
 assert.equal(deliveryPi.sent.at(-1).kind, "user", "an idle completion starts a turn");
 assert.equal(deliveryPi.sent.at(-1).content, "runner finished");
 
@@ -427,7 +427,7 @@ assert.equal(deliveryPending(stateDir, readinessDispatch.jobId), true, "the unde
 const readyRecovery = await becomeReady({ pi: awaitingPi, extension: awaitingExtension, scheduled: awaitingScheduled });
 assert.equal(awaitingExtension.state.sessionReady, true, "the readiness tick opens delivery");
 assert.deepEqual(readyRecovery.delivery.replayed.map((entry) => entry.jobId), [readinessDispatch.jobId], "the readiness tick replays the pending completion");
-assert.equal(readJob(stateDir, readinessDispatch.jobId).delivery.state, "delivered");
+assert.equal(readJob(stateDir, readinessDispatch.jobId).delivery.state, "queued");
 assert.equal(awaitingExtension.state.operatorActive, false, "the operator never spoke in this session");
 assert.ok(awaitingPi.sent.some((entry) => entry.kind === "user" && entry.content.includes("readiness findings")), "an idle reopened session is woken by the recovered completion");
 assert.equal(awaitingPi.sent.filter((entry) => entry.kind === "user").length, 1, "the completion is delivered exactly once");
@@ -492,7 +492,7 @@ assert.ok(recoveredState, "a startup session triggers completion recovery");
 assert.equal(restartExtension.state.recoveries.at(-1).reason, "startup", "recovery records the reason the runtime emitted");
 assert.equal(restartExtension.state.operatorActive, false, "recovery does not wait for the operator to speak");
 assert.ok(recoveredState.delivery.replayed.some((entry) => entry.jobId === orphanDispatch.jobId), "the undelivered result is replayed to its owning session");
-assert.equal(readJob(stateDir, orphanDispatch.jobId).delivery.state, "delivered");
+assert.equal(readJob(stateDir, orphanDispatch.jobId).delivery.state, "queued");
 assert.ok(restartPi.sent.some((entry) => entry.kind === "user" && entry.content.includes("orphaned findings")), "the recovered completion wakes the reopened idle session");
 assert.equal(
   readFileSync(capturePath, "utf8").includes('"kind":"recovery"'),
