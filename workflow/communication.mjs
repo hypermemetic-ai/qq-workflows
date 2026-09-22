@@ -48,9 +48,12 @@
 
 import { spawn as nodeSpawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { createConnection } from "node:net";
 import { chmodSync, existsSync, mkdirSync, statSync, lstatSync, unlinkSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+
+import { withRelayProcessLock, registerRelayHolder, removeRelayHolder, remainingRelayHolders } from "./relay-process-holders.mjs";
 
 import {
   JOB_ROLES,
@@ -466,6 +469,7 @@ async function probeRelayHealth(socketPath, clientModule) {
  *   client()  — the lazily constructed installed RelayClient;
  *   inspect() — the relay health view;
  *   release({force}) — drops one hold; the LAST hold stops an OWNED child
+ *     only when no other live or unknown process/receiver hold remains
  *     gracefully (SIGTERM, bounded, then SIGKILL) and never deletes the state
  *     directory: pending durable obligations survive a release and a restart.
  *     A `shared` handle (a live relay on our private directory that this
@@ -489,7 +493,13 @@ function serializeRelayRuntime(key, operation) {
 export async function acquireRelayRuntime(options = {}) {
   if (!options.stateDir || !isAbsolute(options.stateDir)) throw fail("invalid-arguments", "stateDir must be an absolute path");
   const stateDir = resolve(options.stateDir);
-  return serializeRelayRuntime(stateDir, () => acquireRelayRuntimeUnlocked({ ...options, stateDir }));
+  return serializeRelayRuntime(stateDir, async () => {
+    try {
+      return await acquireRelayRuntimeUnlocked({ ...options, stateDir });
+    } catch (error) {
+      return { ok: false, code: "unavailable", reason: `relay runtime acquisition failed: ${error.message}` };
+    }
+  });
 }
 
 async function acquireRelayRuntimeUnlocked({
@@ -527,6 +537,7 @@ async function acquireRelayRuntimeUnlocked({
     return { ok: false, code: "refused", reason: error.message };
   }
 
+  return withRelayProcessLock(dir, async () => {
   const socketPath = relaySocketPath(stateDir);
   const cached = acquireRelayRuntime.cache?.get(stateDir);
   if (cached && cached.owned && !cached.isReleased && relayProcessAlive(cached)) {
@@ -547,6 +558,9 @@ async function acquireRelayRuntimeUnlocked({
       });
       return { ok: true, relay: shared, shared: true };
     }
+    if (!(await socketProvenDead(socketPath))) {
+      return { ok: false, code: "refused", reason: "relay socket has a live or unobservable listener which did not prove qq-relay health; refusing to replace it" };
+    }
     // Dead socket inside our own private directory: replace it. The journal
     // state (sqlite) persists, so previously recorded obligations remain.
     try {
@@ -556,7 +570,7 @@ async function acquireRelayRuntimeUnlocked({
     }
   }
 
-  const child = spawnImpl(install.bin, ["serve", "--state-dir", dir], { stdio: ["ignore", "pipe", "pipe"], env });
+  const child = spawnImpl(install.bin, ["serve", "--state-dir", dir], { stdio: ["ignore", "pipe", "pipe"], detached: true, env });
   const outputTail = [];
   child.stdout?.on("data", (chunk) => pushTail(outputTail, chunk));
   child.stderr?.on("data", (chunk) => pushTail(outputTail, chunk));
@@ -565,6 +579,7 @@ async function acquireRelayRuntimeUnlocked({
     try { child.kill("SIGKILL"); } catch { /* already gone */ }
     return { ok: false, code: "unavailable", reason: `${ready.reason}${outputTail.length ? ` (relay output: ${tailText(outputTail)})` : ""}` };
   }
+  try {
   const module = await loadRelayClientModule(install.clientModule);
   const handle = makeRelayHandle({
     cacheKey: stateDir, stateDir: dir, socketPath, pid: child.pid ?? null, owned: true,
@@ -573,6 +588,21 @@ async function acquireRelayRuntimeUnlocked({
   acquireRelayRuntime.cache ??= new Map();
   acquireRelayRuntime.cache.set(stateDir, handle);
   return { ok: true, relay: handle, shared: false };
+  } catch (error) {
+    try { child.kill("SIGKILL"); } catch { /* only our just-spawned child */ }
+    throw error;
+  }
+  });
+}
+
+function socketProvenDead(socketPath) {
+  return new Promise(resolve => {
+    const socket = createConnection(socketPath);
+    const finish = dead => { socket.destroy(); resolve(dead); };
+    socket.once("connect", () => finish(false));
+    socket.once("error", error => finish(error.code === "ECONNREFUSED" || error.code === "ENOENT"));
+    socket.setTimeout(500, () => finish(false));
+  });
 }
 
 function pushTail(list, chunk) {
@@ -613,7 +643,8 @@ async function waitForRelayReady({ child, socketPath, install, deadline }) {
 
 function makeRelayHandle({ cacheKey, stateDir, socketPath, pid, owned, clientFactory, releaseGraceMs, child = null }) {
   let clientInstance = null;
-  let refCount = owned ? 1 : 0;
+  let refCount = 1;
+  const holderPath = registerRelayHolder(stateDir);
   let released = false;
   const handle = {
     stateDir,
@@ -636,13 +667,22 @@ function makeRelayHandle({ cacheKey, stateDir, socketPath, pid, owned, clientFac
       return client.inspect({ view: "health" });
     },
     release({ force = false } = {}) {
-      return serializeRelayRuntime(cacheKey, async () => {
+      return serializeRelayRuntime(cacheKey, () => withRelayProcessLock(stateDir, async () => {
         if (released) return { released: false, reason: "relay already released" };
-        if (!owned) return { released: false, reason: "shared relay: this handle does not own the child and never kills it" };
         refCount -= 1;
         if (refCount > 0 && !force) return { released: false, reason: `shared by ${refCount} holder(s) in this process` };
         released = true;
+        removeRelayHolder(holderPath);
         if (acquireRelayRuntime.cache?.get(cacheKey) === handle) acquireRelayRuntime.cache.delete(cacheKey);
+        if (!owned) return { released: false, holdReleased: true, reason: "shared relay: this handle does not own the child and never kills it" };
+        const remaining = remainingRelayHolders(stateDir);
+        if (remaining.length) {
+          // Other process incarnations (including bound Pi receivers) still
+          // need this socket. Relinquish local ownership without terminating
+          // the service or holding this coordinator's event loop open.
+          child?.unref(); child?.stdout?.unref?.(); child?.stderr?.unref?.();
+          return { released: false, holdReleased: true, reason: `retained for ${remaining.length} other process holder(s)` };
+        }
         // Graceful shutdown first (the relay removes its own socket on a clean
         // exit), then bounded escalation — for OUR child only.
         try { child?.kill("SIGTERM"); } catch { /* already gone */ }
@@ -656,7 +696,7 @@ function makeRelayHandle({ cacheKey, stateDir, socketPath, pid, owned, clientFac
         }
         handle.exitCode = child?.exitCode ?? null;
         return { released: true, forced: child ? child.signalCode === "SIGKILL" : false };
-      });
+      }));
     },
     get isReleased() {
       return released;
@@ -665,6 +705,7 @@ function makeRelayHandle({ cacheKey, stateDir, socketPath, pid, owned, clientFac
   if (child) {
     child.on("exit", (code) => {
       handle.exitCode = code;
+      if (!released) void withRelayProcessLock(stateDir, () => removeRelayHolder(holderPath)).catch(() => {});
       if (acquireRelayRuntime.cache?.get(cacheKey) === handle) acquireRelayRuntime.cache.delete(cacheKey);
     });
   }

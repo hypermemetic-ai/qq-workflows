@@ -1,3 +1,5 @@
+import { dirname as relayDirectory } from "node:path";
+import { holdRelayForReceiver } from "./relay-process-holders.mjs";
 // Production Pi receiver for workflow runner communication.
 //
 // This is the receiver the runner integration loads INSIDE the worker's Pi
@@ -216,6 +218,7 @@ async function loadInstalledRelayClient({ installRoot, env }) {
  * `sleep`, `now`.
  */
 export function createCommunicationReceiver(pi, { binding, env = process.env, client = null, sendMessage = null, injectedMessages = null, sleep = (ms) => new Promise((done) => setTimeout(done, ms)) } = {}) {
+  let releaseTransportHold = null;
   let active = false;
   let epoch = 0;
   let current;
@@ -335,14 +338,22 @@ export function createCommunicationReceiver(pi, { binding, env = process.env, cl
   }
 
   async function start(_event, ctx) {
-    currentContext = ctx;
+    const localEpoch = ++epoch;
+    active = false;
     const sessionId = ctx.sessionManager?.getSessionId?.();
     if (typeof sessionId !== "string" || sessionId === "") return;
     if (!validSessionId(sessionId)) throw new Error("host supplied a non-canonical session ID");
+    if (!client && !releaseTransportHold) {
+      const release = await holdRelayForReceiver(relayDirectory(binding.socketPath));
+      // A shutdown/new session while acquiring the hold cannot resurrect an
+      // old receiver or leak its newly acquired transport reference.
+      if (localEpoch !== epoch) { await release(); return; }
+      releaseTransportHold = release;
+    }
+    if (localEpoch !== epoch) return;
+    currentContext = ctx;
     current = { session_id: sessionId, project: projectSlugForChange(binding.changeId), role: binding.role, pane: null };
     active = true;
-    epoch += 1;
-    const localEpoch = epoch;
     void receiver(localEpoch);
   }
 
@@ -352,6 +363,7 @@ export function createCommunicationReceiver(pi, { binding, env = process.env, cl
     dedup.clear();
     current = undefined;
     currentContext = undefined;
+    if (releaseTransportHold) { const release = releaseTransportHold; releaseTransportHold = null; await release(); }
   }
 
   return {
