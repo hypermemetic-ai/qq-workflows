@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { createWorkflow } from '../workflow/operations.mjs';
 import { readJob, writeJob } from '../workflow/jobs.mjs';
 import { tempRepo, fakeChild, agentTransport, waitForJobTerminal } from './support/architect-fixtures.mjs';
@@ -12,7 +13,10 @@ const owner = createWorkflow({ root, env, sessionKey: 'owner', notifierTransport
   spawnFn: () => (child = fakeChild()) });
 const one = owner.dispatchRunner({ task: 'survive loss of callbacks' });
 const record = readJob(owner.stateDir, one.jobId);
-assert.ok(record.resultFile.startsWith(owner.stateDir));
+// This fixture uses the legacy harness. Pi's durable state path is covered
+// with the installed runtime in runner-reload-live.mjs.
+assert.equal(record.launchPlan.harness, 'deepseek-minimal');
+assert.equal(record.resultFile, join(tmpdir(), `qq-runner-result-${one.jobId}.json`));
 child.stdout.write(JSON.stringify({step_update:{step_type:'tool',tool_name:'read',state:'ACTIVE'}})+'\n');
 assert.equal(owner.checkRunner({jobId:one.jobId}).telemetry.state, 'active');
 // Simulate loss of the original workflow instance, with a real result transport
