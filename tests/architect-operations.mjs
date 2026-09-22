@@ -4,12 +4,13 @@
 // with two simultaneous Architect agents, restart recovery, and worker pins.
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createWorkflow, interpretRunnerEvent, WORKFLOW_TOOLS, WORKFLOW_TOOL_NAMES } from "../workflow/operations.mjs";
 import { readJob, writeJob } from "../workflow/jobs.mjs";
 import { readReport } from "../workflow/reports.mjs";
+import { resolveRunnerTransport as resolveLegacyRunnerTransport } from "../prototype/deepseek-minimal/adapter/worker.mjs";
 import {
   DEFAULT_WORKER_CONFIG_PATH,
   planFingerprint,
@@ -64,6 +65,24 @@ await agentB.updateTicket({ content: "# Ticket\n\n## Problem\n\nsecond agent tic
 assert.match((await agentB.readTicket({ section: "Problem" })).content, /second agent ticket/);
 assert.match((await agentA.readTicket({ section: "Problem" })).content, /app-selectable architect/);
 assert.notEqual(agentA.session().sessionId, agentB.session().sessionId);
+
+// The legacy adapter still consumes its existing temp-root transport. Exercise
+// native launch with durable workflow state OUTSIDE tmpdir, then validate the
+// actual launch environment with that adapter's real preflight (no inference).
+{
+  const homeFixture = mkdtempSync(join(homedir(), ".qq-legacy-result-test-"));
+  const launches = [];
+  try {
+    const legacy = createWorkflow({ root, sessionKey: "legacy-home-owner",
+      env: { ...env, QQ_WORKFLOW_STATE_DIR: join(homeFixture, "state") },
+      spawnFn: runnerSpawner({ response: "legacy result", record: launches }) });
+    const started = legacy.dispatchRunner({ task: "Check legacy result compatibility." });
+    await waitForJobTerminal(legacy.stateDir, started.jobId);
+    const transport = resolveLegacyRunnerTransport(launches[0].options.env);
+    assert.equal(transport.runnerId, started.jobId);
+    assert.equal(transport.resultFile, join(tmpdir(), `qq-runner-result-${started.jobId}.json`));
+  } finally { rmSync(homeFixture, { recursive: true, force: true }); }
+}
 
 // ---------------------------------------------------------------------------
 // O2. Runner dispatch -> full report retrieval -> completion delivery.

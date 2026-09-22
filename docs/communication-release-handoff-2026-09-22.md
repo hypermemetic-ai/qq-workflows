@@ -4,7 +4,7 @@ Operational handoff for the landed communication implementation.
 
 ## Release and ownership
 
-- Active executable release: `bd15d4f42f55cf7b339f2aa5fd3e9e05444be82d`. PRs 116–126 contain the implementation and the final production-path repair. The full 66-test suite and independent reviews passed. This documentation commit does not change the active executable release.
+- Runner/role acceptance baseline release: `bd15d4f42f55cf7b339f2aa5fd3e9e05444be82d`. PRs 116–126 contain the implementation and the final production-path repair. The full 66-test suite and independent reviews passed. The current active release and rollback commands are recorded in the durable project checkpoint.
 - Existing Architect owner: `0e74f128-8d65-4fe3-a527-c46e48d09f6f`; model unchanged. Worker roles remain externally configured Pi/MiMo v2.6-pro/high.
 
 ## Current-owner runner acceptance
@@ -19,7 +19,7 @@ Operational handoff for the landed communication implementation.
 ## Communication semantics
 
 - Native/MCP runners and managed implementer/reviewer attempts use one change record, the original relay, durable report-before-notify, scoped updates, and cancellation-before-signal. Submission, transport receipt, acknowledgement, and success remain distinct.
-- Pending B after result A remains unresolved; no automatic relaunch. Recovery never relaunches an interrupted worker; unresolved instructions need an explicit follow-up phase. Legacy/manual communication limitations are explicit. External queue acceptance alone is not model receipt; no exactly-once external queue claim.
+- Pending B after result A remains unresolved; no automatic relaunch. Recovery never relaunches an interrupted worker; unresolved instructions need an explicit follow-up phase. Legacy/manual communication limitations are explicit; non-Pi dispatch retains its existing temporary result transport. External queue acceptance alone is not model receipt; no exactly-once external queue claim.
 
 ## Operations
 
