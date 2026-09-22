@@ -7,6 +7,9 @@ import {join} from 'node:path';
 import {localPiProvider} from './support/local-pi-provider.mjs';
 import {createWorkflow} from '../workflow/operations.mjs';
 import {readJob,processFingerprint} from '../workflow/jobs.mjs';
+import {loadPaseoTreeTerminator} from './support/paseo-rpc.mjs';
+const treeStop=process.env.QQ_TEST_PASEO_TREE==='1'?await loadPaseoTreeTerminator():null;
+if(process.env.QQ_TEST_PASEO_TREE==='1'&&!treeStop){console.log('SKIP managed execution tree teardown: installed Paseo unavailable');process.exit(0);}
 const owner='3f5d2a88-0ce8-4dce-86a8-f2802c079777';
 const phase='bf1ec269-2cab-4a54-8e83-342b90c2f8d8';
 let entered=false;let release;const gate=new Promise(done=>release=done);
@@ -34,7 +37,12 @@ try {
  await wait(()=>existsSync(dispatchPath)&&entered);
  jobId=JSON.parse(readFileSync(dispatchPath,'utf8')).jobId;
  const before=readJob(fixture.env.QQ_WORKFLOW_STATE_DIR,jobId);assert.ok(before.process?.pid);assert.notEqual(before.process.pid,parent.pid);
- const exited=new Promise(done=>parent.once('exit',done));parent.kill('SIGKILL');await exited;release();
+ const exited=new Promise(done=>parent.once('exit',done));
+ if(treeStop)await treeStop(parent,{gracefulTimeoutMs:2000,forceTimeoutMs:1000});else parent.kill('SIGKILL');
+ await exited;
+ await new Promise(done=>setTimeout(done,100));
+ assert.equal(processFingerprint({pid:before.process.pid})?.startTicks,before.process.fingerprint.startTicks,'owned host survives coordinator teardown');
+ release();
  await wait(()=>readJob(fixture.env.QQ_WORKFLOW_STATE_DIR,jobId)?.terminal);
  const notifications=[];
  const wf=createWorkflow({root:fixture.root,sessionKey:owner,env:fixture.env,notifierTransport:{name:'fixture',deliver:async note=>{assert.ok(wf.readReport({reportId:note.reportId}).ok);notifications.push(note);return {state:'delivered',receipt:{kind:'fixture',confirmed:true}};}}});
@@ -46,7 +54,7 @@ try {
  for(const attempt of report.result.childAttempts){assert.equal(attempt.status,'completed');assert.ok(wf.readReport({reportId:attempt.reportId}).ok);}
  assert.equal(notifications.length,1);await wf.recoverDeliveries();assert.equal(notifications.length,1);
  assert.equal(fixture.calls,4,'no relaunch or repeated implementation/review');
- console.log('PASS actual managed pipeline + installed Pi: coordinator dies mid-implementation, host completes implementer/reviewer/local Git landing, role reports and terminal report retrieved, notification replay deduped');
+ console.log(`PASS actual managed pipeline + installed Pi: coordinator ${treeStop?'Paseo recursive teardown':'PID death'} mid-implementation, host completes implementer/reviewer/local Git landing, role reports and terminal report retrieved, notification replay deduped`);
 }finally{
  release();if(parent.exitCode===null&&parent.signalCode===null)parent.kill('SIGTERM');
  if(jobId){const job=readJob(fixture.env.QQ_WORKFLOW_STATE_DIR,jobId);const known=job?.process?.fingerprint;const current=processFingerprint({pid:job?.process?.pid});if(known&&current&&known.startTicks===current.startTicks&&known.cmdlineHash===current.cmdlineHash)try{process.kill(current.pid,'SIGTERM');}catch{}}
