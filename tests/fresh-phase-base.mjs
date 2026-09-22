@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict';
+import {execFileSync} from 'node:child_process';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync} from 'node:fs';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+import {createWorktree} from '../workflow/git.mjs';
+const root=mkdtempSync(join(tmpdir(),'qq-fresh-base-'));
+const producer=join(root,'producer'),remote=join(root,'remote.git'),checkout=join(root,'checkout');
+const git=(cwd,...args)=>execFileSync('git',args,{cwd,encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
+const previous=process.env.ARCHITECT_WORKTREES_DIR;
+process.env.ARCHITECT_WORKTREES_DIR=join(root,'worktrees');
+const ticket=id=>{mkdirSync(join(checkout,'.architect','tickets'),{recursive:true});writeFileSync(join(checkout,'.architect','tickets',id+'.md'),'Approved isolated phase '+id)};
+try {
+  git(root,'init','--bare','--initial-branch=main',remote);
+  git(root,'init','--initial-branch=main',producer);git(producer,'config','user.name','Fixture');git(producer,'config','user.email','fixture@example.invalid');
+  writeFileSync(join(producer,'base.txt'),'old base\n');git(producer,'add','.');git(producer,'commit','-m','initial');git(producer,'remote','add','origin',remote);git(producer,'push','-u','origin','main');
+  git(root,'clone',remote,checkout);git(checkout,'config','user.name','Fixture');git(checkout,'config','user.email','fixture@example.invalid');
+  const old=git(checkout,'rev-parse','HEAD');
+  writeFileSync(join(checkout,'base.txt'),'stashed work\n');git(checkout,'stash','push','-m','preserve fixture stash');const stash=git(checkout,'rev-parse','refs/stash');
+  writeFileSync(join(checkout,'base.txt'),'unrelated dirty root work\n');writeFileSync(join(checkout,'untracked.txt'),'keep me\n');
+  writeFileSync(join(producer,'upstream.txt'),'new upstream code\n');git(producer,'add','.');git(producer,'commit','-m','advance remote');git(producer,'push');
+  const fresh=git(producer,'rev-parse','HEAD');assert.equal(git(checkout,'rev-parse','origin/main'),old,'fixture has genuinely stale remote tracking ref');
+  ticket('new-phase');const created=await createWorktree(checkout,{kind:'open',sessionId:'new-phase'});
+  assert.equal(git(created.cwd,'rev-parse','HEAD'),fresh,'new phase must fetch and pin the actual remote default');
+  assert.deepEqual(created.baseSelection,{ref:'origin/main',sha:fresh,source:'fetched-remote-default'});
+  assert.equal(readFileSync(join(created.cwd,'upstream.txt'),'utf8'),'new upstream code\n');
+  assert.equal(git(checkout,'rev-parse','HEAD'),old,'stale root checkout is untouched');
+  assert.equal(readFileSync(join(checkout,'base.txt'),'utf8'),'unrelated dirty root work\n');
+  assert.equal(readFileSync(join(checkout,'untracked.txt'),'utf8'),'keep me\n');assert.equal(git(checkout,'rev-parse','refs/stash'),stash);
+  writeFileSync(join(created.cwd,'base.txt'),'unfinished preserved phase\n');writeFileSync(join(created.cwd,'pending.txt'),'unfinished new file\n');
+  ticket('pinned-phase');const pinned=await createWorktree(checkout,{kind:'open',sessionId:'pinned-phase',base:old});assert.equal(git(pinned.cwd,'rev-parse','HEAD'),old,'explicit approved base is preserved');
+  git(checkout,'remote','set-url','origin',join(root,'unavailable.git'));
+  const reused=await createWorktree(checkout,{kind:'open',sessionId:'new-phase'});assert.equal(reused.reused,true,'existing phase does not depend on remote availability');
+  assert.equal(readFileSync(join(reused.cwd,'base.txt'),'utf8'),'unfinished preserved phase\n');assert.equal(readFileSync(join(reused.cwd,'pending.txt'),'utf8'),'unfinished new file\n');
+  ticket('must-refuse');await assert.rejects(createWorktree(checkout,{kind:'open',sessionId:'must-refuse'}));
+  assert.throws(()=>git(checkout,'rev-parse','--verify','refs/heads/architect/open/mustrefu'),'failed verification creates no phase branch');
+  assert.equal(git(checkout,'rev-parse','HEAD'),old);assert.equal(git(checkout,'rev-parse','refs/stash'),stash);
+  console.log('PASS actual Git: fresh default base from stale dirty checkout, immutable explicit pin, preserved offline phase, fail closed on unavailable remote, root/stash untouched');
+}finally{
+  if(previous===undefined)delete process.env.ARCHITECT_WORKTREES_DIR;else process.env.ARCHITECT_WORKTREES_DIR=previous;
+  rmSync(root,{recursive:true,force:true});
+}
