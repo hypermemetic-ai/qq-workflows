@@ -656,6 +656,7 @@ export function createArchitectExtension(pi, options = {}) {
       env,
       notifierTransport: transport,
       executionLauncher,
+      runtimeContext: { extensionModule: import.meta.url },
     });
     return workflow;
   }

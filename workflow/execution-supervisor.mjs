@@ -3,7 +3,7 @@
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {mkdirSync,writeFileSync,openSync,closeSync} from 'node:fs';
-import {join,dirname} from 'node:path';
+import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {readJob,writeJob,processFingerprint,reconcileJob} from './jobs.mjs';
 
@@ -19,7 +19,7 @@ export function launchExecutionHost({stateDir,jobId,root,owner,kind,phaseId,base
   const log=openSync(join(dir,'host.log'),'a',0o600);
   let child;
   try {
-    child=spawnFn(process.execPath,[fileURLToPath(new URL('./execution-host.mjs',import.meta.url)),requestPath],{cwd:root,env,detached:true,stdio:['ignore','ignore',log]});
+    child=spawnFn(process.execPath,[fileURLToPath(new URL('./execution-host.mjs',import.meta.url)),requestPath],{cwd:root,env:{...env,QQ_WORKFLOW_STATE_DIR:stateDir},detached:true,stdio:['ignore','ignore',log]});
   } finally {closeSync(log);}
   const current=readJob(stateDir,jobId);
   if(!current.terminal)writeJob(stateDir,{...current,process:{pid:child.pid,spawnedAt:Date.now(),fingerprint:processFingerprint({pid:child.pid})},updatedAt:Date.now()});
@@ -29,7 +29,8 @@ export function launchExecutionHost({stateDir,jobId,root,owner,kind,phaseId,base
     const finish=()=>{
       if(settled)return;
       let current=readJob(stateDir,jobId);
-      onPhase?.(current?.phase ?? 'prepare');
+      // The host owns phase publication; a second parent writer could revive
+      // stale running state after terminal publication.
       if(current?.terminal || current?.status!=='running') {
         settled=true;clearInterval(timer);
         done({ok:current?.status==='completed',status:current?.status ?? 'interrupted',phase:current?.phase,reportId:current?.terminal?.reportId,error:current?.terminal?.error});

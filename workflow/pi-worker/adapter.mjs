@@ -84,6 +84,7 @@ import {
   parseCommunicationBinding,
   assertPiSessionId,
 } from "../communication.mjs";
+import { parseSeatResultBinding, writeSeatResult } from "../results.mjs";
 import { openChange } from "../change-record.mjs";
 import { loadPiSeatInstructions } from "./instructions.mjs";
 import { PiRpcClient, PiRpcError } from "./rpc.mjs";
@@ -711,6 +712,8 @@ async function runOneTurn(args, env) {
   const communication = resolveCommunicationLaunch({ seat: args.seat, env });
   // Runner identity and transport are validated before any work starts.
   const transport = args.seat === "runner" ? resolveRunnerTransport(env) : null;
+  const seatTransport = parseSeatResultBinding(env, args.seat);
+  if(seatTransport && communication.enabled && (seatTransport.jobId!==communication.binding.jobId || seatTransport.attemptId!==communication.binding.attemptId)) throw new Error("result binding does not match communication attempt");
 
   // The materialized worker settings must match the configured context policy:
   // a divergence would mean the runtime compacts under different rules than the
@@ -934,6 +937,16 @@ async function runOneTurn(args, env) {
         return { ok: false, code: "transport_rejected", summary };
       }
       summary.resultChars = finalText.length;
+    }
+    if (seatTransport) {
+      let revision=null;
+      if(communication.enabled) {
+        const state=openChange({stateDir:communication.binding.stateDir,changeId:communication.binding.changeId}).state;
+        const job=state.jobs[communication.binding.jobId];
+        const attempt=job.attempts[communication.binding.attemptId];
+        revision=attempt.acknowledgements.at(-1)?.revision ?? attempt.launchIntent.revision ?? job.pinnedRevision;
+      }
+      writeSeatResult(seatTransport,{response:finalText,revision});
     }
     // Publish only AFTER the authoritative result file is durable.
     emit({ type: "item.completed", item: { type: "agent_message", text: finalText } });

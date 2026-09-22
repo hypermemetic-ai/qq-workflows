@@ -791,6 +791,7 @@ function workerIsolationEnv(env) {
   // binding names an exact attempt; inheriting it across launches would bind
   // the wrong session). buildPiWorkerLaunch re-adds it deliberately.
   delete childEnv.QQ_WORKFLOW_COMMUNICATION;
+  delete childEnv.QQ_WORKER_RESULT_BINDING;
   return childEnv;
 }
 
@@ -867,6 +868,7 @@ function buildPiWorkerLaunch({ seat, cwd, prompt, env, resolved, mcpEnv }) {
     "--prompt", prompt,
   ];
   const childEnv = workerIsolationEnv(env);
+  if (mcpEnv?.QQ_WORKER_RESULT_BINDING) childEnv.QQ_WORKER_RESULT_BINDING = mcpEnv.QQ_WORKER_RESULT_BINDING;
   delete childEnv.CODEX_HOME;
   delete childEnv.QQ_WORKER_CODEX_HOME;
   // The worker's own pi config root: our explicit context policy plus in-place

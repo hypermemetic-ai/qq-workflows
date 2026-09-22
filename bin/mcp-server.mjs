@@ -40,6 +40,7 @@ import {
   validateRunnerResultPayload,
   readAuthoritativeRunnerResult as readAuthoritativeResultFromStore,
   renderRunnerFindings,
+  readSeatResult,
 } from "../workflow/results.mjs";
 import { routeNotification } from "../workflow/notify.mjs";
 import { saveReport } from "../workflow/reports.mjs";
@@ -2396,9 +2397,17 @@ export async function runChildSubagent(execution, { role, cwd, prompt, provider 
     }
   }
 
+  const seatAttemptId=randomUUID();
+  const seatJobId=randomUUID();
+  const seatResultDir=join(trackerStateDir(execution,{cwd}),"seat-results");
+  mkdirSync(seatResultDir,{recursive:true,mode:0o700});
+  const seatBinding={schema:1,role,jobId:seatJobId,attemptId:seatAttemptId,path:join(seatResultDir,`${seatJobId}-${seatAttemptId}.json`)};
+  const attempt={role,jobId:seatJobId,attemptId:seatAttemptId,resultFile:seatBinding.path,startedAt:Date.now(),status:"running"};
+  execution.childAttempts ??= [];
+  execution.childAttempts.push(attempt);
   let launch;
   try {
-    launch = buildCentralWorkerLaunch({ seat: role, cwd, prompt, env: process.env });
+    launch = buildCentralWorkerLaunch({ seat: role, cwd, prompt, env: process.env,mcpEnv:{QQ_WORKER_RESULT_BINDING:JSON.stringify(seatBinding)} });
   } catch (err) {
     return {
       ok: false,
@@ -2474,7 +2483,14 @@ export async function runChildSubagent(execution, { role, cwd, prompt, provider 
       execution.activeChild = null;
       execution.activeTool = null;
       const finalOutput = finishCleanOutput();
-      if (code === 0) {
+      if (code === 0 && launch.config.harness === "pi") {
+        const result=readSeatResult(seatBinding);
+        if(!result.ok){attempt.status="failed";resolvePromise({ok:false,output:finalOutput,error:{message:result.error,exitCode:code}});return;}
+        const report=saveReport(trackerStateDir(execution,{cwd}),{jobId:seatJobId,role,text:result.response});
+        Object.assign(attempt,{status:"completed",revision:result.revision,reportId:report.reportId,reportChars:report.chars});
+        resolvePromise({ok:true,output:result.response,reportId:report.reportId,revision:result.revision,jobId:seatJobId,attemptId:seatAttemptId});
+      } else if (code === 0) {
+        attempt.status="completed";
         resolvePromise({ ok: true, output: finalOutput });
       } else {
         resolvePromise({
@@ -2920,6 +2936,7 @@ async function runExecutionPipeline(execution) {
   execution.result = {
     verifiedStory: `Worktree ${wt.branch} successfully verified and landed.`,
     landingOutcome: landResult,
+    childAttempts: execution.childAttempts ?? [],
     implementerSummary: sanitizeHeadTail(implementerRes.output, { headLen: 2000, tailLen: 2000 }),
     reviewerSummary: reviewerSummary !== null ? sanitizeHeadTail(reviewerSummary, { headLen: 2000, tailLen: 2000 }) : null,
   };
@@ -3016,7 +3033,7 @@ export async function dispatchExecution(args = {}) {
       };
     }
     await notifyTerminal(execution, "execution");
-  });
+  }).finally(() => { execution.pipelineSettled = true; });
 
   return { ok: true, id, status: "running", phase: "implementing" };
 }
@@ -3041,8 +3058,10 @@ export async function checkExecution(args = {}) {
       trajectory: [...exec.trajectory],
       suspicion: null,
       stuckSuspect: false,
-      ...(exec.status === "completed" ? { result: exec.result } : {}),
-      ...(exec.status === "failed" ? { error: exec.error } : {}),
+      pipelineSettled: exec.pipelineSettled === true,
+      result: exec.result,
+      error: exec.error,
+      childAttempts: exec.childAttempts ?? [],
     };
   }
 

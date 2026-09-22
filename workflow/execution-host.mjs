@@ -23,7 +23,7 @@ export async function runExecutionHost(requestPath,{loadPipeline=()=>import('../
   const request=JSON.parse(readFileSync(requestPath,'utf8'));
   const {stateDir,jobId,owner,root,kind,phaseId,baseRef,launchId}=request;
   const job=readJob(stateDir,jobId);
-  if (!job || job.role !== 'execution' || job.workflow?.sessionKey !== owner || job.workflow?.root !== root || job.executionHost?.launchId !== launchId || job.executionHost?.requestPath !== resolve(requestPath)) throw new Error('execution host ownership mismatch');
+  if (!job || job.role !== 'execution' || job.workflow?.sessionKey !== owner || job.workflow?.root !== root || job.executionHost?.launchId !== launchId || job.executionHost?.requestPath !== resolve(requestPath) || job.kind !== kind || job.phaseId !== phaseId || (job.baseRef ?? null) !== (baseRef ?? null)) throw new Error('execution host ownership mismatch');
   if (job.terminal || job.cancellation) return job;
   // Spawn intent is durable before fork; do not run the pipeline until the
   // parent has published this host's observed process identity.
@@ -56,7 +56,7 @@ export async function runExecutionHost(requestPath,{loadPipeline=()=>import('../
       if (!current) throw new Error('execution record disappeared');
       if(current.cancellation && !cancelling) await cancel('cancellation intent');
       if(!current.terminal) writeJob(stateDir,{...current,phase:view.phase,updatedAt:Date.now(),executionHost:{...current.executionHost,pipelineId},telemetry:{source:'execution-host',lastObservedAt:Date.now(),activeTool:view.activeTool ?? null,trajectory:(view.trajectory ?? []).slice(-8)}});
-      if(view.status !== 'running') return publishExecutionResult({stateDir,jobId,result:{ok:view.status==='completed',status:view.status,phase:view.phase,result:view.result,error:view.error,pipelineId}});
+      if(view.status !== 'running' && view.pipelineSettled !== false) return publishExecutionResult({stateDir,jobId,result:{ok:view.status==='completed',status:view.status,phase:view.phase,result:view.result,error:view.error,childAttempts:view.childAttempts ?? [],pipelineId}});
       await new Promise(done=>setTimeout(done,500));
     }
   } catch(error) {

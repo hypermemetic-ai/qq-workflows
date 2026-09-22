@@ -14,7 +14,8 @@ const supervisor=pathToFileURL(new URL('../workflow/execution-supervisor.mjs',im
 const host=pathToFileURL(new URL('../workflow/execution-host.mjs',import.meta.url).pathname).href;
 const pipeline=join(root,'pipeline.mjs');
 writeFileSync(pipeline,`let started=0; export const dispatchExecution=async()=>{started=Date.now();return {id:'inner'};}; export const checkExecution=async()=>Date.now()-started<1000?{status:'running',phase:'reviewing'}:{status:'completed',phase:'landed',result:{evidence:'host survived parent'}};`);
-createJob({stateDir,id:'survive',role:'execution',workflow:{sessionKey:owner,root},cwd:root});
+createJob({stateDir,id:'survive',role:'execution',kind:'open',workflow:{sessionKey:owner,root},cwd:root});
+writeJob(stateDir,{...readJob(stateDir,'survive'),phaseId:'phase'});
 const driver=join(root,'parent.mjs');
 writeFileSync(driver,`import {spawn} from 'node:child_process';import {launchExecutionHost} from ${JSON.stringify(supervisor)};
 launchExecutionHost({stateDir:${JSON.stringify(stateDir)},root:${JSON.stringify(root)},jobId:'survive',owner:'coordinator',kind:'open',phaseId:'phase',spawnFn:(bin,args,options)=>spawn(bin,['--input-type=module','-e',\`import {runExecutionHost} from ${JSON.stringify(host)}; await runExecutionHost(\${JSON.stringify(args[1])},{loadPipeline:()=>import(${JSON.stringify(pathToFileURL(pipeline).href)})});\`],options)});setTimeout(()=>process.exit(0),100);`);
