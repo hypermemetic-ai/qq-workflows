@@ -117,10 +117,10 @@ export function parseArgs(argv, env = process.env) {
 
 /**
  * Resolve the runner's bound identity and shared transport path. Fails closed:
- * only the existing `os.tmpdir()`-anchored transport `completeTask` itself uses
- * is accepted, and no default identity is ever invented.
+ * accept the legacy temp transport or the exact durable runner result path
+ * under an already validated communication binding. No identity is invented.
  */
-export function resolveRunnerTransport(env = process.env, { osTmpdir = tmpdir() } = {}) {
+export function resolveRunnerTransport(env = process.env, { osTmpdir = tmpdir(), communication = null } = {}) {
   const runnerId = env.QQ_RUNNER_ID;
   if (typeof runnerId !== "string" || runnerId.trim() === "") {
     throw Object.assign(new Error("runner seat requires a bound runner identity (QQ_RUNNER_ID is missing)"), { code: "runner_identity_required" });
@@ -134,7 +134,10 @@ export function resolveRunnerTransport(env = process.env, { osTmpdir = tmpdir() 
   }
   const tempRoot = resolve(osTmpdir);
   const candidate = resolve(provided);
-  if (candidate !== tempRoot && !candidate.startsWith(`${tempRoot}${sep}`)) {
+  const binding = communication?.enabled ? communication.binding : null;
+  const durablePath = binding?.role === "runner" && binding.jobId === runnerId
+    ? resolve(binding.stateDir, "runner-results", `${runnerId}.json`) : null;
+  if (candidate !== durablePath && candidate !== tempRoot && !candidate.startsWith(`${tempRoot}${sep}`)) {
     throw Object.assign(new Error(`runner transport path '${provided}' is outside the shared os.tmpdir() transport root '${tempRoot}'`), { code: "runner_transport_invalid" });
   }
   return { runnerId, resultFile: provided };
@@ -712,7 +715,7 @@ async function runOneTurn(args, env) {
   // enable, and an absent binding preserves the exact prior behavior.
   const communication = resolveCommunicationLaunch({ seat: args.seat, env });
   // Runner identity and transport are validated before any work starts.
-  const transport = args.seat === "runner" ? resolveRunnerTransport(env) : null;
+  const transport = args.seat === "runner" ? resolveRunnerTransport(env, { communication }) : null;
   const seatTransport = parseSeatResultBinding(env, args.seat);
   if(seatTransport && communication.enabled && (seatTransport.jobId!==communication.binding.jobId || seatTransport.attemptId!==communication.binding.attemptId)) throw new Error("result binding does not match communication attempt");
 

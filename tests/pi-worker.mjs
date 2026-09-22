@@ -308,6 +308,12 @@ try {
     () => resolveRunnerTransport({ QQ_RUNNER_ID: "r", QQ_RUNNER_RESULT_FILE: "/etc/passwd" }),
     /outside the shared os\.tmpdir\(\) transport root/,
   );
+  const durableEnv = { QQ_RUNNER_ID: "r", QQ_RUNNER_RESULT_FILE: "/home/fixture/state/runner-results/r.json" };
+  const communication = { enabled: true, binding: { role: "runner", jobId: "r", stateDir: "/home/fixture/state" } };
+  assert.equal(resolveRunnerTransport(durableEnv, { communication }).resultFile, durableEnv.QQ_RUNNER_RESULT_FILE);
+  assert.throws(() => resolveRunnerTransport(durableEnv), /outside the shared/);
+  assert.throws(() => resolveRunnerTransport({ ...durableEnv, QQ_RUNNER_ID: "other" }, { communication }), /outside the shared/);
+  assert.throws(() => resolveRunnerTransport({ ...durableEnv, QQ_RUNNER_RESULT_FILE: "/home/fixture/state/unrelated.json" }, { communication }), /outside the shared/);
   assert.deepEqual(parseArgs(["--seat", "runner", "--prompt", "hi"]).seat, "runner");
   assert.deepEqual(classifyPiTerminal({ settled: false }), { ok: false, code: "missing_terminal", diagnostic: "the pi run never settled (no agent_settled before the child ended)" });
   assert.equal(classifyPiTerminal({ settled: true, finalText: "x" }).ok, true);
