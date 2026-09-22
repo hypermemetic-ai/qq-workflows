@@ -35,3 +35,11 @@ PR117 separates coordinating-session ownership from the selected phase/worktree 
 Subsequent owned-host work exercises the existing managed pipeline in an independent process. Tests use installed Pi, an isolated localhost provider, real Git worktrees and local landing. They kill the coordinator during the first model turn and verify role reports, pipeline completion, recovery and deduplication. Their external notification sink is a test seam; actual Architect delivery still requires release acceptance in the live session.
 
 Source landing, a release pointer, a native final answer, and a queued notification are not deployment acceptance. The final release checkpoint records the activated source and current-session evidence separately.
+
+## Additional defect found by end-to-end communication proof
+
+With communication enabled, an actual Architect Pi session received pushed progress, submitted an update, and the worker read/acknowledged revision 2. After killing and reopening the Architect between submission and completion, the worker completed and its report existed, but no completion wake arrived. `acknowledgeDelivery` had written the progress receipt into the job's single terminal-delivery projection; recovery mistook that receipt for completion delivery.
+
+The isolated notification-identity fix keeps progress receipts in their own journal entries, updates a job's terminal slot only for its exact completion event, and ignores stale foreign-event projections when recovering completion. The live test then passed both ordinary and reopened-session flows, with no fake notification sink. The focused regression also verifies that a late progress receipt cannot erase an existing completion receipt and that both event histories remain retrievable. Full-suite and review evidence is retained in the current ticket.
+
+Separate stale-cache tests exposed contradictions between top-level cached status and authoritative cancellation/outcome, including a cancellation attempt signalling an owned test process after authority already recorded completion. Those tests are phase2b review gates. They must pass on final integrated source; the notification fix alone does not establish authoritative runner lifecycle correctness.
