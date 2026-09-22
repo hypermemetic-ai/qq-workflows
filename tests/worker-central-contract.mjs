@@ -48,6 +48,15 @@ import { createWorkflow } from "../workflow/operations.mjs";
 import { loadManagedExecutionLauncher } from "../pi-extension/managed-execution.mjs";
 import { fakeChild, runnerSpawner, tempDir, waitForJobTerminal } from "./support/architect-fixtures.mjs";
 
+// This file is also run directly, outside tests/run.mjs's environment scrub.
+// Capture fixture notifications locally so an enclosing Codex session cannot
+// receive simulated implementation/review/landing messages.
+const notifications = [];
+globalThis.__QQ_TEST_DISABLE_PROC_THREAD = true;
+globalThis.__QQ_TEST_NOTIFY_HANDLER = async (notification) => {
+  notifications.push(notification);
+};
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = dirname(HERE);
 const WORKER_EXEC = join(REPO_ROOT, "bin", "worker-exec.mjs");
@@ -443,6 +452,8 @@ assert.match(missingRuntime.stderr, /no prepared runtime at .*setup-runtime\.mjs
       view = await checkExecutionView(started.id);
     }
     assert.equal(view.status, "completed", `managed execution must complete: ${JSON.stringify(view.error ?? null)}`);
+    assert.ok(notifications.some((entry) => entry.trackerId === started.id && entry.message.includes("successfully verified and landed")),
+      "the simulated landing notification must be captured inside the test");
     const seats = readFileSync(seatLog, "utf8").trim().split("\n").map((line) => line.split("\t"));
     assert.deepEqual(seats.map(([seat]) => seat), ["implementer", "reviewer"], "both managed seats launch through the central contract, in order");
     for (const [, argv] of seats) {
@@ -508,6 +519,8 @@ assert.match(missingRuntime.stderr, /no prepared runtime at .*setup-runtime\.mjs
         view = await checkExecutionView(started.id);
       }
       assert.equal(view.status, "failed", "a non-PASS review must fail the execution, not land it");
+      assert.ok(notifications.some((entry) => entry.trackerId === started.id && entry.message.includes("failed")),
+        "the simulated failure notification must be captured inside the test");
       const actions = view.trajectory.map((entry) => entry.action);
       assert.ok(actions.includes("implementer_started"), `the implementer ran: ${actions.join(",")}`);
       assert.ok(actions.includes("reviewer_started"), `the reviewer ran: ${actions.join(",")}`);
