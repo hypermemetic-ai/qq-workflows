@@ -29,6 +29,7 @@
  * @module pi-worker/instructions
  */
 import { FINAL_RESPONSE_MAX_CHARS_LABEL } from "../limits.mjs";
+import { COMMUNICATION_TOOL_NAMES } from "../communication.mjs";
 import { WORKER_PI_TOOLS, loadRoleContract } from "../worker-config.mjs";
 
 /**
@@ -60,6 +61,11 @@ export const PI_WORKER_TOOL_EQUIVALENTS = Object.freeze({
   complete_task: null,
   "mcp__zvec_grep__zvec_grep_search": PI_SEARCH_TOOL,
   [PI_SEARCH_TOOL]: PI_SEARCH_TOOL,
+  // Runner communication tools (registered only on a validated,
+  // communication-enabled runner): mapped to themselves so a contract that
+  // names them resolves exactly when the runtime actually exposes them - a
+  // reference on a non-communication launch still refuses, as it must.
+  ...Object.fromEntries(COMMUNICATION_TOOL_NAMES.map((name) => [name, name])),
   view_file: "read",
   read_image: "read",
   run_command: "bash",

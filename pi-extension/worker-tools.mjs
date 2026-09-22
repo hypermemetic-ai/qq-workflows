@@ -4,13 +4,25 @@
 // (`pi --no-extensions --extension <this file>`, one process per runner,
 // implementer, and reviewer turn). An ordinary pi session never loads it.
 //
-// It contributes exactly ONE tool: the shared, root-bound `zvec_grep_search`
-// gateway. The reviewed policy lives in the retained gateway module
+// It always contributes the shared, root-bound `zvec_grep_search` gateway. The
+// reviewed policy lives in the retained gateway module
 // (`prototype/deepseek-minimal/gateway/zvec-grep-tool.mjs`): the model-facing
 // schema is re-derived from the pinned upstream snapshot, the three
 // caller-controlled fields (`root`, `freshness`, `autoUpdate`) are removed and
 // re-injected from the bound worktree, and upstream results are classified with
 // the same evidence rules (missing index, freshness, no-matches).
+//
+// Runner communication (phase 2a): when the adapter validated a communication
+// binding and passed it through the environment (`QQ_WORKFLOW_COMMUNICATION`,
+// see `workflow/communication.mjs`), this extension additionally registers the
+// production relay receiver and the three coordinator-authored workflow tools
+// (`workflow_read_assignment`, `workflow_acknowledge_assignment`,
+// `workflow_report_progress`) inside this same extension file — the receiver
+// seam stays the one reviewed worker extension. An absent binding preserves the
+// exact prior surface (search tool only); a malformed binding refuses the whole
+// extension (never partially enabled). The fixture-only tools
+// (`fixture_acknowledge_amendment`, `fixture_report_progress`) are NOT exposed
+// here.
 //
 // One thing is deliberately local: the stdio transport. The gateway runtime
 // module imports the pinned runtime's MCP client package, which is not
@@ -53,6 +65,8 @@ import {
   reportedFreshness,
   searchArgumentViolations,
 } from "../prototype/deepseek-minimal/gateway/zvec-grep-tool.mjs";
+import { COMMUNICATION_TOOL_NAMES, parseCommunicationBinding } from "../workflow/communication.mjs";
+import { registerCommunicationReceiver } from "../workflow/communication-receiver.mjs";
 
 export const WORKER_TOOLS_EXTENSION_NAME = "qq-worker-tools";
 /** Worker seats that receive the shared search tool: every role, including the
@@ -310,8 +324,16 @@ function textOf(result) {
 /**
  * Build the extension. `options.gateway` is injectable so offline tests can
  * drive the tool without the `zg` binary.
+ *
+ * Runner communication: when the environment carries a valid communication
+ * binding (the adapter validates it structurally before launch and binds the
+ * observed session against the change record), the extension ALSO registers
+ * the receiver and the three coordinator-authored workflow tools; the shared
+ * search tool stays registered exactly as before. An absent binding preserves
+ * the exact prior surface. A present-but-malformed binding throws: the
+ * extension is never partially enabled.
  */
-export function createWorkerToolsExtension(pi, { env = process.env, cwd = process.cwd(), gateway = null, spawnImpl = spawn } = {}) {
+export function createWorkerToolsExtension(pi, { env = process.env, cwd = process.cwd(), gateway = null, spawnImpl = spawn, communication = undefined } = {}) {
   const binding = resolveWorkerSearchBinding({ seat: env[ENV_SEAT], root: env[ENV_ROOT] || cwd });
   let live = gateway;
   function searchGateway() {
@@ -319,6 +341,9 @@ export function createWorkerToolsExtension(pi, { env = process.env, cwd = proces
     live = createWorkerSearchGateway({ binding, env: workerSearchEnv({ seat: binding.seat, root: binding.root, env }), spawnImpl });
     return live;
   }
+
+  const communicationBinding = communication === undefined ? parseCommunicationBinding(env) : communication;
+  const receiver = communicationBinding.enabled ? registerCommunicationReceiver(pi, { binding: communicationBinding.binding, env }) : null;
 
   const tool = {
     name: WORKER_SEARCH_TOOL_NAME,
@@ -344,15 +369,18 @@ export function createWorkerToolsExtension(pi, { env = process.env, cwd = proces
       Type = null;
     }
     pi.registerTool({ ...tool, parameters: Type ? Type.Unsafe(tool.parameters) : tool.parameters });
-    return { registered: [tool.name], binding };
+    return { registered: receiver ? [tool.name, ...COMMUNICATION_TOOL_NAMES] : [tool.name], binding };
   }
 
   return {
     register,
     binding,
+    communication: receiver,
     seats: WORKER_SEARCH_SEATS,
     injectedFields: [...INJECTED_SEARCH_FIELDS],
-    close: async () => {},
+    close: async () => {
+      if (receiver) await receiver.stop();
+    },
   };
 }
 

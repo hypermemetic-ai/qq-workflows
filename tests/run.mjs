@@ -32,9 +32,13 @@ delete env.REAL_AGY_BIN;
 delete env.QQ_DEEPSEEK_RUNTIME_ROOT;
 // Never inherit a live zvec-grep gateway binding: a seat's search root is bound
 // by the adapter from its own worktree, never by an ambient test environment.
+// Same for a live runner communication binding: it names an exact attempt in an
+// exact state dir and must never reach a test child by inheritance.
 for (const key of Object.keys(env)) {
   if (key.startsWith('QQ_ZVEC_GREP_')) delete env[key];
 }
+delete env.QQ_WORKFLOW_COMMUNICATION;
+delete env.QQ_RELAY_INSTALL_ROOT;
 env.QQ_WORKFLOW_STATE_DIR = join(mkdtempSync(join(tmpdir(), 'qq-workflow-state-')), 'state');
 // Scrub live notification routing/thread env from test runs.
 // Targeted actual live routing values (preserve needed config: CODEX_HOME, CODEX_MODEL, CODEX_BIN).

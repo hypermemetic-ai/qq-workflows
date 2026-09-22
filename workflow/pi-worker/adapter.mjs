@@ -76,6 +76,15 @@ import {
   workerPiAllowedTools,
   workerPiBin,
 } from "../worker-config.mjs";
+import {
+  COMMUNICATION_ROLE_PARAGRAPH,
+  COMMUNICATION_TOOL_NAMES,
+  bindAttemptReceiver,
+  closeReceiverAdmission,
+  parseCommunicationBinding,
+  assertPiSessionId,
+} from "../communication.mjs";
+import { openChange } from "../change-record.mjs";
 import { loadPiSeatInstructions } from "./instructions.mjs";
 import { PiRpcClient, PiRpcError } from "./rpc.mjs";
 
@@ -362,6 +371,14 @@ export function createTranslator({ seat, onLine }) {
     errorMessage: null,
     toolNames: new Map(),
     intermediate: 0,
+    // Communication drain bookkeeping: how many agent runs started and settled.
+    // An idle receiver injection starts a NEW run after a settle, so
+    // `turnStarts > settles` means a turn is in flight and final-result
+    // selection must wait for it (never report the earlier final message as the
+    // outcome of the updated assignment).
+    turnStarts: 0,
+    settles: 0,
+    activity: 0,
   };
   const line = (event) => onLine(event);
 
@@ -383,6 +400,11 @@ export function createTranslator({ seat, onLine }) {
     handle(event) {
       if (!event || typeof event !== "object") return;
       switch (event.type) {
+        case "agent_start": {
+          state.turnStarts += 1;
+          state.activity += 1;
+          return;
+        }
         case "tool_execution_start": {
           const name = event.toolName ?? event.tool_name ?? "tool";
           const callId = event.toolCallId ?? event.toolCallIdStr ?? null;
@@ -405,6 +427,7 @@ export function createTranslator({ seat, onLine }) {
           if (message.role !== "assistant") return;
           state.stopReason = typeof message.stopReason === "string" ? message.stopReason : null;
           state.errorMessage = typeof message.errorMessage === "string" ? message.errorMessage : null;
+          state.activity += 1;
           const text = assistantText(message);
           if (text.trim() !== "") {
             if (state.finalText !== "" && state.finalText !== text) {
@@ -432,6 +455,7 @@ export function createTranslator({ seat, onLine }) {
         }
         case "agent_settled": {
           state.settled = true;
+          state.settles += 1;
           return;
         }
         default:
@@ -480,6 +504,149 @@ function selectedModelView(model) {
   };
 }
 
+/**
+ * Resolve the runner communication launch context. Absent binding -> disabled
+ * (the exact prior behavior). A binding on a seat other than the runner, or a
+ * structurally malformed binding, refuses before any process is spawned; a
+ * binding whose record does not name the attempt (or names it in a phase that
+ * cannot be started) refuses before any provider traffic.
+ */
+function resolveCommunicationLaunch({ seat, env }) {
+  const parsed = parseCommunicationBinding(env);
+  if (!parsed.enabled) return { enabled: false };
+  if (seat !== "runner") {
+    throw Object.assign(
+      new Error(`a communication binding is only valid for the runner seat (got '${seat}'); refusing instead of partially enabling communication`),
+      { code: "binding_invalid_seat" },
+    );
+  }
+  const binding = parsed.binding;
+  // Record-side preflight: the binding must name a real attempt that a launch
+  // intent created and that has not already ended, so the observed session can
+  // be bound against it before any delivery admission.
+  let handle;
+  try {
+    handle = openChange({ stateDir: binding.stateDir, changeId: binding.changeId });
+  } catch (error) {
+    throw Object.assign(new Error(`communication binding record is unavailable: ${error.message}`), { code: "binding_record_unavailable" });
+  }
+  const attempt = handle.state.jobs[binding.jobId]?.attempts[binding.attemptId];
+  if (!attempt) {
+    throw Object.assign(
+      new Error(`communication binding names attempt '${binding.attemptId}' on job '${binding.jobId}', which does not exist in change '${binding.changeId}'`),
+      { code: "binding_attempt_unknown" },
+    );
+  }
+  if (attempt.phase !== "launched" && attempt.phase !== "started") {
+    throw Object.assign(
+      new Error(`communication binding names attempt '${binding.attemptId}' in phase '${attempt.phase}'; only an unresolved launch intent (or a matching started attempt) can be bound`),
+      { code: "binding_attempt_not_launchable" },
+    );
+  }
+  return { enabled: true, binding };
+}
+
+/** Drain-loop cadence: how often the in-flight/exit state is re-evaluated. */
+const DRAIN_POLL_MS = 100;
+
+const drainSleep = (ms) => new Promise((resolve) => {
+  const timer = setTimeout(resolve, ms);
+  if (typeof timer.unref === "function") timer.unref();
+});
+
+/**
+ * Wait until the translator has observed `target` agent runs settle, the child
+ * exits first, or an optional timeout elapses. The settle/exit race preserves
+ * the exact pre-communication semantics (same 25ms poll, same exit precedence):
+ * an exit before the run settled is still classified honestly downstream.
+ */
+function waitForSettle(client, translator, target, { timeoutMs = 0 } = {}) {
+  return new Promise((resolve) => {
+    let poll = null;
+    let timer = null;
+    let done = false;
+    const finish = (value) => {
+      if (done) return;
+      done = true;
+      if (poll) clearInterval(poll);
+      if (timer) clearTimeout(timer);
+      resolve(value);
+    };
+    poll = setInterval(() => {
+      if (translator.state.settles >= target) finish({ reason: "settled" });
+    }, 25);
+    if (typeof poll.unref === "function") poll.unref();
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => finish({ reason: "timeout" }), timeoutMs);
+      if (typeof timer.unref === "function") timer.unref();
+    }
+    if (translator.state.settles >= target) finish({ reason: "settled" });
+    client.waitForExit().then((result) => finish({ reason: "exit", result }));
+  });
+}
+
+/**
+ * Bounded drain window after the admission closure: keep the runtime alive so
+ * deliveries admitted BEFORE the closure can still land (the record-level
+ * barrier is closed; the receiver keeps polling), while never letting a drain
+ * turn mask the run's outcome.
+ *
+ * An idle injection that starts another agent run postpones final-result
+ * selection: this loop waits until THAT run settles, so the classifier below
+ * sees the post-update final message instead of the stale pre-injection one.
+ * There is deliberately no quiet-based early exit: returning between "a
+ * delivery was received" and "its agent_start became visible" would report the
+ * stale final message as the outcome of the updated assignment.
+ *
+ * At the deadline a still-in-flight turn is refused honestly: the run's error
+ * is set (classification fails, exit 1) rather than reporting the pre-injection
+ * final message as success - a cut-off incorporation must never look complete.
+ * The still-pending amendment stays pending in the record for the coordinator.
+ */
+async function drainReceiverWindow({ client, translator, drainMs }) {
+  const started = Date.now();
+  const settlesBefore = translator.state.settles;
+  const report = (extra = {}) => ({
+    reason: "deadline",
+    ms: Date.now() - started,
+    injectedTurns: translator.state.settles - settlesBefore,
+    ...extra,
+  });
+  const exitReport = (result) => {
+    // An exit while a drain-injected turn is in flight must not read as
+    // success: the classifier would otherwise see the stale pre-injection
+    // final message. Conservatively fail; the record stays honest.
+    if (translator.state.turnStarts > translator.state.settles) {
+      translator.state.error = {
+        code: "runtime_exit",
+        message: `the pi runtime ended (${result?.reason ?? "unknown"}) while a drain-injected turn was still in flight`,
+      };
+      return report({ reason: "exit", interruptedTurn: true });
+    }
+    return report({ reason: "exit" });
+  };
+  while (Date.now() - started < drainMs) {
+    if (translator.state.turnStarts > translator.state.settles) {
+      const remaining = Math.max(drainMs - (Date.now() - started), 1);
+      await waitForSettle(client, translator, translator.state.settles + 1, { timeoutMs: remaining });
+      continue;
+    }
+    const winner = await Promise.race([
+      drainSleep(DRAIN_POLL_MS).then(() => null),
+      client.waitForExit().then((result) => ({ result })),
+    ]);
+    if (winner) return exitReport(winner.result);
+  }
+  if (translator.state.turnStarts > translator.state.settles) {
+    translator.state.error = {
+      code: "drain_turn_interrupted",
+      message: "the communication drain window ended while an injected turn was still in flight; refusing to report the pre-injection final message as the outcome",
+    };
+    return report({ interruptedTurn: true });
+  }
+  return report();
+}
+
 function summaryShape({ seat, args, config, runtime, settings, transport, client, instructions }) {
   return {
     seat,
@@ -500,6 +667,8 @@ function summaryShape({ seat, args, config, runtime, settings, transport, client
       source: instructions.source,
       adaptedSections: instructions.adaptedSections,
       namedTools: instructions.namedTools,
+      // Recorded when the validated communication paragraph was appended.
+      ...(instructions.communicationRoleParagraph === true ? { communicationRoleParagraph: true } : {}),
     },
     runnerBound: transport !== null,
     sessionId: args.sessionId ?? null,
@@ -518,6 +687,11 @@ async function runOneTurn(args, env) {
   if (config.harness !== "pi") {
     throw Object.assign(new Error(`the pi worker adapter was launched under harness '${config.harness}'; expected 'pi'`), { code: "harness_mismatch" });
   }
+  // Runner communication is enabled ONLY by an explicit, structurally valid
+  // binding, and only for the runner seat. Validation happens here, before any
+  // process is spawned: a malformed binding is a refusal, never a partial
+  // enable, and an absent binding preserves the exact prior behavior.
+  const communication = resolveCommunicationLaunch({ seat: args.seat, env });
   // Runner identity and transport are validated before any work starts.
   const transport = args.seat === "runner" ? resolveRunnerTransport(env) : null;
 
@@ -534,11 +708,22 @@ async function runOneTurn(args, env) {
     throw Object.assign(new Error(`worker pi settings at '${effective.file}' do not match the configured context policy`), { code: "context_policy_mismatch" });
   }
 
-  const tools = workerPiAllowedTools(args.seat);
+  const tools = communication.enabled
+    ? [...workerPiAllowedTools(args.seat), ...COMMUNICATION_TOOL_NAMES]
+    : workerPiAllowedTools(args.seat);
   // The instruction surface must describe THIS runtime: the shared contract is
   // adapted (no MCP completion tool, the ZG tool's real name) and a reference
-  // that cannot resolve refuses the launch before any work starts.
-  const instructions = loadPiSeatInstructions(args.seat, { tools });
+  // that cannot resolve refuses the launch before any work starts. A validated
+  // communication-enabled runner additionally carries the coordinator-authored
+  // communication paragraph, verbatim.
+  const seatInstructions = loadPiSeatInstructions(args.seat, { tools });
+  const instructions = communication.enabled
+    ? {
+      ...seatInstructions,
+      body: `${seatInstructions.body}\n\n${COMMUNICATION_ROLE_PARAGRAPH}`,
+      communicationRoleParagraph: true,
+    }
+    : seatInstructions;
   const extension = WORKER_PI_EXTENSION;
   const sessionPath = resolveNativeSessionPath({
     env,
@@ -565,6 +750,17 @@ async function runOneTurn(args, env) {
   });
   if (sessionPath) summary.sessionFile = sessionPath;
   summary.effectiveSettings = effective;
+  summary.communication = communication.enabled
+    ? {
+      enabled: true,
+      changeId: communication.binding.changeId,
+      jobId: communication.binding.jobId,
+      attemptId: communication.binding.attemptId,
+      role: communication.binding.role,
+      recipientAgent: communication.binding.recipientAgent,
+      drainMs: communication.binding.drainMs,
+    }
+    : { enabled: false };
 
   const translator = createTranslator({ seat: args.seat, onLine: (event) => emit(event) });
   client.onEvent = (event) => translator.handle(event);
@@ -589,6 +785,25 @@ async function runOneTurn(args, env) {
     // substituted provider/model before any (billable) turn is sent.
     summary.selectedModel = assertSelectedModel({ config, selected: selectedModelView(initState?.model) });
     summary.sessionId = initState?.sessionId ?? null;
+    if (communication.enabled) {
+      // The observed runtime session is the ONLY receiver identity: a bare Pi
+      // session UUID, bound against the exact started attempt in the change
+      // record BEFORE any delivery admission. A non-UUID session id, an unknown
+      // attempt, or a mismatched recorded binding refuses here — before the
+      // prompt, before inference, never partially enabled.
+      assertPiSessionId(initState?.sessionId, "the runtime's observed session id");
+      const bound = bindAttemptReceiver({
+        stateDir: communication.binding.stateDir,
+        changeId: communication.binding.changeId,
+        jobId: communication.binding.jobId,
+        attemptId: communication.binding.attemptId,
+        sessionId: initState.sessionId,
+        seat: args.seat,
+        runtimeActorId: communication.binding.runtimeActorId,
+      });
+      summary.communication.bound = { recorded: bound.recorded, dedupe: bound.dedupe, seq: bound.seq, recipient: bound.identity.recipient };
+      diagnostic(`communication bound: ${communication.binding.changeId}/${communication.binding.jobId}/${communication.binding.attemptId} -> agents/${initState.sessionId}`);
+    }
     summary.capacity = {
       note: "contextWindow is registry metadata for the selected model, not an enforced hard input bound",
       contextWindow: typeof initState?.model?.contextWindow === "number" ? initState.model.contextWindow : null,
@@ -623,21 +838,36 @@ async function runOneTurn(args, env) {
     await client.request({ type: "prompt", message: args.prompt }, { timeoutMs: 60_000 });
 
     // Wait for the run to settle (or for the child to end first).
-    const exit = await new Promise((resolveSettled) => {
-      const timer = setInterval(() => {
-        if (translator.state.settled) {
-          clearInterval(timer);
-          resolveSettled({ reason: "settled" });
-        }
-      }, 25);
-      if (typeof timer.unref === "function") timer.unref();
-      client.waitForExit().then((result) => {
-        clearInterval(timer);
-        resolveSettled({ reason: "exit", result });
-      });
-    });
-    if (exit.reason === "exit" && !translator.state.settled && !translator.state.error) {
-      translator.state.error = { code: "runtime_exit", message: `the pi runtime ended (${exit.result?.reason ?? "unknown"}) before the run settled` };
+    const firstSettle = await waitForSettle(client, translator, 1, { timeoutMs: 0 });
+    if (firstSettle.reason === "exit" && !translator.state.settled && !translator.state.error) {
+      translator.state.error = { code: "runtime_exit", message: `the pi runtime ended (${firstSettle.result?.reason ?? "unknown"}) before the run settled` };
+    }
+
+    // Communication settle/drain/close handshake (enabled runners only): the
+    // admission closure is durable and serialized with amendment submissions in
+    // the change record; the bounded drain window then lets already-admitted
+    // deliveries land. An idle injection that starts another turn postpones
+    // final-result selection until that turn settles — the earlier final
+    // message is never reported as the outcome of the updated assignment.
+    if (communication.enabled && firstSettle.reason === "settled") {
+      try {
+        const closed = closeReceiverAdmission({
+          stateDir: communication.binding.stateDir,
+          changeId: communication.binding.changeId,
+          jobId: communication.binding.jobId,
+          attemptId: communication.binding.attemptId,
+          runtimeActorId: communication.binding.runtimeActorId,
+        });
+        summary.communication.admissionClosed = { seq: closed.seq, dedupe: closed.dedupe };
+      } catch (error) {
+        // Bookkeeping failure is reported honestly; it never fabricates a
+        // delivery and never promotes unacknowledged work.
+        summary.communication.admissionClosed = { error: String(error?.message ?? error).slice(0, 200) };
+        diagnostic(`admission closure failed: ${error?.message ?? error}`);
+      }
+      summary.communication.drain = await drainReceiverWindow({ client, translator, drainMs: communication.binding.drainMs });
+    } else if (communication.enabled) {
+      summary.communication.drain = { skipped: true, reason: firstSettle.reason };
     }
 
     const verdict = classifyPiTerminal({
