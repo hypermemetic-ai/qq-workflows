@@ -170,7 +170,7 @@ async function waitForRunnerTerminal(runnerId, { timeoutMs = 20_000 } = {}) {
 }
 
 // 1. Tool schema checks
-assert.equal(TOOLS.length, 12);
+assert.equal(TOOLS.length, 13);
 const toolNames = TOOLS.map((t) => t.name).sort();
 assert.deepEqual(toolNames, [
   "cancel_runner",
@@ -181,11 +181,18 @@ assert.deepEqual(toolNames, [
   "dispatch_runner",
   "land",
   "prepare_worktree",
+  "read_report",
   "read_ticket",
   "retry_runner_notification",
   "steer_runner",
   "update_ticket",
 ]);
+
+// The mandated durable report retrieval surface (bounded pagination) exists
+// through the normal tool dispatcher on BOTH surfaces.
+const readReportTool = TOOLS.find((t) => t.name === "read_report");
+assert.ok(readReportTool, "read_report is exposed");
+assert.deepEqual(readReportTool.inputSchema.required, ["reportId"]);
 
 const prepareTool = TOOLS.find((t) => t.name === "prepare_worktree");
 assert.ok(prepareTool);
@@ -784,18 +791,25 @@ try {
   assert.equal(checkRunningRes.trajectory.length, 1);
   assert.equal(checkRunningRes.trajectory[0].action, "grep_search");
 
-  // Steer runner
+  // Steer runner: a legacy (non-Pi) runner has no verified receiver, so the
+  // update is TRUTHFULLY refused — nothing is written to an ignored stdin and
+  // no false success is returned. The refusal stays in the trajectory so
+  // historical check results identify communication unsupported.
   let steeredInstruction = null;
   mockRunner.onSteer = (inst) => {
     steeredInstruction = inst;
   };
   const steerRes = await steerRunner({ runnerId: dispatchRes.runnerId, instruction: "Also check baz.mjs" });
-  assert.equal(steerRes.ok, true);
-  assert.equal(steeredInstruction, "Also check baz.mjs");
+  assert.equal(steerRes.ok, false, "legacy steering is refused, never a false success");
+  assert.equal(steerRes.supported, false);
+  assert.equal(steerRes.steered, false);
+  assert.match(steerRes.error, /no verified receiver/);
+  assert.equal(steeredInstruction, null, "nothing is delivered to an ignored stdin");
   const checkSteeredRes = await checkRunner({ runnerId: dispatchRes.runnerId });
   assert.equal(checkSteeredRes.trajectory.length, 2);
   assert.equal(checkSteeredRes.trajectory[1].action, "steer");
   assert.equal(checkSteeredRes.trajectory[1].instruction, "Also check baz.mjs");
+  assert.equal(checkSteeredRes.trajectory[1].refused, true, "the trajectory identifies the steer as refused");
 
   // Complete runner
   mockRunner.activeTool = null;
@@ -1179,7 +1193,7 @@ const pingResp = await handleRpc("ping", {});
 assert.deepEqual(pingResp, {});
 
 const listResp = await handleRpc("tools/list", {});
-assert.equal(listResp.tools.length, 12);
+assert.equal(listResp.tools.length, 13);
 
 // tools/call with missing kind should return isError: true
 const errCallResp = await handleRpc("tools/call", {
@@ -1219,7 +1233,7 @@ assert.equal(responses[0].id, 1);
 assert.equal(responses[0].result.serverInfo.name, "qq-workflows");
 
 assert.equal(responses[1].id, 2);
-assert.equal(responses[1].result.tools.length, 12);
+assert.equal(responses[1].result.tools.length, 13);
 
 assert.equal(responses[2].id, 3);
 assert.deepEqual(responses[2].result, {});
@@ -2425,12 +2439,14 @@ assert.equal(toolSilenceThresholdMs(undefined), 290_000);
   assert.equal(runner.status, "running");
   assert.equal(killed, false);
 
-  // Steer still works afterward.
+  // Steering still responds afterward: for a legacy runner that response is a
+  // truthful refusal (no verified receiver), never a false success.
   let steered = null;
   runner.onSteer = (inst) => { steered = inst; };
   const steerRes = await steerRunner({ runnerId: disp.runnerId, instruction: "focus on foo" });
-  assert.equal(steerRes.ok, true);
-  assert.equal(steered, "focus on foo");
+  assert.equal(steerRes.ok, false);
+  assert.equal(steerRes.supported, false);
+  assert.equal(steered, null);
   assert.equal(runner.status, "running");
 
   // Re-await still works afterward (still silent -> needs-decision again).
@@ -2713,7 +2729,7 @@ assert.equal(toolSilenceThresholdMs(undefined), 290_000);
     assert.equal(check.status, "running");
     const runner = RUNNERS.get(disp.runnerId);
     runner.onSteer = () => {};
-    assert.equal((await steerRunner({ runnerId: disp.runnerId, instruction: "keep going" })).ok, true);
+    assert.equal((await steerRunner({ runnerId: disp.runnerId, instruction: "keep going" })).ok, false, "legacy steer is truthfully refused mid-session");
     const second = await checkRunner({ runnerId: disp.runnerId });
     assert.equal(second.status, "running");
     assert.equal((await cancelRunner({ runnerId: disp.runnerId })).status, "cancelled");
@@ -3711,13 +3727,13 @@ assert.equal(getDisabledTools([], {}).size, 0);
 {
   const disabled = ["steer_runner", "cancel_runner"];
   const list = await handleRpc("tools/list", {}, { disabledTools: disabled });
-  assert.equal(list.tools.length, 10);
+  assert.equal(list.tools.length, 11);
   const names = list.tools.map((t) => t.name);
   assert.ok(!names.includes("steer_runner"));
   assert.ok(!names.includes("cancel_runner"));
 
   const full = await handleRpc("tools/list", {}, { disabledTools: [] });
-  assert.equal(full.tools.length, 12);
+  assert.equal(full.tools.length, 13);
 
   await assert.rejects(
     () => callTool("steer_runner", { runnerId: "x" }, { disabledTools: disabled }),
@@ -3763,7 +3779,7 @@ assert.equal(getDisabledTools([], {}).size, 0);
   delete process.env.QQ_DISABLED_TOOLS;
   try {
     const full = await handleRpc("tools/list", {});
-    assert.equal(full.tools.length, 12);
+    assert.equal(full.tools.length, 13);
   } finally {
     if (savedDisabledEnv === undefined) delete process.env.QQ_DISABLED_TOOLS;
     else process.env.QQ_DISABLED_TOOLS = savedDisabledEnv;
@@ -3772,7 +3788,7 @@ assert.equal(getDisabledTools([], {}).size, 0);
   process.env.QQ_DISABLED_TOOLS = "steer_runner,cancel_runner";
   try {
     const list = await handleRpc("tools/list", {});
-    assert.equal(list.tools.length, 10);
+    assert.equal(list.tools.length, 11);
     assert.ok(!list.tools.some((t) => t.name === "steer_runner" || t.name === "cancel_runner"));
     await assert.rejects(() => callTool("cancel_runner", { runnerId: "x" }), /Tool 'cancel_runner' is disabled/);
     const rpcErr = await handleRpc("tools/call", { name: "cancel_runner", arguments: { runnerId: "x" } });
@@ -3821,7 +3837,7 @@ assert.equal(getDisabledTools([], {}).size, 0);
       args: ["--disabled-tools", "steer_runner,cancel_runner"],
       stripDisabledEnv: true,
     });
-    assert.equal(listResp.result.tools.length, 10);
+    assert.equal(listResp.result.tools.length, 11);
     assert.ok(!listResp.result.tools.some((t) => t.name === "steer_runner" || t.name === "cancel_runner"));
     assert.equal(callResp.result.isError, true);
     assert.equal(callResp.result.content[0].text, "Tool 'steer_runner' is disabled");
@@ -3830,7 +3846,7 @@ assert.equal(getDisabledTools([], {}).size, 0);
   // Env var alone filters the list and rejects the call.
   {
     const [listResp, callResp] = queryServer({ env: { QQ_DISABLED_TOOLS: "steer_runner,cancel_runner" } });
-    assert.equal(listResp.result.tools.length, 10);
+    assert.equal(listResp.result.tools.length, 11);
     assert.ok(!listResp.result.tools.some((t) => t.name === "steer_runner" || t.name === "cancel_runner"));
     assert.equal(callResp.result.isError, true);
     assert.equal(callResp.result.content[0].text, "Tool 'steer_runner' is disabled");
@@ -3839,7 +3855,7 @@ assert.equal(getDisabledTools([], {}).size, 0);
   // Neither: the full surviving tool surface.
   {
     const [listResp] = queryServer({ stripDisabledEnv: true });
-    assert.equal(listResp.result.tools.length, 12);
+    assert.equal(listResp.result.tools.length, 13);
   }
 }
 

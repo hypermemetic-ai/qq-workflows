@@ -187,6 +187,13 @@ export const EVENT_KINDS = Object.freeze([
   "attempt.admission_closed",
   "attempt.outcome",
   "amendment.submitted",
+  // Transport-push bookkeeping for one admitted amendment: the relay event id
+  // and the observed transport status of a push attempt. This is delivery
+  // CORRELATION durably in the authoritative record (so a parent restart can
+  // inspect and retry a recorded-but-unsent update without re-recording
+  // anything); it never advances acknowledgement — only worker.acknowledged
+  // does. Records written before this kind existed replay unchanged.
+  "amendment.pushed",
   "amendment.accepted",
   "worker.acknowledged",
   "text.continued",
@@ -217,7 +224,9 @@ export const MAX_TEXT_PARTS = 4_096;
 // are dot-separated and rooted at the event payload.
 export const LARGE_TEXT_FIELDS = Object.freeze({
   "change.created": ["title"],
-  "assignment.revised": ["assignment.instructions"],
+  // A revision carries BOTH the full assignment text and (for an amendment
+  // revision) the coordinator's raw instruction: both are splittable.
+  "assignment.revised": ["assignment.instructions", "note"],
   "job.registered": ["note"],
   "attempt.launch_intent": ["note"],
   "attempt.started": ["note"],
@@ -227,6 +236,7 @@ export const LARGE_TEXT_FIELDS = Object.freeze({
   "attempt.cancel_intent": ["reason"],
   "attempt.outcome": ["summary", "result"],
   "amendment.submitted": ["note"],
+  "amendment.pushed": [],
   "amendment.accepted": ["note"],
   "worker.acknowledged": ["note"],
 });
@@ -245,6 +255,7 @@ const KIND_ID_REQUIREMENTS = Object.freeze({
   "attempt.admission_closed": { jobId: true, attemptId: true },
   "attempt.outcome": { jobId: true, attemptId: true },
   "amendment.submitted": { jobId: true, attemptId: true },
+  "amendment.pushed": { jobId: true, attemptId: true },
   "amendment.accepted": { jobId: true, attemptId: true },
   "worker.acknowledged": { jobId: true, attemptId: true },
   "text.continued": {},
@@ -266,6 +277,7 @@ const KIND_ACTORS = Object.freeze({
   "attempt.admission_closed": ["runtime", "operator"],
   "attempt.outcome": ["runtime", "operator"],
   "amendment.submitted": ["runtime", "operator"],
+  "amendment.pushed": ["runtime", "operator"],
   "amendment.accepted": ["runtime", "operator"],
   "worker.acknowledged": ["worker"],
   "text.continued": ["runtime", "worker", "operator"],
@@ -756,13 +768,33 @@ function applyEvent(state, env) {
         assertRevisionApplicableToJob(state, payload.revision, env.jobId, "launch intent");
         revision = payload.revision;
       }
+      // Launch context retention (optional, additive): the original working
+      // directory, owner/session routing and target paths the launch was
+      // intended for. Records written before these fields existed replay
+      // unchanged (they are simply absent).
+      for (const field of ["cwd", "owner"]) {
+        if (payload[field] !== undefined && payload[field] !== null && typeof payload[field] !== "string") {
+          throw fail("invalid-event", `attempt.launch_intent payload.${field} must be a string or null`);
+        }
+      }
+      if (payload.targetPaths !== undefined && payload.targetPaths !== null
+        && (!Array.isArray(payload.targetPaths) || payload.targetPaths.some((entry) => typeof entry !== "string"))) {
+        throw fail("invalid-event", "attempt.launch_intent payload.targetPaths must be an array of strings or null");
+      }
       // Launch intent is explicitly UNRESOLVED until an observed start. The
       // reducer never repeats or assumes any external effect.
       job.attempts[env.attemptId] = {
         id: env.attemptId,
         jobId: env.jobId,
         phase: "launched",
-        launchIntent: { at: env.at, seq: env.seq, revision },
+        launchIntent: {
+          at: env.at,
+          seq: env.seq,
+          revision,
+          cwd: payload.cwd ?? null,
+          owner: payload.owner ?? null,
+          targetPaths: payload.targetPaths ?? null,
+        },
         started: null,
         activity: [],
         progress: [],
@@ -835,15 +867,26 @@ function applyEvent(state, env) {
 
     case "attempt.outcome": {
       const attempt = requireAttempt(state, env.jobId, env.attemptId, env.kind);
-      if (attempt.phase !== "started") {
+      if (attempt.phase === "terminal") {
         throw fail(
           "invalid-transition",
-          `attempt '${env.attemptId}' is '${attempt.phase}'; a validated outcome requires an observed start and no prior outcome`,
+          `attempt '${env.attemptId}' already carries a validated outcome`,
         );
       }
       const { status } = payload;
       if (!OUTCOME_STATUSES.includes(status)) {
         throw fail("invalid-event", `attempt.outcome status ${JSON.stringify(status)} is unknown (allowed: ${OUTCOME_STATUSES.join(", ")})`);
+      }
+      // A COMPLETED outcome requires an observed start. A failure or
+      // cancellation is recordable for a never-started attempt too: a launch
+      // or communication setup that failed before the receiver binding was
+      // observed must still reach a truthful terminal state (an honest
+      // terminal failure, never a success and never an eternal 'launched').
+      if (attempt.phase !== "started" && status === "completed") {
+        throw fail(
+          "invalid-transition",
+          `attempt '${env.attemptId}' is '${attempt.phase}'; a completed outcome requires an observed start`,
+        );
       }
       if (attempt.cancelIntent && status === "completed") {
         throw fail("invalid-transition", `cancellation intent on attempt '${env.attemptId}' forbids a completed outcome`);
@@ -906,15 +949,45 @@ function applyEvent(state, env) {
         throw fail("invalid-event", "amendment.submitted payload.transport must be an object");
       }
       // Delivery bookkeeping only. Submission never advances worker
-      // acknowledgement; only worker.acknowledged can do that.
+      // acknowledgement; only worker.acknowledged can do that. The submitted
+      // payload is retained (with its split markers) so the coordinator's raw
+      // instruction stays recoverable for assignment composition and
+      // post-restart inspection.
       job.amendments[amendmentId] = {
         amendmentId,
         revision,
         targetedAttemptId: env.attemptId,
-        submitted: { at: env.at, seq: env.seq, transport: payload.transport ?? null },
+        submitted: { at: env.at, seq: env.seq, transport: payload.transport ?? null, note: payload.note ?? null, splits: payload.textContinuation ?? null },
+        pushes: [],
         accepted: null,
       };
       job.amendmentOrder.push(amendmentId);
+      break;
+    }
+
+    case "amendment.pushed": {
+      const job = requireJob(state, env.jobId);
+      requireAttempt(state, env.jobId, env.attemptId, env.kind);
+      const { amendmentId } = payload;
+      assertIdentifier(amendmentId, "payload.amendmentId");
+      const amendment = job.amendments[amendmentId];
+      if (!amendment) {
+        throw fail("invalid-transition", `amendment '${amendmentId}' was never submitted on job '${env.jobId}'`);
+      }
+      // Payload key `pushEventId` (never `eventId`: that name is reserved for
+      // trusted envelope identity and the spoofing guard rejects it).
+      if (payload.pushEventId !== undefined && payload.pushEventId !== null && typeof payload.pushEventId !== "string") {
+        throw fail("invalid-event", "amendment.pushed payload.pushEventId must be a string or null");
+      }
+      if (payload.status !== undefined && payload.status !== null && typeof payload.status !== "string") {
+        throw fail("invalid-event", "amendment.pushed payload.status must be a string or null");
+      }
+      // One entry per push attempt, in order. The LAST entry is the correlation
+      // the retry path checks against the relay journal; a push whose transport
+      // result was lost (crash before the append) simply has no entry here, and
+      // the next retry re-pushes (safe: incorporation is a deterministic record
+      // dedupe, never a duplicate incorporation).
+      amendment.pushes.push({ eventId: payload.pushEventId ?? null, status: payload.status ?? null, at: env.at, seq: env.seq });
       break;
     }
 
@@ -1085,6 +1158,10 @@ function outcomeView(state, outcome) {
     revision: outcome.revision,
     summary: value.summary ?? null,
     result: value.result ?? null,
+    // The durable report reference recorded with the validated outcome (if
+    // any): readers reconstruct the terminal report pointer from the
+    // AUTHORITY, never from a compatibility cache.
+    reportId: value.reportId ?? null,
     complete: incomplete.length === 0,
     incompleteTexts: incomplete,
   };
@@ -1100,15 +1177,25 @@ function amendmentAcknowledgedBy(state, jobId, amendment) {
 
 function amendmentView(state, jobId, amendment) {
   const acknowledged = amendmentAcknowledgedBy(state, jobId, amendment);
+  const submitted = amendment.submitted ?? {};
+  const note = resolveSplits(state, { note: submitted.note ?? null }, submitted.splits ?? null);
   return {
     jobId,
     amendmentId: amendment.amendmentId,
     revision: amendment.revision,
     targetedAttemptId: amendment.targetedAttemptId,
-    submittedAt: amendment.submitted?.at ?? null,
+    submittedAt: submitted.at ?? null,
     acceptedAt: amendment.accepted?.at ?? null,
     status: amendment.accepted ? "accepted" : "submitted",
     acknowledged,
+    // The coordinator's raw instruction for this amendment, verbatim (resolved
+    // from any large-text continuation parts; null when incomplete).
+    note: note.value.note ?? null,
+    noteComplete: note.incomplete.length === 0,
+    // Transport-push attempts, in order (delivery correlation only — never
+    // incorporation). The last entry is what the retry path checks against the
+    // relay journal.
+    pushes: (amendment.pushes ?? []).map((push) => ({ eventId: push.eventId ?? null, status: push.status ?? null, at: push.at, seq: push.seq })),
   };
 }
 
@@ -1118,7 +1205,14 @@ function attemptView(state, job, attempt) {
     id: attempt.id,
     jobId: attempt.jobId,
     phase: attempt.phase,
-    launchIntent: { at: attempt.launchIntent.at, seq: attempt.launchIntent.seq, revision: attempt.launchIntent.revision },
+    launchIntent: {
+      at: attempt.launchIntent.at,
+      seq: attempt.launchIntent.seq,
+      revision: attempt.launchIntent.revision,
+      cwd: attempt.launchIntent.cwd ?? null,
+      owner: attempt.launchIntent.owner ?? null,
+      targetPaths: attempt.launchIntent.targetPaths ?? null,
+    },
     started: attempt.started ? { at: attempt.started.at, seq: attempt.started.seq, identity: attempt.started.identity } : null,
     activity: attempt.activity.map((entry) => textEntryView(state, entry, "note")),
     progress,
@@ -1159,6 +1253,11 @@ export function viewsFor(state) {
         at: entry.at,
         seq: entry.seq,
         assignment: value.assignment,
+        // The raw coordinator instruction recorded for an amendment revision
+        // (null for the initial revision). Resolved from continuation parts;
+        // `noteComplete: false` reports missing parts instead of truncating.
+        note: value.note ?? null,
+        noteComplete: incomplete.length === 0,
         complete: incomplete.length === 0,
         incompleteTexts: incomplete,
       };

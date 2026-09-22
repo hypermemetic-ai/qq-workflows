@@ -382,6 +382,9 @@ export function reconcileJob(
 
   // Recover explicit, job-bound completion before interpreting disappearance.
   // A model transcript/final stdout is never accepted as a completion result.
+  // Communication-enabled runners are NOT decided here: their explicit result
+  // is ingested by the shared recovery helper in workflow/runner-lifecycle.mjs
+  // under authoritative change-record admission first.
   if (record.role === "runner" && !record.communication) {
     const runner = { id: record.id, resultFile: record.resultFile ?? join(tmpdir(), `qq-runner-result-${record.id}.json`) };
     let bound = false;

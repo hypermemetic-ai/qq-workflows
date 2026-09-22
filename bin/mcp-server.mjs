@@ -43,8 +43,20 @@ import {
   readSeatResult,
 } from "../workflow/results.mjs";
 import { routeNotification } from "../workflow/notify.mjs";
-import { saveReport } from "../workflow/reports.mjs";
-import { processFingerprint } from "../workflow/jobs.mjs";
+import { readReport, saveReport } from "../workflow/reports.mjs";
+import { createJob, processFingerprint, readJob, recordCancellation, writeJob } from "../workflow/jobs.mjs";
+import { openChange, viewsFor } from "../workflow/change-record.mjs";
+import {
+  acquireRelayRuntime,
+  prepareRunnerCommunication,
+  reconcileRunnerJob,
+  recordRunnerCancelIntent,
+  recordRunnerOutcome,
+  releaseAllRunnerConsumers,
+  retryPendingRunnerAmendments,
+  runnerCommunicationView,
+  steerRunnerLifecycle,
+} from "../workflow/runner-lifecycle.mjs";
 import { stateDirFor } from "../workflow/session.mjs";
 import {
   CANONICAL_PROVIDERS,
@@ -68,6 +80,7 @@ import { FINAL_RESPONSE_MAX_CHARS_LABEL } from "../workflow/limits.mjs";
 import {
   assertCentralWorkerConfig,
   buildCentralWorkerLaunch,
+  resolveWorkerLaunchPlan,
 } from "../workflow/worker-launch.mjs";
 
 export { CANONICAL_PROVIDERS, PROVIDERS, assertKnownProvider, normalizeProvider, hasImplementationChanges, OPERATOR_ACTION_TOOLS, loadWorkerConfig, WORKER_SEATS, WORKER_PROVIDER };
@@ -119,7 +132,7 @@ export const TOOLS = [
   },
   {
     name: "dispatch_runner",
-    description: "Spawn a background Gemini runner for research, deep investigation, diagnostics, or test runs.",
+    description: "Delegate research, inspection, reproduction, or diagnostics to a runner. Returns a job ID for tracking. Communication-enabled runners can receive assignment updates and push progress; completion arrives through the existing notification path.",
     inputSchema: {
       type: "object",
       properties: {
@@ -146,7 +159,7 @@ export const TOOLS = [
   },
   {
     name: "check_runner",
-    description: "Check health, trajectory, and delivery state of a running or finished runner (status, elapsed, active tool, recent steps, notification delivery). Point-in-time read; surfaces the stuck-suspicion flag with evidence when silent past threshold. Does not return the runner's findings.",
+    description: "Read a runner's current status, assignment revision, pending updates, and report reference. Transport receipt and worker acknowledgement are separate; neither proves the requested outcome succeeded. This tool does not return the full findings.",
     inputSchema: {
       type: "object",
       properties: {
@@ -174,7 +187,7 @@ export const TOOLS = [
   },
   {
     name: "steer_runner",
-    description: "Inject a one-way instruction to course-correct a running runner.",
+    description: "Submit an additional instruction to a runner as an assignment update. The result distinguishes recording, transport receipt, and worker acknowledgement. Pending or refused delivery does not mean the worker incorporated the update.",
     inputSchema: {
       type: "object",
       properties: {
@@ -192,7 +205,7 @@ export const TOOLS = [
   },
   {
     name: "cancel_runner",
-    description: "Cancel and terminate a running runner process cleanly.",
+    description: "Record cancellation intent and stop the owned runner process. Cancellation prevents later output from becoming a successful outcome and does not automatically restart the runner.",
     inputSchema: {
       type: "object",
       properties: {
@@ -202,6 +215,28 @@ export const TOOLS = [
         },
       },
       required: ["runnerId"],
+    },
+  },
+  {
+    name: "read_report",
+    description: "Read a persisted terminal report in bounded chunks. Continue with nextOffset; complete=true means the whole report was returned.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reportId: {
+          type: "string",
+          description: "Report reference returned by check_runner (terminal reportId)",
+        },
+        offset: {
+          type: "number",
+          description: "Character offset to continue from (default 0)",
+        },
+        limit: {
+          type: "number",
+          description: "Maximum characters to return in this chunk",
+        },
+      },
+      required: ["reportId"],
     },
   },
   {
@@ -1175,6 +1210,12 @@ export async function notifyTerminal(tracker, kind) {
     const report = persistTrackerReport(tracker, kind);
     const stateDir = trackerStateDir(tracker);
     const sessionDir = join(stateDir, kind === "execution" ? "executions" : "runners");
+    // The change record is the authoritative outcome for a communication-enabled
+    // runner: the validated outcome (pinned to the revision the attempt actually
+    // worked against) is recorded — and its acceptance checked — before any
+    // notification bookkeeping is reported. One shared implementation with the
+    // cleanup choke point below.
+    if (kind === "runner") finalizeRunnerOutcome(tracker);
     const attempt = (async () => {
       const message = kind === "execution"
         ? buildExecutionTerminalMessage(tracker)
@@ -1302,7 +1343,7 @@ async function sweepTracker(tracker, kind, now, summary) {
 // needs-decision notification per stall episode. Read-only toward the work
 // itself — no process is ever signalled here. Never throws.
 export async function sweepNotifications(now = Date.now()) {
-  const summary = { executions: 0, runners: 0, suspicionNotified: 0, terminalNotified: 0 };
+  const summary = { executions: 0, runners: 0, suspicionNotified: 0, terminalNotified: 0, amendmentsRetried: 0 };
   for (const execution of EXECUTIONS.values()) {
     try {
       summary.executions += 1;
@@ -1316,11 +1357,45 @@ export async function sweepNotifications(now = Date.now()) {
       summary.runners += 1;
       reconcileDeadRunner(runner);
       await sweepTracker(runner, "runner", now, summary);
+      summary.amendmentsRetried += await retryRunnerAmendmentsSweep(runner);
     } catch {
       /* one bad tracker must never wedge the sweep */
     }
   }
   return summary;
+}
+
+// Recorded-but-unsent assignment updates are recovered on the EXISTING sweep
+// lifecycle (no new orchestrator): the shared retry path re-pushes only when
+// the relay journal shows no live/delivered obligation for the recorded
+// correlation, and an attempt that is terminal, admission-closed, or unbound
+// keeps the request recorded but unresolved (never a worker relaunch).
+async function retryRunnerAmendmentsSweep(runner) {
+  const communication = runner.communication;
+  if (!communication?.enabled || !communication.changeId || runner.status !== "running") return 0;
+  if (communication.retryInFlight) return 0;
+  communication.retryInFlight = true;
+  try {
+    const stateDir = communication.stateDir ?? trackerStateDir(runner);
+    const acquired = await acquireRelayRuntime({ stateDir, env: process.env });
+    if (!acquired.ok) return 0;
+    try {
+      const retry = await retryPendingRunnerAmendments({
+        stateDir,
+        changeId: communication.changeId,
+        jobId: runner.runnerId,
+        relay: acquired.relay,
+        actor: { kind: "runtime", id: communication.runtimeActorId ?? "qq-workflows-runtime" },
+      });
+      return retry.pushed.length;
+    } finally {
+      void acquired.relay.release();
+    }
+  } catch {
+    return 0;
+  } finally {
+    communication.retryInFlight = false;
+  }
 }
 
 let suspicionSweeperTimer = null;
@@ -1364,6 +1439,22 @@ export function stopSuspicionSweeper() {
 // is notify-first (needs-decision, process left alive) because healthy work
 // (buffered test output, quiet reporters, one long single test) can go
 // quiet that long.
+// Whether an OPERATOR cancellation intent is durably recorded for this
+// tracker's attempt (the authoritative change record decides; a signal or a
+// stale cache never does).
+export function authoritativeCancelIntent(runner) {
+  const communication = runner?.communication;
+  if (!communication?.enabled || !communication.changeId) return false;
+  try {
+    const attempt = viewsFor(
+      openChange({ stateDir: communication.stateDir ?? trackerStateDir(runner), changeId: communication.changeId }).state,
+    ).attempt(communication.jobId ?? runner.runnerId ?? runner.id, communication.attemptId);
+    return Boolean(attempt?.cancelIntent) || attempt?.outcome?.status === "cancelled";
+  } catch {
+    return false;
+  }
+}
+
 export function reconcileDeadRunner(runner) {
   if (!runner || runner.status !== "running") return null;
   const proc = runner.process;
@@ -1375,9 +1466,29 @@ export function reconcileDeadRunner(runner) {
   // Dead: fix the books to match reality. Terminal transitions only out of
   // "running" (caller guarantees this); never overwrite another terminal
   // state and never signal the (already dead) process.
-  if (signalCode === "SIGTERM" || signalCode === "SIGINT") {
+  //
+  // A SIGTERM/SIGINT is operator cancellation ONLY with a recorded operator
+  // intent (which is always durable BEFORE any signal). An unexpected signal
+  // is never a cancellation: it preserves the unexpected-exit uncertainty —
+  // no cancelled outcome is invented — and falls through to the validated
+  // explicit-result check and the honest failure verdict below.
+  if ((signalCode === "SIGTERM" || signalCode === "SIGINT") && (runner.cancelRequested === true || authoritativeCancelIntent(runner))) {
     runner.status = "cancelled";
     runner.activeTool = null;
+    // A cancellation with recorded intent is still a cancellation: record the
+    // authoritative outcome so later output can never complete it.
+    if (runner.communication?.enabled && runner.communication.changeId && !runner.communication.outcomeRecorded) {
+      runner.communication.outcomeRecorded = true;
+      recordRunnerOutcome({
+        stateDir: runner.communication.stateDir ?? trackerStateDir(runner),
+        changeId: runner.communication.changeId,
+        jobId: runner.runnerId,
+        attemptId: runner.communication.attemptId,
+        status: "cancelled",
+        summary: "the runner process was terminated after a recorded cancellation intent",
+        actor: { kind: "runtime", id: runner.communication.runtimeActorId ?? "qq-workflows-runtime" },
+      });
+    }
     cleanupRunnerFiles(runner);
     return { reconciled: true, status: "cancelled", signalCode };
   }
@@ -1403,6 +1514,21 @@ export function reconcileDeadRunner(runner) {
         return { reconciled: true, status: "failed", exitCode };
       }
     }
+    if (runner.communication?.enabled) {
+      // A communication-enabled runner's result comes ONLY from the validated
+      // explicit transport (checked above) or the existing authority: a bare
+      // exit 0 with stdout tails is never promoted into workflow truth.
+      runner.status = "failed";
+      runner.error = {
+        message: "Runner exited 0 without an authoritative explicit result",
+        exitCode,
+        stderr: sanitizeHeadTail((runner.stderrTail || "").trim()),
+        outputTail: sanitizeHeadTail((runner.outputTail || "").trim()),
+      };
+      runner.activeTool = null;
+      cleanupRunnerFiles(runner);
+      return { reconciled: true, status: "failed", exitCode };
+    }
     runner.status = "completed";
     if (runner.result == null) {
       const tail = (runner.outputTail || "").trim();
@@ -1414,8 +1540,9 @@ export function reconcileDeadRunner(runner) {
   }
   runner.status = "failed";
   runner.error = {
-    message: `Runner process exited with code ${exitCode}`,
+    message: `Runner process exited with code ${exitCode}${signalCode ? ` (signal ${signalCode})` : ""}${signalCode && !runner.cancelRequested && !authoritativeCancelIntent(runner) ? "; no cancellation intent was recorded" : ""}`,
     exitCode,
+    ...(signalCode ? { signalCode } : {}),
     stderr: sanitizeHeadTail((runner.stderrTail || "").trim()),
     outputTail: sanitizeHeadTail((runner.outputTail || "").trim()),
   };
@@ -1429,6 +1556,17 @@ export function reconcileDeadRunner(runner) {
 // ============================================================================
 
 export const RUNNERS = new Map();
+
+// runnerId -> { release } — one hold per runner on the OWNER's shared progress
+// consumer (the consumer and its relay runtime are shared and refcounted; each
+// runner releases its own hold when it terminalizes).
+const RUNNER_CONSUMER_HOLDS = new Map();
+
+// Test/shutdown seam: drop every consumer/relay hold this process still owns
+// (each release drains bounded first and never deletes pending journal work).
+export async function releaseRunnerCommunication() {
+  await releaseAllRunnerConsumers();
+}
 
 // Per-runner complete_task state: tracks whether each runner called complete_task.
 // Keyed by runnerId. Also used by the Stop hook for sub-agent tracking.
@@ -1449,8 +1587,60 @@ export {
   validateRunnerResultPayload,
 };
 
+// Durable terminal bookkeeping for a tracker, exactly once: the complete
+// report is persisted and the AUTHORITATIVE change-record outcome is recorded
+// (and its acceptance checked) before the transient transport file is deleted
+// and before any notification is attempted. A compatibility tracker never
+// claims a success the record refused (e.g. output that arrived after a
+// cancellation intent) and never contradicts an outcome the record already
+// holds — the record wins in both directions.
+function finalizeRunnerOutcome(runner) {
+  if (!runner || !runner.communication?.enabled || !runner.communication.changeId) return null;
+  if (runner.status !== "completed" && runner.status !== "failed" && runner.status !== "cancelled") return null;
+  const report = persistTrackerReport(runner, "runner");
+  if (runner.communication.outcomeRecorded) return report;
+  runner.communication.outcomeRecorded = true;
+  const outcome = recordRunnerOutcome({
+    stateDir: runner.communication.stateDir ?? trackerStateDir(runner),
+    changeId: runner.communication.changeId,
+    jobId: trackerRef(runner),
+    attemptId: runner.communication.attemptId,
+    status: runner.status,
+    summary: runner.status === "failed"
+      ? String(runner.error?.message ?? "failed").slice(0, 500)
+      : runner.status === "cancelled" ? "cancelled by architect" : "completed",
+    reportId: report?.reportId ?? null,
+    actor: { kind: "runtime", id: runner.communication.runtimeActorId ?? "qq-workflows-runtime" },
+  });
+  if (!outcome.ok && outcome.code === "cancelled") {
+    runner.status = "cancelled";
+    runner.result = null;
+    runner.completionRejected = outcome.reason;
+  } else if (outcome.ok && outcome.status && outcome.status !== runner.status) {
+    runner.status = outcome.status;
+    if (outcome.status !== "completed") runner.result = null;
+  }
+  return report;
+}
+
 export function cleanupRunnerFiles(runner) {
   if (!runner) return;
+  // Release this runner's hold on the shared progress consumer. The consumer
+  // and its relay runtime are shared and refcounted, so this never destroys
+  // another runner's transport; the last hold drains bounded and stops.
+  if (runner.communication?.enabled) {
+    const held = RUNNER_CONSUMER_HOLDS.get(runner.id);
+    if (held && !runner.communication.consumerReleased) {
+      runner.communication.consumerReleased = true;
+      RUNNER_CONSUMER_HOLDS.delete(runner.id);
+      void Promise.resolve(held.release()).catch(() => {});
+    }
+  }
+  // Record/report durable BEFORE the transient transport is deleted (the
+  // shared finalize above): the complete terminal report is persisted and the
+  // authoritative change-record outcome is recorded before anything below
+  // removes the only other copy.
+  finalizeRunnerOutcome(runner);
   // Single choke point for terminal transitions: every path sets
   // status/result/error and then calls this, so retaining here is what makes
   // BOTH completed and failed terminal outcomes durable BEFORE the transient
@@ -1852,12 +2042,120 @@ export async function dispatchRunner(args = {}) {
   }
   RUNNERS.set(runnerId, runner);
 
-  startRunnerProcess(runner);
+  // A Pi-harness runner is communication-enabled: the shared runner lifecycle
+  // prepares the authoritative record, the private relay, the owner's
+  // return-consumer subscription and the validated binding BEFORE anything is
+  // spawned. A setup failure is an honest terminal failure — never a silent
+  // downgrade to a legacy, unsteerable runner.
+  let spawnEnv = process.env;
+  let communication = null;
+  let prepared = null;
+  let launchPlan = null;
+  try {
+    launchPlan = resolveWorkerLaunchPlan({ role: "runner", env: process.env });
+  } catch {
+    launchPlan = null; // startRunnerProcess reports the launch failure itself
+  }
+  if (launchPlan?.harness === "pi") {
+    const stateDir = stateDirFor(cwd, process.env);
+    const ownerRouting = runner.sessionId
+      ?? currentRuntimeIdentity().sessionId
+      ?? `unowned-${process.pid}`;
+    prepared = await prepareRunnerCommunication({
+      stateDir,
+      root: cwd,
+      env: process.env,
+      jobId: runnerId,
+      task,
+      targetPaths: runner.targetPaths,
+      cwd,
+      ownerRouting,
+      transport: {
+        name: "codex-queue",
+        deliver: async (notification) => {
+          // Per-message attribution comes from the VERIFIED notification (the
+          // shared consumer registry routes per job): a second runner's
+          // progress is never delivered through the first dispatch's closure.
+          const targetId = notification?.jobId ?? runnerId;
+          const target = RUNNERS.get(targetId) ?? runner;
+          const res = await notifySession(trackerSessionId(target) ?? runner.sessionId, notification.text, {
+            kind: "runner.progress",
+            trackerId: targetId,
+          });
+          // Queue acceptance, not confirmed consumption: report the
+          // distinction instead of implying the architect saw a turn.
+          return {
+            state: res?.notified ? "accepted" : "failed",
+            reason: res?.reason ?? null,
+            via: res?.via ?? null,
+            threadId: res?.threadId ?? null,
+          };
+        },
+      },
+      journalDir: join(stateDir, "runners"),
+      workflowRouting: { sessionKey: ownerRouting, sessionId: runner.sessionId ?? null },
+      cap: MCP_NOTIFY_CAP,
+      now: Date.now,
+    });
+    if (!prepared.ok) {
+      runner.status = "failed";
+      runner.error = { message: `Runner communication setup failed: ${prepared.reason}` };
+      cleanupRunnerFiles(runner);
+      void notifyTerminal(runner, "runner");
+      return { ok: false, runnerId, status: "failed", error: runner.error.message, communication: { enabled: false, attempted: true, failed: prepared.reason } };
+    }
+    communication = {
+      schema: 1,
+      enabled: true,
+      changeId: prepared.changeId,
+      jobId: runnerId,
+      attemptId: prepared.attemptId,
+      consumerId: prepared.consumerId,
+      stateDir,
+      runtimeActorId: prepared.binding.runtimeActorId,
+      sessionId: runner.sessionId ?? null,
+      ownerRouting,
+    };
+    // The durable compatibility projection (identity, owner routing, result
+    // transport, communication identity) is persisted BEFORE any launch so a
+    // restarted coordinator reconstructs this runner through normal tools. The
+    // change record remains the authority; this record never decides status,
+    // cancellation, effective revision or terminal outcome.
+    try {
+      createJob({
+        stateDir,
+        id: runnerId,
+        role: "runner",
+        workflow: { sessionKey: ownerRouting, sessionId: runner.sessionId ?? null, root: cwd },
+        cwd,
+        task,
+        launchPlan,
+        now: Date.now(),
+      });
+      writeJob(stateDir, { ...(readJob(stateDir, runnerId) ?? {}), resultFile: runner.resultFile, communication });
+    } catch (err) {
+      // Projection failures never block a launch: the authoritative record and
+      // the explicit result transport still allow recovery.
+      console.error("[qq-workflows] runner projection not persisted:", err?.message);
+    }
+    RUNNER_CONSUMER_HOLDS.set(runnerId, { release: prepared.release });
+    spawnEnv = { ...process.env, ...prepared.bindingEnv };
+  }
 
-  return { ok: true, runnerId, status: "running" };
+  startRunnerProcess(runner, { spawnEnv, communication });
+
+  return {
+    ok: true,
+    runnerId,
+    status: "running",
+    ...(communication ? { communication: { enabled: true, changeId: communication.changeId, attemptId: communication.attemptId } } : {}),
+  };
 }
 
-function startRunnerProcess(runner) {
+function startRunnerProcess(runner, { spawnEnv = process.env, communication = null } = {}) {
+  // The consumer hold belongs to this runner until it terminalizes; set the
+  // projection BEFORE any launch so every failure path releases it.
+  runner.communication = communication;
   if (globalThis.__QQ_TEST_RUNNER_HANDLER) {
     try {
       globalThis.__QQ_TEST_RUNNER_HANDLER(runner);
@@ -1878,14 +2176,15 @@ function startRunnerProcess(runner) {
   // The runner seat launches through the central worker contract. Its bound
   // identity and result transport ride inside that contract (the configured
   // harness decides how its seat receives them); no target-project executable is
-  // probed and there is no agy/legacy fallback.
+  // probed and there is no agy/legacy fallback. The communication binding rides
+  // in the same environment and is re-added explicitly by the pi launch.
   let launch;
   try {
     launch = buildCentralWorkerLaunch({
       seat: "runner",
       cwd: runner.cwd,
       prompt,
-      env: process.env,
+      env: spawnEnv,
       mcpEnv: {
         QQ_RUNNER_ID: runner.runnerId,
         QQ_RUNNER_RESULT_FILE: runner.resultFile,
@@ -1924,6 +2223,23 @@ function startRunnerProcess(runner) {
     return;
   }
   runner.process = child;
+  // Owned process identity is persisted on the durable projection so a
+  // restarted coordinator can verify (fingerprint) before ever signalling.
+  if (runner.communication?.enabled) {
+    try {
+      const stateDir = trackerStateDir(runner);
+      const current = readJob(stateDir, runner.runnerId);
+      if (current) {
+        writeJob(stateDir, {
+          ...current,
+          process: { pid: child.pid ?? null, spawnedAt: Date.now(), fingerprint: processFingerprint({ pid: child.pid }) },
+          updatedAt: Date.now(),
+        });
+      }
+    } catch {
+      /* projection bookkeeping never blocks the launch */
+    }
+  }
 
   const rl = createInterface({ input: child.stdout });
   let rawOutput = "";
@@ -1961,7 +2277,12 @@ function startRunnerProcess(runner) {
       return;
     }
     touchActivity(runner);
-    if (signal === "SIGTERM" || signal === "SIGINT") {
+    // An external SIGTERM/SIGINT is operator cancellation ONLY when the
+    // cancellation intent was recorded first (cancelRunner records it before
+    // any signal). An unexpected signal is never a cancellation: it falls
+    // through to the validated explicit-result check and the honest failure
+    // verdict below, with the signal reported.
+    if ((signal === "SIGTERM" || signal === "SIGINT") && (runner.cancelRequested === true || authoritativeCancelIntent(runner))) {
       runner.status = "cancelled";
       runner.activeTool = null;
       cleanupRunnerFiles(runner);
@@ -1991,16 +2312,27 @@ function startRunnerProcess(runner) {
           stderr: sanitizeHeadTail(stderrBuf.trim()),
         };
       }
-    } else if (code === 0) {
+    } else if (code === 0 && !runner.communication?.enabled) {
       runner.status = "completed";
       if (runner.result == null) {
         runner.result = rawOutput.trim();
       }
+    } else if (code === 0) {
+      // A communication-enabled runner's result comes ONLY from the validated
+      // explicit transport (or the existing authority): arbitrary final
+      // stdout is never promoted into workflow truth.
+      runner.status = "failed";
+      runner.error = {
+        message: "Runner exited 0 without an authoritative explicit result",
+        exitCode: code,
+        stderr: sanitizeHeadTail(stderrBuf.trim()),
+      };
     } else {
       runner.status = "failed";
       runner.error = {
-        message: `Runner process exited with code ${code}`,
+        message: `Runner process exited with code ${code}${signal ? ` (signal ${signal})` : ""}`,
         exitCode: code,
+        ...(signal ? { signalCode: signal } : {}),
         stderr: sanitizeHeadTail(stderrBuf.trim()),
       };
     }
@@ -2094,8 +2426,24 @@ export function handleRunnerEvent(runner, event) {
     }
     const res = event.result;
     if (res.status === "SUCCESS") {
-      runner.status = "completed";
-      runner.result = res.response;
+      if (runner.communication?.enabled) {
+        // A communication-enabled runner's result must come from the validated
+        // explicit transport (or the existing authority): the raw terminal
+        // stream event alone is never promoted into workflow truth.
+        const loaded = readAuthoritativeRunnerResult(runner);
+        if (loaded.ok) {
+          runner.status = "completed";
+          runner.result = loaded.result;
+        } else {
+          runner.status = "failed";
+          runner.error = {
+            message: `Runner completed without an authoritative explicit result: ${loaded.error}`,
+          };
+        }
+      } else {
+        runner.status = "completed";
+        runner.result = res.response;
+      }
     } else {
       runner.status = "failed";
       runner.error = {
@@ -2168,10 +2516,155 @@ export function boundedTerminalDiagnostic(tracker) {
   return diag;
 }
 
+// Rebuild a runner tracker from DURABLE state after a coordinator restart —
+// never from the lost in-memory RUNNERS map. Sources, in order: the jobs.json
+// compatibility projection (identity, owner routing, result transport, owned
+// process identity) and the authoritative change record (validated outcome,
+// report reference, launch context). Reload recovery ingests any explicit,
+// job-bound, validated result BEFORE interpreting a lost process (exactly like
+// the native surface); a cache-less runner is reconstructed from the change
+// record alone (the deterministic result transport path derives from the id).
+export function reconstructRunnerTracker(runnerId) {
+  if (!runnerId || typeof runnerId !== "string") return null;
+  const stateDir = stateDirFor(process.cwd(), process.env);
+  let record = readJob(stateDir, runnerId);
+  let communication = record?.communication ?? null;
+  if (!communication) {
+    try {
+      const state = openChange({ stateDir, changeId: runnerId }).state;
+      const job = state.jobs[runnerId];
+      const attemptId = job?.attemptOrder?.at(-1) ?? null;
+      const attempt = attemptId ? viewsFor(state).attempt(runnerId, attemptId) : null;
+      if (job && attempt) {
+        communication = {
+          schema: 1,
+          enabled: true,
+          changeId: runnerId,
+          jobId: runnerId,
+          attemptId,
+          consumerId: null,
+          stateDir,
+          runtimeActorId: "qq-workflows-runtime",
+          sessionId: attempt.launchIntent?.owner ?? null,
+          ownerRouting: attempt.launchIntent?.owner ?? null,
+        };
+      }
+    } catch {
+      communication = null;
+    }
+  }
+  if (!record && !communication) return null;
+  if (!record && communication) {
+    // The compatibility projection is REBUILDABLE: reconstruct it from the
+    // authority so the shared reload recovery can run against it.
+    try {
+      let launchIntent = null;
+      try {
+        launchIntent = viewsFor(openChange({ stateDir, changeId: runnerId }).state).attempt(runnerId, communication.attemptId)?.launchIntent ?? null;
+      } catch { /* the synthetic record stays minimal */ }
+      record = {
+        schema: 1,
+        id: runnerId,
+        role: "runner",
+        kind: null,
+        workflow: {
+          sessionKey: communication.ownerRouting ?? null,
+          sessionId: communication.sessionId ?? null,
+          ownerAgentId: null,
+          root: launchIntent?.cwd ?? null,
+        },
+        cwd: launchIntent?.cwd ?? process.cwd(),
+        task: null,
+        status: "running",
+        phase: null,
+        startedAt: launchIntent?.at ?? Date.now(),
+        updatedAt: Date.now(),
+        finishedAt: null,
+        process: null,
+        launchPlan: null,
+        cancellation: null,
+        terminal: null,
+        delivery: null,
+        recovery: null,
+        events: [],
+        resultFile: join(tmpdir(), `qq-runner-result-${runnerId}.json`),
+        communication,
+      };
+      writeJob(stateDir, record);
+    } catch {
+      return null;
+    }
+  }
+  // Reload recovery FIRST (explicit validated result before process loss),
+  // then mirror the authoritative projection onto the rebuilt tracker.
+  let recoveredRecord = record;
+  try {
+    const recovered = reconcileRunnerJob({ stateDir, jobId: runnerId });
+    if (recovered.record) recoveredRecord = recovered.record;
+  } catch {
+    /* the raw record is still a truthful projection */
+  }
+  const commView = communication
+    ? runnerCommunicationView({ stateDir: communication.stateDir ?? stateDir, communication })
+    : null;
+  const decided = commView?.enabled
+    ? (commView.outcome?.status ?? (commView.cancelIntent ? "cancelled" : null))
+    : null;
+  const status = decided ?? recoveredRecord.status;
+  const reportId = recoveredRecord.terminal?.reportId ?? commView?.outcome?.reportId ?? null;
+  const retained = loadRetainedFindings(runnerId);
+  const tracker = {
+    id: runnerId,
+    runnerId,
+    sessionId: communication?.sessionId ?? recoveredRecord.workflow?.sessionId ?? null,
+    cwd: recoveredRecord.cwd ?? process.cwd(),
+    task: recoveredRecord.task ?? null,
+    status,
+    startedAt: recoveredRecord.startedAt ?? Date.now(),
+    lastActivityAt: recoveredRecord.telemetry?.lastObservedAt ?? recoveredRecord.startedAt ?? Date.now(),
+    activeTool: null,
+    trajectory: recoveredRecord.telemetry?.trajectory ?? [],
+    result: status === "completed" ? retained?.result ?? null : null,
+    error: status === "failed" ? retained?.error ?? (recoveredRecord.terminal?.summary ? { message: recoveredRecord.terminal.summary } : null) ?? { message: "the runner failed before this coordinator started" } : null,
+    process: recoveredRecord.process ?? null,
+    outputTail: retained?.outputTail ?? "",
+    stderrTail: "",
+    resultFile: recoveredRecord.resultFile ?? join(tmpdir(), `qq-runner-result-${runnerId}.json`),
+    communication,
+    recoveredFromRecord: true,
+    ...(reportId ? { durableReport: { reportId, chars: recoveredRecord.terminal?.reportChars ?? 0 } } : {}),
+  };
+  RUNNERS.set(runnerId, tracker);
+  return tracker;
+}
+
+// Full durable report retrieval through a NORMAL tool (bounded pagination):
+// the shared reports.mjs store under the same stateDir convention as the
+// native read_report — reachable from a cold-process restart. check_runner
+// itself never returns findings.
+export function readRunnerReport({ reportId, offset = 0, limit } = {}) {
+  if (!reportId || typeof reportId !== "string" || !reportId.trim()) throw new Error("reportId is required");
+  const candidates = [stateDirFor(process.cwd(), process.env)];
+  for (const tracker of RUNNERS.values()) {
+    const dir = tracker?.communication?.stateDir ?? (tracker?.cwd ? trackerStateDir(tracker) : null);
+    if (dir && !candidates.includes(dir)) candidates.push(dir);
+  }
+  let last = null;
+  for (const stateDir of candidates) {
+    const out = readReport(stateDir, reportId, { offset, ...(limit ? { limit } : {}) });
+    if (out.ok) return out;
+    last = out;
+  }
+  return last ?? { ok: false, reportId, error: `no persisted report '${reportId}'` };
+}
+
 export async function checkRunner(args = {}) {
   const runnerId = args.runnerId || args.id;
   if (!runnerId) throw new Error("runnerId is required");
-  const runner = RUNNERS.get(runnerId);
+  // A restarted coordinator reconstructs the runner from durable state (the
+  // jobs.json projection and the authoritative change record); the lost
+  // in-memory map is never the only source.
+  const runner = RUNNERS.get(runnerId) ?? reconstructRunnerTracker(runnerId);
   if (!runner) throw new Error(`no runner found for id '${runnerId}'`);
 
   // Dead-process reconcile first: fix the books before reporting.
@@ -2180,6 +2673,23 @@ export async function checkRunner(args = {}) {
   const now = Date.now();
   const elapsedSeconds = Math.round((now - runner.startedAt) / 1000);
   const activeTool = activeToolView(runner.activeTool, now);
+  // Rebuilt from the authoritative change record on every read: revision,
+  // pending update references (bounded), unresolved revisions, and the
+  // attempt's outcome — never the full findings.
+  const communication = runner.communication?.enabled
+    ? runnerCommunicationView({ stateDir: runner.communication.stateDir ?? trackerStateDir(runner), communication: runner.communication })
+    : { enabled: false, supported: false, reason: "no communication binding was prepared for this runner; assignment updates are unsupported and progress is not pushed" };
+  // The authoritative outcome wins over any stale tracker projection.
+  if (communication.enabled) {
+    const decided = communication.outcome?.status ?? (communication.cancelIntent ? "cancelled" : null);
+    if (decided && runner.status !== decided) {
+      runner.status = decided;
+      if (decided !== "completed") runner.result = null;
+    }
+    if (communication.outcome?.reportId && !runner.durableReport) {
+      runner.durableReport = { reportId: communication.outcome.reportId, chars: 0 };
+    }
+  }
 
   if (runner.status !== "running") {
     return {
@@ -2196,6 +2706,9 @@ export async function checkRunner(args = {}) {
       // whether that wakeup was confirmed delivered or is still pending.
       notification: notificationDeliveryState(runner),
       findingsRetained: hasRetainedFindings(runner.id),
+      // The terminal report reference (never the findings themselves).
+      reportId: runner.durableReport?.reportId ?? runner.spilledReport?.reportId ?? communication.outcome?.reportId ?? null,
+      communication,
       // Bounded, payload-free failure diagnostic. The full diagnostic (raw
       // stderr/outputTail/message) stays on the tracker for the terminal
       // notification and any retained artifact; check_runner never dumps it.
@@ -2216,6 +2729,7 @@ export async function checkRunner(args = {}) {
     suspicion,
     stuckSuspect: suspicion !== null,
     notification: notificationDeliveryState(runner),
+    communication,
   };
 }
 
@@ -2224,55 +2738,211 @@ export async function steerRunner(args = {}) {
   const instruction = args.instruction;
   if (!runnerId) throw new Error("runnerId is required");
   if (!instruction || typeof instruction !== "string") throw new Error("instruction is required");
-  const runner = RUNNERS.get(runnerId);
+  const runner = RUNNERS.get(runnerId) ?? reconstructRunnerTracker(runnerId);
   if (!runner) throw new Error(`no runner found for id '${runnerId}'`);
+  const communication = runner.communication;
+  if (!communication?.enabled || !communication.changeId) {
+    // Legacy/non-enabled runner steering: the runner's stdin is /dev/null, so a
+    // write there would be ignored delivery theater. Refuse explicitly instead
+    // of keeping a false success — and keep the refusal in the trajectory so
+    // historical check results identify communication unsupported.
+    addTrajectory(runner, {
+      action: "steer",
+      instruction: String(instruction).slice(0, 500),
+      target: "refused: communication unsupported",
+      refused: true,
+      timestamp: Date.now(),
+    });
+    return {
+      ok: false,
+      runnerId,
+      status: runner.status,
+      supported: false,
+      steered: false,
+      error: "runner communication is not enabled for this runner; there is no verified receiver to deliver the instruction to, and nothing was sent",
+    };
+  }
   if (runner.status !== "running") {
-    throw new Error(`cannot steer runner in status '${runner.status}'`);
+    return {
+      ok: false,
+      runnerId,
+      status: runner.status,
+      supported: true,
+      steered: false,
+      error: `cannot steer runner in status '${runner.status}': updates are no longer admitted`,
+    };
+  }
+
+  const stateDir = communication.stateDir ?? trackerStateDir(runner);
+  // The relay push reuses the shared, refcounted relay runtime for this state
+  // directory; the hold is dropped as soon as the submission settled.
+  const acquired = await acquireRelayRuntime({ stateDir, env: process.env });
+  const relay = acquired.ok ? acquired.relay : null;
+  let result;
+  try {
+    result = await steerRunnerLifecycle({
+      stateDir,
+      changeId: communication.changeId,
+      jobId: runnerId,
+      message: instruction.trim(),
+      relay,
+      actor: { kind: "runtime", id: communication.runtimeActorId ?? "qq-workflows-runtime" },
+      now: Date.now(),
+    });
+  } finally {
+    if (acquired.ok) void acquired.relay.release();
   }
 
   addTrajectory(runner, {
     action: "steer",
-    instruction,
+    instruction: String(instruction).slice(0, 500),
+    ...(result.ok ? { target: `revision ${result.revision} (${result.delivery?.status ?? "unknown"})` } : { target: `${result.code}: refused` }),
     timestamp: Date.now(),
   });
 
-  if (runner.onSteer && typeof runner.onSteer === "function") {
-    runner.onSteer(instruction);
+  if (!result.ok) {
+    return {
+      ok: false,
+      runnerId,
+      status: runner.status,
+      supported: true,
+      steered: false,
+      code: result.code,
+      retryable: result.code === "not-bound",
+      ...(result.revisionRecorded ? { revisionRecorded: result.revisionRecorded, unresolved: true } : {}),
+      error: result.reason,
+    };
   }
-
-  if (runner.process && runner.process.stdin && runner.process.stdin.writable) {
-    try {
-      runner.process.stdin.write(`${instruction}\n`);
-    } catch {
-      /* ignore pipe error */
-    }
-  }
-
-  return { ok: true, runnerId, steered: true };
+  // Rebuildable delivery correlation on the in-memory tracker (the
+  // authoritative correlation lives in the change record).
+  communication.amendments = [
+    ...(Array.isArray(communication.amendments) ? communication.amendments : []),
+    { amendmentId: result.amendmentId, revision: result.revision, push: { status: result.delivery?.status ?? "unknown", eventId: result.delivery?.eventId ?? null, at: Date.now() } },
+  ];
+  return {
+    ok: true,
+    runnerId,
+    status: runner.status,
+    recorded: true,
+    revision: result.revision,
+    amendmentId: result.amendmentId,
+    delivery: result.delivery,
+    acknowledged: false,
+    note: "recorded as an assignment update; transport receipt and worker acknowledgement are separate later facts (check_runner)",
+  };
 }
 
 export async function cancelRunner(args = {}) {
   const runnerId = args.runnerId || args.id;
   if (!runnerId) throw new Error("runnerId is required");
-  const runner = RUNNERS.get(runnerId);
+  const runner = RUNNERS.get(runnerId) ?? reconstructRunnerTracker(runnerId);
   if (!runner) throw new Error(`no runner found for id '${runnerId}'`);
-
+  const communication = runner.communication;
+  if (communication?.enabled && communication.changeId) {
+    // The AUTHORITATIVE change record decides FIRST: an already-validated
+    // outcome is never overwritten by a false cancellation, and nothing is
+    // signalled before the cancellation intent is durably admitted (a refused
+    // or unavailable record fails safely — no tombstone, no signal).
+    const stateDir = communication.stateDir ?? trackerStateDir(runner);
+    const actor = { kind: "runtime", id: communication.runtimeActorId ?? "qq-workflows-runtime" };
+    const readDecided = () => {
+      try {
+        return viewsFor(openChange({ stateDir, changeId: communication.changeId }).state)
+          .attempt(communication.jobId ?? runnerId, communication.attemptId)?.outcome?.status ?? null;
+      } catch {
+        return null;
+      }
+    };
+    const decided = readDecided();
+    if (decided) {
+      if (runner.status !== decided) runner.status = decided;
+      return {
+        ok: decided === "cancelled",
+        runnerId,
+        status: decided,
+        ...(decided === "cancelled" ? {} : { code: "already-decided" }),
+        note: `the authoritative change record already holds the validated '${decided}' outcome; nothing was signalled`,
+      };
+    }
+    const intent = recordRunnerCancelIntent({
+      stateDir,
+      changeId: communication.changeId,
+      jobId: runnerId,
+      attemptId: communication.attemptId,
+      reason: "cancelled by architect",
+      actor,
+    });
+    if (!intent.ok) {
+      return {
+        ok: false,
+        runnerId,
+        status: runner.status,
+        code: intent.code ?? "refused",
+        error: `cancellation refused: ${intent.reason}`,
+        note: "no cancellation intent was recorded, no cache tombstone was written, and no process was signalled",
+      };
+    }
+    recordRunnerOutcome({
+      stateDir,
+      changeId: communication.changeId,
+      jobId: runnerId,
+      attemptId: communication.attemptId,
+      status: "cancelled",
+      summary: "cancelled by architect",
+      actor,
+    });
+    const settled = readDecided();
+    if (settled !== "cancelled") {
+      // The append lost to a validated success (or failed): never signal and
+      // never claim an accepted cancellation.
+      return {
+        ok: false,
+        runnerId,
+        status: settled ?? runner.status,
+        code: "already-decided",
+        note: "no accepted authoritative cancellation outcome exists; no process was signalled",
+      };
+    }
+    if (!communication.outcomeRecorded) communication.outcomeRecorded = true;
+  }
   if (runner.status === "running") {
+    // The cancellation intent is durable BEFORE the owned process is
+    // signalled: later output can never become a successful outcome.
+    runner.cancelRequested = true;
     runner.status = "cancelled";
     runner.activeTool = null;
     addTrajectory(runner, { action: "cancelled", timestamp: Date.now() });
-    if (runner.process) {
+    // The durable compatibility projection mirrors the tombstone (a no-op for
+    // legacy runners without one).
+    try {
+      recordCancellation(communication?.stateDir ?? trackerStateDir(runner), runnerId, {
+        by: runner.sessionId ?? "architect",
+        reason: "cancelled by architect",
+        now: Date.now(),
+      });
+    } catch {
+      /* legacy runners may have no durable projection */
+    }
+    if (runner.process && typeof runner.process.kill === "function") {
       try {
         runner.process.kill("SIGTERM");
       } catch {
         /* ignore */
       }
-    } else {
+    } else if (runner.process?.pid && runner.process?.fingerprint) {
+      // A reconstructed handle has no live ChildProcess: only a
+      // fingerprint-matched owned process is ever signalled.
+      const live = processFingerprint({ pid: runner.process.pid });
+      const recorded = runner.process.fingerprint;
+      if (live && recorded && live.startTicks === recorded.startTicks && live.cmdlineHash === recorded.cmdlineHash) {
+        try { process.kill(runner.process.pid, "SIGTERM"); } catch { /* already gone */ }
+      }
+    } else if (!runner.process) {
       cleanupRunnerFiles(runner);
     }
   }
 
-  return { ok: true, runnerId, status: "cancelled" };
+  return { ok: true, runnerId, status: runner.status === "running" ? "cancelled" : runner.status };
 }
 
 // ============================================================================
@@ -3333,6 +4003,9 @@ export async function callTool(name, args = {}, options = {}) {
     // Routing is taken ONLY from the retained record; the caller supplies no
     // thread/session and ownership is verified against trusted runtime context.
     return replayRetainedRunnerFindings(args.runnerId);
+  }
+  if (name === "read_report") {
+    return readRunnerReport(args);
   }
   if (name === "dispatch_execution") {
     return dispatchExecution(args);
