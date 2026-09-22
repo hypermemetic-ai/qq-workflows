@@ -618,17 +618,44 @@ export function createArchitectExtension(pi, options = {}) {
         return { state: "failed", reason: "stale-session-context", error: err?.message || String(err) };
       }
       try {
+        // A replay can arrive after Pi persisted the previous wake but before
+        // its workflow receipt was saved. This also covers progress, which is
+        // journaled independently of terminal job recovery. Reuse the exact
+        // owning-session evidence before asking Pi to insert another message.
+        const evidence = sessionEvidence(ctx);
+        const retained = evidence?.entries.find((entry) => entry.eventId === details.eventId);
+        const retainedText = evidence?.userMessages.get(text)?.[0];
+        if (details.eventId && (retained || retainedText)) {
+          const entry = retained ?? retainedText;
+          const receipt = { kind: retained ? "pi-session-entry" : "session-user-message",
+            eventId: details.eventId, entryId: entry.entryId, at: entry.at ?? null,
+            sessionFile: evidence.sessionFile, observedAt: now() };
+          rememberAcknowledged(details.eventId, receipt);
+          releaseInFlight(details.eventId);
+          return { state: "delivered", receipt };
+        }
         if (!idle) return steer(notification, text, "session-busy");
         // The idle branch wakes the session with a regular user message (the
         // operator's live wakeup, unchanged). Its receipt is pi starting a turn
         // for this text, confirmed later by the exact session entry.
-        if (details.eventId) expectReceipt({ ...details, text, kind: "user-message" });
-        pi.sendUserMessage(text);
+        if (details.eventId) {
+          expectReceipt({ ...details, text, kind: "user-message" });
+          holdInFlight(details.eventId);
+        }
+        // The installed extension API is fire-and-forget: it catches an
+        // asynchronous prompt failure internally and returns void. Invocation
+        // is not proof that a turn started or that the session retained it.
+        pi.sendUserMessage(text, { deliverAs: "steer" });
         const observed = details.eventId ? state.acknowledged.get(details.eventId) ?? null : null;
-        const receipt = observed ?? { kind: "turn-started", eventId: details.eventId ?? null, at: now(), confirmed: false };
-        state.deliveries.push({ eventId: details.eventId, state: "delivered", receiptKind: receipt.kind });
-        return { state: "delivered", receipt };
+        if (observed) {
+          state.deliveries.push({ eventId: details.eventId, state: "delivered", receiptKind: observed.kind });
+          return { state: "delivered", receipt: observed };
+        }
+        scheduleReceiptCheck();
+        state.deliveries.push({ eventId: details.eventId, state: "queued", reason: "awaiting-session-receipt" });
+        return { state: "queued", reason: "awaiting-session-receipt" };
       } catch (err) {
+        if (details.eventId) releaseInFlight(details.eventId);
         // A wake can lose a race with a prompt the operator (or Paseo) submitted
         // in the same instant. Queue instead of failing when that is the cause;
         // report anything else truthfully.

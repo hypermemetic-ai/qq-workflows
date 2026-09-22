@@ -291,7 +291,7 @@ export function markDelivery(
   // `null`/`undefined` match each other, so marking such a record (e.g. as
   // `unknown`) neither invents an event ID nor resets the acceptance evidence
   // the record already carries.
-  const previous = current.delivery && (current.delivery.eventId ?? null) === (eventId ?? null) ? current.delivery : null;
+  const previous = current.delivery && (current.delivery.eventId ?? null) === (eventId ?? null) ? deliveryEvidence(current.delivery) : null;
   const previousState = previous?.state ?? null;
   const next = nextDeliveryState(previousState, state);
   const observedState = observed ?? state;
@@ -312,7 +312,13 @@ export function markDelivery(
     acceptedAt: transitioned && next === "accepted" ? now : previous?.acceptedAt ?? null,
     queuedAt: transitioned && next === "queued" ? now : previous?.queuedAt ?? null,
     deliveredAt: transitioned && next === "delivered" ? now : previous?.deliveredAt ?? null,
-    receipt: receipt ?? previous?.receipt ?? null,
+    // An independently confirmed journal delivery must not inherit an old
+    // explicitly unconfirmed receipt and normalize back to queued forever.
+    receipt: receipt ?? (next === "delivered" && previous?.receipt?.confirmed === false ? null : previous?.receipt ?? null),
+    ...(previous?.legacyUnconfirmedReceipt ? {
+      legacyUnconfirmedReceipt: previous.legacyUnconfirmedReceipt,
+      legacyReportedState: previous.legacyReportedState,
+    } : {}),
     reason: suppressed ? previous?.reason ?? null : reason ?? null,
     messageId: messageId ?? previous?.messageId ?? null,
     lastResult: suppressed ? { state: observedState, at: now, reason: reason ?? null, applied: false } : previous?.lastResult ?? null,
@@ -323,8 +329,16 @@ export function markDelivery(
 // The job projection tracks only its terminal notification. Progress/blocker
 // receipts live in their own journal entries and cannot satisfy completion.
 // Identity-less historical projections retain their uncertainty semantics.
+export function deliveryEvidence(delivery) {
+  if (delivery?.state === "delivered" && delivery.receipt?.confirmed === false) {
+    return { ...delivery, state: "queued", legacyReportedState: "delivered",
+      legacyUnconfirmedReceipt: delivery.legacyUnconfirmedReceipt ?? delivery.receipt };
+  }
+  return delivery;
+}
+
 export function terminalDelivery(record) {
-  const delivery = record?.delivery ?? null;
+  const delivery = deliveryEvidence(record?.delivery ?? null);
   if (delivery?.eventId && delivery.eventId !== `${record.role}:${record.id}:terminal`) return null;
   return delivery;
 }
@@ -490,7 +504,7 @@ export function jobSummary(record) {
           error: record.terminal.error,
         }
       : null,
-    delivery: record.delivery,
+    delivery: terminalDelivery(record),
     recovery: record.recovery,
     reportId: record.terminal?.reportId ?? null,
   };

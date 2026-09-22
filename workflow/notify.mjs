@@ -47,6 +47,7 @@ import {
   DELIVERY_STATES,
   UNVERIFIED_DELIVERY_STATES,
   deliveryPending,
+  deliveryEvidence,
   terminalDelivery,
   markDelivery,
   nextDeliveryState,
@@ -60,7 +61,7 @@ export const NOTIFICATION_STATES = ["pending", "accepted", "queued", "delivered"
 // What a receipt can be based on. `pi-session-entry` is a durable pi session
 // entry carrying the event identity (the strongest evidence available);
 // `session-user-message` is the exact delivered text observed as a session user
-// message; `turn-started` is pi accepting an idle wakeup into a new turn.
+// message; `turn-started` is retained for historical records; confirmed:false is not a receipt.
 // `session-entry-content-correspondence` is the conservative fallback for a
 // completion a previous release steered WITHOUT the identity metadata: the exact
 // delivered text is the only link back to the event, so it is only ever used
@@ -108,7 +109,7 @@ export function readNotificationState(stateDir, eventId) {
   }
   try {
     const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return { status: "ok", record: parsed, raw };
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return { status: "ok", record: deliveryEvidence(parsed), raw };
     return { status: "corrupt", record: null, raw };
   } catch {
     return { status: "corrupt", record: null, raw };
@@ -277,7 +278,7 @@ export function repairNotificationFromJob({ stateDir, job, eventId, now = Date.n
     // therefore cannot be preserved): the uncertainty is reported instead.
     return { ok: false, repaired: false, reason: "notification-record-unreadable", error: current.error ?? null };
   }
-  const delivery = job.delivery ?? null;
+  const delivery = deliveryEvidence(job.delivery ?? null);
   const at = delivery?.at ?? job.terminal?.at ?? now;
   const repair = { at: now, source: "job-projection", previous: current.status, quarantined: null, preservedChars: 0 };
   if (current.status === "corrupt") {
@@ -342,6 +343,9 @@ export function acknowledgeDelivery({
 } = {}) {
   if (!stateDir) throw new Error("stateDir is required");
   if (!eventId) throw new Error("eventId is required");
+  if (receipt?.confirmed === false) {
+    return { ok: false, acknowledged: false, eventId, jobId, state: null, reason: "unconfirmed-receipt" };
+  }
   const journal = readNotificationState(stateDir, eventId);
   if (journal.status !== "ok") {
     // Consumption can be observed before the send call returns and the router
@@ -521,7 +525,8 @@ async function routeNotificationOnce({
   } catch (err) {
     result = { state: "failed", reason: err?.message || String(err) };
   }
-  const reported = DELIVERY_STATES.includes(result?.state) ? result.state : "failed";
+  const reported = result?.state === "delivered" && result?.receipt?.confirmed === false
+    ? "queued" : DELIVERY_STATES.includes(result?.state) ? result.state : "failed";
   // A receipt observed while the transport call was in flight is stronger than
   // the transport result, and a receipt already on disk is never downgraded.
   const receipt = result?.receipt ?? null;
@@ -689,10 +694,11 @@ function evidenceAt(entry) {
 // acknowledged. They are only ever read through `matchLegacyEvidence` below.
 export function normalizeEvidence(evidence) {
   if (!evidence) {
-    return { known: false, byEventId: new Map(), unidentified: [], sessionFile: null, pendingMessages: null, inFlight: new Set(), at: null };
+    return { known: false, byEventId: new Map(), unidentified: [], userMessages: [], sessionFile: null, pendingMessages: null, inFlight: new Set(), at: null };
   }
   const byEventId = new Map();
   const unidentified = [];
+  const userMessages = [];
   // Legacy completion evidence reaches the reader in one of two shapes: the
   // owning reader's normalized `{entryId, text}` form, or a raw pi session entry
   // for a completion of this profile (`custom_message` of the completion type,
@@ -727,6 +733,21 @@ export function normalizeEvidence(evidence) {
   for (const entry of evidence.unidentified ?? []) {
     collect(entry, { requireCompletionType: false });
   }
+  // Idle wakes are ordinary Pi user messages, without custom event metadata.
+  // Preserve their exact text for the same conservative correspondence used
+  // by the live receipt checker. Dropping this evidence on reopen duplicates
+  // a wake saved just before the workflow receipt was written.
+  if (evidence.userMessages instanceof Map) {
+    for (const [text, entries] of evidence.userMessages) {
+      if (typeof text !== "string" || !Array.isArray(entries)) continue;
+      for (const entry of entries) userMessages.push({ ...entry, text, source: "user-message" });
+    }
+  }
+  for (const entry of evidence.entries ?? []) {
+    if (entry?.type !== "message" || entry.message?.role !== "user") continue;
+    const text = evidenceText(entry.message);
+    if (text) userMessages.push({ entryId: entry.id ?? null, at: evidenceAt(entry), text, source: "user-message" });
+  }
   const inFlight = new Set();
   if (evidence.inFlight && typeof evidence.inFlight !== "string" && typeof evidence.inFlight[Symbol.iterator] === "function") {
     for (const entry of evidence.inFlight) {
@@ -738,6 +759,7 @@ export function normalizeEvidence(evidence) {
     known: true,
     byEventId,
     unidentified,
+    userMessages,
     sessionFile: evidence.sessionFile ?? null,
     pendingMessages: typeof evidence.pendingMessages === "boolean" ? evidence.pendingMessages : null,
     inFlight,
@@ -789,9 +811,12 @@ function completionHeader(job) {
 // for an explicit decision instead of being replayed on a guess.
 export function matchLegacyEvidence({ job, evidence, claimants = new Map() } = {}) {
   const known = evidence?.byEventId ? evidence : normalizeEvidence(evidence);
-  if (known.unidentified.length === 0) return { state: "none" };
+  if (known.unidentified.length === 0 && !known.userMessages?.length) return { state: "none" };
   const forms = completionTextForms(job);
-  const matches = known.unidentified.filter((entry) => forms.includes(entry.text));
+  // Prefer labelled completion evidence when present. Ordinary user text is
+  // only the idle-wake fallback, not another copy of a labelled completion.
+  const labelled = known.unidentified.filter((entry) => forms.includes(entry.text));
+  const matches = labelled.length ? labelled : (known.userMessages ?? []).filter((entry) => forms.includes(entry.text));
   if (matches.length > 0) {
     const claimantsForText = new Set();
     for (const form of forms) for (const id of claimants.get(form) ?? []) claimantsForText.add(id);
@@ -1012,7 +1037,7 @@ export async function recoverPendingDeliveries({
     const legacy = matchLegacyEvidence({ job, evidence: known, claimants });
     if (legacy.state === "exact") {
       const receipt = {
-        kind: "session-entry-content-correspondence",
+        kind: legacy.entry.source === "user-message" ? "session-user-message" : "session-entry-content-correspondence",
         eventId,
         entryId: legacy.entry.entryId,
         sessionFile: legacy.entry.sessionFile ?? known.sessionFile,
