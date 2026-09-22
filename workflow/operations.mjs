@@ -364,7 +364,8 @@ export function createWorkflow({
     if (typeof task !== "string" || !task.trim()) throw new Error("task is required");
     const association = session();
     const id = randomUUID();
-    const resultFile = join(tmpdir(), `qq-runner-result-${id}.json`);
+    const resultFile = join(stateDir, "runner-results", `${id}.json`);
+    mkdirSync(dirname(resultFile), { recursive: true, mode: 0o700 });
     const reportFile = join(tmpdir(), `qq-runner-report-${id}.md`);
     try {
       rmSync(resultFile, { force: true });
@@ -429,6 +430,7 @@ export function createWorkflow({
     const current = readJob(stateDir, id);
     writeJob(stateDir, {
       ...current,
+      resultFile,
       process: { pid, spawnedAt: now(), fingerprint: processFingerprint({ pid }) },
       launchPlan: record.launchPlan,
     });
@@ -442,6 +444,11 @@ export function createWorkflow({
           const interpreted = interpretRunnerEvent(JSON.parse(line));
           if (interpreted.step) liveState.trajectory = [...liveState.trajectory.slice(-8), { at: now(), ...interpreted.step }];
           if (interpreted.activeTool !== undefined) liveState.activeTool = interpreted.activeTool;
+          const current = readJob(stateDir, id);
+          liveState.lastObservedAt = now();
+          if (current && !current.terminal) writeJob(stateDir, { ...current,
+            telemetry: { lastObservedAt: now(), activeTool: liveState.activeTool,
+              trajectory: liveState.trajectory }, updatedAt: now() });
           if (interpreted.completeTask) liveState.completeTaskSeen = true;
         } catch {
           /* non-JSON progress lines are liveness only */
@@ -481,7 +488,7 @@ export function createWorkflow({
         void finishJob(finished, { status: "completed", findings: withReport, report: authoritative.report ?? null });
         return;
       }
-      if (finished.cancellation || signal === "SIGTERM" || signal === "SIGINT") {
+      if (finished.cancellation) {
         cleanupRunnerFiles(runner);
         live.delete(id);
         return;
@@ -494,7 +501,7 @@ export function createWorkflow({
           message:
             code === 0
               ? `runner exited 0 without an authoritative complete_task result: ${authoritative.error}`
-              : `runner process exited with code ${code}`,
+              : `runner process exited with code ${code}${signal ? ` (signal ${signal})` : ""}`,
           ...(liveState.stderr.trim() ? { stderr: clamp(liveState.stderr.trim(), 1000) } : {}),
         },
       });
@@ -512,12 +519,22 @@ export function createWorkflow({
   }
 
   function checkRunnerOp({ jobId } = {}) {
-    const record = requireJob(jobId);
+    let record = requireJob(jobId);
     const state = live.get(jobId) ?? null;
+    // Live child callbacks own settlement until exit. Recovered handles have no
+    // callback, so inspect the result transport and process on every read.
+    if (!state && record.role === "runner") record = reconcileJob(stateDir, jobId) ?? record;
+    const telemetry = state ?? record.telemetry ?? null;
+    const lastObservedAt = telemetry?.lastObservedAt ?? null;
     return {
       ...jobSummary(record),
-      activeTool: state?.activeTool ?? null,
-      trajectory: state?.trajectory ?? [],
+      jobId: record.id,
+      telemetry: { source: state ? "live" : record.telemetry ? "durable" : "unavailable",
+        state: record.terminal ? "terminal" : !lastObservedAt ? "unavailable"
+          : now() - lastObservedAt > 30_000 ? "stale" : telemetry?.activeTool ? "active" : "idle",
+        lastObservedAt, observedAt: now(), idleMeaning: "no tool currently observed; model activity may continue" },
+      activeTool: telemetry?.activeTool ?? null,
+      trajectory: telemetry?.trajectory ?? [],
       outputTail: state?.outputTail ? clamp(state.outputTail, 2000) : null,
       reportHint: record.terminal?.reportId
         ? `Full report '${record.terminal.reportId}' (${record.terminal.reportChars} chars) via read_report.`
@@ -668,7 +685,8 @@ export function createWorkflow({
 
   async function recoverDeliveriesOp({ transport = notifierTransport, evidence = null, allowUnverified = false } = {}) {
     const association = session();
-    const jobs = reconcileAll(stateDir).map(jobSummary);
+    const jobs = listJobs(stateDir, { sessionKey: association.sessionKey }).map((record) =>
+      live.has(record.id) ? record : reconcileJob(stateDir, record.id)).map(jobSummary);
     const delivery = await recoverPendingDeliveries({
       stateDir,
       sessionKey: association.sessionKey,

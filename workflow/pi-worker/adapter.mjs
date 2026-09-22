@@ -290,12 +290,29 @@ export function resolveNativeSessionPath({
   throw Object.assign(new Error("native_session_collision: could not allocate a unique native session file after 5 attempts"), { code: "native_session_collision" });
 }
 
+// Progress pipes are disposable across a coordinator reload. They are never
+// the result transport; EPIPE must not abort an otherwise healthy attempt.
+const brokenStreams = new WeakSet();
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on("error", (error) => {
+    if (["EPIPE", "ERR_STREAM_DESTROYED"].includes(error.code)) brokenStreams.add(stream);
+    else throw error;
+  });
+}
+function bestEffortWrite(stream, text) {
+  if (brokenStreams.has(stream) || stream.destroyed) return;
+  try { stream.write(text); } catch (error) {
+    if (["EPIPE", "ERR_STREAM_DESTROYED"].includes(error.code)) brokenStreams.add(stream);
+    else throw error;
+  }
+}
+
 export function diagnostic(message) {
-  process.stderr.write(`pi-worker-adapter: ${String(message).replace(/\s+/gu, " ").slice(0, 400)}\n`);
+  bestEffortWrite(process.stderr, `pi-worker-adapter: ${String(message).replace(/\s+/gu, " ").slice(0, 400)}\n`);
 }
 
 export function emit(event) {
-  process.stdout.write(`${JSON.stringify(event)}\n`);
+  bestEffortWrite(process.stdout, `${JSON.stringify(event)}\n`);
 }
 
 function assistantText(message) {
@@ -898,7 +915,6 @@ async function runOneTurn(args, env) {
     }
 
     const finalText = translator.state.finalText;
-    emit({ type: "item.completed", item: { type: "agent_message", text: finalText } });
     summary.outcome = "completed";
 
     if (args.seat === "runner") {
@@ -919,6 +935,8 @@ async function runOneTurn(args, env) {
       }
       summary.resultChars = finalText.length;
     }
+    // Publish only AFTER the authoritative result file is durable.
+    emit({ type: "item.completed", item: { type: "agent_message", text: finalText } });
     await client.cancel({ signal: "SIGTERM", graceMs: 3_000 });
     return { ok: true, code: "completed", summary };
   } finally {

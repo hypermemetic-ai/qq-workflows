@@ -639,6 +639,14 @@ export function createArchitectExtension(pi, options = {}) {
     },
   };
 
+  let recoveryTimer = null;
+  let recoveryRunning = false;
+  pi.on("session_shutdown", () => {
+    state.sessionReady = false;
+    if (recoveryTimer) clearInterval(recoveryTimer);
+    recoveryTimer = null;
+    cancelReceiptTimers();
+  });
   let workflow = null;
   function ensureWorkflow() {
     if (workflow) return workflow;
@@ -748,6 +756,13 @@ export function createArchitectExtension(pi, options = {}) {
     }
     const reason = typeof event?.reason === "string" && event.reason ? event.reason : "startup";
     state.sessionReason = reason;
+    if (recoveryTimer) clearInterval(recoveryTimer);
+    recoveryTimer = setInterval(async () => {
+      if (!state.sessionReady || recoveryRunning) return;
+      recoveryRunning = true;
+      try { await runReadyTick("supervision"); } finally { recoveryRunning = false; }
+    }, 5_000);
+    recoveryTimer.unref?.();
     // A new session start either continues the session this extension was
     // reloaded into (`reload`: same agent, same session file, same steer queue)
     // or replaces it with a different one. The generation identifies the session

@@ -8,6 +8,9 @@
 
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { acceptRunnerResult, renderRunnerFindings } from "./results.mjs";
+import { saveReport } from "./reports.mjs";
 import { dirname, join } from "node:path";
 
 export const JOB_SCHEMA = 1;
@@ -354,6 +357,22 @@ export function reconcileJob(
     });
   }
 
+  // Recover explicit, job-bound completion before interpreting disappearance.
+  // A model transcript/final stdout is never accepted as a completion result.
+  if (record.role === "runner" && !record.communication) {
+    const runner = { id: record.id, resultFile: record.resultFile ?? join(tmpdir(), `qq-runner-result-${record.id}.json`) };
+    let bound = false;
+    try { bound = JSON.parse(readFileSync(runner.resultFile, "utf8")).runnerId === record.id; } catch {}
+    if (bound) {
+      const accepted = acceptRunnerResult(runner, { stateDir, saveReport, now });
+      if (accepted.ok) {
+        const text = renderRunnerFindings(accepted.result);
+        const report = accepted.report ?? saveReport(stateDir, { jobId: record.id, role: record.role, text, now });
+        return recordTerminal(stateDir, record.id, { status: "completed", summary: text,
+          reportId: report.reportId, reportChars: report.chars, now });
+      }
+    }
+  }
   const pid = record.process?.pid ?? null;
   const recorded = record.process?.fingerprint ?? null;
   if (!pid) {

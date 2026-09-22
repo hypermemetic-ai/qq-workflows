@@ -131,7 +131,7 @@ function writeConfig(file) {
 }
 
 const childProcs = new Set();
-async function runAdapter({ name, mode = "ok", abortTrigger = null, extraEnv = {} }) {
+async function runAdapter({ name, mode = "ok", abortTrigger = null, extraEnv = {}, disconnect = false }) {
   const dir = join(root, name);
   const agentDir = join(dir, "agent");
   const work = join(dir, "work");
@@ -173,6 +173,7 @@ async function runAdapter({ name, mode = "ok", abortTrigger = null, extraEnv = {
     "--summary-file", summaryFile,
   ], { cwd: work, env, stdio: ["ignore", "pipe", "pipe"] });
   childProcs.add(child);
+  if (disconnect) { child.stdout.destroy(); child.stderr.destroy(); }
   let stdout = ""; let stderr = "";
   child.stdout.on("data", (c) => { stdout += c; });
   child.stderr.on("data", (c) => { stderr += c; });
@@ -302,6 +303,11 @@ try {
   }
   pass("W1 argv/protocol/event-contract preservation (no invented consumer, no new event types)");
 
+  const disconnected = await runAdapter({ name: "disconnected", disconnect: true });
+  assert.equal(disconnected.code, 0, "lost coordinator pipes must not kill the adapter");
+  assert.equal(disconnected.transport?.response, disconnected.nonce, "result survives lost coordinator pipes");
+  pass("Coordinator pipe loss: installed Pi still completes and publishes its durable result");
+
   // ---------------------------------------------------------------- W2: abort
   const abortRun = await runAdapter({
     name: "abort",
@@ -355,7 +361,7 @@ try {
   assert.equal(leftover, "", `no leftover processes reference the test tree: ${leftover}`);
   pass("Reaping: no owned adapter/pi/mock process left; mock time bounded (stall 30s < kill timer, aborted early)");
   console.log(`mock provider requests total: ${calls} (2 success + 2 abort + 0 refusal expected)`);
-  assert.equal(calls, 4, "exactly the scripted provider traffic reached the mock");
+  assert.equal(calls, 6, "exactly the scripted provider traffic reached the mock");
 } catch (error) {
   console.error("WIRE FAILURE:", error?.message ?? error);
   process.exitCode = 1;
