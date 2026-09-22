@@ -35,9 +35,10 @@ import { holdRelayForReceiver } from "./relay-process-holders.mjs";
 //       `fixture_report_progress`) are NOT carried over. Their production
 //       replacements are `workflow_acknowledge_assignment` and
 //       `workflow_report_progress`, with the same record-first discipline and
-//       the same deterministic acknowledgement command IDs
-//       (`ack-<amendmentId>-rev<revision>`), so a re-injected envelope after a
-//       crash can produce duplicate INJECTION but never duplicate
+//       the same deterministic acknowledgement command IDs, scoped to
+//       job+attempt (+ amendment/revision) so two jobs or two attempts sharing
+//       an initial revision can never collide, and a re-injected envelope after
+//       a crash can produce duplicate INJECTION but never duplicate
 //       INCORPORATION.
 //   P4. The relay client is resolved from the binding's install root (falling
 //       back to QQ_RELAY_INSTALL_ROOT and the installed default) and connects
@@ -178,6 +179,11 @@ function deliveryGuard(delivery) {
     expected_gap_token: delivery.guard.expected_gap_token,
   };
 }
+
+// Exported for the parent-side consumer (workflow/runner-lifecycle.mjs): the
+// parent acknowledges/retries/blocks its consumer obligations with the same
+// full-delivery-guard discipline the worker receiver uses.
+export { deliveryGuard };
 
 function statusName(result) {
   const statuses = (result?.obligations ?? []).map((item) => item.status);
@@ -483,11 +489,14 @@ export function readAssignment({ stateDir, changeId, jobId, attemptId }, params 
  * The `workflow_acknowledge_assignment` implementation. Resolves the targeted
  * amendments for the exact revision against THIS attempt, refuses stale,
  * wrong-target, unknown, or inaccessible revisions, and appends
- * `worker.acknowledged` with the deterministic incorporation command ID
- * (`ack-<amendmentId>-rev<revision>`, or `ack-rev<revision>` when no amendment
- * ever targeted this revision for this attempt — the documented
- * launch-revision acknowledgement case the reducer already supports).
- * Retries with identical meaning are record dedupes.
+ * `worker.acknowledged` with the deterministic incorporation command ID.
+ *
+ * Command IDs are scoped to job+attempt (+ amendment/revision when one
+ * targeted this revision): global revision numbering does NOT make a pinned
+ * revision unique across jobs, so the bare `ack-rev<revision>` fallback of the
+ * first receiver revision could collide when two jobs or two attempts in one
+ * record acknowledged the same initial revision. Retries with identical
+ * meaning are still record dedupes.
  */
 export function acknowledgeAssignment({ stateDir, changeId, jobId, attemptId, actorId }, params = {}) {
   const revision = params.revision;
@@ -529,7 +538,9 @@ export function acknowledgeAssignment({ stateDir, changeId, jobId, attemptId, ac
       `revision ${revision} is stale: it is not this job's effective revision (${effective}), no pending amendment targets it for this attempt, and it was not already acknowledged`,
     );
   }
-  const commandId = targeted.length > 0 ? `ack-${targeted[0].amendmentId}-rev${revision}` : `ack-rev${revision}`;
+  const commandId = targeted.length > 0
+    ? `ack-${jobId}-${attemptId}-${targeted[0].amendmentId}-rev${revision}`
+    : `ack-${jobId}-${attemptId}-rev${revision}`;
   try {
     const result = handle.append(
       "worker.acknowledged",

@@ -389,12 +389,15 @@ try {
   assert.match(zeroRevision.content[0].text, /refused/, "revision 0 refuses");
   const launchAck = acknowledgeAssignment(toolsCtx, { revision: 2 });
   assert.equal(launchAck.details.status, "ok");
-  assert.equal(launchAck.details.commandId, "ack-rev2", "the launch-revision acknowledgement uses the documented command ID");
+  // Job+attempt scoped: global revision numbering does not make a pinned
+  // revision unique across jobs or attempts, so the bare `ack-rev<revision>`
+  // fallback of the first receiver revision could collide.
+  assert.equal(launchAck.details.commandId, `ack-${JOB2_ID}-attempt-1-rev2`, "the launch-revision acknowledgement uses the job+attempt scoped command ID");
   assert.equal(launchAck.details.launchRevisionAcknowledgement, true);
   assert.equal(launchAck.details.dedupe, false);
   const launchAckRetry = acknowledgeAssignment(toolsCtx, { revision: 2 });
   assert.equal(launchAckRetry.details.dedupe, true, "an identical acknowledgement retry is a record dedupe");
-  assert.equal(launchAckRetry.details.commandId, "ack-rev2", "the retry resolves the same command ID");
+  assert.equal(launchAckRetry.details.commandId, `ack-${JOB2_ID}-attempt-1-rev2`, "the retry resolves the same command ID");
   pass("workflow_acknowledge_assignment: launch-revision acknowledgement with idempotent retries");
 
   // Pending refs ride along, capped, only for THIS attempt.
@@ -428,7 +431,7 @@ try {
   assert.equal(preAck.details.status, "ok", "the worker can read the exact amended revision");
   const ack = acknowledgeAssignment(toolsCtx, { revision: targetedRevision });
   assert.equal(ack.details.status, "ok");
-  assert.equal(ack.details.commandId, `ack-amend-targeted-1-rev${targetedRevision}`, "a targeted amendment acknowledgement uses the documented command ID");
+  assert.equal(ack.details.commandId, `ack-${JOB2_ID}-attempt-1-amend-targeted-1-rev${targetedRevision}`, "a targeted amendment acknowledgement uses the job+attempt+amendment scoped command ID");
   assert.equal(ack.details.launchRevisionAcknowledgement, false);
   assert.equal(ack.details.amendment.acknowledged !== null, true, "the amendment is fulfilled by the acknowledgement");
   const ackRetry = acknowledgeAssignment(toolsCtx, { revision: targetedRevision });

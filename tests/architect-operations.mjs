@@ -171,9 +171,12 @@ const agentHeld = workflowFor({
   },
 });
 const heldDispatch = agentHeld.dispatchRunner({ task: "long runner" });
-const steer = agentHeld.steerRunner({ jobId: heldDispatch.jobId, message: "also check the worktree root" });
-assert.equal(steer.ok, true);
-assert.deepEqual(held.written, ["also check the worktree root\n"], "steering writes to the live runner without restarting it");
+const steer = await agentHeld.steerRunner({ jobId: heldDispatch.jobId, message: "also check the worktree root" });
+assert.equal(steer.ok, false, "a legacy runner without a verified receiver refuses the update instead of pretending delivery");
+assert.equal(steer.supported, false);
+assert.equal(steer.steered, false);
+assert.match(steer.error, /no verified receiver/);
+assert.deepEqual(held.written, [], "nothing is written to an ignored stdin; there is no false success");
 const cancelled = agentHeld.cancelRunner({ jobId: heldDispatch.jobId, reason: "operator changed direction" });
 assert.equal(cancelled.status, "cancelled");
 assert.equal(cancelled.tombstoned, true);

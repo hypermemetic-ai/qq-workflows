@@ -570,6 +570,10 @@ async function acquireRelayRuntimeUnlocked({
     }
   }
 
+  // Relay lifetime is owned by the shared runtime's cross-process holders
+  // (workflow/relay-process-holders.mjs): the child is detached and adopted as
+  // SHARED transport by a later parent; owned shutdown goes through the
+  // holder-checked release path only — never an unconditional exit hook.
   const child = spawnImpl(install.bin, ["serve", "--state-dir", dir], { stdio: ["ignore", "pipe", "pipe"], detached: true, env });
   const outputTail = [];
   child.stdout?.on("data", (chunk) => pushTail(outputTail, chunk));
@@ -731,16 +735,19 @@ export function transportStatusOf(statusResult) {
 /**
  * Send one agent.message envelope. `from` must be a bare Pi session UUID (the
  * sender's own identity), `recipientAgent` an `agents/<uuid>` reference.
+ * `requestId` is the stable transport identity for retries of the SAME logical
+ * push (a lost send reply, acknowledgement loss): the relay journal dedupes a
+ * repeated request id instead of creating a second delivery obligation.
  * Returns `{ eventId, status }` where status is the immediate transport
  * observation (`queued` = journal acceptance, never delivery).
  */
-export async function sendAgentMessage({ relayOrClient, from, recipientAgent, project, role, tasks, content, delivery = "default" }) {
+export async function sendAgentMessage({ relayOrClient, from, recipientAgent, project, role, tasks, content, delivery = "default", requestId = null }) {
   assertPiSessionId(from, "sender session id");
   parseRelayAgentId(recipientAgent, "recipient");
   const client = "client" in relayOrClient && typeof relayOrClient.client === "function" ? await relayOrClient.client() : relayOrClient;
   const sent = await client.send({
     producer_id: relayAgentId(from),
-    request_id: `msg_${randomUUID()}`,
+    request_id: requestId ?? `msg_${randomUUID()}`,
     origin_id: relayAgentId(from),
     recipient_id: recipientAgent,
     product_id: RELAY_PRODUCT,
@@ -795,6 +802,8 @@ export async function submitAmendment({
   jobId,
   attemptId,
   instructions,
+  composeInstructions = null,
+  note = null,
   amendmentId = null,
   actor = null,
   relay = null,
@@ -804,7 +813,12 @@ export async function submitAmendment({
   assertIdentifier(jobId, "jobId");
   assertIdentifier(attemptId, "attemptId");
   if (typeof instructions !== "string" || instructions.trim() === "") {
-    throw fail("invalid-arguments", "instructions (the full assignment revision content) is required");
+    if (typeof composeInstructions !== "function") {
+      throw fail("invalid-arguments", "instructions (the full assignment revision content) is required");
+    }
+  }
+  if (note !== null && (typeof note !== "string" || note.trim() === "")) {
+    throw fail("invalid-arguments", "note (the raw coordinator instruction) must be a nonempty string when given");
   }
   const resolvedActor = actor ?? { kind: "runtime", id: "qq-workflows-runtime" };
   const handle = openChange({ stateDir, changeId });
@@ -875,11 +889,27 @@ export async function submitAmendment({
       };
     }
     revision = currentState.currentRevision + 1;
+    // The caller may need the COMMITTED revision number to author the full
+    // assignment text (concurrent coordinators race for the next revision
+    // number, so the precomputed text could carry a stale revision label).
+    // `composeInstructions` is recomputed under the record's writer lock for
+    // each race attempt, so the committed revision is always the one the text
+    // names.
+    const resolvedInstructions = composeInstructions ? String(composeInstructions(revision)) : instructions;
+    if (typeof resolvedInstructions !== "string" || resolvedInstructions.trim() === "") {
+      throw fail("invalid-arguments", "the composed assignment revision content is required");
+    }
     let revisedAttempt;
     try {
       revisedAttempt = current.append(
         "assignment.revised",
-        { revision, predecessor: currentState.currentRevision, scope: { kind: "job", jobId }, assignment: { instructions } },
+        {
+          revision,
+          predecessor: currentState.currentRevision,
+          scope: { kind: "job", jobId },
+          assignment: { instructions: resolvedInstructions },
+          ...(note ? { note } : {}),
+        },
         { context: { actor: resolvedActor, jobId }, commandId: `revise-${jobId}-r${revision}`, now },
       );
     } catch (error) {
@@ -948,6 +978,9 @@ export async function submitAmendment({
         role: job.role,
         tasks: [`change:${changeId}`, `job:${jobId}`, `attempt:${attemptId}`, `amendment:${resolvedAmendmentId}`, `revision:${revision}`],
         content: pushedUpdateText(revision),
+        // Stable transport identity: a retry after a lost send reply dedupes
+        // at the relay journal instead of creating a second obligation.
+        requestId: `push-req-${jobId}-${attemptId}-${resolvedAmendmentId}-0`,
       });
       delivery = { status: pushed.status, eventId: pushed.eventId };
     } catch (error) {

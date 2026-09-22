@@ -5,9 +5,12 @@ runner worker's live Pi session: a shared runtime API
 (`workflow/communication.mjs`), the production receiver loaded inside the
 worker Pi (`workflow/communication-receiver.mjs`, carried through the existing
 worker extension seam), three coordinator-authored model-facing tools, and the
-adapter's validated enable/binding/settle/drain handshake. Phase 2b will wire
-`operations.mjs` and `bin/mcp-server.mjs` to this API; nothing in this phase
-changes a default launch: an absent binding preserves the exact prior behavior.
+adapter's validated enable/binding/settle/drain handshake. Phase 2b wires BOTH
+runner entry points (`workflow/operations.mjs` and `bin/mcp-server.mjs`)
+through the ONE shared runner lifecycle (`workflow/runner-lifecycle.mjs`) — see
+"Phase 2b: the shared runner lifecycle" below. An absent binding preserves the
+exact prior behavior; a launch without a verified receiver never pretends to
+steer.
 
 The change record stays the sole workflow authority. The relay journal is
 delivery bookkeeping only: it can prove that a message was accepted, delivered,
@@ -23,7 +26,7 @@ The parent passes ONE JSON environment variable to a runner launch:
   "schema": "qq-worker-communication-binding/1",
   "stateDir": "/abs/change-state", "changeId": "…", "jobId": "…", "attemptId": "…",
   "actorId": "worker-…", "runtimeActorId": "runtime-…", "role": "runner",
-  "recipientAgent": "agents/<architect-session-uuid>",
+  "recipientAgent": "agents/<workflow-consumer-uuid>",
   "socketPath": "/abs/state/relay/qq-relay.sock",
   "installRoot": "/abs/qq-relay", "drainMs": 8000
 }
@@ -248,3 +251,180 @@ For a communication-enabled runner the adapter:
 * `tests/relay-receiver-units.mjs` and `tests/pi-relay-receiver.mjs` — the
   receiver mechanics this module reuses (offline units and the real-Pi fixture
   proof, which stays green).
+
+## Phase 2b: the shared runner lifecycle
+
+`workflow/runner-lifecycle.mjs` is the ONE integration layer both runner entry
+points use, so record creation, launch/attempt transitions, binding
+preparation, amendment composition/submission, status projection, cancellation
+intent, result validation/outcome and progress recovery are never implemented
+twice. Caller-specific concerns stay adapters: argument names
+(`jobId`/`message` native vs `runnerId`/`instruction` MCP), live process
+handles, public ids and the notification transport.
+
+### Source of truth and rebuild rules
+
+* The **change record** is the SOLE workflow authority for a dispatched runner
+  job: assignment revisions and their raw instructions, amendment submissions,
+  transport-push correlation (`amendment.pushed`), worker acknowledgements,
+  cancellation intent, receiver admission and validated outcomes. For a newly
+  dispatched Pi runner the record follows the DIRECT LOOKUP convention: one
+  change record whose `changeId` is the public runner/job id, `jobId` the same
+  id, and a fresh attempt UUID per dispatch. This is a lookup convenience, not
+  a second authority — every shared API keeps the full multi-job/multi-attempt
+  record shape. The record preserves the original task and target constraints
+  verbatim (revision 1 IS the exact prompt text) plus launch context (cwd,
+  owner/session routing, target paths) on `attempt.launch_intent`.
+* The **relay journal** is subordinate durable TRANSPORT bookkeeping: it can
+  prove an envelope was accepted (`queued`), delivered/receipted (`delivered`),
+  retried or blocked — never that a worker incorporated anything.
+* **jobs.json records and MCP RUNNERS trackers** hold live handles or
+  REBUILDABLE compatibility projections (identity, live process handles, push
+  event-id correlation). They never decide a job's status, cancellation,
+  effective revision or terminal outcome: `check_runner`'s communication
+  projection (`runnerCommunicationView`) is rebuilt from the authoritative
+  record on every read, and the shared recovery (`reconcileRunnerJob`) mirrors a
+  settled terminal state INTO the change record — a stale compatibility cache
+  can never override it, and reload recovery ingests any explicit, job-bound
+  result before a lost process is interpreted (communication-enabled jobs
+  included). There is no bulk history migration: existing old jobs stay
+  readable and cancellable exactly as before.
+* The outcome is pinned to the revision the attempt actually worked against
+  (last acknowledged revision, else the job's pin). A completed outcome for
+  revision A stays a result for A when a later update B was never acknowledged —
+  never silently re-pinned, and B stays visible as a pending/unresolved update
+  (bounded references) after terminal completion.
+
+### The workflow consumer address (parent-side relay recipient)
+
+The parent-side recipient is a WORKFLOW CONSUMER address
+(`workflowConsumerAddress`): a deterministic UUID-form transport address
+derived from the repository root and the coordinator's actual owner routing
+(the workflow session key / owner session id). It is scoped to repository +
+owner, independent of worker Pi session ids and parent PIDs, and is NEVER named
+or asserted as an observed Pi session — MCP coordinators are Codex sessions and
+a native coordinator's session identity is not a Pi session either. A restarted
+parent for the same owner derives the same address (no identity database); an
+unrelated owner derives a different address and never consumes another owner's
+obligations. With no owner identity the address falls back to a per-process
+(unrecoverable-by-design) form and says so.
+
+One owned relay runtime and one progress consumer serve every runner of the
+same parent/owner, shared and REFERENCE-COUNTED: releasing one worker never
+destroys another worker's transport or pending messages; the last hold drains
+bounded and releases (pending journal obligations survive). Concurrent
+acquisitions of the same consumer COALESCE onto one creation (one relay
+runtime, one consumer, one prime) instead of racing. The consumer
+subscription is established BEFORE any worker is spawned (journal obligations
+need a live consumer). Every call registers a PER-JOB route (jobId ->
+transport/session routing), and each outgoing notification selects its route
+from the VERIFIED notification's job id — a second runner's progress is never
+delivered through whichever dispatch closure created the shared consumer
+first. Private shared-runtime adoption stays scoped and
+ownership-checked; there is no global service discovery or installation, and no
+user-facing polling loop or general worker-messaging tool.
+
+### Progress bridging and the acknowledgement layers
+
+Every incoming progress/blocker envelope is verified against the authoritative
+record before anything is surfaced (source job/attempt/binding, committed
+sequence, committed note verbatim, project slug); the outgoing notification is
+REBUILT from the committed note with the exact coordinator-authored wrapper —
+transport text and transport tasks are never authority, and forged or
+uncommitted payloads are blocked on the journal (no phantom progress):
+
+    Runner [jobId] reported [kind] at sequence [seq] (attempt [attemptId]):
+    [committed message]
+
+Notification ids are deterministic (`runner:<jobId>:progress:<changeId>:<attemptId>:<seq>`),
+so repeated relay delivery and parent restarts never duplicate an
+already-receipted progress notification. The layers, each a distinct fact:
+
+1. **transport/journal receipt** — the relay obligation was acknowledged;
+2. **durable notification acceptance** — the existing notification system's
+   journal record was written (the relay obligation is acknowledged only AFTER
+   this);
+3. **the Architect acting on it** — NOT implied by either layer.
+
+A transport failure keeps the obligation retryable (pending work is never
+deleted) and recovery rides the existing notification recovery/lifecycle hooks
+(no new orchestrator). Where no active Architect transport exists, progress
+stays committed and inspectable in the record and is reported as
+pending/unavailable — never as delivered.
+
+### Assignment updates (amendments)
+
+`steer_runner` arguments mean an ADDITIONAL instruction. The full new
+assignment is composed from the original task + target constraints verbatim and
+the ordered amendments' verbatim text (never summarized, never replaced by the
+latest message, never concatenated onto an obsolete revision), under the exact
+heading and precedence copy:
+
+    ## Assignment updates
+    Apply these updates in revision order. A later update takes precedence where it conflicts with an earlier instruction.
+
+Requested updates are PERSISTED before any delivery attempt, with stable
+transport request identities (`push-req-<jobId>-<attemptId>-<amendmentId>-<n>`)
+and durable push correlation (`amendment.pushed`) so a lost send reply, an
+acknowledgement loss or a parent restart can be inspected and safely retried
+(`retryPendingRunnerAmendments`) without re-recording, without duplicating a
+live obligation, and without relaunching a worker. Before the receiver binding
+is observed an update is refused with a clear retryable reason and nothing is
+claimed as recorded; after admission closes or the attempt is terminal, a
+recorded request stays visible as unresolved and the call returns a refusal
+with the reason. Results always distinguish recording, transport receipt and
+worker acknowledgement; `delivered:true`/`steered:true` is never returned from
+a write or send that merely did not throw.
+
+Worker incorporation command IDs are scoped to job+attempt(+amendment/revision)
+(`ack-<jobId>-<attemptId>[-<amendmentId>]-rev<revision>`): global revision
+numbering does not make a shared pinned revision unique across jobs or
+attempts. Retries with identical meaning are record dedupes (exactly-once
+incorporation). Receiver acknowledgement stays a trusted runtime-scoped action;
+model arguments never choose routing or actor identity.
+
+### Cancellation, outcomes, and legacy runners
+
+Cancellation records intent in the authoritative record BEFORE the
+fingerprint-matched owned process is signalled; a cancelled attempt can never
+become a success from later output. The AUTHORITATIVE record decides first on
+BOTH surfaces: an already-validated outcome (completed/failed/cancelled) is
+never overwritten by a cancellation, its process is never signalled, and the
+call reports the validated outcome truthfully; a refused or unavailable record
+(a corruption, a lost append, a lost race against a validated success) fails
+safely — no cache tombstone, no signal, and no claimed cancellation. A
+launched-but-unbound setup failure reaches an honest terminal FAILURE in the
+record (a completion requires an observed start), and dispatch failures
+release exactly what was acquired. A new Pi runner is never silently
+downgraded to legacy steering when communication setup fails.
+
+Discovered process loss (a reload finding no process and no managed result) is
+outcome-UNKNOWN: the top level reports `interrupted`, `attempt.outcome` stays
+null, and obligations/pending updates remain inspectable — a known FAILED
+outcome is never invented from disappearance. An unexpected SIGTERM/SIGINT is
+never reported as cancellation (that would fabricate operator intent): with a
+recorded intent it is a cancellation; without one it falls through to the
+validated explicit-result check and the honest failure verdict with the signal
+reported. A communication-enabled runner's result comes only from the
+validated explicit transport (identity/attempt bound) or the existing
+authority — arbitrary final stdout is never promoted into workflow truth.
+
+### Restart recovery and report retrieval
+
+`check_runner`'s top-level status is RECONSTRUCTED from the authoritative
+outcome (a stale running/completed cache is rebuilt from the record — both
+directions). On both surfaces a restarted coordinator rebuilds a known runner
+from durable state instead of the lost in-memory map: the jobs.json
+compatibility projection (identity, owner routing, result transport, owned
+process fingerprint) plus the change record (validated outcome, report
+reference, launch context) — a missing projection is rebuilt from the record
+alone. Both surfaces retrieve durable reports through normal tools (native
+`read_report`; MCP `read_report` backed by `workflow/reports.mjs` with bounded
+pagination and the terminal `reportId` exposed by `check_runner`, never the
+findings themselves), including from a cold process.
+
+Legacy/non-enabled runners have no verified receiver: `steer_runner` returns an
+explicit unsupported/refused result with the reason and writes nothing to any
+ignored stdin (the refusal is kept in job history/trajectory so historical
+check results identify communication unsupported). Existing cancellation,
+report retrieval and all other legacy lifecycle behavior are unchanged.

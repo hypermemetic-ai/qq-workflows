@@ -28,12 +28,26 @@ import {
   TERMINAL_STATUSES,
   writeJob,
 } from "./jobs.mjs";
-import { acknowledgeDelivery, defaultCompletionText, deliverCompletion, readNotification, recoverPendingDeliveries } from "./notify.mjs";
+import { acknowledgeDelivery, defaultCompletionText, deliverCompletion, recoverPendingDeliveries } from "./notify.mjs";
+import { openChange, viewsFor } from "./change-record.mjs";
 import { readReport, saveReport } from "./reports.mjs";
 import { acceptRunnerResult, cleanupRunnerFiles, renderRunnerFindings } from "./results.mjs";
+import { COMMUNICATION_BINDING_ENV } from "./communication.mjs";
+import {
+  acquireRelayRuntime,
+  acquireRunnerConsumer,
+  prepareRunnerCommunication,
+  reconcileRunnerJob,
+  recordRunnerCancelIntent,
+  recordRunnerOutcome,
+  releaseAllRunnerConsumers,
+  retryPendingRunnerAmendments,
+  runnerCommunicationView,
+  steerRunnerLifecycle,
+} from "./runner-lifecycle.mjs";
 import { ensureAssociation, resolveSessionKey, stateDirFor } from "./session.mjs";
 import { extractSection, listSections, loadPackagedTemplate, replaceSection, ticketPath } from "./ticket.mjs";
-import { planFingerprint, planToSpawn, resolveWorkerLaunchPlan } from "./worker-launch.mjs";
+import { PI_HARNESS, planFingerprint, planToSpawn, resolveWorkerLaunchPlan } from "./worker-launch.mjs";
 
 // Native tool surface for the Architect. Local inspection stays read-only
 // (read/grep/find/ls); workflow capabilities are scoped ticket updates and
@@ -84,8 +98,7 @@ export const WORKFLOW_TOOLS = [
   {
     name: "dispatch_runner",
     label: "Dispatch runner",
-    description:
-      "Delegate research, inspection, reproduction, or diagnostics to a runner worker and return its durable job id. The runner investigates and reports; implementation and landing stay with the managed pipeline.",
+    description: "Delegate research, inspection, reproduction, or diagnostics to a runner. Returns a job ID for tracking. Communication-enabled runners can receive assignment updates and push progress; completion arrives through the existing notification path.",
     parameters: {
       type: "object",
       properties: {
@@ -99,13 +112,13 @@ export const WORKFLOW_TOOLS = [
   {
     name: "check_runner",
     label: "Check runner",
-    description: "Point-in-time status of a runner job, including its report reference.",
+    description: "Read a runner's current status, assignment revision, pending updates, and report reference. Transport receipt and worker acknowledgement are separate; neither proves the requested outcome succeeded. This tool does not return the full findings.",
     parameters: { type: "object", properties: { jobId: { type: "string" } }, required: ["jobId"], additionalProperties: false },
   },
   {
     name: "steer_runner",
     label: "Steer runner",
-    description: "Send an additional instruction to a running runner without restarting it.",
+    description: "Submit an additional instruction to a runner as an assignment update. The result distinguishes recording, transport receipt, and worker acknowledgement. Pending or refused delivery does not mean the worker incorporated the update.",
     parameters: {
       type: "object",
       properties: { jobId: { type: "string" }, message: { type: "string" } },
@@ -116,7 +129,7 @@ export const WORKFLOW_TOOLS = [
   {
     name: "cancel_runner",
     label: "Cancel runner",
-    description: "Cancel a runner job. Cancellation is tombstoned so recovery can never restart it.",
+    description: "Record cancellation intent and stop the owned runner process. Cancellation prevents later output from becoming a successful outcome and does not automatically restart the runner.",
     parameters: {
       type: "object",
       properties: { jobId: { type: "string" }, reason: { type: "string" } },
@@ -227,6 +240,10 @@ export function createWorkflow({
   if (!root) throw new Error("repository root is required");
   const stateDir = stateDirFor(root, env);
   const live = new Map(); // jobId -> { child, outputTail, activeTool, trajectory, stderr }
+  // jobId -> { release } — one hold per job on the OWNER's shared progress
+  // consumer (the consumer and its relay runtime are shared and refcounted;
+  // each job releases its own hold when it terminalizes).
+  const communicationConsumerHolds = new Map();
 
   function session() {
     const key = resolveSessionKey({ explicit: sessionKey, env });
@@ -255,9 +272,13 @@ export function createWorkflow({
     return record;
   }
 
-  // Persist the complete report + terminal outcome BEFORE notifying, then hand a
-  // bounded summary to the transport. A failed delivery leaves the record
-  // inspectable and retryable; the report is never the thing that gets dropped.
+  // Persist the complete report + record the AUTHORITATIVE outcome + terminal
+  // outcome BEFORE notifying, then hand a bounded summary to the transport. A
+  // failed delivery leaves the record inspectable and retryable; the report is
+  // never the thing that gets dropped. The change record's validated outcome is
+  // recorded (and its acceptance checked) BEFORE the compatibility terminal is
+  // written, so a stale jobs.json projection can never claim a success the
+  // record refused (e.g. output that arrived after a cancellation intent).
   async function finishJob(record, { status, findings = "", error = null, phase = null, report = null }) {
     const summary = error ? `${error.message}${error.stderr ? `\n${clamp(error.stderr, 500)}` : ""}` : clamp(findings, 2000);
     // A report produced earlier in the pipeline (e.g. an over-cap complete_task
@@ -271,17 +292,72 @@ export function createWorkflow({
       : durableText
         ? saveReport(stateDir, { jobId: record.id, role: record.role, text: durableText, now: now() })
         : null;
+    // The change record is the authoritative outcome for a communication-enabled
+    // runner: the validated outcome (pinned to the revision the attempt actually
+    // worked against, so an unacknowledged update never silently re-pins a
+    // result) is recorded and its acceptance checked BEFORE the compatibility
+    // terminal exists.
+    let finalStatus = status;
+    let outcomeSuffix = "";
+    const currentRecord = readJob(stateDir, record.id) ?? record;
+    if (currentRecord.communication?.enabled && currentRecord.communication.changeId) {
+      const outcome = recordRunnerOutcome({
+        stateDir: currentRecord.communication.stateDir ?? stateDir,
+        changeId: currentRecord.communication.changeId,
+        jobId: currentRecord.id,
+        attemptId: currentRecord.communication.attemptId,
+        status,
+        summary,
+        reportId: saved?.reportId ?? null,
+        actor: { kind: "runtime", id: currentRecord.communication.runtimeActorId ?? "qq-workflows-runtime" },
+        now: now(),
+      });
+      if (!outcome.ok && outcome.code === "cancelled") {
+        // Cancellation intent forbids success: record the honest cancelled
+        // outcome and never let late output become a completed result.
+        finalStatus = "cancelled";
+        outcomeSuffix = `\n[late output rejected: ${outcome.reason}]`;
+        recordRunnerOutcome({
+          stateDir: currentRecord.communication.stateDir ?? stateDir,
+          changeId: currentRecord.communication.changeId,
+          jobId: currentRecord.id,
+          attemptId: currentRecord.communication.attemptId,
+          status: "cancelled",
+          summary: outcome.reason,
+          actor: { kind: "runtime", id: currentRecord.communication.runtimeActorId ?? "qq-workflows-runtime" },
+          now: now(),
+        });
+      } else if (outcome.ok && outcome.status && outcome.status !== status) {
+        // The record already holds a different validated outcome (e.g. an
+        // operator cancellation): the compatibility projection mirrors the
+        // record, never the other way around.
+        finalStatus = outcome.status === "completed" ? "completed" : outcome.status === "cancelled" ? "cancelled" : "failed";
+        outcomeSuffix = `\n[authoritative change-record outcome '${outcome.status}' supersedes the attempted '${status}']`;
+      } else if (!outcome.ok) {
+        // The record refused the attempted outcome (invalid transition,
+        // unavailable record, identity refusal): the compatibility projection
+        // must never publish a success the authority did not accept. A refused
+        // completion becomes an explicit reconciliation-required terminal; a
+        // refused failure stays a failure, with the refusal kept for review.
+        outcomeSuffix = `\n[change record refused the outcome: ${outcome.reason ?? outcome.code}]`;
+        if (finalStatus === "completed") finalStatus = "reconciliation-required";
+      }
+    }
     const settled = recordTerminal(stateDir, record.id, {
-      status,
-      summary,
+      status: finalStatus,
+      summary: `${summary}${outcomeSuffix}`,
       reportId: saved?.reportId ?? null,
       reportChars: saved?.chars ?? 0,
       error,
       phase,
       now: now(),
     });
+    // The job is terminal: release its consumer/relay hold. The last hold
+    // drains bounded (delivering progress obligations already accepted by the
+    // notification journal) and never deletes pending work.
+    void Promise.resolve(releaseRunnerConsumerForJob(currentRecord)).catch(() => {});
     let delivery = null;
-    if (status !== "cancelled" && notifierTransport) {
+    if (finalStatus !== "cancelled" && notifierTransport) {
       delivery = await deliverCompletion({
         stateDir,
         job: settled,
@@ -295,6 +371,17 @@ export function createWorkflow({
     // actually achieved, not the state before delivery.
     const finalRecord = readJob(stateDir, record.id) ?? settled;
     return { record: finalRecord, delivery };
+  }
+
+  // Release this job's hold on the shared consumer for its owner. Idempotent
+  // per job; the shared consumer survives while other holders remain.
+  function releaseRunnerConsumerForJob(record) {
+    const communication = record?.communication;
+    if (!communication?.enabled || !communication.consumerId || communication.consumerReleased) return null;
+    const held = communicationConsumerHolds.get(record.id);
+    if (!held) return null;
+    communicationConsumerHolds.delete(record.id);
+    return held.release();
   }
 
   function completionText(record) {
@@ -367,6 +454,8 @@ export function createWorkflow({
     if (typeof task !== "string" || !task.trim()) throw new Error("task is required");
     const association = session();
     const id = randomUUID();
+    // Durable, private result transport location: the explicit result survives
+    // a coordinator reload inside this workflow's own state directory.
     const resultFile = join(stateDir, "runner-results", `${id}.json`);
     mkdirSync(dirname(resultFile), { recursive: true, mode: 0o700 });
     const reportFile = join(tmpdir(), `qq-runner-report-${id}.md`);
@@ -396,6 +485,100 @@ export function createWorkflow({
     if (Array.isArray(targetPaths) && targetPaths.length > 0) {
       prompt += `\n\nTarget paths to inspect:\n${targetPaths.join("\n")}`;
     }
+
+    // Never leak a parent's binding into another job/seat: an inherited
+    // QQ_WORKFLOW_COMMUNICATION names an exact attempt in an exact state dir.
+    const spawnEnv = { ...env };
+    delete spawnEnv[COMMUNICATION_BINDING_ENV];
+
+    if (launchPlan.harness !== PI_HARNESS) {
+      // Legacy (non-Pi) dispatch: unchanged and fully synchronous. Steering
+      // such a runner is explicitly refused later — never a silent stdin write
+      // pretending delivery.
+      return launchRunnerProcess({ id, record, association, launchPlan, prompt, cwd, spawnEnv, communication: null, resultFile, reportFile });
+    }
+
+    // A Pi-harness runner is communication-enabled: the shared runner lifecycle
+    // prepares the authoritative record, the private relay, the owner's
+    // return-consumer subscription and the validated binding BEFORE anything is
+    // spawned (the preparation is asynchronous; its ORDER is fixed). The
+    // dispatch returns synchronously with the durable job id and a `ready`
+    // promise the tool surface awaits — a returned job ID never means the
+    // receiver binding is ready (the adapter records the observed binding after
+    // get_state; check_runner reports it). A setup failure records an honest
+    // terminal failure and releases exactly what was acquired — it never
+    // silently downgrades the runner to legacy (unsteerable) dispatch.
+    let resolveReady;
+    const ready = new Promise((resolve) => { resolveReady = resolve; });
+    void (async () => {
+      try {
+        const prepared = await prepareRunnerCommunication({
+          stateDir,
+          root,
+          env,
+          jobId: id,
+          task,
+          targetPaths,
+          cwd,
+          ownerRouting: association.sessionKey,
+          transport: notifierTransport,
+          workflowRouting: { sessionKey: association.sessionKey, sessionId: association.sessionId },
+          now: now(),
+        });
+        if (!prepared.ok) {
+          void finishJob(record, { status: "failed", error: { message: `runner communication setup failed: ${prepared.reason}` } }).catch(() => {});
+          resolveReady({
+            ok: false,
+            jobId: id,
+            runnerId: id,
+            status: "failed",
+            error: prepared.reason,
+            launchPlan: record.launchPlan,
+            communication: { enabled: false, attempted: true, failed: prepared.reason },
+          });
+          return;
+        }
+        const communication = {
+          schema: 1,
+          enabled: true,
+          changeId: prepared.changeId,
+          jobId: id,
+          attemptId: prepared.attemptId,
+          consumerId: prepared.consumerId,
+          stateDir,
+          runtimeActorId: prepared.binding.runtimeActorId,
+        };
+        spawnEnv[COMMUNICATION_BINDING_ENV] = prepared.bindingEnv[COMMUNICATION_BINDING_ENV];
+        // The consumer hold belongs to this job until it terminalizes; every
+        // later failure path releases it through finishJob.
+        communicationConsumerHolds.set(id, { release: prepared.release });
+        // Persist the projection BEFORE any launch so every later failure path
+        // finds the authoritative record and reports an honest outcome there.
+        writeJob(stateDir, { ...(readJob(stateDir, id) ?? record), resultFile, communication });
+        resolveReady(launchRunnerProcess({ id, record, association, launchPlan, prompt, cwd, spawnEnv, communication, resultFile, reportFile }));
+      } catch (error) {
+        void finishJob(record, { status: "failed", error: { message: `runner dispatch failed: ${String(error?.message ?? error)}` } }).catch(() => {});
+        resolveReady({ ok: false, jobId: id, runnerId: id, status: "failed", error: String(error?.message ?? error), launchPlan: record.launchPlan });
+      }
+    })();
+
+    return {
+      ok: true,
+      jobId: id,
+      runnerId: id,
+      status: "launching",
+      sessionKey: association.sessionKey,
+      launchPlan: record.launchPlan,
+      ready,
+      note: "communication setup and spawn are in progress; a returned job ID does not mean the receiver binding is ready (check_runner reports it)",
+    };
+  }
+
+  // Spawn one dispatched runner through the existing canonical worker launcher
+  // and wire its lifecycle. Shared verbatim by the synchronous legacy path and
+  // the communication continuation above — never implemented twice.
+  function launchRunnerProcess({ id, record, association, launchPlan, prompt, cwd, spawnEnv, communication, resultFile, reportFile }) {
+
     // The runner's bound identity and result transport are the caller's, and
     // they reach the worker only through the central launch contract: the
     // configured harness owns how its seat receives them. The target project is
@@ -404,12 +587,15 @@ export function createWorkflow({
     try {
       launched = planToSpawn(launchPlan, {
         prompt,
-        env,
+        env: spawnEnv,
         cwd,
         mcpEnv: { QQ_RUNNER_ID: id, QQ_RUNNER_RESULT_FILE: resultFile },
       });
     } catch (err) {
-      void finishJob(record, { status: "failed", error: { message: `runner launch rejected: ${err.message}` } });
+      // finishJob records the honest terminal failure in BOTH the compatibility
+      // record and the authoritative change record, then releases the acquired
+      // consumer hold (the relay journal keeps pending work).
+      void finishJob(record, { status: "failed", error: { message: `runner launch rejected: ${err.message}` } }).catch(() => {});
       return { ok: false, jobId: id, status: "failed", error: err.message, launchPlan: record.launchPlan };
     }
 
@@ -423,11 +609,11 @@ export function createWorkflow({
         env: launched.env,
       });
     } catch (err) {
-      void finishJob(record, { status: "failed", error: { message: `runner spawn failed: ${err.message}` } });
+      void finishJob(record, { status: "failed", error: { message: `runner spawn failed: ${err.message}` } }).catch(() => {});
       return { ok: false, jobId: id, status: "failed", error: err.message, launchPlan: record.launchPlan };
     }
 
-    const liveState = { child, outputTail: "", activeTool: null, trajectory: [], stderr: "" };
+    const liveState = { child, outputTail: "", activeTool: null, trajectory: [], stderr: "", lastObservedAt: now() };
     live.set(id, liveState);
     const pid = child.pid ?? null;
     const current = readJob(stateDir, id);
@@ -436,6 +622,7 @@ export function createWorkflow({
       resultFile,
       process: { pid, spawnedAt: now(), fingerprint: processFingerprint({ pid }) },
       launchPlan: record.launchPlan,
+      ...(communication ? { communication } : {}),
     });
 
     if (child.stdout) {
@@ -447,11 +634,17 @@ export function createWorkflow({
           const interpreted = interpretRunnerEvent(JSON.parse(line));
           if (interpreted.step) liveState.trajectory = [...liveState.trajectory.slice(-8), { at: now(), ...interpreted.step }];
           if (interpreted.activeTool !== undefined) liveState.activeTool = interpreted.activeTool;
-          const current = readJob(stateDir, id);
+          // Durable telemetry so a RECOVERED handle (a coordinator reload) still
+          // reports honest activity without any live callback owning settlement.
           liveState.lastObservedAt = now();
-          if (current && !current.terminal) writeJob(stateDir, { ...current,
-            telemetry: { lastObservedAt: now(), activeTool: liveState.activeTool,
-              trajectory: liveState.trajectory }, updatedAt: now() });
+          const telemetryRecord = readJob(stateDir, id);
+          if (telemetryRecord && !telemetryRecord.terminal) {
+            writeJob(stateDir, {
+              ...telemetryRecord,
+              telemetry: { lastObservedAt: liveState.lastObservedAt, activeTool: liveState.activeTool, trajectory: liveState.trajectory },
+              updatedAt: now(),
+            });
+          }
           if (interpreted.completeTask) liveState.completeTaskSeen = true;
         } catch {
           /* non-JSON progress lines are liveness only */
@@ -465,13 +658,21 @@ export function createWorkflow({
       void finishJob(readJob(stateDir, id) ?? record, {
         status: "failed",
         error: { message: `runner process error: ${err.message}` },
-      });
+      }).catch(() => {});
     });
     child.on("close", (code, signal) => {
       const finished = readJob(stateDir, id);
-      if (!finished || finished.terminal) {
+      live.delete(id);
+      // A recorded cancellation intent is terminal, before anything else: later
+      // output can never become a successful outcome.
+      if (finished?.cancellation) {
+        void Promise.resolve(releaseRunnerConsumerForJob(finished)).catch(() => {});
         cleanupRunnerFiles(runner);
-        live.delete(id);
+        return;
+      }
+      if (!finished || finished.terminal) {
+        void Promise.resolve(releaseRunnerConsumerForJob(finished)).catch(() => {});
+        cleanupRunnerFiles(runner);
         return;
       }
       // The authoritative transport wins over the exit signal: a complete_task
@@ -486,18 +687,16 @@ export function createWorkflow({
         const withReport = authoritative.report
           ? `${findings}\n\n[complete findings spilled to durable report '${authoritative.report.reportId}' (${authoritative.report.chars} chars): the worker result exceeded the transport cap]`
           : findings;
-        cleanupRunnerFiles(runner);
-        live.delete(id);
-        void finishJob(finished, { status: "completed", findings: withReport, report: authoritative.report ?? null });
+        // Record/report durable BEFORE the transient transport is deleted.
+        void finishJob(finished, { status: "completed", findings: withReport, report: authoritative.report ?? null })
+          .catch(() => {})
+          .finally(() => cleanupRunnerFiles(runner));
         return;
       }
-      if (finished.cancellation) {
-        cleanupRunnerFiles(runner);
-        live.delete(id);
-        return;
-      }
-      cleanupRunnerFiles(runner);
-      live.delete(id);
+      // An external SIGTERM/SIGINT is not operator cancellation: the honest
+      // terminal state is a failure, with the signal reported. Cleanup runs
+      // only AFTER record/report/authoritative-outcome registration (the
+      // `.finally` below) so the explicit result is never the thing dropped.
       void finishJob(finished, {
         status: "failed",
         error: {
@@ -507,7 +706,9 @@ export function createWorkflow({
               : `runner process exited with code ${code}${signal ? ` (signal ${signal})` : ""}`,
           ...(liveState.stderr.trim() ? { stderr: clamp(liveState.stderr.trim(), 1000) } : {}),
         },
-      });
+      })
+        .catch(() => {})
+        .finally(() => cleanupRunnerFiles(runner));
     });
 
     return {
@@ -518,6 +719,7 @@ export function createWorkflow({
       sessionKey: association.sessionKey,
       launchPlan: record.launchPlan,
       pid,
+      ...(communication ? { communication: { enabled: true, changeId: communication.changeId, attemptId: communication.attemptId } } : {}),
     };
   }
 
@@ -525,13 +727,33 @@ export function createWorkflow({
     let record = requireJob(jobId);
     const state = live.get(jobId) ?? null;
     // Live child callbacks own settlement until exit. Recovered handles have no
-    // callback, so inspect the result transport and process on every read.
-    if (!state && record.role === "runner") record = reconcileJob(stateDir, jobId) ?? record;
+    // callback, so reload recovery ingests any explicit, job-bound result
+    // (communication-enabled jobs included) and mirrors the settled outcome
+    // into the authoritative change record BEFORE any lost process is
+    // reconciled. Identity/owner/assignment/cwd are reconstructed from the
+    // durable record here — never from an in-memory cache.
+    if (!state && record.role === "runner") {
+      const recovered = reconcileRunnerJob({ stateDir, jobId, now: now() });
+      if (recovered.record) record = recovered.record;
+    }
     const telemetry = state?.execution ? record.telemetry ?? null : state ?? record.telemetry ?? null;
     const lastObservedAt = telemetry?.lastObservedAt ?? null;
+    // The TOP-LEVEL status and report reference are reconstructed from the
+    // authoritative change record for communication-enabled runners: a stale
+    // compatibility cache (including a corrupted one) can never override the
+    // record's validated outcome or accepted cancellation.
+    const communication = runnerCommunicationView({ stateDir, communication: record.communication ?? null });
+    let status = record.status;
+    if (communication.enabled) {
+      if (communication.outcome?.status) status = communication.outcome.status;
+      else if (communication.cancelIntent) status = "cancelled";
+    }
+    const reportId = record.terminal?.reportId ?? communication.outcome?.reportId ?? null;
     return {
       ...jobSummary(record),
+      status,
       jobId: record.id,
+      reportId,
       telemetry: { source: state && !state.execution ? "live" : record.telemetry ? "durable" : "unavailable",
         state: record.terminal ? "terminal" : !lastObservedAt ? "unavailable"
           : now() - lastObservedAt > 30_000 ? "stale" : telemetry?.activeTool ? "active" : "idle",
@@ -539,29 +761,189 @@ export function createWorkflow({
       activeTool: telemetry?.activeTool ?? null,
       trajectory: telemetry?.trajectory ?? [],
       outputTail: state?.outputTail ? clamp(state.outputTail, 2000) : null,
-      reportHint: record.terminal?.reportId
-        ? `Full report '${record.terminal.reportId}' (${record.terminal.reportChars} chars) via read_report.`
+      reportHint: reportId
+        ? `Full report '${reportId}' (${record.terminal?.reportChars ?? 0} chars) via read_report.`
         : null,
+      // Rebuilt from the authoritative change record on every read: revision,
+      // pending update references (bounded), unresolved revisions, and the
+      // attempt's outcome — never the full findings.
+      communication,
     };
   }
 
-  function steerRunnerOp({ jobId, message } = {}) {
+  async function steerRunnerOp({ jobId, message } = {}) {
     const record = requireJob(jobId);
     if (typeof message !== "string" || !message.trim()) throw new Error("message is required");
-    const state = live.get(jobId) ?? null;
-    if (record.status !== RUNNING || !state?.child?.stdin) {
-      return { ok: false, jobId, status: record.status, error: "runner is not running; nothing to steer" };
+    const communication = record.communication;
+    if (!communication?.enabled || !communication.changeId) {
+      // Legacy/non-enabled runner steering: no verified receiver exists, so a
+      // stdin write would be ignored delivery theater. Refuse explicitly and
+      // keep the refusal in the job history so check results identify
+      // communication unsupported.
+      appendJobEvent(stateDir, jobId, { action: "steer_refused", code: "unsupported", reason: "communication unsupported" }, { now: now() });
+      return {
+        ok: false,
+        jobId,
+        status: record.status,
+        supported: false,
+        steered: false,
+        error: "runner communication is not enabled for this job; there is no verified receiver to deliver the instruction to, and nothing was sent",
+      };
     }
-    state.child.stdin.write(`${message.trim()}\n`);
-    appendJobEvent(stateDir, jobId, { action: "steer", message: clamp(message.trim(), 400) }, { now: now() });
-    return { ok: true, jobId, status: RUNNING, delivered: true };
+    if (record.status !== RUNNING) {
+      return {
+        ok: false,
+        jobId,
+        status: record.status,
+        supported: true,
+        steered: false,
+        error: `runner is ${record.status}; updates are no longer admitted`,
+      };
+    }
+    // The relay push reuses the shared, refcounted relay runtime for this state
+    // directory; the hold is dropped as soon as the submission settled.
+    const acquired = await acquireRelayRuntime({ stateDir, env });
+    const relay = acquired.ok ? acquired.relay : null;
+    let result;
+    try {
+      result = await steerRunnerLifecycle({
+        stateDir,
+        changeId: communication.changeId,
+        jobId,
+        message: message.trim(),
+        relay,
+        actor: { kind: "runtime", id: communication.runtimeActorId ?? "qq-workflows-runtime" },
+        now: now(),
+      });
+    } finally {
+      if (acquired.ok) void Promise.resolve(acquired.relay.release()).catch(() => {});
+    }
+    if (result.ok) {
+      // Rebuildable delivery correlation on the compatibility record (the
+      // authoritative correlation lives in the change record).
+      const current = readJob(stateDir, jobId);
+      if (current) {
+        writeJob(stateDir, {
+          ...current,
+          communication: {
+            ...communication,
+            amendments: [
+              ...(Array.isArray(current.communication?.amendments) ? current.communication.amendments : []),
+              { amendmentId: result.amendmentId, revision: result.revision, push: { status: result.delivery?.status ?? "unknown", eventId: result.delivery?.eventId ?? null, at: now() } },
+            ],
+          },
+        });
+      }
+      appendJobEvent(stateDir, jobId, { action: "steer", revision: result.revision, delivery: result.delivery?.status ?? "unknown", message: clamp(message.trim(), 400) }, { now: now() });
+      return {
+        ok: true,
+        jobId,
+        status: record.status,
+        recorded: true,
+        revision: result.revision,
+        amendmentId: result.amendmentId,
+        delivery: result.delivery,
+        acknowledged: false,
+        note: "recorded as an assignment update; transport receipt and worker acknowledgement are separate later facts (check_runner)",
+      };
+    }
+    appendJobEvent(stateDir, jobId, { action: "steer_refused", code: result.code, reason: clamp(result.reason ?? "", 200) }, { now: now() });
+    return {
+      ok: false,
+      jobId,
+      status: record.status,
+      supported: true,
+      steered: false,
+      code: result.code,
+      retryable: result.code === "not-bound",
+      ...(result.revisionRecorded ? { revisionRecorded: result.revisionRecorded, unresolved: true } : {}),
+      error: result.reason,
+    };
   }
 
   function cancelRunnerOp({ jobId, reason = "cancelled by architect" } = {}) {
     const record = requireJob(jobId);
-    if (TERMINAL_STATUSES.includes(record.status)) {
+    const communication = record.communication;
+    if (communication?.enabled && communication.changeId) {
+      // The AUTHORITATIVE change record decides FIRST. A stale compatibility
+      // cache can neither invent a cancellation nor let one overwrite an
+      // already-validated outcome; a refused or unavailable authority means NO
+      // cache tombstone and NO signal — and an accepted intent is durable
+      // BEFORE the owned process is signalled.
+      const commStateDir = communication.stateDir ?? stateDir;
+      const actor = { kind: "runtime", id: communication.runtimeActorId ?? "qq-workflows-runtime" };
+      const readAttempt = () => {
+        try {
+          return viewsFor(openChange({ stateDir: commStateDir, changeId: communication.changeId }).state).attempt(jobId, communication.attemptId);
+        } catch {
+          return null;
+        }
+      };
+      let attempt = readAttempt();
+      const decided = attempt?.outcome?.status ?? null;
+      if (decided) {
+        // The validated outcome is authoritative and terminal: cancellation
+        // never overwrites it and never signals its process.
+        return {
+          ok: decided === "cancelled",
+          jobId,
+          status: decided,
+          signalled: false,
+          ...(decided === "cancelled" ? {} : { code: "already-decided" }),
+          note: `the authoritative change record already holds the validated '${decided}' outcome; nothing was signalled`,
+        };
+      }
+      const intent = recordRunnerCancelIntent({
+        stateDir: commStateDir,
+        changeId: communication.changeId,
+        jobId,
+        attemptId: communication.attemptId,
+        reason,
+        actor,
+        now: now(),
+      });
+      if (!intent.ok) {
+        return {
+          ok: false,
+          jobId,
+          status: record.status,
+          signalled: false,
+          code: intent.code ?? "refused",
+          error: `cancellation refused: ${intent.reason}`,
+          note: "no cancellation intent was recorded, no cache tombstone was written, and no owned process was signalled",
+        };
+      }
+      const outcome = recordRunnerOutcome({
+        stateDir: commStateDir,
+        changeId: communication.changeId,
+        jobId,
+        attemptId: communication.attemptId,
+        status: "cancelled",
+        summary: clamp(reason, 500),
+        actor,
+        now: now(),
+      });
+      attempt = readAttempt();
+      const settled = attempt?.outcome?.status ?? null;
+      if (settled !== "cancelled") {
+        // The outcome append lost to a validated success (or failed): never
+        // signal and never claim an accepted cancellation.
+        return {
+          ok: false,
+          jobId,
+          status: settled ?? record.status,
+          signalled: false,
+          code: outcome.ok ? "already-decided" : (outcome.code ?? "refused"),
+          ...(outcome.ok ? {} : { error: `cancellation refused: ${outcome.reason}` }),
+          note: "no accepted authoritative cancellation outcome exists; no owned process was signalled",
+        };
+      }
+      void Promise.resolve(releaseRunnerConsumerForJob(record)).catch(() => {});
+    } else if (TERMINAL_STATUSES.includes(record.status)) {
       return { ok: true, jobId, status: record.status, note: "already terminal" };
     }
+    // The cache tombstone is written AFTER the authority admitted the
+    // cancellation (and is a no-op for an already-terminal cache).
     const cancelled = recordCancellation(stateDir, jobId, { by: session().sessionKey, reason, now: now() });
     const state = live.get(jobId) ?? null;
     const recordedFingerprint = cancelled.process?.fingerprint ?? null;
@@ -664,7 +1046,7 @@ export function createWorkflow({
           error: failed
             ? { message: result?.error?.message ?? `managed execution ${result?.status ?? "failed"}`, phase: result?.error?.phase ?? null }
             : null,
-        });
+        }).catch(() => {});
       } catch (err) {
         const current = readJob(stateDir, id);
         if (!current || current.terminal) return;
@@ -672,7 +1054,7 @@ export function createWorkflow({
           status: "failed",
           phase: current.phase,
           error: { message: err?.message || String(err), phase: current.phase },
-        });
+        }).catch(() => {});
       }
     })();
     return { ok: true, jobId: id, executionId: id, status: RUNNING, kind, phaseId: targetPhase, sessionKey: association.sessionKey };
@@ -694,8 +1076,12 @@ export function createWorkflow({
 
   async function recoverDeliveriesOp({ transport = notifierTransport, evidence = null, allowUnverified = false } = {}) {
     const association = session();
-    const jobs = listJobs(stateDir, { sessionKey: association.sessionKey }).map((record) =>
-      live.has(record.id) ? record : reconcileJob(stateDir, record.id)).map(jobSummary);
+    // Reload recovery: ingest explicit results and mirror authoritative
+    // outcomes BEFORE interpreting any lost process, session-scoped.
+    const jobs = listJobs(stateDir, { sessionKey: association.sessionKey })
+      .map((record) => (live.has(record.id) ? record : reconcileRunnerJob({ stateDir, jobId: record.id, now: now() }).record))
+      .filter(Boolean)
+      .map(jobSummary);
     const delivery = await recoverPendingDeliveries({
       stateDir,
       sessionKey: association.sessionKey,
@@ -704,12 +1090,19 @@ export function createWorkflow({
       evidence,
       allowUnverified,
     });
+    // Runner communication recovery: recorded-but-unsent assignment updates for
+    // this session's runners are re-pushed here (never re-recorded), and a
+    // bounded consumer drain delivers progress obligations the notification
+    // journal already accepted. A restarted parent for the same owner recovers
+    // the same consumer address, so nothing is lost and nothing is duplicated.
+    const communication = await recoverRunnerCommunicationForSession(association);
     return {
       ok: true,
       sessionKey: association.sessionKey,
       runtime: { operationsModule: import.meta.url, pid: process.pid, ...runtimeContext },
       jobs,
       delivery,
+      communication,
       pendingDelivery: jobs.filter((job) => job.terminal && !job.delivery).map((job) => job.id),
       awaitingExplicitRetry: jobs.filter((job) => deliveryPending(stateDir, job.id)).map((job) => job.id),
       reconciled: delivery.reconciled.map((entry) => entry.jobId),
@@ -722,6 +1115,53 @@ export function createWorkflow({
       note:
         "recovery replays completion notifications only for this session and never restarts work: an event the session already retained is acknowledged from its receipt (or, for a completion a previous release steered without the identity metadata, from an exact unique content correspondence) instead of being resent, a receipt whose journal record was lost or corrupted is rebuilt from the owner-bound job record first, an event whose receipt cannot be proven is retained as outcome-unknown (an explicit /qq_recover retries it), an event whose records could not be written is reported as unreconciled rather than delivered, and interrupted or reconciliation-required jobs stay inspectable for an explicit decision",
     };
+  }
+
+  // Recover the communication lifecycle for one session's runner jobs:
+  // re-push recorded-but-unsent assignment updates (the explicit safe retry
+  // path — never a re-record, never a worker relaunch) through a bounded
+  // consumer hold that also drains pending progress obligations.
+  async function recoverRunnerCommunicationForSession(association) {
+    const runnerRecords = listJobs(stateDir, { sessionKey: association.sessionKey, role: "runner" }).filter(
+      (record) => record.communication?.enabled && record.communication.changeId,
+    );
+    if (runnerRecords.length === 0) return { recovered: 0, pushed: [], unresolved: [], errors: [] };
+    const consumer = await acquireRunnerConsumer({
+      stateDir,
+      root,
+      ownerRouting: association.sessionKey,
+      env,
+      transport: notifierTransport,
+      workflowRouting: { sessionKey: association.sessionKey, sessionId: association.sessionId },
+    });
+    if (!consumer.ok) {
+      return { recovered: runnerRecords.length, pushed: [], unresolved: [], errors: [{ jobId: null, reason: consumer.reason }] };
+    }
+    const out = { recovered: runnerRecords.length, pushed: [], unresolved: [], errors: [] };
+    try {
+      for (const record of runnerRecords) {
+        try {
+          const retry = await retryPendingRunnerAmendments({
+            stateDir,
+            changeId: record.communication.changeId,
+            jobId: record.id,
+            relay: consumer.relay,
+            actor: { kind: "runtime", id: record.communication.runtimeActorId ?? "qq-workflows-runtime" },
+            now: now(),
+          });
+          out.pushed.push(...retry.pushed.map((entry) => ({ jobId: record.id, ...entry })));
+          out.unresolved.push(...retry.unresolved.map((entry) => ({ jobId: record.id, ...entry })));
+          out.errors.push(...retry.errors.map((entry) => ({ jobId: record.id, ...entry })));
+        } catch (error) {
+          out.errors.push({ jobId: record.id, reason: clamp(String(error?.message ?? error), 200) });
+        }
+      }
+    } finally {
+      // The bounded drain on the last hold delivers progress obligations the
+      // notification journal already accepted.
+      void Promise.resolve(consumer.release()).catch(() => {});
+    }
+    return out;
   }
 
   // Durable receipt path for the pi transport: consumption of the exact event is
@@ -752,8 +1192,14 @@ export function createWorkflow({
         return readTicketOp(args ?? {});
       case "update_ticket":
         return updateTicketOp(args ?? {});
-      case "dispatch_runner":
-        return dispatchRunnerOp(args ?? {});
+      case "dispatch_runner": {
+        const dispatched = dispatchRunnerOp(args ?? {});
+        // The tool surface awaits the communication setup + spawn so the
+        // model-facing result reports the launched state; the direct API keeps
+        // its synchronous job id (a returned job ID never means the receiver
+        // binding is ready).
+        return dispatched?.ready ? await dispatched.ready : dispatched;
+      }
       case "check_runner":
         return checkRunnerOp(args ?? {});
       case "steer_runner":
@@ -783,6 +1229,9 @@ export function createWorkflow({
     reconcile: reconcileOp,
     recoverDeliveries: recoverDeliveriesOp,
     acknowledgeDelivery: acknowledgeDeliveryOp,
+    // Test/shutdown seam: drop every consumer/relay hold this workflow still
+    // owns (each also drains bounded before the transport stops).
+    releaseCommunication: releaseAllRunnerConsumers,
     callTool,
     readTicket: readTicketOp,
     updateTicket: updateTicketOp,
