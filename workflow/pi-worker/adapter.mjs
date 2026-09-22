@@ -48,8 +48,17 @@
  *
  * @module pi-worker/adapter
  */
-import { readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {
+  closeSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { randomBytes } from "node:crypto";
+import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import {
   COMPLETE_TASK_RESPONSE_MAX,
@@ -122,7 +131,7 @@ export function resolveRunnerTransport(env = process.env, { osTmpdir = tmpdir() 
 }
 
 /** The `pi --mode rpc` argv for one seat turn. */
-export function buildPiArgs({ seat, config, extension, tools, roleInstructions }) {
+export function buildPiArgs({ seat, config, extension, tools, roleInstructions, sessionPath }) {
   if (!WORKER_SEATS.includes(seat)) throw new Error(`unknown worker seat '${seat}'`);
   const args = [
     "--mode", "rpc",
@@ -131,9 +140,12 @@ export function buildPiArgs({ seat, config, extension, tools, roleInstructions }
   ];
   if (config.reasoningEffort) args.push("--thinking", config.reasoningEffort);
   args.push(
-    // One worker turn per process; no session file is written into the
-    // operator's session store.
-    "--no-session",
+    // One worker turn per process; the operator's session store is never used.
+    // Production workers record the attempt's native session by default in the
+    // dedicated private worker-session directory; an explicit absolute
+    // QQ_WORKER_SESSION_DIR overrides that directory. A recording-disabled
+    // launch passes --no-session exactly as before.
+    ...(sessionPath ? ["--session", sessionPath] : ["--no-session"]),
     // Only the reviewed worker extension loads; project-local extensions and
     // target-repo resources are never trusted by a worker session.
     "--no-extensions",
@@ -143,6 +155,130 @@ export function buildPiArgs({ seat, config, extension, tools, roleInstructions }
     "--append-system-prompt", roleInstructions,
   );
   return args;
+}
+
+/**
+ * The dedicated private worker-session directory under the user's local state:
+ * `$XDG_STATE_HOME/qq-workflows/worker-sessions`, defaulting to
+ * `~/.local/state/qq-workflows/worker-sessions`. Stable across launches, never
+ * inside a checkout, and per-user private.
+ */
+export function defaultNativeSessionDir(env = process.env) {
+  const base = env.XDG_STATE_HOME && String(env.XDG_STATE_HOME).trim()
+    ? String(env.XDG_STATE_HOME)
+    : join(env.HOME && String(env.HOME).trim() ? String(env.HOME) : homedir(), ".local", "state");
+  return join(base, "qq-workflows", "worker-sessions");
+}
+
+/**
+ * Allocate the durable native session file for ONE attempt, plus the private
+ * metadata sidecar that associates it with this attempt.
+ *
+ * Enabled by default for production workers (`production: true`): the session
+ * is recorded under `defaultNativeSessionDir(env)`. An explicit absolute
+ * `QQ_WORKER_SESSION_DIR` overrides that directory; unset (or blank) with a
+ * non-production launch records nothing and returns null (the exact prior
+ * `--no-session` behavior).
+ *
+ * The directory is created with mode 0700 (missing components only - an
+ * existing directory is never chmodded) and then verified with lstat: it must
+ * be a real directory (never a symlink or other non-regular entry), owned by
+ * this user, and exactly owner-rwx (0700). Anything else is a refusal, never a
+ * silent recording into an unsafe location and never a permission "repair" of
+ * an unrelated path.
+ *
+ * The file itself is created exclusively (`wx`, 0o600) with a
+ * timestamp+pid+random name, so no launch can resume, reuse, or collide with
+ * another attempt's session, and the file's permissions never widen. A
+ * collision retries with a fresh random name; an exclusive create can never
+ * follow a preexisting symlink (O_EXCL fails it with EEXIST).
+ *
+ * Next to the session file a sidecar `<session>.meta.json` (exclusively
+ * created, 0o600) durably records the per-attempt association: seat, cwd,
+ * adapter pid, the available QQ runner identity (QQ_RUNNER_ID when bound, else
+ * null) and the start time. It never contains the prompt, environment, or
+ * credentials. If the sidecar cannot be written the just-created session file
+ * is removed and the failure is thrown - a half-associated recording is never
+ * left behind.
+ */
+export function resolveNativeSessionPath({
+  env = process.env,
+  seat,
+  production = false,
+  cwd = null,
+  runnerId = null,
+  now = new Date(),
+  random = randomBytes,
+  mkdir = mkdirSync,
+  lstat = lstatSync,
+  open = openSync,
+  write = writeFileSync,
+  close = closeSync,
+  unlink = unlinkSync,
+} = {}) {
+  const override = env.QQ_WORKER_SESSION_DIR;
+  const root = typeof override === "string" && override.trim() !== ""
+    ? override
+    : production
+      ? defaultNativeSessionDir(env)
+      : null;
+  if (root === null) return null;
+  if (!isAbsolute(root)) {
+    throw Object.assign(new Error(`native_session_dir_invalid: native session trace dir '${root}' must be absolute`), { code: "native_session_dir_invalid" });
+  }
+  // Every directory-initialization problem is one named refusal: a raw mkdir
+  // or lstat error (EEXIST on a non-directory leaf, EACCES, a vanished entry)
+  // is reported as native_session_dir_invalid with its cause, never as a
+  // silent fallback and never as an unnamed crash.
+  try {
+    mkdir(root, { recursive: true, mode: 0o700 });
+    var dir = lstat(root);
+  } catch (error) {
+    throw Object.assign(new Error(`native_session_dir_invalid: native session trace dir '${root}' could not be initialized as a private directory: ${error?.message ?? error}`), { code: "native_session_dir_invalid" });
+  }
+  if (!dir.isDirectory() || dir.isSymbolicLink()) {
+    throw Object.assign(new Error(`native_session_dir_invalid: native session trace dir '${root}' is not a real directory (symlink or other entry)`), { code: "native_session_dir_invalid" });
+  }
+  const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  if (uid !== null && dir.uid !== uid) {
+    throw Object.assign(new Error(`native_session_dir_unsafe: native session trace dir '${root}' is not owned by this user (uid ${dir.uid} != ${uid})`), { code: "native_session_dir_unsafe" });
+  }
+  if ((dir.mode & 0o777) !== 0o700) {
+    throw Object.assign(new Error(`native_session_dir_unsafe: native session trace dir '${root}' must be private (0700), got mode ${(dir.mode & 0o777).toString(8)}`), { code: "native_session_dir_unsafe" });
+  }
+  const stamp = now.toISOString().replace(/[:.]/gu, "-");
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    // A fresh random suffix is drawn per retry so a collision can never loop
+    // on one name; the exclusive `wx` create is the actual collision guard.
+    const path = join(root, `pi-${seat}-${stamp}-${process.pid}-${random(6).toString("hex")}.jsonl`);
+    let fd;
+    try {
+      fd = open(path, "wx", 0o600);
+    } catch (error) {
+      if (error?.code === "EEXIST") continue; // never resume or reuse another attempt's file
+      throw error;
+    }
+    close(fd);
+    const metaPath = `${path}.meta.json`;
+    try {
+      write(metaPath, `${JSON.stringify({
+        schema: "qq-worker-session-meta/1",
+        sessionFile: path,
+        seat,
+        pid: process.pid,
+        cwd: cwd ?? null,
+        runnerId: runnerId ?? null,
+        startedAt: now.toISOString(),
+      }, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    } catch (error) {
+      // Never leave a session file without its association: remove the
+      // just-created file and refuse the launch with a clear failure.
+      try { unlink(path); } catch { /* best effort */ }
+      throw Object.assign(new Error(`native_session_meta_failed: could not write the native session metadata sidecar '${metaPath}': ${error?.message ?? error}`), { code: "native_session_meta_failed" });
+    }
+    return path;
+  }
+  throw Object.assign(new Error("native_session_collision: could not allocate a unique native session file after 5 attempts"), { code: "native_session_collision" });
 }
 
 export function diagnostic(message) {
@@ -404,7 +540,15 @@ async function runOneTurn(args, env) {
   // that cannot resolve refuses the launch before any work starts.
   const instructions = loadPiSeatInstructions(args.seat, { tools });
   const extension = WORKER_PI_EXTENSION;
-  const piArgs = buildPiArgs({ seat: args.seat, config, extension, tools, roleInstructions: instructions.body });
+  const sessionPath = resolveNativeSessionPath({
+    env,
+    seat: args.seat,
+    production: args.production === true,
+    cwd: args.cwd,
+    runnerId: typeof env.QQ_RUNNER_ID === "string" && env.QQ_RUNNER_ID.trim() !== "" ? env.QQ_RUNNER_ID : null,
+  });
+  if (sessionPath) diagnostic(`native session file: ${sessionPath}`);
+  const piArgs = buildPiArgs({ seat: args.seat, config, extension, tools, roleInstructions: instructions.body, sessionPath });
   const bin = workerPiBin(env);
   const client = new PiRpcClient({ bin, args: piArgs, cwd: args.cwd, env });
   client.start();
@@ -419,6 +563,7 @@ async function runOneTurn(args, env) {
     client,
     instructions,
   });
+  if (sessionPath) summary.sessionFile = sessionPath;
   summary.effectiveSettings = effective;
 
   const translator = createTranslator({ seat: args.seat, onLine: (event) => emit(event) });

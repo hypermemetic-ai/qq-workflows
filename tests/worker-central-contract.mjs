@@ -17,15 +17,14 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   WORKER_CONFIG_FILE_ENV,
   WORKER_DEEPSEEK_ADAPTER,
-  WORKER_MESSAGES_BASE_URL,
+  WORKER_PI_ADAPTER,
   WORKER_SEATS,
   buildWorkerLaunch,
   loadWorkerConfig,
@@ -583,32 +582,42 @@ async function checkExecutionView(id) {
   );
   assert.deepEqual(plannedSpawn.args, spawn.args, "the planned argv is the same in either environment");
 
-  // The operator's real configuration (when present) is likewise untouched, and
-  // still resolves to the authorized DeepSeek minimal harness. No value from it
-  // is printed or asserted on beyond that invariant.
-  const liveConfig = join(homedir(), ".config", "qq-workflows", "worker-config.json");
-  let live = null;
-  try {
-    live = readFileSync(liveConfig, "utf8");
-  } catch {
-    live = null;
-  }
-  if (live !== null) {
-    const livePlans = WORKER_SEATS.map((seat) => resolveWorkerLaunchPlan({ role: seat, env: { [WORKER_CONFIG_FILE_ENV]: liveConfig } }));
-    for (const livePlan of livePlans) {
-      assert.equal(livePlan.provider, "deepseek");
-      assert.equal(livePlan.model, "deepseek-flash");
-      assert.equal(livePlan.harness, "deepseek-minimal");
-      assert.equal(livePlan.reasoning_effort, "max");
-      assert.equal(livePlan.base_url, "https://api.deepseek.com");
-      assert.equal(livePlan.wire_api, "responses");
-      assert.equal(livePlan.env_key, "DEEPSEEK_API_KEY");
-      assert.equal(livePlan.messages_base_url, WORKER_MESSAGES_BASE_URL);
+  // Resolver coverage beyond the C1 pins comes from an isolated additional
+  // fixture, never from the operator's live configuration file: the plan must
+  // mirror exactly what a central configuration declares (a different
+  // selection resolves as faithfully as the C1 pins), resolution never
+  // rewrites the file, and it writes nothing at all next to it (no config
+  // rewrite, no registry/settings side files).
+  {
+    const alternateFixture = join(staging, "alternate-worker-config.json");
+    const alternateSelection = {
+      harness: "pi",
+      provider: "muse",
+      model: "muse-spark-1.3-contributor",
+      reasoning_effort: "high",
+      env_key: "MUSE_API_KEY",
+    };
+    writeFileSync(alternateFixture, `${JSON.stringify(alternateSelection, null, 2)}\n`, "utf8");
+    const alternateBytes = readFileSync(alternateFixture, "utf8");
+    const stagingBefore = readdirSync(staging).sort();
+    for (const seat of WORKER_SEATS) {
+      const plan = resolveWorkerLaunchPlan({ role: seat, env: { [WORKER_CONFIG_FILE_ENV]: alternateFixture } });
+      assert.equal(plan.source, "central-config");
+      assert.equal(plan.configPath, alternateFixture);
+      assert.equal(plan.harness, alternateSelection.harness);
+      assert.equal(plan.provider, alternateSelection.provider);
+      assert.equal(plan.model, alternateSelection.model);
+      assert.equal(plan.reasoning_effort, alternateSelection.reasoning_effort);
+      assert.equal(plan.env_key, alternateSelection.env_key);
+      // The pi harness takes endpoint and protocol from pi's own registry: the
+      // fixture declares neither, so the plan invents neither.
+      assert.equal(plan.base_url, null);
+      assert.equal(plan.wire_api, null);
+      assert.equal(plan.adapter, WORKER_PI_ADAPTER);
+      assert.equal(plan.runtime_root, null);
     }
-    assert.equal(readFileSync(liveConfig, "utf8"), live, "the operator's central configuration is byte-for-byte unchanged");
-    console.log("live operator worker configuration: unchanged and pinned to the authorized DeepSeek minimal harness");
-  } else {
-    console.log("live operator worker configuration: absent in this environment (fixture pins verified instead)");
+    assert.equal(readFileSync(alternateFixture, "utf8"), alternateBytes, "resolving a launch never rewrites the central configuration");
+    assert.deepEqual(readdirSync(staging).sort(), stagingBefore, "resolution writes nothing: no config rewrite, no registry/settings side files");
   }
 }
 
