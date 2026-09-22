@@ -5,10 +5,10 @@ import {mkdtempSync,mkdirSync,writeFileSync,existsSync,statSync,readdirSync,read
 import {tmpdir} from 'node:os';
 import {join,basename} from 'node:path';
 import {processFingerprint} from '../../workflow/jobs.mjs';
-export async function localPiProvider({respond}={}) {
+export async function localPiProvider({respond,fixtureParent=tmpdir()}={}) {
   const pi=String(process.env.PATH??'').split(':').map(p=>join(p,'pi')).find(p=>{try{return existsSync(p)&&statSync(p).isFile();}catch{return false;}});
   if(!pi)return null;
-  const root=mkdtempSync(join(tmpdir(),'qq-local-pi-'));
+  const root=mkdtempSync(join(fixtureParent,'qq-local-pi-'));
   const agentDir=join(root,'agent');mkdirSync(agentDir);
   mkdirSync(join(root,'state'),{mode:0o700}); // real relay requires a private transport ancestry
   const configFile=join(root,'worker-config.json');
