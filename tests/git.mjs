@@ -223,7 +223,9 @@ try {
   await git(lifecycleRepo, ["remote", "add", "origin", "https://example.com/repo.git"]);
   assert.equal(await hasRemote(lifecycleRepo), true);
   const roRemoteSession = "66778899-0011-2233-4455-667788990011";
-  const wtRoRemote = await createWorktree(lifecycleRepo, { kind: "research", sessionId: roRemoteSession });
+  // This unreachable-remote fixture tests empty-PR retirement, not default
+  // base fetching; explicitly pin the local commit it intends to inspect.
+  const wtRoRemote = await createWorktree(lifecycleRepo, { kind: "research", sessionId: roRemoteSession, base: "HEAD" });
   const landRoRemoteResult = await landWorktree(lifecycleRepo, {
     worktree: wtRoRemote.cwd,
     branch: wtRoRemote.branch,

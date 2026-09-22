@@ -153,6 +153,35 @@ export async function defaultBaseRef(cwd) {
   throw new Error("no default/base branch (origin/main, main, origin/master, master)");
 }
 
+// New managed work must not inherit an independently dirty/stale checkout's
+// HEAD. Resolve the remote's actual default branch, fetch it, and pin the SHA
+// before worktree creation. A failed verification never falls back to cached
+// refs. Explicit bases and existing phase branches are handled separately.
+export async function freshDefaultBase(cwd) {
+  const remotes = (await git(cwd, ["remote"])).split("\n").filter(Boolean);
+  if (!remotes.length) {
+    const ref = await defaultLocalBranch(cwd);
+    return { ref, sha: await revParse(cwd, `refs/heads/${ref}`), source: "local-default" };
+  }
+  const remote = remotes.includes("origin") ? "origin" : remotes.length === 1 ? remotes[0] : null;
+  if (!remote) throw new Error("multiple remotes without origin: specify an explicit base for the new phase");
+  const remoteGit = async (args) => {
+    const { stdout } = await exec("git", args, {
+      cwd, encoding: "utf8", timeout: 30_000,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    });
+    return stdout.trimEnd();
+  };
+  const advertised = await remoteGit(["ls-remote", "--symref", "--exit-code", "--", remote, "HEAD"]);
+  const head = advertised.split("\n").find((line) => /^ref: refs\/heads\/[^\s]+\s+HEAD$/.test(line));
+  if (!head) throw new Error(`remote '${remote}' has no verifiable default branch; specify an explicit base`);
+  const remoteBranch = head.match(/^ref: (refs\/heads\/[^\s]+)/)[1];
+  const branch = remoteBranch.slice("refs/heads/".length);
+  const tracking = `refs/remotes/${remote}/${branch}`;
+  await remoteGit(["fetch", "--no-tags", "--", remote, `+${remoteBranch}:${tracking}`]);
+  return { ref: `${remote}/${branch}`, sha: await revParse(cwd, tracking), source: "fetched-remote-default" };
+}
+
 export async function mergeBase(cwd, base, head = "HEAD") {
   return git(cwd, ["merge-base", base, head]);
 }
@@ -280,16 +309,18 @@ async function copyTicketToWorktree(srcTicket, dest) {
   return destTicket;
 }
 
-export async function createWorktree(cwd, { kind = "bounded", sessionId, branch: customBranch, base = "HEAD" } = {}) {
+export async function createWorktree(cwd, { kind = "bounded", sessionId, branch: customBranch, base = null } = {}) {
   const root = await mainRepoRoot(cwd);
   // Fail fast on a missing ticket before any worktree or branch exists.
   const srcTicket = await resolveTicketSource(root, sessionId);
   const branch = customBranch || implementerBranchName(kind, sessionId);
   const dest = worktreePathFor(root, branch);
+  const explicitBaseSha = base == null ? null : await revParse(root, base);
 
   await mkdir(dirname(dest), { recursive: true });
 
   let branchExists = false;
+  let baseSelection = null;
   try {
     await git(root, ["rev-parse", "--verify", `refs/heads/${branch}`]);
     branchExists = true;
@@ -304,13 +335,20 @@ export async function createWorktree(cwd, { kind = "bounded", sessionId, branch:
       const actualRoot = await mainRepoRoot(dest);
       const actualBranch = await currentBranch(dest);
       if (actualRoot !== root || actualBranch !== branch) throw new Error("preserved worktree identity mismatch");
-      if (base !== "HEAD") await git(dest, ["merge-base", "--is-ancestor", base, "HEAD"]);
+      if (explicitBaseSha) await git(dest, ["merge-base", "--is-ancestor", explicitBaseSha, "HEAD"]);
       await copyTicketToWorktree(srcTicket, dest);
       return { cwd: dest, worktree: dest, branch, reused: true, sessionId, ticketSource: srcTicket };
     }
+    if (explicitBaseSha) await git(root, ["merge-base", "--is-ancestor", explicitBaseSha, branch]);
     await git(root, ["worktree", "add", dest, branch]);
   } else {
-    await git(root, ["worktree", "add", "-b", branch, dest, base]);
+    const selected = base == null
+      ? await freshDefaultBase(root)
+      : { ref: base, sha: explicitBaseSha, source: "explicit" };
+    // Pin the verified commit: concurrent fetches cannot change the branch
+    // between selection and creation. No root checkout or stash is modified.
+    await git(root, ["worktree", "add", "-b", branch, dest, selected.sha]);
+    baseSelection = selected;
   }
 
   // Exclude .architect in the worktree to keep git status clean
@@ -329,7 +367,7 @@ export async function createWorktree(cwd, { kind = "bounded", sessionId, branch:
 
   await copyTicketToWorktree(srcTicket, dest);
 
-  return { cwd: dest, worktree: dest, branch, reused: false, sessionId, ticketSource: srcTicket };
+  return { cwd: dest, worktree: dest, branch, reused: false, sessionId, ticketSource: srcTicket, ...(baseSelection ? { baseSelection } : {}) };
 }
 
 export async function mainRepoRoot(cwd) {
