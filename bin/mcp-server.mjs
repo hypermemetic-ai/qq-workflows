@@ -217,6 +217,8 @@ export const TOOLS = [
           type: "string",
           description: "Optional session ID. Defaults to active ticket in .architect/tickets/",
         },
+        phaseId: { type: "string", description: "Approved phase ticket UUID, separate from the coordinating session that owns notifications." },
+        baseRef: { type: "string", description: "Explicit new-worktree base or required ancestor when resuming a preserved phase." },
         cwd: {
           type: "string",
           description: "Optional repository working directory (defaults to process.cwd())",
@@ -2663,10 +2665,11 @@ export function handleExecutionStreamEvent(execution, event) {
 
 async function runExecutionPipeline(execution) {
   const { root, kind, sessionId, args } = execution;
+  const phaseId = execution.phaseId ?? sessionId;
 
   touchActivity(execution);
   addTrajectory(execution, { action: "provision_worktree", timestamp: Date.now() });
-  const wt = await createWorktree(root, { kind, sessionId });
+  const wt = await createWorktree(root, { kind, sessionId: phaseId, ...(args.baseRef ? { base: args.baseRef } : {}) });
   execution.worktree = wt.cwd;
   execution.branch = wt.branch;
   touchActivity(execution);
@@ -2928,9 +2931,17 @@ export async function dispatchExecution(args = {}) {
   // any worktree, implementer, or reviewer is started.
   assertNoProviderOverrides(args);
 
+  if (args.phaseId !== undefined && !args.sessionId && !args.id) throw new Error("phaseId requires an explicit coordinating sessionId; owner is never inferred from the phase ticket");
   const root = await mainRepoRoot(cwd);
   const sessionId = await resolveSessionId(root, args.sessionId || args.id);
-  await resolveTicketSource(root, sessionId);
+  const phaseId = args.phaseId ?? sessionId;
+  if (args.phaseId !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(phaseId)) throw new Error("phaseId must be a ticket UUID");
+  await resolveTicketSource(root, phaseId);
+  for (const existing of EXECUTIONS.values()) {
+    if (existing.root === root && (existing.phaseId ?? existing.sessionId) === phaseId && existing.status === "running") {
+      throw new Error("phase already has a running managed execution");
+    }
+  }
   if (sessionId) {
     const procThread = findCodexThreadFromProc();
     if (procThread) DETECTED_CODEX_THREADS.set(sessionId, procThread);
@@ -2947,6 +2958,7 @@ export async function dispatchExecution(args = {}) {
     id,
     kind,
     sessionId,
+    phaseId,
     root,
     cwd,
     args,

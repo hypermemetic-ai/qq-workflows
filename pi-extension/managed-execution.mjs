@@ -22,7 +22,7 @@ function delay(ms) {
 }
 
 export function loadManagedExecutionLauncher({ importModule = (specifier) => import(specifier) } = {}) {
-  return async function launchManagedExecution({ kind, cwd, sessionId, onPhase }) {
+  return async function launchManagedExecution({ kind, cwd, sessionId, phaseId, baseRef, onPhase }) {
     const pipeline = await importModule("../bin/mcp-server.mjs");
     if (typeof pipeline.dispatchExecution !== "function") {
       throw new Error("the repository's managed execution pipeline is unavailable (dispatchExecution missing)");
@@ -36,7 +36,7 @@ export function loadManagedExecutionLauncher({ importModule = (specifier) => imp
         "the installed managed execution pipeline does not use the central worker launch contract (assertNoProviderOverrides/WORKER_SEATS missing); reinstall the integration source instead of substituting another harness",
       );
     }
-    const started = await pipeline.dispatchExecution({ kind, cwd, sessionId });
+    const started = await pipeline.dispatchExecution({ kind, cwd, sessionId, ...(phaseId ? { phaseId } : {}), ...(baseRef ? { baseRef } : {}) });
     onPhase?.("implementing", started?.id ?? null);
     for (;;) {
       const view = await pipeline.checkExecution({ id: started.id });
