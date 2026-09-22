@@ -519,9 +519,12 @@ export function createWorkflow({
     if (typeof task !== "string" || !task.trim()) throw new Error("task is required");
     const association = session();
     const id = randomUUID();
-    // Durable, private result transport location: the explicit result survives
-    // a coordinator reload inside this workflow's own state directory.
-    const resultFile = join(stateDir, "runner-results", `${id}.json`);
+    const launchPlan = plan ?? resolveWorkerLaunchPlan({ role: "runner", env });
+    // Bound Pi runners publish durable results in workflow state. Legacy
+    // harnesses retain their existing temp-root transport contract.
+    const resultFile = launchPlan.harness === PI_HARNESS
+      ? join(stateDir, "runner-results", `${id}.json`)
+      : join(tmpdir(), `qq-runner-result-${id}.json`);
     mkdirSync(dirname(resultFile), { recursive: true, mode: 0o700 });
     const reportFile = join(tmpdir(), `qq-runner-report-${id}.md`);
     try {
@@ -529,7 +532,6 @@ export function createWorkflow({
       rmSync(reportFile, { force: true });
     } catch {}
 
-    const launchPlan = plan ?? resolveWorkerLaunchPlan({ role: "runner", env });
     const record = createJob({
       stateDir,
       id,
