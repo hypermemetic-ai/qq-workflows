@@ -49,7 +49,7 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, statSync, lstatSync, unlinkSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -471,7 +471,28 @@ async function probeRelayHealth(socketPath, clientModule) {
  *     A `shared` handle (a live relay on our private directory that this
  *     process did not spawn) never kills the child, by construction.
  */
-export async function acquireRelayRuntime({
+// Startup and shutdown share one queue per canonical directory. A ready-only
+// cache does not protect the asynchronous socket readiness window: two calls
+// can otherwise start competing singleton relays and fail an unrelated job.
+const relayRuntimeQueues = new Map();
+function serializeRelayRuntime(key, operation) {
+  const previous = relayRuntimeQueues.get(key) ?? Promise.resolve();
+  const result = previous.then(operation);
+  const settled = result.then(() => {}, () => {});
+  relayRuntimeQueues.set(key, settled);
+  settled.then(() => {
+    if (relayRuntimeQueues.get(key) === settled) relayRuntimeQueues.delete(key);
+  });
+  return result;
+}
+
+export async function acquireRelayRuntime(options = {}) {
+  if (!options.stateDir || !isAbsolute(options.stateDir)) throw fail("invalid-arguments", "stateDir must be an absolute path");
+  const stateDir = resolve(options.stateDir);
+  return serializeRelayRuntime(stateDir, () => acquireRelayRuntimeUnlocked({ ...options, stateDir }));
+}
+
+async function acquireRelayRuntimeUnlocked({
   stateDir,
   env = process.env,
   spawnImpl = nodeSpawn,
@@ -508,7 +529,7 @@ export async function acquireRelayRuntime({
 
   const socketPath = relaySocketPath(stateDir);
   const cached = acquireRelayRuntime.cache?.get(stateDir);
-  if (cached && cached.owned && relayProcessAlive(cached)) {
+  if (cached && cached.owned && !cached.isReleased && relayProcessAlive(cached)) {
     cached.refCount += 1;
     return { ok: true, relay: cached, shared: false };
   }
@@ -521,7 +542,7 @@ export async function acquireRelayRuntime({
       // shared transport and never kill it.
       const module = await loadRelayClientModule(install.clientModule);
       const shared = makeRelayHandle({
-        stateDir: dir, socketPath, pid: null, owned: false,
+        cacheKey: stateDir, stateDir: dir, socketPath, pid: null, owned: false,
         clientFactory: () => new module.RelayClient(socketPath), releaseGraceMs,
       });
       return { ok: true, relay: shared, shared: true };
@@ -546,7 +567,7 @@ export async function acquireRelayRuntime({
   }
   const module = await loadRelayClientModule(install.clientModule);
   const handle = makeRelayHandle({
-    stateDir: dir, socketPath, pid: child.pid ?? null, owned: true,
+    cacheKey: stateDir, stateDir: dir, socketPath, pid: child.pid ?? null, owned: true,
     clientFactory: () => new module.RelayClient(socketPath), releaseGraceMs, child,
   });
   acquireRelayRuntime.cache ??= new Map();
@@ -590,7 +611,7 @@ async function waitForRelayReady({ child, socketPath, install, deadline }) {
   return { ok: false, reason: lastReason };
 }
 
-function makeRelayHandle({ stateDir, socketPath, pid, owned, clientFactory, releaseGraceMs, child = null }) {
+function makeRelayHandle({ cacheKey, stateDir, socketPath, pid, owned, clientFactory, releaseGraceMs, child = null }) {
   let clientInstance = null;
   let refCount = owned ? 1 : 0;
   let released = false;
@@ -614,25 +635,28 @@ function makeRelayHandle({ stateDir, socketPath, pid, owned, clientFactory, rele
       const client = await handle.client();
       return client.inspect({ view: "health" });
     },
-    async release({ force = false } = {}) {
-      if (!owned) return { released: false, reason: "shared relay: this handle does not own the child and never kills it" };
-      refCount -= 1;
-      if (refCount > 0 && !force) return { released: false, reason: `shared by ${refCount} holder(s) in this process` };
-      released = true;
-      acquireRelayRuntime.cache?.delete(stateDir);
-      // Graceful shutdown first (the relay removes its own socket on a clean
-      // exit), then bounded escalation — for OUR child only.
-      try { child?.kill("SIGTERM"); } catch { /* already gone */ }
-      const deadline = Date.now() + releaseGraceMs;
-      while (child && Date.now() < deadline && child.exitCode === null && child.signalCode === null) {
-        await sleep(50);
-      }
-      if (child && child.exitCode === null && child.signalCode === null) {
-        try { child.kill("SIGKILL"); } catch { /* already gone */ }
-        await sleep(50);
-      }
-      handle.exitCode = child?.exitCode ?? null;
-      return { released: true, forced: child ? child.signalCode === "SIGKILL" : false };
+    release({ force = false } = {}) {
+      return serializeRelayRuntime(cacheKey, async () => {
+        if (released) return { released: false, reason: "relay already released" };
+        if (!owned) return { released: false, reason: "shared relay: this handle does not own the child and never kills it" };
+        refCount -= 1;
+        if (refCount > 0 && !force) return { released: false, reason: `shared by ${refCount} holder(s) in this process` };
+        released = true;
+        if (acquireRelayRuntime.cache?.get(cacheKey) === handle) acquireRelayRuntime.cache.delete(cacheKey);
+        // Graceful shutdown first (the relay removes its own socket on a clean
+        // exit), then bounded escalation — for OUR child only.
+        try { child?.kill("SIGTERM"); } catch { /* already gone */ }
+        const deadline = Date.now() + releaseGraceMs;
+        while (child && Date.now() < deadline && child.exitCode === null && child.signalCode === null) {
+          await sleep(50);
+        }
+        if (child && child.exitCode === null && child.signalCode === null) {
+          try { child.kill("SIGKILL"); } catch { /* already gone */ }
+          await sleep(50);
+        }
+        handle.exitCode = child?.exitCode ?? null;
+        return { released: true, forced: child ? child.signalCode === "SIGKILL" : false };
+      });
     },
     get isReleased() {
       return released;
@@ -641,7 +665,7 @@ function makeRelayHandle({ stateDir, socketPath, pid, owned, clientFactory, rele
   if (child) {
     child.on("exit", (code) => {
       handle.exitCode = code;
-      acquireRelayRuntime.cache?.delete(stateDir);
+      if (acquireRelayRuntime.cache?.get(cacheKey) === handle) acquireRelayRuntime.cache.delete(cacheKey);
     });
   }
   return handle;
