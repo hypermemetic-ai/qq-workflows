@@ -96,9 +96,20 @@ view); a live relay on our private directory that this process did not spawn is
 adopted as a SHARED handle whose release never kills it; a dead socket inside
 our private directory is unlinked and respawned (the sqlite journal survives,
 so recorded obligations stay pending). `release()` drops one hold; the last
-hold stops an OWNED child with SIGTERM (bounded) and then SIGKILL, keeps the
-state directory (pending obligations are never deleted), and a graceful exit
-removes the socket.
+local hold stops an OWNED child with SIGTERM (bounded) and then SIGKILL only
+when no other process or receiver holds it. The state directory and pending
+obligations remain; a graceful exit removes the socket.
+
+On Linux, kernel `flock` serializes acquisition and shutdown across processes.
+Rebuildable holder files in private `<stateDir>/relay-runtime/` record PID,
+process start ticks, and boot identity. They are transport bookkeeping, never
+workflow authority. A bound Pi receiver holds the transport independently of
+its parent. Provably dead holders are pruned; uncertain holders prevent
+shutdown. If another process still uses an owned relay, release relinquishes
+local ownership and leaves the relay available for subsequent shared reuse.
+Shared handles never signal that relay, including after their last release.
+A runtime-lock failure is explicit unavailable; it never implies delivery.
+A live socket that cannot prove relay health is refused, not replaced.
 
 ## Delivery: `submitAmendment` and the distinct facts
 
