@@ -6,9 +6,9 @@
 // entry explicitly keyed by that job). There is no fallback that promotes
 // stream output to a result.
 
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname, isAbsolute } from "node:path";
 
 import { FINAL_RESPONSE_MAX_CHARS, FINAL_RESPONSE_MAX_CHARS_LABEL } from "./limits.mjs";
 
@@ -217,4 +217,35 @@ export function acceptRunnerResult(
       data_points: dataPoints,
     },
   };
+}
+
+// Durable final-answer transport for managed implementer/reviewer attempts.
+// This is evidence for the parent change record, never a second job authority.
+export const SEAT_RESULT_BINDING_ENV = "QQ_WORKER_RESULT_BINDING";
+export function parseSeatResultBinding(env, role) {
+  const raw=env?.[SEAT_RESULT_BINDING_ENV];
+  if (!raw) return null;
+  const binding=JSON.parse(raw);
+  if (binding?.schema !== 1 || binding.role !== role || !["implementer","reviewer"].includes(role)
+    || !isAbsolute(binding.path ?? "") || !/^[A-Za-z0-9._-]{1,128}$/.test(binding.jobId ?? "")
+    || !/^[A-Za-z0-9._-]{1,128}$/.test(binding.attemptId ?? "")) throw new Error("invalid managed seat result binding");
+  return binding;
+}
+export function writeSeatResult(binding,{response,revision=null}) {
+  if(typeof response!=="string" || !response.trim() || response.length>COMPLETE_TASK_RESPONSE_MAX) throw new Error("invalid managed seat final answer");
+  const payload={schema:"qq-seat-result/1",jobId:binding.jobId,attemptId:binding.attemptId,role:binding.role,response,revision,at:Date.now()};
+  mkdirSync(dirname(binding.path),{recursive:true,mode:0o700});
+  const temporary=`${binding.path}.tmp-${process.pid}`;
+  writeFileSync(temporary,JSON.stringify(payload),{flag:"wx",mode:0o600});
+  renameSync(temporary,binding.path);
+  return payload;
+}
+export function readSeatResult(binding) {
+  try {
+    const payload=JSON.parse(readFileSync(binding.path,"utf8"));
+    if(payload.schema!=="qq-seat-result/1" || payload.jobId!==binding.jobId || payload.attemptId!==binding.attemptId || payload.role!==binding.role) return {ok:false,error:"managed seat result identity mismatch"};
+    if(typeof payload.response!=="string" || !payload.response.trim() || payload.response.length>COMPLETE_TASK_RESPONSE_MAX) return {ok:false,error:"invalid managed seat final answer"};
+    if(payload.revision!==null && (!Number.isInteger(payload.revision)||payload.revision<1)) return {ok:false,error:"invalid result revision"};
+    return {ok:true,...payload};
+  } catch(error) {return {ok:false,error:`managed seat result unavailable: ${error.message}`};}
 }

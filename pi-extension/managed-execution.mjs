@@ -1,16 +1,16 @@
+import {launchExecutionHost} from "../workflow/execution-supervisor.mjs";
+import {stateDirFor} from "../workflow/session.mjs";
 // Managed execution launcher for the pi Architect.
 //
 // Implementations run through the repository's existing managed pipeline
 // (worktree preparation, implementer, reviewer, retry, landing). The profile
-// calls that pipeline as a library in this process — no MCP transport, no MCP
-// server process, and no new implementation path — and reports each phase back
+// calls that pipeline in an owned host process — no MCP transport and no new
+// implementation path — and reports each phase back
 // to the durable execution record so a restart stays inspectable.
 //
-// The pipeline's own completion notification targets a Codex thread by design;
-// inside a pi session there is no Codex thread, so it reports "no codex context"
-// and the Architect's durable delivery path (idle wake / busy queue) is the one
-// that reaches the operator. Delivery is deduped by event ID, so a bounded
-// Codex wakeup can never duplicate the pi delivery.
+// The host disables the pipeline's Codex notification adapter explicitly.
+// Durable terminal reports are consumed by the Architect's existing recovery
+// and delivery path, preserving idle wakeup and session receipts.
 
 const PHASE_POLL_MS = 5_000;
 
@@ -21,8 +21,10 @@ function delay(ms) {
   });
 }
 
-export function loadManagedExecutionLauncher({ importModule = (specifier) => import(specifier) } = {}) {
-  return async function launchManagedExecution({ kind, cwd, sessionId, phaseId, baseRef, onPhase }) {
+export function loadManagedExecutionLauncher({ importModule = null } = {}) {
+  return async function launchManagedExecution({ kind, cwd, sessionId, workflow, jobId, phaseId, baseRef, stateDir, onPhase }) {
+    if (!importModule) return launchExecutionHost({root:cwd,stateDir:stateDir ?? stateDirFor(cwd),jobId,owner:workflow?.sessionKey ?? sessionId,kind,phaseId:phaseId ?? sessionId,baseRef,onPhase});
+
     const pipeline = await importModule("../bin/mcp-server.mjs");
     if (typeof pipeline.dispatchExecution !== "function") {
       throw new Error("the repository's managed execution pipeline is unavailable (dispatchExecution missing)");

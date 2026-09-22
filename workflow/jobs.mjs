@@ -459,11 +459,11 @@ export function reconcileJob(
       },
     });
   }
-  return writeJob(stateDir, {
-    ...record,
-    updatedAt: now,
-    recovery: { reconciledAt: now, verdict: "running", detail: "recorded process matches its fingerprint" },
-  });
+  // Liveness is an observation, not a state mutation. A concurrent host may
+  // have published its terminal result during the process check.
+  const latest = readJob(stateDir, jobId) ?? record;
+  if (latest.terminal) return latest;
+  return { ...latest, recovery: { reconciledAt: now, verdict: "running", detail: "recorded process matches its fingerprint" } };
 }
 
 export function reconcileAll(stateDir, options = {}) {

@@ -222,6 +222,7 @@ export function createWorkflow({
   now = () => Date.now(),
   registry = new Map(),
   executionLauncher = null,
+  runtimeContext = {},
 } = {}) {
   if (!root) throw new Error("repository root is required");
   const stateDir = stateDirFor(root, env);
@@ -526,12 +527,12 @@ export function createWorkflow({
     // Live child callbacks own settlement until exit. Recovered handles have no
     // callback, so inspect the result transport and process on every read.
     if (!state && record.role === "runner") record = reconcileJob(stateDir, jobId) ?? record;
-    const telemetry = state ?? record.telemetry ?? null;
+    const telemetry = state?.execution ? record.telemetry ?? null : state ?? record.telemetry ?? null;
     const lastObservedAt = telemetry?.lastObservedAt ?? null;
     return {
       ...jobSummary(record),
       jobId: record.id,
-      telemetry: { source: state ? "live" : record.telemetry ? "durable" : "unavailable",
+      telemetry: { source: state && !state.execution ? "live" : record.telemetry ? "durable" : "unavailable",
         state: record.terminal ? "terminal" : !lastObservedAt ? "unavailable"
           : now() - lastObservedAt > 30_000 ? "stale" : telemetry?.activeTool ? "active" : "idle",
         lastObservedAt, observedAt: now(), idleMeaning: "no tool currently observed; model activity may continue" },
@@ -638,6 +639,7 @@ export function createWorkflow({
           kind,
           cwd,
           jobId: id,
+          stateDir,
           sessionId: association.sessionId,
           phaseId: targetPhase,
           baseRef,
@@ -705,6 +707,7 @@ export function createWorkflow({
     return {
       ok: true,
       sessionKey: association.sessionKey,
+      runtime: { operationsModule: import.meta.url, pid: process.pid, ...runtimeContext },
       jobs,
       delivery,
       pendingDelivery: jobs.filter((job) => job.terminal && !job.delivery).map((job) => job.id),

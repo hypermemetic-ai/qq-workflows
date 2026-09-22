@@ -40,9 +40,11 @@ import {
   validateRunnerResultPayload,
   readAuthoritativeRunnerResult as readAuthoritativeResultFromStore,
   renderRunnerFindings,
+  readSeatResult,
 } from "../workflow/results.mjs";
 import { routeNotification } from "../workflow/notify.mjs";
 import { saveReport } from "../workflow/reports.mjs";
+import { processFingerprint } from "../workflow/jobs.mjs";
 import { stateDirFor } from "../workflow/session.mjs";
 import {
   CANONICAL_PROVIDERS,
@@ -1156,6 +1158,7 @@ export function buildSuspicionMessage(kind, tracker, suspicion) {
 //     this bounds concurrent duplicate sends but does not promise exactly-once
 //     external delivery.
 export async function notifyTerminal(tracker, kind) {
+  if (tracker?.args?.notificationMode === "parent") return { notified: false, reason: "owned-parent-delivery" };
   try {
     if (!tracker || tracker.notifiedTerminal) return { notified: false, reason: "already-notified" };
     if (tracker.status !== "completed" && tracker.status !== "failed") {
@@ -2384,6 +2387,7 @@ export function evaluateReviewPassed(outputOrResult, explicitExitCode) {
 // ignored here (and rejected at the public entry points) and is kept only for
 // the test-handler signature below.
 export async function runChildSubagent(execution, { role, cwd, prompt, provider }) {
+  assertExecutionActive(execution);
   if (globalThis.__QQ_TEST_SUBAGENT_HANDLER) {
     try {
       const res = await globalThis.__QQ_TEST_SUBAGENT_HANDLER({ role, cwd, prompt, provider, execution });
@@ -2393,9 +2397,17 @@ export async function runChildSubagent(execution, { role, cwd, prompt, provider 
     }
   }
 
+  const seatAttemptId=randomUUID();
+  const seatJobId=randomUUID();
+  const seatResultDir=join(trackerStateDir(execution,{cwd}),"seat-results");
+  mkdirSync(seatResultDir,{recursive:true,mode:0o700});
+  const seatBinding={schema:1,role,jobId:seatJobId,attemptId:seatAttemptId,path:join(seatResultDir,`${seatJobId}-${seatAttemptId}.json`)};
+  const attempt={role,jobId:seatJobId,attemptId:seatAttemptId,resultFile:seatBinding.path,startedAt:Date.now(),status:"running"};
+  execution.childAttempts ??= [];
+  execution.childAttempts.push(attempt);
   let launch;
   try {
-    launch = buildCentralWorkerLaunch({ seat: role, cwd, prompt, env: process.env });
+    launch = buildCentralWorkerLaunch({ seat: role, cwd, prompt, env: process.env,mcpEnv:{QQ_WORKER_RESULT_BINDING:JSON.stringify(seatBinding)} });
   } catch (err) {
     return {
       ok: false,
@@ -2427,6 +2439,7 @@ export async function runChildSubagent(execution, { role, cwd, prompt, provider 
       return;
     }
     execution.activeChild = child;
+    execution.activeChildFingerprint = processFingerprint({pid:child.pid});
 
     const rl = createInterface({ input: child.stdout });
     rl.on("line", (line) => {
@@ -2470,7 +2483,14 @@ export async function runChildSubagent(execution, { role, cwd, prompt, provider 
       execution.activeChild = null;
       execution.activeTool = null;
       const finalOutput = finishCleanOutput();
-      if (code === 0) {
+      if (code === 0 && launch.config.harness === "pi") {
+        const result=readSeatResult(seatBinding);
+        if(!result.ok){attempt.status="failed";resolvePromise({ok:false,output:finalOutput,error:{message:result.error,exitCode:code}});return;}
+        const report=saveReport(trackerStateDir(execution,{cwd}),{jobId:seatJobId,role,text:result.response});
+        Object.assign(attempt,{status:"completed",revision:result.revision,reportId:report.reportId,reportChars:report.chars});
+        resolvePromise({ok:true,output:result.response,reportId:report.reportId,revision:result.revision,jobId:seatJobId,attemptId:seatAttemptId});
+      } else if (code === 0) {
+        attempt.status="completed";
         resolvePromise({ ok: true, output: finalOutput });
       } else {
         resolvePromise({
@@ -2669,7 +2689,9 @@ async function runExecutionPipeline(execution) {
 
   touchActivity(execution);
   addTrajectory(execution, { action: "provision_worktree", timestamp: Date.now() });
+  assertExecutionActive(execution);
   const wt = await createWorktree(root, { kind, sessionId: phaseId, ...(args.baseRef ? { base: args.baseRef } : {}) });
+  assertExecutionActive(execution);
   execution.worktree = wt.cwd;
   execution.branch = wt.branch;
   touchActivity(execution);
@@ -2697,6 +2719,7 @@ async function runExecutionPipeline(execution) {
   });
   touchActivity(execution);
 
+  assertExecutionActive(execution);
   if (implementerRes.error) {
     execution.status = "failed";
     execution.error = {
@@ -2734,6 +2757,7 @@ async function runExecutionPipeline(execution) {
     });
     touchActivity(execution);
 
+    assertExecutionActive(execution);
     const hasProcessError = Boolean(
       reviewRes.error ||
       reviewRes.ok === false ||
@@ -2871,7 +2895,9 @@ async function runExecutionPipeline(execution) {
     }
   }
 
+  assertExecutionActive(execution);
   const hasChanges = await hasImplementationChanges(wt.cwd, wt.branch);
+  assertExecutionActive(execution);
   if (!hasChanges) {
     execution.status = "failed";
     execution.error = {
@@ -2906,10 +2932,11 @@ async function runExecutionPipeline(execution) {
   touchActivity(execution);
 
   execution.phase = "completed";
-  execution.status = "completed";
+  if (!execution.cancellation) execution.status = "completed";
   execution.result = {
     verifiedStory: `Worktree ${wt.branch} successfully verified and landed.`,
     landingOutcome: landResult,
+    childAttempts: execution.childAttempts ?? [],
     implementerSummary: sanitizeHeadTail(implementerRes.output, { headLen: 2000, tailLen: 2000 }),
     reviewerSummary: reviewerSummary !== null ? sanitizeHeadTail(reviewerSummary, { headLen: 2000, tailLen: 2000 }) : null,
   };
@@ -2919,6 +2946,28 @@ async function runExecutionPipeline(execution) {
     timestamp: Date.now(),
   });
   await notifyTerminal(execution, "execution");
+}
+
+function assertExecutionActive(execution) {
+  if (execution.cancellation) throw new Error("managed execution cancellation prevents further work or landing");
+}
+
+// Internal host cancellation. Intent is set before inspecting or signalling the
+// exact child handle; signals are never interpreted as operator intent.
+export async function cancelExecution({id,reason="cancelled by architect",interrupted=false}={}) {
+  const execution=EXECUTIONS.get(id);
+  if (!execution) return {ok:false,reason:"unknown execution"};
+  if (execution.status!=="running") return {ok:true,status:execution.status,signalled:false};
+  execution.cancellation={at:Date.now(),reason,interrupted};
+  execution.status=interrupted ? "interrupted" : "cancelled";
+  const child=execution.activeChild;
+  const expected=execution.activeChildFingerprint;
+  const current=child?.pid ? processFingerprint({pid:child.pid}) : null;
+  let signalled=false;
+  if (expected && current && expected.startTicks===current.startTicks && expected.cmdlineHash===current.cmdlineHash) {
+    try { signalled=child.kill("SIGTERM"); } catch {}
+  }
+  return {ok:true,status:execution.status,signalled};
 }
 
 export async function dispatchExecution(args = {}) {
@@ -2984,7 +3033,7 @@ export async function dispatchExecution(args = {}) {
       };
     }
     await notifyTerminal(execution, "execution");
-  });
+  }).finally(() => { execution.pipelineSettled = true; });
 
   return { ok: true, id, status: "running", phase: "implementing" };
 }
@@ -3009,8 +3058,10 @@ export async function checkExecution(args = {}) {
       trajectory: [...exec.trajectory],
       suspicion: null,
       stuckSuspect: false,
-      ...(exec.status === "completed" ? { result: exec.result } : {}),
-      ...(exec.status === "failed" ? { error: exec.error } : {}),
+      pipelineSettled: exec.pipelineSettled === true,
+      result: exec.result,
+      error: exec.error,
+      childAttempts: exec.childAttempts ?? [],
     };
   }
 

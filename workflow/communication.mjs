@@ -49,7 +49,7 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createConnection } from "node:net";
-import { chmodSync, existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, statSync, lstatSync, unlinkSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -517,13 +517,12 @@ async function acquireRelayRuntimeUnlocked({
   const dir = relayRuntimeDir(stateDir);
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    chmodSync(dir, 0o700); // umask-proof
   } catch (error) {
     return { ok: false, code: "refused", reason: `relay state directory '${dir}' could not be initialized: ${error?.message ?? error}` };
   }
-  const dirStat = statSync(dir);
-  if (!dirStat.isDirectory()) {
-    return { ok: false, code: "refused", reason: `relay state directory '${dir}' is not a real directory` };
+  const dirStat = lstatSync(dir);
+  if (!dirStat.isDirectory() || dirStat.isSymbolicLink() || dirStat.uid !== process.getuid()) {
+    return { ok: false, code: "refused", reason: `relay state directory '${dir}' is not an owned real directory` };
   }
   if ((dirStat.mode & 0o777) !== 0o700) {
     return { ok: false, code: "refused", reason: `relay state directory '${dir}' must be private (0700), got ${(dirStat.mode & 0o777).toString(8)}` };
