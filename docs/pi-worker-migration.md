@@ -231,12 +231,17 @@ git archive <landed-sha> | tar -x -C "$REL" && chmod 700 "$REL"
 ```
 
 Activation is the Paseo daemon config (`~/.paseo/config.json`) pointing its absolute
-release paths (plugin directory, `pi-extension/qq-architect.mjs`, `configuredServer`
-`bin/mcp-server.mjs`) at the new release, plus the parent restart that re-resolves those
-paths. The worker adapter path is computed from the parent's own source
-(`WORKER_PI_ADAPTER` in `workflow/worker-config.mjs`) and a fresh adapter process is
-spawned per launch, so a running parent keeps serving its current release until the
-switch.
+release paths — the plugin directory (`plugins.qq-architect.path`) and the architect
+extension (`agents.providers.qq-architect.command` →
+`pi-extension/qq-architect.mjs`) — at the new release, plus the parent restart that
+re-resolves those paths. The MCP server is NOT named by a separately verified
+daemon-config path: the live config carries no `configuredServer` entry, and the
+worker's MCP server is resolved transitively from the release modules
+(`WORKER_MCP_SERVER` in `workflow/worker-config.mjs` resolving `bin/mcp-server.mjs`
+next to the release's own modules). The worker adapter path is likewise computed
+from the parent's own source (`WORKER_PI_ADAPTER` in `workflow/worker-config.mjs`) and
+a fresh adapter process is spawned per launch, so a running parent keeps serving its
+current release until the switch.
 
 Before switching to a newly materialized release, verify the recording repair is in the
 built tree (never assume it from the commit id):
