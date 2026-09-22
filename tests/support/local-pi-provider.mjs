@@ -1,14 +1,16 @@
 // Reusable installed-Pi fixture: only localhost model traffic, private config,
 // recording and state. No operator provider registry or credential is read.
 import {createServer} from 'node:http';
-import {mkdtempSync,mkdirSync,writeFileSync,existsSync,statSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,existsSync,statSync,readdirSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join,basename} from 'node:path';
+import {processFingerprint} from '../../workflow/jobs.mjs';
 export async function localPiProvider({respond}={}) {
   const pi=String(process.env.PATH??'').split(':').map(p=>join(p,'pi')).find(p=>{try{return existsSync(p)&&statSync(p).isFile();}catch{return false;}});
   if(!pi)return null;
   const root=mkdtempSync(join(tmpdir(),'qq-local-pi-'));
   const agentDir=join(root,'agent');mkdirSync(agentDir);
+  mkdirSync(join(root,'state'),{mode:0o700}); // real relay requires a private transport ancestry
   const configFile=join(root,'worker-config.json');
   const provider='local-fixture'; const model='local-fixture-model';
   let calls=0;
@@ -30,5 +32,22 @@ export async function localPiProvider({respond}={}) {
   const env={...process.env,QQ_WORKER_CONFIG_FILE:configFile,QQ_WORKER_PI_BIN:pi,QQ_WORKER_PI_AGENT_DIR:agentDir,PI_CODING_AGENT_DIR:agentDir,XDG_STATE_HOME:join(root,'xdg'),QQ_WORKFLOW_STATE_DIR:join(root,'state'),PI_SKIP_VERSION_CHECK:'1',PI_TELEMETRY:'0'};
   for(const key of Object.keys(env))if(key.startsWith('QQ_RUNNER_')||key.startsWith('QQ_ARCHITECT_')||key.startsWith('QQ_ZVEC_GREP_'))delete env[key];
   delete env.QQ_WORKFLOW_COMMUNICATION;delete env.QQ_WORKER_SESSION_DIR;
-  return {root,env,pi,provider,model,get calls(){return calls;},stop:async()=>{server.closeAllConnections();await new Promise(done=>server.close(done));}};
+  return {root,env,pi,provider,model,get calls(){return calls;},stop:async()=>{
+    server.closeAllConnections();await new Promise(done=>server.close(done));
+    // A coordinator SIGKILL deliberately leaves an orphan relay. Reap only
+    // relay processes whose exact state-dir argument belongs to this fixture;
+    // never stop a shared production runtime or another fixture's relay.
+    for(const entry of readdirSync('/proc')) {
+      if(!/^\d+$/.test(entry))continue;
+      const pid=Number(entry);let argv;
+      try{argv=readFileSync(`/proc/${pid}/cmdline`,'utf8').split('\0');}catch{continue;}
+      const index=argv.indexOf('--state-dir');
+      if(!basename(argv[0]??'').includes('qq-relay')||index<0||!argv[index+1]?.startsWith(root+'/'))continue;
+      const expected=processFingerprint({pid});if(!expected)continue;
+      try{process.kill(pid,'SIGTERM');}catch{continue;}
+      await new Promise(done=>setTimeout(done,100));
+      const observed=processFingerprint({pid});
+      if(observed&&observed.startTicks===expected.startTicks&&observed.cmdlineHash===expected.cmdlineHash)try{process.kill(pid,'SIGKILL');}catch{}
+    }
+  }};
 }
