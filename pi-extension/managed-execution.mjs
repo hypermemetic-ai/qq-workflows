@@ -1,3 +1,5 @@
+import {launchExecutionHost} from "../workflow/execution-supervisor.mjs";
+import {stateDirFor} from "../workflow/session.mjs";
 // Managed execution launcher for the pi Architect.
 //
 // Implementations run through the repository's existing managed pipeline
@@ -21,8 +23,9 @@ function delay(ms) {
   });
 }
 
-export function loadManagedExecutionLauncher({ importModule = (specifier) => import(specifier) } = {}) {
-  return async function launchManagedExecution({ kind, cwd, sessionId, onPhase }) {
+export function loadManagedExecutionLauncher({ importModule = null } = {}) {
+  return async function launchManagedExecution({ kind, cwd, sessionId, workflow, jobId, phaseId, baseRef, stateDir, onPhase }) {
+    if (!importModule) return launchExecutionHost({root:cwd,stateDir:stateDir ?? stateDirFor(cwd),jobId,owner:workflow?.sessionKey ?? sessionId,kind,phaseId:phaseId ?? sessionId,baseRef,onPhase});
     const pipeline = await importModule("../bin/mcp-server.mjs");
     if (typeof pipeline.dispatchExecution !== "function") {
       throw new Error("the repository's managed execution pipeline is unavailable (dispatchExecution missing)");

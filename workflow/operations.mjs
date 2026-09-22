@@ -633,6 +633,7 @@ export function createWorkflow({
           kind,
           cwd,
           jobId: id,
+          stateDir,
           sessionId: association.sessionId,
           workflow: association,
           onPhase: (phase, detail = null) => {

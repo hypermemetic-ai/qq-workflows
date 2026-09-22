@@ -43,6 +43,7 @@ import {
 } from "../workflow/results.mjs";
 import { routeNotification } from "../workflow/notify.mjs";
 import { saveReport } from "../workflow/reports.mjs";
+import { processFingerprint } from "../workflow/jobs.mjs";
 import { stateDirFor } from "../workflow/session.mjs";
 import {
   CANONICAL_PROVIDERS,
@@ -1154,6 +1155,7 @@ export function buildSuspicionMessage(kind, tracker, suspicion) {
 //     this bounds concurrent duplicate sends but does not promise exactly-once
 //     external delivery.
 export async function notifyTerminal(tracker, kind) {
+  if (tracker?.args?.notificationMode === "parent") return { notified: false, reason: "owned-parent-delivery" };
   try {
     if (!tracker || tracker.notifiedTerminal) return { notified: false, reason: "already-notified" };
     if (tracker.status !== "completed" && tracker.status !== "failed") {
@@ -2382,6 +2384,7 @@ export function evaluateReviewPassed(outputOrResult, explicitExitCode) {
 // ignored here (and rejected at the public entry points) and is kept only for
 // the test-handler signature below.
 export async function runChildSubagent(execution, { role, cwd, prompt, provider }) {
+  assertExecutionActive(execution);
   if (globalThis.__QQ_TEST_SUBAGENT_HANDLER) {
     try {
       const res = await globalThis.__QQ_TEST_SUBAGENT_HANDLER({ role, cwd, prompt, provider, execution });
@@ -2425,6 +2428,7 @@ export async function runChildSubagent(execution, { role, cwd, prompt, provider 
       return;
     }
     execution.activeChild = child;
+    execution.activeChildFingerprint = processFingerprint({pid:child.pid});
 
     const rl = createInterface({ input: child.stdout });
     rl.on("line", (line) => {
@@ -2666,7 +2670,9 @@ async function runExecutionPipeline(execution) {
 
   touchActivity(execution);
   addTrajectory(execution, { action: "provision_worktree", timestamp: Date.now() });
+  assertExecutionActive(execution);
   const wt = await createWorktree(root, { kind, sessionId });
+  assertExecutionActive(execution);
   execution.worktree = wt.cwd;
   execution.branch = wt.branch;
   touchActivity(execution);
@@ -2694,6 +2700,7 @@ async function runExecutionPipeline(execution) {
   });
   touchActivity(execution);
 
+  assertExecutionActive(execution);
   if (implementerRes.error) {
     execution.status = "failed";
     execution.error = {
@@ -2731,6 +2738,7 @@ async function runExecutionPipeline(execution) {
     });
     touchActivity(execution);
 
+    assertExecutionActive(execution);
     const hasProcessError = Boolean(
       reviewRes.error ||
       reviewRes.ok === false ||
@@ -2868,7 +2876,9 @@ async function runExecutionPipeline(execution) {
     }
   }
 
+  assertExecutionActive(execution);
   const hasChanges = await hasImplementationChanges(wt.cwd, wt.branch);
+  assertExecutionActive(execution);
   if (!hasChanges) {
     execution.status = "failed";
     execution.error = {
@@ -2903,7 +2913,7 @@ async function runExecutionPipeline(execution) {
   touchActivity(execution);
 
   execution.phase = "completed";
-  execution.status = "completed";
+  if (!execution.cancellation) execution.status = "completed";
   execution.result = {
     verifiedStory: `Worktree ${wt.branch} successfully verified and landed.`,
     landingOutcome: landResult,
@@ -2916,6 +2926,28 @@ async function runExecutionPipeline(execution) {
     timestamp: Date.now(),
   });
   await notifyTerminal(execution, "execution");
+}
+
+function assertExecutionActive(execution) {
+  if (execution.cancellation) throw new Error("managed execution cancellation prevents further work or landing");
+}
+
+// Internal host cancellation. Intent is set before inspecting or signalling the
+// exact child handle; signals are never interpreted as operator intent.
+export async function cancelExecution({id,reason="cancelled by architect",interrupted=false}={}) {
+  const execution=EXECUTIONS.get(id);
+  if (!execution) return {ok:false,reason:"unknown execution"};
+  if (execution.status!=="running") return {ok:true,status:execution.status,signalled:false};
+  execution.cancellation={at:Date.now(),reason,interrupted};
+  execution.status=interrupted ? "interrupted" : "cancelled";
+  const child=execution.activeChild;
+  const expected=execution.activeChildFingerprint;
+  const current=child?.pid ? processFingerprint({pid:child.pid}) : null;
+  let signalled=false;
+  if (expected && current && expected.startTicks===current.startTicks && expected.cmdlineHash===current.cmdlineHash) {
+    try { signalled=child.kill("SIGTERM"); } catch {}
+  }
+  return {ok:true,status:execution.status,signalled};
 }
 
 export async function dispatchExecution(args = {}) {
