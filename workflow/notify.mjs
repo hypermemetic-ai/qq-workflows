@@ -47,6 +47,7 @@ import {
   DELIVERY_STATES,
   UNVERIFIED_DELIVERY_STATES,
   deliveryPending,
+  terminalDelivery,
   markDelivery,
   nextDeliveryState,
   readJob,
@@ -380,7 +381,10 @@ export function acknowledgeDelivery({
   const targetJob = jobId ?? previous.jobId ?? null;
   let job = null;
   let jobError = null;
-  if (targetJob) {
+  // A progress receipt must never overwrite (or fabricate) terminal delivery
+  // state. The notification journal above already retains its own receipt.
+  const projectionJob = targetJob ? readJob(stateDir, targetJob) : null;
+  if (targetJob && (!projectionJob || eventId === completedEventId(projectionJob))) {
     try {
       job = markDelivery(stateDir, targetJob, {
         eventId: projectionEventId === undefined ? eventId : projectionEventId,
@@ -967,7 +971,10 @@ export async function recoverPendingDeliveries({
       claimants.set(text, list);
     }
   }
-  for (const job of jobs) {
+  for (const persistedJob of jobs) {
+    // Older receivers could project a progress receipt into this single slot.
+    // Ignore that foreign event for completion recovery; preserve its journal.
+    const job = { ...persistedJob, delivery: terminalDelivery(persistedJob) };
     const owner = job.workflow?.sessionKey ?? null;
     if (owner !== sessionKey) {
       summary.orphaned.push({ jobId: job.id, owner, requested: sessionKey ?? null });
