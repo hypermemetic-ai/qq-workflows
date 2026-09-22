@@ -14,6 +14,11 @@ delete process.env.CODEX_THREAD_ID;
 delete process.env.CODEX_SESSION_ID;
 delete process.env.CODEX_CONVERSATION_ID;
 process.env.QQ_CODEX_BIN = "/usr/bin/true";
+// Direct invocations also need isolated notification journals: fixed fixture IDs
+// must not inherit receipts from an earlier run in this worktree.
+if (!process.env.QQ_WORKFLOW_STATE_DIR) {
+  process.env.QQ_WORKFLOW_STATE_DIR = join(mkdtempSync(join(tmpdir(), "qq-mcp-state-")), "state");
+}
 // Durable retention of terminal findings must never touch the operator's real
 // state dir during tests: point it at a unique temp dir (imports are hoisted,
 // so mkdtempSync/join/tmpdir are available here).

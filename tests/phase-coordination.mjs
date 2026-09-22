@@ -1,0 +1,52 @@
+import assert from 'node:assert/strict';
+import {createWorkflow} from '../workflow/operations.mjs';
+import {loadManagedExecutionLauncher} from '../pi-extension/managed-execution.mjs';
+import {tempRepo} from './support/architect-fixtures.mjs';
+import {readJob} from '../workflow/jobs.mjs';
+const {root,env}=await tempRepo();
+const phaseId='ab57e628-1542-48c9-93e6-42f8c1a865d9';
+let called;
+const workflow=createWorkflow({root,env,sessionKey:'current-coordinator',executionLauncher:async args=>{called=args;return {ok:true};}});
+const started=workflow.dispatchExecution({kind:'open',phaseId,baseRef:'origin/main'});
+assert.equal(called.phaseId,phaseId);
+assert.equal(called.baseRef,'origin/main');
+assert.equal(called.workflow.sessionKey,'current-coordinator');
+assert.notEqual(called.sessionId,phaseId);
+const job=readJob(workflow.stateDir,started.jobId);
+assert.equal(job.workflow.sessionKey,'current-coordinator');
+assert.equal(job.phaseId,phaseId);
+assert.throws(()=>workflow.dispatchExecution({kind:'open',phaseId:'../forged'}),/UUID/);
+let forwarded;
+const launcher=loadManagedExecutionLauncher({importModule:async()=>({WORKER_SEATS:[],assertNoProviderOverrides(){},dispatchExecution:async args=>{forwarded=args;return {id:'execution'};},checkExecution:async()=>({status:'completed'})})});
+await launcher({kind:'open',cwd:root,sessionId:called.sessionId,phaseId,baseRef:'origin/main'});
+assert.equal(forwarded.sessionId,called.sessionId);
+assert.equal(forwarded.phaseId,phaseId);
+assert.equal(forwarded.baseRef,'origin/main');
+console.log('PASS phase identity is separate from coordinator ownership through native managed entrypoint');
+
+// Actual Git worktree reuse must preserve dirty contents and reject wrong refs.
+const {execFileSync}=await import('node:child_process');
+const {writeFileSync,mkdirSync,readFileSync}=await import('node:fs');
+const {join}=await import('node:path');
+const {createWorktree}=await import('../workflow/git.mjs');
+const git=args=>execFileSync('git',args,{cwd:root,encoding:'utf8'}).trim();
+git(['init','-b','main']);git(['config','user.name','Test']);git(['config','user.email','test@example.invalid']);
+writeFileSync(join(root,'tracked.txt'),'base');git(['add','tracked.txt']);git(['commit','-m','base']);
+mkdirSync(join(root,'.architect','tickets'),{recursive:true});
+writeFileSync(join(root,'.architect','tickets',`${phaseId}.md`),'phase ticket');
+const base=git(['rev-parse','HEAD']);
+const first=await createWorktree(root,{kind:'open',sessionId:phaseId,base});
+writeFileSync(join(first.cwd,'tracked.txt'),'preserved unfinished work');
+writeFileSync(join(first.cwd,'new.txt'),'preserved untracked work');
+const reuse=await createWorktree(root,{kind:'open',sessionId:phaseId,base});
+assert.equal(reuse.reused,true);
+assert.equal(readFileSync(join(reuse.cwd,'tracked.txt'),'utf8'),'preserved unfinished work');
+assert.equal(readFileSync(join(reuse.cwd,'new.txt'),'utf8'),'preserved untracked work');
+execFileSync('git',['switch','-c','foreign'],{cwd:first.cwd});
+await assert.rejects(createWorktree(root,{kind:'open',sessionId:phaseId,base}),/identity mismatch/);
+console.log('PASS preserved worktree dirty contents retained; foreign branch rejected');
+
+execFileSync("git",["worktree","remove","--force",first.cwd],{cwd:root});
+
+const {dispatchExecution}=await import("../bin/mcp-server.mjs");
+await assert.rejects(dispatchExecution({kind:"open",cwd:root,phaseId}),/explicit coordinating sessionId/);

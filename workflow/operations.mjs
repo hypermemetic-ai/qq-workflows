@@ -133,6 +133,8 @@ export const WORKFLOW_TOOLS = [
       type: "object",
       properties: {
         kind: { type: "string", description: "'bounded' or 'open'." },
+        phaseId: { type: "string", description: "Approved phase ticket identity; defaults to this coordinator. Notifications remain owned by this session." },
+        baseRef: { type: "string", description: "Explicit Git base for a new worktree; for a preserved worktree, it must be an ancestor of its HEAD." },
       },
       required: ["kind"],
       additionalProperties: false,
@@ -597,7 +599,7 @@ export function createWorkflow({
   // execution record (identity, kind, phase, cancellation, terminal result) and
   // never exposes a direct land/branch mutation path: without the managed
   // launcher the tool reports that truthfully instead of doing something else.
-  function dispatchExecutionOp({ kind, cwd = root, plan = undefined } = {}) {
+  function dispatchExecutionOp({ kind, phaseId = null, baseRef = undefined, cwd = root, plan = undefined } = {}) {
     if (!kind || (kind !== "bounded" && kind !== "open")) {
       throw new Error("kind is required: 'bounded' | 'open'");
     }
@@ -609,6 +611,8 @@ export function createWorkflow({
       };
     }
     const association = session();
+    const targetPhase = phaseId ?? association.sessionId;
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetPhase)) throw new Error("phaseId must be a ticket UUID");
     const id = randomUUID();
     const record = createJob({
       stateDir,
@@ -626,6 +630,7 @@ export function createWorkflow({
       launchPlan: plan ?? null,
       now: now(),
     });
+    writeJob(stateDir, { ...record, phaseId: targetPhase, baseRef: baseRef ?? null });
     live.set(id, { execution: true, phase: record.phase });
     void (async () => {
       try {
@@ -635,6 +640,8 @@ export function createWorkflow({
           jobId: id,
           stateDir,
           sessionId: association.sessionId,
+          phaseId: targetPhase,
+          baseRef,
           workflow: association,
           onPhase: (phase, detail = null) => {
             const current = readJob(stateDir, id);
@@ -667,7 +674,7 @@ export function createWorkflow({
         });
       }
     })();
-    return { ok: true, jobId: id, executionId: id, status: RUNNING, kind, sessionKey: association.sessionKey };
+    return { ok: true, jobId: id, executionId: id, status: RUNNING, kind, phaseId: targetPhase, sessionKey: association.sessionKey };
   }
 
   function checkExecutionOp({ jobId } = {}) {

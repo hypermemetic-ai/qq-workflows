@@ -226,7 +226,10 @@ export async function createAndMergePr(cwd, { title, body, branch, expectedHead,
   try {
     const checkout = await worktreeCheckingOut(cwd, base);
     if (checkout) {
-      await git(checkout, ["merge", "--ff-only", `refs/remotes/${remote}/${base}`]);
+      // Source landing must not mutate an independently dirty checkout.
+      if ((await git(checkout, ["status", "--porcelain"])).trim()) {
+        await checkpoint("local_sync_skipped", { reason: "dirty checkout", checkout });
+      } else await git(checkout, ["merge", "--ff-only", `refs/remotes/${remote}/${base}`]);
     } else {
       await git(cwd, ["update-ref", `refs/heads/${base}`, actual.mergeCommit.oid]);
     }
@@ -296,6 +299,12 @@ export async function createWorktree(cwd, { kind = "bounded", sessionId, branch:
 
   if (branchExists) {
     if (existsSync(dest)) {
+      // Never refresh a ticket into a foreign directory or a worktree whose
+      // branch was replaced. Reuse preserves all tracked and untracked work.
+      const actualRoot = await mainRepoRoot(dest);
+      const actualBranch = await currentBranch(dest);
+      if (actualRoot !== root || actualBranch !== branch) throw new Error("preserved worktree identity mismatch");
+      if (base !== "HEAD") await git(dest, ["merge-base", "--is-ancestor", base, "HEAD"]);
       await copyTicketToWorktree(srcTicket, dest);
       return { cwd: dest, worktree: dest, branch, reused: true, sessionId, ticketSource: srcTicket };
     }
