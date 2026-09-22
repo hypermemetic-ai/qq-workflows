@@ -163,6 +163,10 @@ async function runTurn({ name, mode = "ok", seat = "runner", extraConfig = {} })
   const env = {
     ...process.env,
     PATH: process.env.PATH,
+    // Default-on session recording resolves under XDG_STATE_HOME; pointing it
+    // into the fixture keeps the operator's real worker-session store
+    // untouched by test runs.
+    XDG_STATE_HOME: join(dir, "state"),
     PI_CODING_AGENT_DIR: agentDir,
     QQ_WORKER_PI_AGENT_DIR: agentDir,
     QQ_WORKER_CONFIG_FILE: configFile,

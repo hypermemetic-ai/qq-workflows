@@ -185,10 +185,85 @@ stock threshold, which on a 1M-capacity model means a ~1M working window. Set th
 block explicitly so the working window is a deliberate choice: the templates and
 the examples above use `reserve_tokens: 917504` for the `~128k` target.
 
+## Native per-attempt session recording (default-on, source-integrated)
+
+Production workers record each attempt's native pi session by default: `--session <file>`
+replaces `--no-session` at the same argv position (+1 token), and every other selection
+argument stays byte-identical. A recording-disabled launch passes `--no-session` exactly
+as before. The allocation lives inside the adapter (`workflow/pi-worker/adapter.mjs`), so
+`launchPlan`/`planToSpawn` intentionally do NOT contain the path:
+
+- Directory: `$XDG_STATE_HOME/qq-workflows/worker-sessions` (default
+  `~/.local/state/qq-workflows/worker-sessions`); an explicit absolute
+  `QQ_WORKER_SESSION_DIR` overrides it. The directory is created 0700 and verified with
+  `lstat`: a real directory, owned by this user, exactly 0700 - never chmodded, never a
+  symlink.
+- Files: an exclusively created 0600 `pi-<seat>-<UTCstamp>-<pid>-<rand>.jsonl` (fresh
+  random suffix per collision retry, 5 attempts) plus a 0600 sidecar
+  `<session>.meta.json` with schema `qq-worker-session-meta/1` and exactly the fields
+  `sessionFile`, `seat`, `pid`, `cwd`, `runnerId` (null when unbound), `startedAt` - no
+  prompt, environment, or credentials. A sidecar failure removes the just-created session
+  file.
+- Diagnostics: one bounded payload-free stderr line per launch
+  (`pi-worker-adapter: native session file: <path>`); `summary.sessionFile` is set only
+  when `--summary-file` is passed (production passes none). Initialization problems
+  refuse the launch (exit 2) with the named codes `native_session_dir_invalid`,
+  `native_session_dir_unsafe`, `native_session_meta_failed`, `native_session_collision`
+  - before any runtime is spawned.
+- Tests: `tests/pi-worker.mjs` (offline: disabled argv equivalence, resolution rules,
+  exclusive 0600/0700 allocation, collision retries and exhaustion, every named refusal,
+  sidecar content and cleanup) and `tests/pi-worker-session-recording.mjs` (real
+  installed pi against a deterministic localhost provider with a dummy key: success with
+  the read tool call/result and final answer stored in the session file, a controlled
+  abort with the persisted evidence, and an unsafe-directory refusal before any
+  provider traffic). A missing installed runtime is reported as SKIPPED, never as a
+  pass.
+
+## Release materialization, activation, and pre-switch verification
+
+There is no release-materialization script in this repository. The mechanism recorded for
+the currently deployed release (PR111 dispatch record) is a read-only materialization of
+a **landed commit**:
+
+```bash
+REL="$HOME/.local/share/qq-workflows/releases/<new-full-commit-sha>"
+git archive <landed-sha> | tar -x -C "$REL" && chmod 700 "$REL"
+```
+
+Activation is the Paseo daemon config (`~/.paseo/config.json`) pointing its absolute
+release paths (plugin directory, `pi-extension/qq-architect.mjs`, `configuredServer`
+`bin/mcp-server.mjs`) at the new release, plus the parent restart that re-resolves those
+paths. The worker adapter path is computed from the parent's own source
+(`WORKER_PI_ADAPTER` in `workflow/worker-config.mjs`) and a fresh adapter process is
+spawned per launch, so a running parent keeps serving its current release until the
+switch.
+
+Before switching to a newly materialized release, verify the recording repair is in the
+built tree (never assume it from the commit id):
+
+```bash
+sha256sum "$REL/workflow/pi-worker/adapter.mjs"
+# must equal the landed source adapter hash (for this integration:
+# 5c5d10e5b8a9354258585f625a1abda0316735f63f2e4c31101c360ce3c182c7)
+node --check "$REL/workflow/pi-worker/adapter.mjs"
+grep -n "resolveNativeSessionPath\|native_session_dir_invalid" "$REL/workflow/pi-worker/adapter.mjs"
+```
+
+and run one bounded recording smoke against the built tree (the
+`tests/pi-worker-session-recording.mjs` fixture shape: temporary `XDG_STATE_HOME`, dummy
+key, localhost mock provider) before the switch. After the switch, one production worker
+turn must produce a session file plus sidecar under
+`$XDG_STATE_HOME/qq-workflows/worker-sessions` and the bounded stderr trace line.
+
+The currently deployed ce0b35a release carries this exact repair as a local hotfix (same
+bytes as the integrated source); landing the source does not itself activate a new
+release, and the historical patch artifact must never be re-applied over the integrated
+source.
+
 ## Verification available today (offline)
 
 ```bash
-npm test          # 19 offline test files, including tests/pi-worker.mjs
+npm test          # offline test files, including tests/pi-worker.mjs
 ```
 
 `tests/pi-worker.mjs` drives a fake `pi --mode rpc` runtime and proves: config
@@ -211,6 +286,9 @@ request body carries the configured `model`, the registry `max_tokens`, and
 closing message lands in the authoritative runner transport, and a message that
 ends in a non-retryable error fails the run instead of delivering its partial
 text.
+
+`tests/pi-worker-session-recording.mjs` proves the native session recording on
+the same real-runtime fixture shape (see the recording section above).
 
 Live end-to-end activation (the operator's real provider and credential) is
 explicitly **not** claimed from these localhost proofs.
