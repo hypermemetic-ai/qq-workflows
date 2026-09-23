@@ -6,6 +6,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { buildPacket, parseDiffHunks } from "./packet.mjs";
 import { archiveAndClearTicket, resolveTicketSource } from "./ticket.mjs";
+import { registerStateExclude } from "./state-exclude.mjs";
+import { stateDirFor } from "./session.mjs";
 
 const exec = promisify(execFile);
 
@@ -392,6 +394,7 @@ export async function createWorktree(cwd, { kind = "bounded", sessionId, branch:
       const actualBranch = await currentBranch(dest);
       if (actualRoot !== root || actualBranch !== branch) throw new Error("preserved worktree identity mismatch");
       if (explicitBaseSha) await git(dest, ["merge-base", "--is-ancestor", explicitBaseSha, "HEAD"]);
+      registerStateExclude(dest, stateDirFor(dest));
       await copyTicketToWorktree(srcTicket, dest);
       return { cwd: dest, worktree: dest, branch, reused: true, sessionId, ticketSource: srcTicket };
     }
@@ -407,19 +410,7 @@ export async function createWorktree(cwd, { kind = "bounded", sessionId, branch:
     baseSelection = selected;
   }
 
-  // Exclude .architect in the worktree to keep git status clean
-  try {
-    const gitDir = await git(dest, ["rev-parse", "--git-dir"]);
-    const excludePath = join(gitDir.startsWith("/") ? gitDir : join(dest, gitDir), "info", "exclude");
-    await mkdir(dirname(excludePath), { recursive: true });
-    let existing = "";
-    if (existsSync(excludePath)) existing = await readFile(excludePath, "utf8");
-    if (!existing.includes(".architect")) {
-      await writeFile(excludePath, `${existing}\n.architect\n`, "utf8");
-    }
-  } catch {
-    /* best-effort exclude */
-  }
+  registerStateExclude(dest, stateDirFor(dest));
 
   await copyTicketToWorktree(srcTicket, dest);
 
