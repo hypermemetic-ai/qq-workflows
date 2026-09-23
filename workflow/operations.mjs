@@ -52,6 +52,7 @@ import {
 import { ensureAssociation, resolveSessionKey, stateDirFor } from "./session.mjs";
 import { registerStateExclude } from "./state-exclude.mjs";
 import { extractSection, listSections, loadPackagedTemplate, replaceSection, ticketPath } from "./ticket.mjs";
+import { readAdr, searchAdrs } from "./adr-retrieval.mjs";
 import { PI_HARNESS, planFingerprint, planToSpawn, resolveWorkerLaunchPlan } from "./worker-launch.mjs";
 
 // Native tool surface for the Architect. Local inspection stays read-only
@@ -68,6 +69,8 @@ export const WORKFLOW_TOOL_NAMES = [
   "read_report",
   "list_jobs",
   "recover_deliveries",
+  "search_adrs",
+  "read_adr",
   "dispatch_execution",
   "check_execution",
   "steer_execution",
@@ -141,6 +144,40 @@ export const WORKFLOW_TOOLS = [
       type: "object",
       properties: { jobId: { type: "string" }, reason: { type: "string" } },
       required: ["jobId"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "search_adrs",
+    label: "Search ADRs",
+    description:
+      "Search the project's committed ADR corpus (docs/adr) through the derived ADR-only index while planning. Returns stable ADR id/path/content-version/committed source revision with exact excerpts, source/index freshness and bounded coverage/errors. An excerpt is NOT the full document (read_adr pages it). A lookup hit is relevance only: never automatic mandate or approval. Failed or missing search is reported honestly, never as zero matches.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Natural-language or exact-term query over ADR content." },
+        limit: { type: "integer", minimum: 1, maximum: 50, description: "Bounded maximum number of ADR results (default 8, max 50)." },
+        revision: { type: "string", description: "Optional pinned committed revision (commit-ish); defaults to the current committed snapshot. Dirty worktree contents are never read." },
+        refreshIndex: { type: "boolean", description: "Refresh the derived ADR-only index first when it is missing or stale (derived state only; never repository mutation)." },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "read_adr",
+    label: "Read ADR",
+    description:
+      "Read one ADR's full exact committed text by its canonical reference (ADR-<id> or ADR-<id>-<slug>, case-sensitive), paged in bounded chunks (continue with nextOffset until complete). Exact bytes at the pinned committed source revision; ambiguous/unknown/unsafe references are explicit refusals.",
+    parameters: {
+      type: "object",
+      properties: {
+        adrId: { type: "string", description: "Canonical ADR reference: 'ADR-<id>' or the full 'ADR-<id>-<slug>' stem (an identifier, never a path)." },
+        revision: { type: "string", description: "Optional pinned committed revision (commit-ish)." },
+        offset: { type: "integer", minimum: 0 },
+        limit: { type: "integer", minimum: 1 },
+      },
+      required: ["adrId"],
       additionalProperties: false,
     },
   },
@@ -273,6 +310,7 @@ export function createWorkflow({
   registry = new Map(),
   executionLauncher = null,
   runtimeContext = {},
+  adrBackendFactory = null,
 } = {}) {
   if (!root) throw new Error("repository root is required");
   const stateDir = stateDirFor(root, env);
@@ -1193,6 +1231,32 @@ export function createWorkflow({
     return readReport(stateDir, reportId, { offset, ...(limit ? { limit } : {}) });
   }
 
+  // ADR retrieval is read/derived-index work: no session identity, no
+  // publication, no Jev judgment is required to look up an ADR. The backend
+  // seam (`adrBackendFactory`) is the provider boundary tests inject at.
+  function searchAdrsOp(args = {}) {
+    return searchAdrs({
+      stateDir,
+      projectRoot: root,
+      query: args.query,
+      ...(args.limit != null ? { limit: args.limit } : {}),
+      revision: args.revision ?? "HEAD",
+      refreshIndex: args.refreshIndex === true,
+      ...(adrBackendFactory ? { backendFactory: adrBackendFactory } : {}),
+      now,
+    });
+  }
+
+  function readAdrOp(args = {}) {
+    return readAdr({
+      projectRoot: root,
+      reference: args.adrId ?? args.reference,
+      revision: args.revision ?? "HEAD",
+      ...(args.offset != null ? { offset: args.offset } : {}),
+      ...(args.limit != null ? { limit: args.limit } : {}),
+    });
+  }
+
   function reconcileOp() {
     // Reconstruct owned execution authority after process reconciliation.
     // Merely observing another session never mutates its records.
@@ -1354,6 +1418,10 @@ export function createWorkflow({
         return cancelRunnerOp(args ?? {});
       case "read_report":
         return readReportOp(args ?? {});
+      case "search_adrs":
+        return searchAdrsOp(args ?? {});
+      case "read_adr":
+        return readAdrOp(args ?? {});
       case "dispatch_execution":
         return dispatchExecutionOp(args ?? {});
       case "check_execution":
@@ -1390,6 +1458,8 @@ export function createWorkflow({
     steerRunner: steerRunnerOp,
     cancelRunner: cancelRunnerOp,
     readReport: readReportOp,
+    searchAdrs: searchAdrsOp,
+    readAdr: readAdrOp,
     dispatchExecution: dispatchExecutionOp,
     checkExecution: checkExecutionOp,
     steerExecution: steerExecutionOp,

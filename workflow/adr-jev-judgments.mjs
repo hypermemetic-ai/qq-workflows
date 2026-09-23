@@ -53,8 +53,10 @@
 // candidate content is MODEL DATA, never instructions for filesystem/worker
 // actions, and is never opened from disk here). Zero candidates is valid;
 // incomplete candidate coverage is carried forward honestly. Candidate
-// enumeration/filtering belongs to the later retrieval-integration phase —
-// there is no reranker here.
+// enumeration/filtering lives in the retrieval-integration module
+// (workflow/adr-candidates.mjs); pass its `coverage` as `candidateCoverage`
+// here so the result packet describes exhaustive/filtered/deferred coverage
+// truthfully. There is no reranker here.
 
 import { readReport } from "./reports.mjs";
 import {
@@ -778,6 +780,7 @@ export async function compareCandidates({
   budget = {},
   routingPolicy = DEFAULT_ROUTING_POLICY,
   provenance = {},
+  candidateCoverage = null,
 } = {}) {
   if (!stateDir) throw fail("invalid-arguments", "stateDir is required");
   if (!provider || typeof provider.request !== "function") throw fail("invalid-arguments", "compareCandidates requires an injectable provider seam (no live call is ever made implicitly)");
@@ -866,13 +869,25 @@ export async function compareCandidates({
       }
       : null,
     cacheIssues,
-    coverage: {
-      candidatesSupplied: normalized.length,
-      pairsPlanned: planned.length,
-      pairsCompared: together.length + unrelated.length,
-      exhaustiveCandidateComparison: false,
-      note: "only the caller-supplied candidate ADRs were compared (exact ID/path/content/version tuples); candidate enumeration and filtering belong to the later retrieval-integration phase",
-    },
+    // Coverage honesty: when the caller's candidate policy produced this set
+    // (workflow/adr-candidates.mjs), its exhaustive/filtered/deferred coverage
+    // is propagated instead of the supplied-only description. Without it, the
+    // historical supplied-only wording stays (and stays truthful).
+    coverage: candidateCoverage
+      ? {
+        ...candidateCoverage,
+        candidatesSupplied: normalized.length,
+        pairsPlanned: planned.length,
+        pairsCompared: together.length + unrelated.length,
+        exhaustiveCandidateComparison: candidateCoverage.exhaustive === true,
+      }
+      : {
+        candidatesSupplied: normalized.length,
+        pairsPlanned: planned.length,
+        pairsCompared: together.length + unrelated.length,
+        exhaustiveCandidateComparison: false,
+        note: "only the caller-supplied candidate ADRs were compared (exact ID/path/content/version tuples); candidate enumeration and filtering belong to the later retrieval-integration phase",
+      },
     routingPolicy: policySummary(routingPolicy),
     model,
     api: effectiveApi,
@@ -911,6 +926,7 @@ export function buildResultPacket({
   prepared,
   selection,
   comparison = null,
+  candidateCoverage = null,
   model = DEFAULT_MODEL,
   api = null,
   routingPolicy = DEFAULT_ROUTING_POLICY,
@@ -959,10 +975,17 @@ export function buildResultPacket({
       recordOnlySources: prepared.recordOnly,
       candidatesSupplied: comparison ? comparison.coverage.candidatesSupplied : 0,
       pairsCompared: comparison ? comparison.coverage.pairsCompared : 0,
-      exhaustiveCandidateComparison: false,
+      // Exhaustive vs filtered vs deferred candidate coverage comes from the
+      // candidate policy when one produced the set (never the hardcoded
+      // supplied-only description on the exhaustive path).
+      exhaustiveCandidateComparison: candidateCoverage ? candidateCoverage.exhaustive === true : (comparison?.coverage?.exhaustiveCandidateComparison === true),
+      candidateComparison: candidateCoverage ?? (comparison?.coverage ?? null),
       curationObligation: "pending (untouched by this processing)",
     },
-    notes: [...PACKET_NOTES],
+    notes: candidateCoverage
+      ? [...PACKET_NOTES.slice(0, PACKET_NOTES.length - 1),
+        `Candidate coverage is exactly the prepared candidate set: ${candidateCoverage.strategy} over ${candidateCoverage.eligibleAdrs} eligible ADR document(s) at source revision ${candidateCoverage.corpus?.sourceRevision ?? "unknown"} (${candidateCoverage.note}).`]
+      : [...PACKET_NOTES],
   };
   packet.packetId = resultPacketId(packet);
   return packet;
