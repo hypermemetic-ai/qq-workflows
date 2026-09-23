@@ -75,7 +75,7 @@ export const PI_WORKER_TOOL_EQUIVALENTS = Object.freeze({
   write_to_file: "write",
   replace_file_content: "edit",
   read_url_content: null,
-  search_web: null,
+  search_web: "search_web",
 });
 
 const BACKTICKED = /`([^`\n]+)`/gu;
