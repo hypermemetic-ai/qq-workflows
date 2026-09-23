@@ -188,7 +188,9 @@ the sole authority and this phase appends no events.
 
 ## Deliberately out of scope (next phases)
 
-ZG/Qwen/Jina candidate discovery and ADR planning lookup first-class; narrow
-Jev comparisons at scale (≤ 50 ADR exhaustive + shadow, > 50 permissive, no
-fixed 50-candidate ceiling); exact Architect-authored publication/indexing with
-an independently retryable index; Architect UI/tools; end-to-end wake-up.
+Shared ADR retrieval and Architect planning lookup are implemented in phase 52315bc8
+(see [adr-retrieval.md](adr-retrieval.md)); this is ZG hybrid/RRF, **not** Jina
+invocation. Candidate policy is exhaustive plus non-excluding shadow through 50
+eligible ADRs by default, selective above that with no fixed 50 ceiling. Still
+out of scope: deterministic Architect-authored publication, obligation disposition,
+post-landing delivery/recovery and integrated runtime acceptance.

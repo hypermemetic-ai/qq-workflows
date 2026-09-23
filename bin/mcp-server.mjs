@@ -64,6 +64,7 @@ import {createMcpExecutionSurface} from "../workflow/mcp-executions.mjs";
 import { cancelExecutionHost } from "../workflow/execution-supervisor.mjs";
 import { stateDirFor } from "../workflow/session.mjs";
 import { registerStateExclude } from "../workflow/state-exclude.mjs";
+import { readAdr, searchAdrs } from "../workflow/adr-retrieval.mjs";
 import {
   CANONICAL_PROVIDERS,
   PROVIDERS,
@@ -345,6 +346,36 @@ export const TOOLS = [
         },
       },
       required: ["content"],
+    },
+  },
+  {
+    name: "search_adrs",
+    description: "Search the project's committed ADR corpus (docs/adr) through the derived ADR-only index while planning. Returns stable ADR id/path/content-version/committed source revision with exact excerpts, source/index freshness and bounded coverage/errors. An excerpt is NOT the full document (read_adr pages it). A lookup hit is relevance only: never automatic mandate or approval. Failed or missing search is reported honestly, never as zero matches.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Natural-language or exact-term query over ADR content." },
+        limit: { type: "integer", minimum: 1, maximum: 50, description: "Bounded maximum number of ADR results (default 8, max 50)." },
+        revision: { type: "string", description: "Optional pinned committed revision (commit-ish); defaults to the current committed snapshot. Dirty worktree contents are never read." },
+        refreshIndex: { type: "boolean", description: "Refresh the derived ADR-only index first when it is missing or stale (derived state only; never repository mutation)." },
+        cwd: { type: "string" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "read_adr",
+    description: "Read one ADR's full exact committed text by its canonical reference (ADR-<id> or ADR-<id>-<slug>, case-sensitive), paged in bounded chunks (continue with nextOffset until complete). Exact bytes at the pinned committed source revision; ambiguous/unknown/unsafe references are explicit refusals.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        adrId: { type: "string", description: "Canonical ADR reference: 'ADR-<id>' or the full 'ADR-<id>-<slug>' stem (an identifier, never a path)." },
+        revision: { type: "string", description: "Optional pinned committed revision (commit-ish)." },
+        offset: { type: "integer", minimum: 0 },
+        limit: { type: "integer", minimum: 1 },
+        cwd: { type: "string" },
+      },
+      required: ["adrId"],
     },
   },
   {
@@ -4314,6 +4345,29 @@ export async function callTool(name, args = {}, options = {}) {
     return replayRetainedRunnerFindings(args.runnerId);
   }
   if (name === "read_report") return managedExecutionSurface.readReport(args);
+  if (name === "search_adrs") {
+    // Read/derived-index work: no session identity required to look up an ADR.
+    const adrRoot = await mainRepoRoot(args.cwd ?? process.cwd());
+    return searchAdrs({
+      stateDir: stateDirFor(adrRoot, process.env),
+      projectRoot: adrRoot,
+      query: args.query,
+      limit: args.limit,
+      revision: args.revision ?? "HEAD",
+      refreshIndex: args.refreshIndex === true,
+      ...(options.adrBackendFactory ? { backendFactory: options.adrBackendFactory } : {}),
+    });
+  }
+  if (name === "read_adr") {
+    const adrRoot = await mainRepoRoot(args.cwd ?? process.cwd());
+    return readAdr({
+      projectRoot: adrRoot,
+      reference: args.adrId ?? args.reference,
+      revision: args.revision ?? "HEAD",
+      offset: args.offset,
+      limit: args.limit,
+    });
+  }
   if (name === "dispatch_execution") {
     assertNoProviderOverrides(args);
     return managedExecutionSurface.dispatch(args);
