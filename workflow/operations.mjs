@@ -50,6 +50,7 @@ import {
   steerRunnerLifecycle,
 } from "./runner-lifecycle.mjs";
 import { ensureAssociation, resolveSessionKey, stateDirFor } from "./session.mjs";
+import { registerStateExclude } from "./state-exclude.mjs";
 import { extractSection, listSections, loadPackagedTemplate, replaceSection, ticketPath } from "./ticket.mjs";
 import { PI_HARNESS, planFingerprint, planToSpawn, resolveWorkerLaunchPlan } from "./worker-launch.mjs";
 
@@ -275,6 +276,7 @@ export function createWorkflow({
 } = {}) {
   if (!root) throw new Error("repository root is required");
   const stateDir = stateDirFor(root, env);
+  registerStateExclude(root, stateDir);
   const live = new Map(); // jobId -> { child, outputTail, activeTool, trajectory, stderr }
   // jobId -> { release } — one hold per job on the OWNER's shared progress
   // consumer (the consumer and its relay runtime are shared and refcounted;

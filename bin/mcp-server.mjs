@@ -63,6 +63,7 @@ import {prepareManagedRoleCommunication} from "../workflow/execution-communicati
 import {createMcpExecutionSurface} from "../workflow/mcp-executions.mjs";
 import { cancelExecutionHost } from "../workflow/execution-supervisor.mjs";
 import { stateDirFor } from "../workflow/session.mjs";
+import { registerStateExclude } from "../workflow/state-exclude.mjs";
 import {
   CANONICAL_PROVIDERS,
   PROVIDERS,
@@ -4280,6 +4281,15 @@ export async function callTool(name, args = {}, options = {}) {
   if (OPERATOR_ACTION_TOOL_NAMES.has(name) && !isOperatorActionEnabled(options)) {
     throw new Error(`Tool '${name}' is disabled`);
   }
+  // Explicit MCP workflow entry; stateDirFor remains a pure lookup for
+  // report/notification reads. A tool may be called from a subdirectory (or a
+  // linked worktree), so register against that worktree's top level. The
+  // registrar still validates root and default state-dir identity itself.
+  const cwd = args.cwd || process.cwd();
+  let worktreeRoot = cwd;
+  try { worktreeRoot = await git(cwd, ["rev-parse", "--show-toplevel"]); }
+  catch { /* Non-Git paths are skipped by the registrar; tool behavior is unchanged. */ }
+  registerStateExclude(worktreeRoot, stateDirFor(worktreeRoot, process.env));
   if (name === "prepare_worktree") {
     return prepareWorktree(args);
   }
