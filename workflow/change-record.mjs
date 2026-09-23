@@ -208,6 +208,18 @@ export const EVENT_KINDS = Object.freeze([
   "amendment.pushed",
   "amendment.accepted",
   "worker.acknowledged",
+  // ADR source evidence + curation obligation seam. Subordinate immutable
+  // evidence blobs (the ADR source manifest) are referenced, never fetched;
+  // these events are the workflow authority for the post-landing curation
+  // obligation. `adr.source_manifest` stages retained source evidence before
+  // the destructive ticket reset/worktree retirement, `adr.source_completion`
+  // fills explicit pending/missing references idempotently after landing or
+  // archival, and `adr.curation_obligation` records the post-landing
+  // disposition (pending curation, explicit no-source-change, or validated
+  // suppression). Records written before these kinds existed replay unchanged.
+  "adr.source_manifest",
+  "adr.source_completion",
+  "adr.curation_obligation",
   "text.continued",
 ]);
 
@@ -253,6 +265,9 @@ export const LARGE_TEXT_FIELDS = Object.freeze({
   "amendment.pushed": [],
   "amendment.accepted": ["note"],
   "worker.acknowledged": ["note"],
+  "adr.source_manifest": ["note"],
+  "adr.source_completion": ["note"],
+  "adr.curation_obligation": ["note"],
 });
 
 // Which trusted identity fields each kind requires on the envelope.
@@ -274,6 +289,9 @@ const KIND_ID_REQUIREMENTS = Object.freeze({
   "amendment.pushed": { jobId: true, attemptId: true },
   "amendment.accepted": { jobId: true, attemptId: true },
   "worker.acknowledged": { jobId: true, attemptId: true },
+  "adr.source_manifest": { jobId: true, attemptId: true },
+  "adr.source_completion": { jobId: true, attemptId: true },
+  "adr.curation_obligation": { jobId: true, attemptId: true },
   "text.continued": {},
 });
 
@@ -298,6 +316,12 @@ const KIND_ACTORS = Object.freeze({
   "amendment.pushed": ["runtime", "operator"],
   "amendment.accepted": ["runtime", "operator"],
   "worker.acknowledged": ["worker"],
+  // Curation evidence and obligations are runtime/operator authored only: a
+  // worker can never stage its own source evidence or schedule its own
+  // curation disposition.
+  "adr.source_manifest": ["runtime", "operator"],
+  "adr.source_completion": ["runtime", "operator"],
+  "adr.curation_obligation": ["runtime", "operator"],
   "text.continued": ["runtime", "worker", "operator"],
 });
 
@@ -624,7 +648,128 @@ export function emptyState(changeId) {
     texts: {}, // textId -> { textId, kind, field, parts, commandId, chunks }
     eventIds: {}, // eventId -> seq
     commandIndex: {}, // commandId -> { seq, eventId, digest, splits }
+    // ADR source evidence + curation obligation seam (subordinate blobs are
+    // referenced from `evidence`, never fetched by this module).
+    adr: {
+      manifests: {}, // manifestId -> staged manifest entry
+      manifestOrder: [],
+      obligations: {}, // operationId -> curation obligation entry
+      obligationOrder: [],
+    },
   };
+}
+
+// ADR source/curation vocabulary (validated exactly; unknown values are
+// rejected, never silently applied).
+export const ADR_REF_STATUSES = Object.freeze(["retained", "pending", "missing"]);
+export const ADR_OBLIGATION_STATUSES = Object.freeze(["pending", "no-change", "suppressed"]);
+export const ADR_LANDING_METHODS = Object.freeze(["pr", "ff", "none"]);
+export const ADR_SUPPRESSION_BASES = Object.freeze(["adr-roots", "trusted-opt-out"]);
+// A manifest explicitly tracks these references; an absent required reference
+// is an explicit pending/missing entry, so complete evidence is never declared
+// while one of them is not retained.
+export const ADR_REQUIRED_REFS = Object.freeze([
+  "ticket", "provenance", "constraints", "amendments", "roleReports", "landingReceipt",
+]);
+
+function assertAdrRefEntry(name, entry) {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    throw fail("invalid-event", `ADR ref '${name}' must be an object with an explicit status`);
+  }
+  if (!ADR_REF_STATUSES.includes(entry.status)) {
+    throw fail("invalid-event", `ADR ref '${name}' status ${JSON.stringify(entry.status)} is unknown (allowed: ${ADR_REF_STATUSES.join(", ")})`);
+  }
+  for (const field of ["reportId", "path", "sha256", "reason"]) {
+    if (entry[field] !== undefined && entry[field] !== null && typeof entry[field] !== "string") {
+      throw fail("invalid-event", `ADR ref '${name}'.${field} must be a string or null`);
+    }
+  }
+  if (entry.bytes !== undefined && entry.bytes !== null && (!Number.isInteger(entry.bytes) || entry.bytes < 0)) {
+    throw fail("invalid-event", `ADR ref '${name}'.bytes must be a non-negative integer or null`);
+  }
+  if (entry.seq !== undefined && entry.seq !== null && (!Number.isInteger(entry.seq) || entry.seq < 1)) {
+    throw fail("invalid-event", `ADR ref '${name}'.seq must be a positive integer or null`);
+  }
+  if (entry.count !== undefined && entry.count !== null && (!Number.isInteger(entry.count) || entry.count < 0)) {
+    throw fail("invalid-event", `ADR ref '${name}'.count must be a non-negative integer or null`);
+  }
+  if (entry.landing !== undefined && entry.landing !== null) assertAdrLanding(entry.landing, `ADR ref '${name}'`);
+  return entry;
+}
+
+function assertAdrRefs(refs, kind, { requireAll = false } = {}) {
+  if (!refs || typeof refs !== "object" || Array.isArray(refs)) {
+    throw fail("invalid-event", `${kind} requires a payload.refs object of named evidence references`);
+  }
+  for (const [name, entry] of Object.entries(refs)) assertAdrRefEntry(name, entry);
+  if (requireAll) {
+    for (const name of ADR_REQUIRED_REFS) {
+      if (!refs[name]) {
+        throw fail("invalid-event", `${kind} requires an explicit payload.refs.${name} entry (retained, pending, or missing — never silently absent)`);
+      }
+    }
+  }
+  return refs;
+}
+
+function assertAdrLanding(landing, what) {
+  if (!landing || typeof landing !== "object" || Array.isArray(landing)) {
+    throw fail("invalid-event", `${what} requires a landing receipt object`);
+  }
+  if (!ADR_LANDING_METHODS.includes(landing.method)) {
+    throw fail("invalid-event", `${what} landing method ${JSON.stringify(landing.method)} is unknown (allowed: ${ADR_LANDING_METHODS.join(", ")})`);
+  }
+  for (const field of ["receipt", "headSha", "pr"]) {
+    if (landing[field] !== undefined && landing[field] !== null && typeof landing[field] !== "string") {
+      throw fail("invalid-event", `${what} landing.${field} must be a string or null`);
+    }
+  }
+  if (landing.method === "pr" || landing.method === "ff") {
+    if (typeof landing.receipt !== "string" || !/^[0-9a-f]{7,64}$/.test(landing.receipt)) {
+      throw fail("invalid-event", `${what}: a '${landing.method}' landing requires its verified merge/ff receipt (the actual landed revision)`);
+    }
+    if (landing.method === "pr" && (typeof landing.pr !== "string" || !landing.pr.trim())) {
+      throw fail("invalid-event", `${what}: a 'pr' landing requires its merged PR reference`);
+    }
+  }
+  if (landing.method === "none" && landing.receipt != null) {
+    throw fail("invalid-event", `${what}: a no-source-change (method 'none') landing never carries a commit receipt`);
+  }
+  if (landing.changedPaths !== undefined && landing.changedPaths !== null) {
+    const paths = landing.changedPaths;
+    if (typeof paths !== "object" || Array.isArray(paths)) {
+      throw fail("invalid-event", `${what} landing.changedPaths must be an object or null`);
+    }
+    if (paths.verified !== undefined && typeof paths.verified !== "boolean") {
+      throw fail("invalid-event", `${what} landing.changedPaths.verified must be a boolean`);
+    }
+    if (paths.allWithinAdrRoots !== undefined && typeof paths.allWithinAdrRoots !== "boolean") {
+      throw fail("invalid-event", `${what} landing.changedPaths.allWithinAdrRoots must be a boolean`);
+    }
+    if (paths.count !== undefined && paths.count !== null && (!Number.isInteger(paths.count) || paths.count < 0)) {
+      throw fail("invalid-event", `${what} landing.changedPaths.count must be a non-negative integer`);
+    }
+  }
+  return landing;
+}
+
+function assertAdrSuppression(suppression, what) {
+  if (!suppression || typeof suppression !== "object" || Array.isArray(suppression)) {
+    throw fail("invalid-event", `${what} suppression must be an object`);
+  }
+  if (!ADR_SUPPRESSION_BASES.includes(suppression.basis)) {
+    throw fail("invalid-event", `${what} suppression basis ${JSON.stringify(suppression.basis)} is unknown (allowed: ${ADR_SUPPRESSION_BASES.join(", ")})`);
+  }
+  if (typeof suppression.reason !== "string" || !suppression.reason.trim()) {
+    throw fail("invalid-event", `${what} suppression requires an explicit non-empty reason`);
+  }
+  if (typeof suppression.provenance !== "string" || !suppression.provenance.trim()) {
+    throw fail("invalid-event", `${what} suppression requires explicit provenance`);
+  }
+  if (suppression.basis === "trusted-opt-out" && suppression.publisher !== true) {
+    throw fail("invalid-event", `${what}: the trusted suppression opt-out is available to the ADR publisher only`);
+  }
+  return suppression;
 }
 
 function requirePayloadString(payload, field, kind) {
@@ -1161,6 +1306,173 @@ function applyEvent(state, env) {
       break;
     }
 
+    case "adr.source_manifest": {
+      // A staged ADR source manifest binds to the MANAGED EXECUTION attempt of
+      // this change (its project, coordinating owner and phase identity live
+      // in the retained blob and the obligation event; this module stores the
+      // typed evidence reference verbatim and never fetches it).
+      if (state.jobs[env.jobId].role !== "execution") {
+        throw fail("invalid-transition", "an ADR source manifest binds to a managed execution attempt");
+      }
+      requireAttempt(state, env.jobId, env.attemptId, env.kind);
+      assertIdentifier(payload.manifestId, "payload.manifestId");
+      if (!Number.isInteger(payload.schemaVersion) || payload.schemaVersion < 1) {
+        throw fail("invalid-event", "adr.source_manifest requires a positive integer payload.schemaVersion");
+      }
+      const evidence = payload.evidence;
+      if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
+        throw fail("invalid-event", "adr.source_manifest requires a payload.evidence reference object");
+      }
+      if (typeof evidence.path !== "string" || !evidence.path.trim()) {
+        throw fail("invalid-event", "payload.evidence.path must name the retained manifest artifact");
+      }
+      if (typeof evidence.sha256 !== "string" || !SHA_PATTERN.test(evidence.sha256)) {
+        throw fail("invalid-event", "payload.evidence.sha256 must be the artifact's sha256");
+      }
+      if (!Number.isInteger(evidence.bytes) || evidence.bytes < 0) {
+        throw fail("invalid-event", "payload.evidence.bytes must be a non-negative integer");
+      }
+      const refs = assertAdrRefs(payload.refs, env.kind, { requireAll: true });
+      if (state.adr.manifests[payload.manifestId]) {
+        throw fail("invalid-transition", `ADR source manifest '${payload.manifestId}' is already staged`);
+      }
+      state.adr.manifests[payload.manifestId] = {
+        manifestId: payload.manifestId,
+        schemaVersion: payload.schemaVersion,
+        seq: env.seq,
+        at: env.at,
+        evidence: { path: evidence.path, sha256: evidence.sha256, bytes: evidence.bytes },
+        refs: Object.fromEntries(Object.entries(refs).map(([name, entry]) => [name, { ...entry }])),
+        landing: null,
+        disposition: null,
+        suppression: null,
+      };
+      state.adr.manifestOrder.push(payload.manifestId);
+      break;
+    }
+
+    case "adr.source_completion": {
+      if (state.jobs[env.jobId].role !== "execution") {
+        throw fail("invalid-transition", "an ADR source completion binds to a managed execution attempt");
+      }
+      requireAttempt(state, env.jobId, env.attemptId, env.kind);
+      assertIdentifier(payload.manifestId, "payload.manifestId");
+      const manifest = state.adr.manifests[payload.manifestId];
+      if (!manifest) {
+        throw fail("invalid-transition", `completion references unknown ADR source manifest '${payload.manifestId}'`);
+      }
+      const completionRefs = assertAdrRefs(payload.refs ?? {}, env.kind, { requireAll: false });
+      for (const [name, entry] of Object.entries(completionRefs)) {
+        const existing = manifest.refs[name];
+        if (!existing) {
+          manifest.refs[name] = { ...entry };
+          continue;
+        }
+        if (existing.status === "retained") {
+          // Retained stays retained; a late completion is idempotent, and a
+          // conflicting identity for the same named reference is refused.
+          if (entry.status === "retained"
+            && ((existing.reportId ?? null) !== (entry.reportId ?? null)
+              || (existing.path ?? null) !== (entry.path ?? null)
+              || (existing.sha256 ?? null) !== (entry.sha256 ?? null))) {
+            throw fail("invalid-transition", `conflicting retained ref '${name}' on ADR source manifest '${payload.manifestId}'`);
+          }
+          continue;
+        }
+        if (entry.status === "retained") manifest.refs[name] = { ...entry };
+        else if (existing.status === "pending" && entry.status === "missing") manifest.refs[name] = { ...entry };
+      }
+      if (payload.landing !== undefined && payload.landing !== null) {
+        assertAdrLanding(payload.landing, env.kind);
+        if (manifest.landing && canonicalJson(manifest.landing) !== canonicalJson(payload.landing)) {
+          throw fail("invalid-transition", `conflicting observed landing evidence on ADR source manifest '${payload.manifestId}'`);
+        }
+        manifest.landing = { ...payload.landing };
+      }
+      if (payload.disposition !== undefined && payload.disposition !== null) {
+        if (!ADR_OBLIGATION_STATUSES.includes(payload.disposition)) {
+          throw fail("invalid-event", `payload.disposition ${JSON.stringify(payload.disposition)} is unknown (allowed: ${ADR_OBLIGATION_STATUSES.join(", ")})`);
+        }
+        if (manifest.disposition && manifest.disposition !== payload.disposition) {
+          throw fail("invalid-transition", `conflicting curation disposition on ADR source manifest '${payload.manifestId}'`);
+        }
+        manifest.disposition = payload.disposition;
+      }
+      if (payload.suppression !== undefined && payload.suppression !== null) {
+        assertAdrSuppression(payload.suppression, env.kind);
+        if (manifest.suppression && canonicalJson(manifest.suppression) !== canonicalJson(payload.suppression)) {
+          throw fail("invalid-transition", `conflicting suppression on ADR source manifest '${payload.manifestId}'`);
+        }
+        manifest.suppression = { ...payload.suppression };
+      }
+      break;
+    }
+
+    case "adr.curation_obligation": {
+      if (state.jobs[env.jobId].role !== "execution") {
+        throw fail("invalid-transition", "a curation obligation binds to a managed execution attempt");
+      }
+      requireAttempt(state, env.jobId, env.attemptId, env.kind);
+      assertIdentifier(payload.operationId, "payload.operationId");
+      if (state.adr.obligations[payload.operationId]) {
+        throw fail("invalid-transition", `curation obligation '${payload.operationId}' is already recorded`);
+      }
+      if (!ADR_OBLIGATION_STATUSES.includes(payload.status)) {
+        throw fail("invalid-event", `payload.status ${JSON.stringify(payload.status)} is unknown (allowed: ${ADR_OBLIGATION_STATUSES.join(", ")})`);
+      }
+      assertAdrLanding(payload.landing, env.kind);
+      for (const field of ["project", "owner"]) {
+        if (typeof payload[field] !== "string" || !payload[field].trim()) {
+          throw fail("invalid-event", `adr.curation_obligation requires payload.${field} (the binding identity)`);
+        }
+      }
+      if (payload.phaseId !== undefined && payload.phaseId !== null && typeof payload.phaseId !== "string") {
+        throw fail("invalid-event", "adr.curation_obligation payload.phaseId must be a string or null");
+      }
+      if (payload.manifestId !== undefined && payload.manifestId !== null) {
+        assertIdentifier(payload.manifestId, "payload.manifestId");
+        if (!state.adr.manifests[payload.manifestId]) {
+          throw fail("invalid-transition", `curation obligation references unknown ADR source manifest '${payload.manifestId}'`);
+        }
+      }
+      if (payload.suppression !== undefined && payload.suppression !== null) {
+        assertAdrSuppression(payload.suppression, env.kind);
+      }
+      if (payload.status === "pending") {
+        // Only a verified successful REAL source landing activates a pending
+        // curation obligation, and only over retained source evidence.
+        if (!payload.manifestId) {
+          throw fail("invalid-transition", "a pending curation obligation requires the retained ADR source manifest");
+        }
+        if (payload.landing.method !== "pr" && payload.landing.method !== "ff") {
+          throw fail("invalid-transition", "a pending curation obligation requires a verified real source landing (method 'pr' or 'ff')");
+        }
+        if (payload.suppression) {
+          throw fail("invalid-transition", "a suppressed landing never schedules architectural curation");
+        }
+      }
+      if (payload.status === "no-change" && payload.landing.method !== "none") {
+        throw fail("invalid-transition", "a no-source-change disposition describes a method 'none' landing");
+      }
+      if (payload.status === "suppressed" && !payload.suppression) {
+        throw fail("invalid-transition", "a suppressed disposition requires its validated suppression basis");
+      }
+      state.adr.obligations[payload.operationId] = {
+        operationId: payload.operationId,
+        manifestId: payload.manifestId ?? null,
+        status: payload.status,
+        landing: { ...payload.landing },
+        suppression: payload.suppression ? { ...payload.suppression } : null,
+        project: payload.project,
+        owner: payload.owner,
+        phaseId: payload.phaseId ?? null,
+        seq: env.seq,
+        at: env.at,
+      };
+      state.adr.obligationOrder.push(payload.operationId);
+      break;
+    }
+
     case "text.continued": {
       const { textId, part } = payload;
       assertIdentifier(textId, "payload.textId");
@@ -1451,6 +1763,28 @@ export function viewsFor(state) {
       const attempt = job.attempts[attemptId];
       if (!attempt) throw fail("not-found", `unknown attempt '${attemptId}' on job '${jobId}'`);
       return attemptView(state, job, attempt);
+    },
+
+    // ADR source evidence + curation obligation projection. Pure copy of the
+    // authoritative entries; subordinate blobs are read (and hash-verified)
+    // only by the adr-curation helper, never by this module.
+    adr() {
+      const manifests = state.adr.manifestOrder.map((manifestId) => {
+        const entry = state.adr.manifests[manifestId];
+        return {
+          manifestId: entry.manifestId,
+          schemaVersion: entry.schemaVersion,
+          seq: entry.seq,
+          at: entry.at,
+          evidence: { ...entry.evidence },
+          refs: Object.fromEntries(Object.entries(entry.refs).map(([name, ref]) => [name, { ...ref }])),
+          landing: entry.landing ? { ...entry.landing } : null,
+          disposition: entry.disposition,
+          suppression: entry.suppression ? { ...entry.suppression } : null,
+        };
+      });
+      const obligations = state.adr.obligationOrder.map((operationId) => ({ ...state.adr.obligations[operationId] }));
+      return { manifests, obligations };
     },
 
     pendingAmendments(jobId = null) {

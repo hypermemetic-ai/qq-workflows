@@ -50,6 +50,11 @@ import {
   viewsFor,
 } from "./change-record.mjs";
 import { submitAmendment } from "./communication.mjs";
+import {
+  adrCurationProjection,
+  createAdrCurationHook,
+  recoverAdrCuration,
+} from "./adr-curation.mjs";
 import { createJob, readJob, writeJob, processFingerprint } from "./jobs.mjs";
 import { readNotification, routeNotification, normalizeEvidence, acknowledgeDelivery } from "./notify.mjs";
 
@@ -1095,6 +1100,10 @@ export function managedExecutionView({ stateDir, executionId, limit = {} }) {
     unresolvedRevisions: unresolvedRevisions.slice(0, limit.updates ?? VIEW_UPDATES_MAX),
     unresolvedRevisionCount: unresolvedRevisions.length,
     reconciliations: views.reconciliations().slice(0, limit.updates ?? VIEW_UPDATES_MAX),
+    // The ADR source-evidence / curation-obligation projection, rebuilt from
+    // the authoritative record on every read (a stale cache cannot override
+    // it). Bounded; the job cache is never consulted.
+    curation: adrCurationProjection(state, { stateDir }),
     reports: reports.slice(-1 * (limit.reports ?? VIEW_REPORTS_MAX)),
     reportCount: reports.length,
   };
@@ -1193,7 +1202,17 @@ export function reconcileManagedExecution({ stateDir, executionId, expectedOwner
     next = {...job,status:"running",terminal:null,recovery:{...job.recovery,verdict:"authority-restored",reconciledAt:nowMs}};
   }
   if (corrected) writeJob(stateDir, next);
-  return { ok: true, view, projection: next, corrected };
+  // Recovery of an interrupted ADR capture/archive/receipt handoff reuses this
+  // recovery hook: it reconstructs pending obligation/evidence only from
+  // verified retained material and NEVER blocks or rewrites the reconciliation
+  // above (bounded truthful state, no periodic scheduler, no relaunch).
+  let curationRecovery = null;
+  try {
+    curationRecovery = recoverAdrCuration({ stateDir, changeId: executionId, repair: true, now: nowMs });
+  } catch (error) {
+    curationRecovery = { ok: false, reason: String(error?.message ?? error) };
+  }
+  return { ok: true, view, projection: next, corrected, curationRecovery };
 }
 
 // The cache index is rebuildable too: enumerate the authoritative records,
@@ -1247,6 +1266,12 @@ export function managedExecutionPipelineHooks({ stateDir, executionId, owner = n
     recordEvidence: (args) => recordAttemptEvidence({ stateDir, executionId, actor, now, ...args }),
     admitLanding: (args) => admitLanding({ stateDir, executionId, actor, now, ...args }),
     recordCancelIntent: (args) => recordExecutionCancelIntent({ stateDir, executionId, actor, now, ...args }),
+    // The ADR source-evidence/curation-obligation seam the landing pipeline
+    // threads through landWorktree: capture before destructive cleanup,
+    // activation only on a verified real landing receipt, idempotent late
+    // completion. Carries no second authority — every step appends to or reads
+    // the ONE change record.
+    adrCuration: createAdrCurationHook({ stateDir, executionId, owner, actor, now }),
     steer: async (args) => (await import('./execution-communication.mjs')).steerManagedRoleCommunication({ stateDir, executionId, actor, now, ...args }),
     view: (options = {}) => managedExecutionView({ stateDir, executionId, ...options }),
     reconcile: () => reconcileManagedExecution({ stateDir, executionId, now }),

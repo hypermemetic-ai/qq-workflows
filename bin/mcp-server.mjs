@@ -3804,6 +3804,11 @@ async function runExecutionPipeline(execution) {
     worktree: wt.cwd,
     branch: wt.branch,
     message: args.message || `feat: implement and verify ${wt.branch}`,
+    // Record-backed managed landings carry the ADR source-evidence/curation
+    // seam (capture before destructive cleanup, obligation only on a verified
+    // real landing receipt). Legacy landings without an authoritative change
+    // record keep ordinary behavior and say so truthfully on the result.
+    ...(execution.authority?.adrCuration ? { curation: execution.authority.adrCuration } : {}),
   });
   touchActivity(execution);
 

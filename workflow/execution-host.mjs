@@ -30,6 +30,7 @@ import {
   recordHostStarted,
   verifyHostLaunch,
 } from "./execution-authority.mjs";
+import { completeAdrSourceRefs } from "./adr-curation.mjs";
 
 export function publishExecutionResult({ stateDir, jobId, result, now = Date.now() }) {
   const job = readJob(stateDir, jobId);
@@ -37,6 +38,7 @@ export function publishExecutionResult({ stateDir, jobId, result, now = Date.now
   const report = saveReport(stateDir, {jobId, role:"execution", text:JSON.stringify(result,null,2), now});
   const meta = executionAuthorityMetadata({stateDir, executionId:jobId, job});
   const view = meta ? managedExecutionView({stateDir, executionId:jobId}) : null;
+  let curationCompletion = null;
   let status = (meta ? view.execution.cancelIntent : job.cancellation) ? "cancelled"
     : result.ok === true && result.status === "completed" ? "completed"
     : result.status === "interrupted" ? "interrupted" : "failed";
@@ -56,6 +58,25 @@ export function publishExecutionResult({ stateDir, jobId, result, now = Date.now
     }
     const recovered = reconcileManagedExecution({stateDir,executionId:jobId,now});
     if (!recovered.ok) throw new Error(recovered.reason);
+    // Idempotent post-landing completion: the execution's final durable report
+    // reference closes the landing-return -> report-finalization gap without
+    // any circular dependency (landing never waits for it) and without ever
+    // declaring complete evidence when the reference is absent. Failure is a
+    // bounded warning only — publication and the settled result stand.
+    try {
+      curationCompletion = completeAdrSourceRefs({
+        stateDir,
+        executionId: jobId,
+        refs: {
+          executionReport: report
+            ? { status: "retained", reportId: report.reportId }
+            : { status: "missing", reason: "no durable execution report was persisted for this result" },
+        },
+        now,
+      });
+    } catch (error) {
+      curationCompletion = { ok: false, reason: String(error?.message ?? error) };
+    }
   }
   const settled = recordTerminal(stateDir,jobId,{status,summary,reportId:report.reportId,reportChars:report.chars,error:result.error??null,phase:result.phase,now});
   // Phase is telemetry; it cannot replace the authoritative outcome or report.
@@ -63,8 +84,9 @@ export function publishExecutionResult({ stateDir, jobId, result, now = Date.now
     settled.phase = result.phase;
     writeJob(stateDir,settled);
   }
-  return settled.terminal?.reportId === report.reportId ? settled : {...settled,
+  const settledResult = settled.terminal?.reportId === report.reportId ? settled : {...settled,
     lateEvidence:{reportId:report.reportId,reportChars:report.chars,at:now,resultStatus:result.status??null,outcomeUnchanged:settled.terminal?.status??null}};
+  return curationCompletion ? { ...settledResult, curationCompletion } : settledResult;
 }
 
 export async function runExecutionHost(requestPath, { loadPipeline = () => import("../bin/mcp-server.mjs") } = {}) {
