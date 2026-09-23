@@ -489,7 +489,7 @@ export async function retireWorktree(cwd, { worktree, branch, force = true, home
   return { retired: true, worktree: targetWorktree, branch: targetBranch };
 }
 
-export async function landWorktree(cwd, { worktree, branch, message, title, body, deleteBranch = true, home, sessionId: explicitSessionId, clearTicket = true } = {}) {
+export async function landWorktree(cwd, { worktree, branch, message, title, body, deleteBranch = true, home, sessionId: explicitSessionId, clearTicket = true, curation = null } = {}) {
   const targetWorktree = worktree || cwd;
   const mainRoot = await mainRepoRoot(targetWorktree);
 
@@ -498,14 +498,104 @@ export async function landWorktree(cwd, { worktree, branch, message, title, body
     throw new Error(`cannot land branch '${targetBranch}'; requires a dedicated worktree branch`);
   }
 
-  const commitMsg = message || title || `architect: ${targetBranch}`;
-  const commitResult = await commitIfDirty(targetWorktree, commitMsg);
-
   const resolveSessionTag = () => {
     if (explicitSessionId) return explicitSessionId;
     const match = /^architect\/(?:bounded|open|research)\/([a-zA-Z0-9]+)$/.exec(targetBranch);
     return match ? match[1] : null;
   };
+
+  // ADR source evidence capture / curation obligation seam (managed,
+  // record-backed landings only). Nonblocking BY CONTRACT: capture runs
+  // BEFORE the destructive ticket reset/worktree retirement, activation runs
+  // only after a verified real landing outcome (the actual merge/ff receipt),
+  // and every curation failure becomes a bounded truthful warning on the
+  // result — a completed landing is never rolled back or failed by curation.
+  // A failed capture or receipt handoff PRESERVES the sole unretained required
+  // evidence (worktree, branch, session ticket) for recovery instead of
+  // cleaning it up. Legacy/manual landings without the seam keep ordinary
+  // behavior and state their unsupported/deferred curation truthfully.
+  const bounded = (error) => String(error?.message ?? error).slice(0, 300);
+  const curationState = curation
+    ? { supported: true, status: "capturing", warnings: [] }
+    : {
+      supported: false,
+      status: "unsupported",
+      warnings: [],
+      reason: "no authoritative managed change record is attached to this landing; ADR source evidence capture and post-landing curation are unsupported/deferred for legacy or manual landing",
+    };
+  let preserveSoleEvidence = false;
+  let captureResult = null;
+  const sessionTag = resolveSessionTag();
+  let ticketPath = null;
+  if (curation?.capture && sessionTag) {
+    ticketPath = await resolveTicketSource(mainRoot, sessionTag).catch(() => null);
+  }
+  if (curation?.capture) {
+    try {
+      captureResult = await curation.capture({
+        mainRoot,
+        worktree: targetWorktree,
+        branch: targetBranch,
+        sessionTag,
+        ticketPath,
+        baseSelection: null,
+      });
+      if (captureResult?.suppressed) {
+        curationState.status = "suppressed";
+        curationState.suppression = captureResult.suppression ?? null;
+      } else {
+        curationState.status = "prepared";
+        curationState.manifestId = captureResult?.manifestId ?? null;
+        curationState.operationId = captureResult?.operationId ?? null;
+      }
+    } catch (error) {
+      preserveSoleEvidence = true;
+      curationState.status = "capture-failed";
+      curationState.warnings.push(`ADR source capture failed; landing continues and the ticket/worktree are preserved for recovery: ${bounded(error)}`);
+      curationState.preservedForRecovery = ["worktree", "branch", "ticket"];
+    }
+  }
+  const activateCuration = async (landing) => {
+    if (!curation?.activate) return;
+    // With a failed capture and a REAL landing no pending obligation can
+    // exist (it requires the retained manifest): do not manufacture a second
+    // failure over the truthful capture-failed state. A no-change disposition
+    // is still recorded — it requires no manifest and invents nothing.
+    if (curationState.status === "capture-failed" && landing?.method !== "none") return;
+    try {
+      const activated = await curation.activate({ landing, manifestId: captureResult?.manifestId ?? null });
+      curationState.status = activated?.status ?? curationState.status;
+      curationState.operationId = activated?.operationId ?? curationState.operationId ?? null;
+      curationState.manifestId = captureResult?.manifestId ?? curationState.manifestId ?? null;
+      curationState.obligationRecorded = Boolean(activated?.ok);
+    } catch (error) {
+      // The receipt evidence itself is the sole unretained artifact here: the
+      // worktree/branch stay intact for recovery and the landing stands.
+      preserveSoleEvidence = true;
+      curationState.status = "activation-failed";
+      curationState.warnings.push(`ADR curation obligation activation failed; landing continues and the worktree/branch are preserved for recovery: ${bounded(error)}`);
+      curationState.preservedForRecovery = [...new Set([...(curationState.preservedForRecovery ?? []), "worktree", "branch"])];
+    }
+  };
+  const completeCuration = async (archivePath) => {
+    if (!curation?.complete) return;
+    try {
+      await curation.complete({
+        manifestId: captureResult?.manifestId ?? null,
+        refs: {
+          archivePath: archivePath
+            ? { status: "retained", path: archivePath }
+            : { status: "missing", reason: "the ticket was not archived (or archival failed) during this landing" },
+        },
+      });
+    } catch (error) {
+      // Idempotent post-landing completion stays available (e.g. recovery).
+      curationState.warnings.push(`ADR source reference completion failed; the explicit pending/missing reference remains retryable: ${bounded(error)}`);
+    }
+  };
+
+  const commitMsg = message || title || `architect: ${targetBranch}`;
+  const commitResult = await commitIfDirty(targetWorktree, commitMsg);
 
   // Determine whether this worktree introduced any changes or commits against base
   let hasChanges = commitResult.committed;
@@ -531,13 +621,15 @@ export async function landWorktree(cwd, { worktree, branch, message, title, body
   // If there are no changes or commits to merge (e.g. read-only research worktree),
   // safely retire the worktree and branch without erroring on an empty PR.
   if (!hasChanges) {
-    if (deleteBranch) {
+    // A no-op landing produces an EXPLICIT no-source-change disposition: no
+    // commit is invented and architectural curation is never scheduled.
+    await activateCuration({ method: "none", receipt: null, headSha: null, pr: null });
+    if (deleteBranch && !preserveSoleEvidence) {
       await retireWorktree(mainRoot, { worktree: targetWorktree, branch: targetBranch, force: true, home });
     }
     let ticketArchived = false;
     let archivePath = null;
-    if (clearTicket) {
-      const sessionTag = resolveSessionTag();
+    if (clearTicket && !preserveSoleEvidence) {
       if (sessionTag) {
         try {
           const archResult = await archiveAndClearTicket(mainRoot, sessionTag);
@@ -546,15 +638,17 @@ export async function landWorktree(cwd, { worktree, branch, message, title, body
         } catch {}
       }
     }
+    await completeCuration(archivePath);
     return {
       landed: true,
-      retired: true,
+      retired: !preserveSoleEvidence,
       branch: targetBranch,
       method: "none",
       pr: null,
       mergeSha: null,
       ticketArchived,
       ...(archivePath ? { archivePath } : {}),
+      curation: curationState,
     };
   }
 
@@ -571,14 +665,25 @@ export async function landWorktree(cwd, { worktree, branch, message, title, body
     result = await fastForwardMain(targetWorktree, { branch: targetBranch });
   }
 
-  if (deleteBranch) {
+  // The ACTUAL merge/ff receipt (result.mergeSha / result.sha) is the
+  // authoritative landing identity — commitIfDirty.sha is not necessarily the
+  // merge sha. Activation happens BEFORE retirement so the receipt evidence
+  // survives an interrupted obligation handoff.
+  const mergeSha = result.mergeSha ?? result.sha ?? null;
+  await activateCuration({
+    method: remote ? "pr" : "ff",
+    receipt: mergeSha,
+    headSha: result.headSha ?? commitResult.sha ?? null,
+    pr: result.pr ?? null,
+  });
+
+  if (deleteBranch && !preserveSoleEvidence) {
     await retireWorktree(mainRoot, { worktree: targetWorktree, branch: targetBranch, force: true, home });
   }
 
   let ticketArchived = false;
   let archivePath = null;
-  if (clearTicket) {
-    const sessionTag = resolveSessionTag();
+  if (clearTicket && !preserveSoleEvidence) {
     if (sessionTag) {
       try {
         let prNum;
@@ -592,15 +697,19 @@ export async function landWorktree(cwd, { worktree, branch, message, title, body
       } catch {}
     }
   }
+  // archivePath is reported only when archival actually produced it.
+  await completeCuration(archivePath);
 
   return {
     landed: true,
+    retired: Boolean(deleteBranch && !preserveSoleEvidence),
     branch: targetBranch,
     method: remote ? "pr" : "ff",
     pr: result.pr ?? null,
-    mergeSha: result.mergeSha ?? result.sha ?? null,
+    mergeSha,
     ticketArchived,
     ...(archivePath ? { archivePath } : {}),
+    curation: curationState,
   };
 }
 
