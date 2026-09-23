@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
   buildReviewPacket,
+  commitIfDirty,
+  isDirty,
   createWorktree,
   defaultBaseRef,
   defaultLocalBranch,
@@ -357,6 +359,120 @@ try {
     rmSync(join(dirname(refreshRepo), ".qq-worktrees", basename(refreshRepo)), { recursive: true, force: true });
   } catch {}
   rmSync(refreshRepo, { recursive: true, force: true });
+}
+
+// Real Git fixtures live in the OS temp directory, never in the managed
+// worktree. The operational directories are ignored just as they are at land.
+async function stagingRepo(prefix) {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  await git(root, ["init", "-b", "main"]);
+  await git(root, ["config", "user.name", "Architect Test"]);
+  await git(root, ["config", "user.email", "architect@example.invalid"]);
+  writeFileSync(join(root, ".gitignore"), "/.zvec-grep/\n/.architect/\n");
+  writeFileSync(join(root, "root.txt"), "initial\n");
+  await git(root, ["add", ".gitignore", "root.txt"]);
+  await git(root, ["commit", "-m", "initial"]);
+  mkdirSync(join(root, ".zvec-grep"));
+  mkdirSync(join(root, ".architect"));
+  writeFileSync(join(root, ".zvec-grep", "index"), "operational index\n");
+  writeFileSync(join(root, ".architect", "ticket.md"), "# ignored ticket\n");
+  return root;
+}
+
+const stagedRepo = await stagingRepo("architect-staging-");
+try {
+  for (const name of ["staged.txt", "deleted.txt", "staged-deleted.txt", "rename-old.txt", "root.txt"]) {
+    writeFileSync(join(stagedRepo, name), "before\n");
+  }
+  await git(stagedRepo, ["add", "-A"]);
+  await git(stagedRepo, ["commit", "-m", "seed paths"]);
+  writeFileSync(join(stagedRepo, "staged.txt"), "staged\n");
+  await git(stagedRepo, ["add", "staged.txt"]);
+  writeFileSync(join(stagedRepo, "staged.txt"), "staged and unstaged\n");
+  rmSync(join(stagedRepo, "deleted.txt"));
+  rmSync(join(stagedRepo, "staged-deleted.txt"));
+  await git(stagedRepo, ["add", "staged-deleted.txt"]);
+  await git(stagedRepo, ["mv", "rename-old.txt", "rename-new.txt"]);
+  writeFileSync(join(stagedRepo, "rename-new.txt"), "renamed and then modified\n");
+  const odd = [" leading space ", "line\nbreak", "[glob]*?", ":(top)odd", "-dash", "tab\tname"];
+  for (const name of odd) writeFileSync(join(stagedRepo, name), name);
+  assert.equal(await isDirty(stagedRepo), true);
+  const before = await git(stagedRepo, ["rev-parse", "HEAD"]);
+  const result = await commitIfDirty(stagedRepo, "eligible only");
+  assert.equal(result.committed, true);
+  assert.match(result.sha, /^[0-9a-f]{40}$/);
+  assert.notEqual(result.sha, before);
+  const committedNames = (await exec("git", ["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "HEAD"], { cwd: stagedRepo, encoding: "utf8" })).stdout.split("\0").filter(Boolean);
+  assert.deepEqual(new Set(committedNames), new Set(["staged.txt", "deleted.txt", "staged-deleted.txt", "rename-old.txt", "rename-new.txt", ...odd]));
+  assert.equal(await git(stagedRepo, ["status", "--porcelain"]), "");
+  assert.equal(await isDirty(stagedRepo), false);
+  assert.deepEqual(await commitIfDirty(stagedRepo), { committed: false, sha: result.sha });
+} finally { rmSync(stagedRepo, { recursive: true, force: true }); }
+
+// A staged ignored credential, index, or boundary rename is an error even
+// when no eligible path is dirty. Never commit or silently unstage it.
+for (const scenario of ["architect-add", "index-add", "rename-in", "rename-out"]) {
+  const root = await stagingRepo(`architect-excluded-${scenario}-`);
+  try {
+    if (scenario === "rename-out") {
+      writeFileSync(join(root, ".architect", "credential"), "secret\n");
+      await git(root, ["add", "-f", ".architect/credential"]);
+      await git(root, ["commit", "-m", "tracked excluded source"]);
+      await git(root, ["mv", ".architect/credential", "public-credential"]);
+    } else if (scenario === "rename-in") {
+      writeFileSync(join(root, "credential"), "secret\n");
+      await git(root, ["add", "credential"]);
+      await git(root, ["commit", "-m", "tracked source"]);
+      await git(root, ["mv", "credential", ".architect/credential"]);
+    } else {
+      await git(root, ["add", "-f", scenario === "index-add" ? ".zvec-grep/index" : ".architect/ticket.md"]);
+    }
+    writeFileSync(join(root, "eligible.txt"), "normal\n");
+    const before = await git(root, ["rev-parse", "HEAD"]);
+    await assert.rejects(() => commitIfDirty(root), /excluded operational path is already staged/);
+    if (scenario === "rename-in") {
+      await git(root, ["branch", "architect/open/excluded-land"]);
+      await git(root, ["checkout", "architect/open/excluded-land"]);
+      await assert.rejects(
+        () => landWorktree(root, { deleteBranch: false, clearTicket: false }),
+        /excluded operational path is already staged/,
+      );
+    }
+    assert.equal(await git(root, ["rev-parse", "HEAD"]), before);
+    assert.equal(await git(root, ["status", "--porcelain", "--", "eligible.txt"]), "?? eligible.txt");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+const landingRoot = await stagingRepo("architect-ignored-land-root-");
+const landingWt = `${landingRoot}-wt`;
+try {
+  await git(landingRoot, ["worktree", "add", "-b", "architect/open/ignored", landingWt]);
+  mkdirSync(join(landingWt, ".zvec-grep"));
+  mkdirSync(join(landingWt, ".architect"));
+  writeFileSync(join(landingWt, ".zvec-grep", "index"), "do not commit\n");
+  writeFileSync(join(landingWt, ".architect", "ticket.md"), "# worktree ticket\n");
+  writeFileSync(join(landingWt, "landed.txt"), "eligible\n");
+  const receipt = await landWorktree(landingRoot, { worktree: landingWt, deleteBranch: false, clearTicket: false });
+  assert.equal(receipt.method, "ff");
+  assert.match(receipt.mergeSha, /^[0-9a-f]{40}$/);
+  assert.equal(await git(landingRoot, ["rev-parse", "HEAD"]), receipt.mergeSha);
+  assert.equal(readFileSync(join(landingRoot, "landed.txt"), "utf8"), "eligible\n");
+  assert.equal(await git(landingRoot, ["ls-tree", "-r", "--name-only", "HEAD"]), ".gitignore\nlanded.txt\nroot.txt");
+
+  await git(landingRoot, ["worktree", "add", "-b", "architect/research/ignored-none", `${landingRoot}-empty`]);
+  const emptyWt = `${landingRoot}-empty`;
+  mkdirSync(join(emptyWt, ".zvec-grep"));
+  mkdirSync(join(emptyWt, ".architect"));
+  writeFileSync(join(emptyWt, ".zvec-grep", "index"), "ignored\n");
+  writeFileSync(join(emptyWt, ".architect", "ticket.md"), "ignored\n");
+  const none = await landWorktree(landingRoot, { worktree: emptyWt, deleteBranch: false, clearTicket: false });
+  assert.equal(none.method, "none");
+  assert.equal(none.mergeSha, null);
+  assert.equal(await git(landingRoot, ["rev-parse", "HEAD"]), receipt.mergeSha);
+} finally {
+  rmSync(landingRoot, { recursive: true, force: true });
+  rmSync(landingWt, { recursive: true, force: true });
+  rmSync(`${landingRoot}-empty`, { recursive: true, force: true });
 }
 
 console.log("Git tests passed cleanly.");

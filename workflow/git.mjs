@@ -23,9 +23,36 @@ export async function isGitRepo(cwd) {
   }
 }
 
+// Porcelain -z gives literal, repository-relative names (including the second
+// name of a rename/copy), without quoting or newline ambiguity. Do not pass
+// ignored operational directories as negative pathspecs to status or add.
+async function changedPaths(cwd) {
+  const { stdout } = await exec("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd, encoding: "utf8" });
+  if (!stdout) return [];
+  const fields = stdout.split("\0");
+  if (fields.pop() !== "") throw new Error("incomplete git status output");
+  const changes = [];
+  for (let i = 0; i < fields.length; i++) {
+    const record = fields[i];
+    if (record.length < 4 || record[2] !== " ") throw new Error("invalid git status output");
+    const xy = record.slice(0, 2);
+    // In -z format the destination precedes the source for renames/copies.
+    const paths = [record.slice(3)];
+    if (/[RC]/.test(xy)) {
+      if (++i >= fields.length) throw new Error("incomplete git rename output");
+      paths.push(fields[i]);
+    }
+    changes.push({ xy, paths });
+  }
+  return changes;
+}
+
+function operationalPath(path) {
+  return [".zvec-grep", ".architect"].some(dir => path === dir || path.startsWith(`${dir}/`));
+}
+
 export async function isDirty(cwd) {
-  const status = await git(cwd, ["status", "--porcelain", "--", ".", ":!.zvec-grep", ":!.architect"]);
-  return status.trim().length > 0;
+  return (await changedPaths(cwd)).some(change => change.paths.some(path => !operationalPath(path)));
 }
 
 export async function currentBranch(cwd) {
@@ -45,8 +72,37 @@ export async function blobSha(cwd, path, ref = "HEAD") {
 }
 
 export async function commitIfDirty(cwd, message = "architect implementer") {
-  if (!(await isDirty(cwd))) return { committed: false, sha: await revParse(cwd).catch(() => null) };
-  await git(cwd, ["add", "-A", "--", ".", ":!.zvec-grep", ":!.architect"]);
+  const changes = await changedPaths(cwd);
+  const assertNoStagedOperationalPaths = entries => {
+    for (const { xy, paths } of entries) {
+      if (xy[0] !== " " && xy[0] !== "?" && paths.some(operationalPath)) {
+        throw new Error("refusing commit: excluded operational path is already staged");
+      }
+    }
+  };
+  assertNoStagedOperationalPaths(changes);
+  const eligible = changes.filter(change => change.paths.some(path => !operationalPath(path)));
+  if (!eligible.length) return { committed: false, sha: await revParse(cwd).catch(() => null) };
+
+  // Staged-only entries are already in the index. In particular, a staged
+  // rename's old name is no longer in the index or worktree: git add on that
+  // old name would fail with "pathspec did not match any files".
+  const toStage = new Set();
+  for (const { xy, paths } of eligible) {
+    if (xy === "??" || xy[1] !== " ") {
+      // A staged rename/copy has removed its source from the index; any
+      // recreated source appears as its own untracked/modified record.
+      const stagePaths = /[RC]/.test(xy[0]) ? paths.slice(0, 1) : paths;
+      for (const path of stagePaths) if (!operationalPath(path)) toStage.add(path);
+    }
+  }
+  const paths = [...toStage];
+  for (let i = 0; i < paths.length; i += 100) {
+    await git(cwd, ["add", "-A", "--", ...paths.slice(i, i + 100).map(path => `:(literal)${path}`)]);
+  }
+  // Recheck the complete index before committing; a pre-staged operational
+  // file (including either side of a boundary rename) must never be committed.
+  assertNoStagedOperationalPaths(await changedPaths(cwd));
   await exec("git", ["commit", "-m", message], { cwd, encoding: "utf8" });
   return { committed: true, sha: await revParse(cwd) };
 }
