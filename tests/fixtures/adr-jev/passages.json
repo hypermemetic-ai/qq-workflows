@@ -1,0 +1,274 @@
+{
+  "note": "MODEL-FACING INPUT SOURCE (identifiers opaque; provenance kept in `source` and STRIPPED before any model request by unitsState()). States are isolated: each request contains exactly ONE state; paired states never co-occur, so pair members cannot leak context to each other. kind=synthetic-control means constructed for this experiment, NOT real-source authority.",
+  "frozen_sources": {
+    "pass1_real_fixture": "/home/qqp/.local/state/qq-workflows/adr-jev-experiments/pass1-real-20260922T212354Z/fixtures/passages.json"
+  },
+  "states": [
+    {
+      "id": "de7113",
+      "pass": 1,
+      "pair_role": "pairA-poor",
+      "heading": "Discussion",
+      "text": "That rule does not apply to bulk import.",
+      "context": {
+        "prev": null,
+        "next": null
+      },
+      "source": {
+        "kind": "synthetic-control",
+        "provenance": "constructed synthetic control (referent pair) reused verbatim from frozen pass1-real-20260922T212354Z fixture units be5904/ca7f5e; NOT extracted from any archived source; no real-source authority beyond reuse of that frozen experiment fixture",
+        "text_sha256": "abd811f24650380e1cf545c105a4723ee5dbeffbe6de2785829ae3e73198a708",
+        "frozen_fixture": "/home/qqp/.local/state/qq-workflows/adr-jev-experiments/pass1-real-20260922T212354Z/fixtures/passages.json",
+        "frozen_unit_id": "be5904"
+      }
+    },
+    {
+      "id": "881b59",
+      "pass": 1,
+      "pair_role": "pairA-expanded",
+      "heading": "Discussion",
+      "text": "That rule does not apply to bulk import.",
+      "context": {
+        "prev": "Adjacent source in the same section: \"All production writes go through the service. Under discussion: an exception allowing bulk import jobs to write directly.\"",
+        "next": null
+      },
+      "source": {
+        "kind": "synthetic-control",
+        "provenance": "constructed synthetic control (referent pair) reused verbatim from frozen pass1-real-20260922T212354Z fixture units be5904/ca7f5e; NOT extracted from any archived source; no real-source authority beyond reuse of that frozen experiment fixture",
+        "text_sha256": "abd811f24650380e1cf545c105a4723ee5dbeffbe6de2785829ae3e73198a708",
+        "frozen_fixture": "/home/qqp/.local/state/qq-workflows/adr-jev-experiments/pass1-real-20260922T212354Z/fixtures/passages.json",
+        "frozen_unit_id": "ca7f5e"
+      }
+    },
+    {
+      "id": "8c7d41",
+      "pass": 1,
+      "pair_role": "pairB-poor",
+      "heading": "Migration notes",
+      "text": "That exception does not survive the migration.",
+      "context": {
+        "prev": null,
+        "next": null
+      },
+      "source": {
+        "text": "That exception does not survive the migration.",
+        "context": {
+          "prev": null,
+          "next": null
+        },
+        "source": {
+          "kind": "synthetic-control",
+          "provenance": "NEW constructed synthetic control for this experiment; NOT extracted from any archived source; realistic ADR-discussion snippet; no real-source authority",
+          "text_sha256": "0ef3c8c0aa6809d2316818aae3b04653e94d531af71c84df9f9c2d434e048e6a"
+        }
+      }
+    },
+    {
+      "id": "89d611",
+      "pass": 1,
+      "pair_role": "pairB-expanded",
+      "heading": "Migration notes",
+      "text": "That exception does not survive the migration.",
+      "context": {
+        "prev": "Archive lookup result: the referenced migration decision record is genuinely ABSENT - no surviving source for it exists in the archive. Nearest surviving section covers only the office badge-system migration (front-desk logistics).",
+        "next": "Temporary contractor badges are reissued at the front desk; this thread covers only office access-card logistics."
+      },
+      "source": {
+        "text": "That exception does not survive the migration.",
+        "context": {
+          "prev": "<documented-absence + nearest surviving section line>",
+          "next": "<office access-card logistics line>"
+        },
+        "source": {
+          "kind": "synthetic-control",
+          "provenance": "NEW constructed synthetic control for this experiment; NOT extracted from any archived source; realistic ADR-discussion snippet; no real-source authority; pairB expansion documents ABSENT referent (unavailable) + neighboring scope, it is NOT the missing source",
+          "text_sha256": "0ef3c8c0aa6809d2316818aae3b04653e94d531af71c84df9f9c2d434e048e6a"
+        }
+      }
+    },
+    {
+      "id": "6a8f2f",
+      "pass": 1,
+      "pair_role": "clear-positive",
+      "heading": "ADR lifecycle and autonomy — operator decision",
+      "text": "ADR curation happens AFTER landing. ADR work must not hold the implementation's landing.",
+      "context": {
+        "prev": "Confirmed operator decisions, superseding earlier approval-gated ADR review proposals:",
+        "next": "- Preserve the source packet before ticket cleanup. The transient ticket is cleaned up; retained evidence supports subsequent ADR work."
+      },
+      "source": {
+        "path": ".architect/tickets/a7c93e62-54b8-4f1d-962a-837cd59e10b4.md",
+        "line": 582,
+        "col": 2,
+        "heading_line": 579,
+        "prev_line": 581,
+        "next_line": 583,
+        "text_sha256": "4a9c01f88340210c1b6b08b6c4cc11bab2cbfc899da70e42777e50a24471c126",
+        "kind": "real",
+        "frozen_fixture": "/home/qqp/.local/state/qq-workflows/adr-jev-experiments/pass1-real-20260922T212354Z/fixtures/passages.json",
+        "frozen_unit_id": "01f6e5"
+      }
+    },
+    {
+      "id": "fc72cd",
+      "pass": 1,
+      "pair_role": "clear-negative",
+      "heading": "Phase 1 dispatch tracking",
+      "text": "Execution: 481c4d9b-2f42-42be-9be1-45217d9929b1; dispatch returned ok:true, status running, phase implementing.",
+      "context": {
+        "prev": "Phase 1 DISPATCHED under standing authorization.",
+        "next": "Phase ticket: 63018d9a-02aa-435c-89e3-24bcef74e8e1; kind open (independent review and managed landing)."
+      },
+      "source": {
+        "path": ".architect/tickets/a7c93e62-54b8-4f1d-962a-837cd59e10b4.md",
+        "line": 934,
+        "col": 0,
+        "heading_line": 930,
+        "prev_line": 932,
+        "next_line": 935,
+        "text_sha256": "21f72f3bd3b5d5d6eabc12ab10590106468a86879e127ad583dccce7cc5d7532",
+        "kind": "real",
+        "frozen_fixture": "/home/qqp/.local/state/qq-workflows/adr-jev-experiments/pass1-real-20260922T212354Z/fixtures/passages.json",
+        "frozen_unit_id": "e3adc0"
+      }
+    },
+    {
+      "id": "4a52e4",
+      "pass": 2,
+      "pair_role": "pairA-poor",
+      "heading": "Pipeline chat excerpt",
+      "text": "The nightly bulk-load job writes directly to the warehouse replica.",
+      "context": {
+        "prev": null,
+        "next": null
+      },
+      "source": {
+        "text": "The nightly bulk-load job writes directly to the warehouse replica.",
+        "context": {
+          "prev": null,
+          "next": null
+        },
+        "source": {
+          "kind": "synthetic-control",
+          "provenance": "NEW constructed synthetic control for this experiment; realistic ADR snippet; NOT from any real ADR or archived source; NO real-ADR authority claimed",
+          "text_sha256": "cd60bed08466030ac80ab94eea03b0c7551e2854f8d34dbf73da4e9904e5f5b7"
+        }
+      }
+    },
+    {
+      "id": "f8d067",
+      "pass": 2,
+      "pair_role": "pairA-expanded",
+      "heading": "Pipeline chat excerpt",
+      "text": "The nightly bulk-load job writes directly to the warehouse replica.",
+      "context": {
+        "prev": "Bulk-load jobs are the recorded carve-out: they write directly to the warehouse replica outside the service layer by agreement.",
+        "next": "All interactive and API production writes continue through the service layer."
+      },
+      "source": {
+        "text": "The nightly bulk-load job writes directly to the warehouse replica.",
+        "context": {
+          "prev": "<carve-out line>",
+          "next": "<service-layer line>"
+        },
+        "source": {
+          "kind": "synthetic-control",
+          "provenance": "NEW constructed synthetic control for this experiment; realistic ADR snippet; NOT from any real ADR or archived source; NO real-ADR authority claimed",
+          "text_sha256": "cd60bed08466030ac80ab94eea03b0c7551e2854f8d34dbf73da4e9904e5f5b7"
+        }
+      }
+    },
+    {
+      "id": "a8ed0f",
+      "pass": 2,
+      "pair_role": "pairB-poor",
+      "heading": "Network change notes",
+      "text": "Per the earlier agreement, ingest keeps the legacy path.",
+      "context": {
+        "prev": null,
+        "next": null
+      },
+      "source": {
+        "text": "Per the earlier agreement, ingest keeps the legacy path.",
+        "context": {
+          "prev": null,
+          "next": null
+        },
+        "source": {
+          "kind": "synthetic-control",
+          "provenance": "NEW constructed synthetic control for this experiment; realistic ADR snippet; NOT from any real ADR or archived source; NO real-ADR authority claimed",
+          "text_sha256": "2aa115cdf5c28f953f479b4c5a4a87092ad5f8474beaf3b98a45ddf92f8ff6f7"
+        }
+      }
+    },
+    {
+      "id": "ce3746",
+      "pass": 2,
+      "pair_role": "pairB-expanded",
+      "heading": "Network change notes",
+      "text": "Per the earlier agreement, ingest keeps the legacy path.",
+      "context": {
+        "prev": "Archive lookup result: the referenced agreement is genuinely ABSENT - no surviving record exists in the archive. This thread's scope is network routing only.",
+        "next": "Ingest hosts keep the legacy VPN path until the firewall migration completes; no data-write or service-layer changes."
+      },
+      "source": {
+        "text": "Per the earlier agreement, ingest keeps the legacy path.",
+        "context": {
+          "prev": "<documented-absence + scope line>",
+          "next": "<VPN routing line>"
+        },
+        "source": {
+          "kind": "synthetic-control",
+          "provenance": "NEW constructed synthetic control for this experiment; realistic ADR snippet; NOT from any real ADR or archived source; NO real-ADR authority claimed; pairB expansion documents ABSENT referent (unavailable) + neighboring scope, it is NOT the missing source",
+          "text_sha256": "2aa115cdf5c28f953f479b4c5a4a87092ad5f8474beaf3b98a45ddf92f8ff6f7"
+        }
+      }
+    },
+    {
+      "id": "2dfc90",
+      "pass": 2,
+      "pair_role": "clear-positive",
+      "heading": "Write-path review",
+      "text": "Bulk import jobs bypass the service layer and write directly; this carve-out is to be recorded in the ADR alongside the service-mediated-write rule.",
+      "context": {
+        "prev": "Review of the draft ADR's write-mediation rule:",
+        "next": "All other production writes go through the service layer."
+      },
+      "source": {
+        "text": "Bulk import jobs bypass the service layer and write directly; ...",
+        "context": {
+          "prev": "<review line>",
+          "next": "<service-layer line>"
+        },
+        "source": {
+          "kind": "synthetic-control",
+          "provenance": "NEW constructed synthetic control for this experiment; realistic ADR snippet; NOT from any real ADR or archived source; NO real-ADR authority claimed",
+          "text_sha256": "acfbee72258cb375162f96b199a540e209e5b873e8b5ff688933899a51406ee9"
+        }
+      }
+    },
+    {
+      "id": "265ff0",
+      "pass": 2,
+      "pair_role": "clear-negative",
+      "heading": "Team logistics",
+      "text": "Design review is rescheduled to 15:00 in room 2A; pizza ordered for six.",
+      "context": {
+        "prev": "Office scheduling:",
+        "next": "Parking permits expire Friday."
+      },
+      "source": {
+        "text": "Design review is rescheduled to 15:00 in room 2A; pizza ordered for six.",
+        "context": {
+          "prev": "<office scheduling line>",
+          "next": "<parking line>"
+        },
+        "source": {
+          "kind": "synthetic-control",
+          "provenance": "NEW constructed synthetic control for this experiment; realistic ADR snippet; NOT from any real ADR or archived source; NO real-ADR authority claimed",
+          "text_sha256": "b317c0424742cd79f5671fd6c28126c6b9188934e3945f3a8a0cd80468ea73cc"
+        }
+      }
+    }
+  ]
+}

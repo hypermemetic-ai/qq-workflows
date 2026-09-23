@@ -1,0 +1,18 @@
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "route__de7113": {
+      "type": "choice",
+      "choice": "include",
+      "confidence": 0.9,
+      "probabilities": {
+        "include": 0.95,
+        "low_priority": 0.05
+      }
+    }
+  },
+  "usage": {
+    "input_tokens": 751,
+    "output_tokens": 38
+  }
+}

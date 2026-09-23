@@ -1,0 +1,234 @@
+{
+  "calls_made": 12,
+  "ternary_calls_made": 0,
+  "entries": [
+    {
+      "call_id": "bin-p1-de7113",
+      "formulation": "binary",
+      "pass": 1,
+      "pair_role": "pairA-poor",
+      "unit_ids": [
+        "de7113"
+      ],
+      "ok": true,
+      "httpStatus": 200,
+      "errorType": null,
+      "latencyMs": 592,
+      "model_returned": "jev-1.13.0",
+      "usage": {
+        "input_tokens": 751,
+        "output_tokens": 38
+      },
+      "at": "2026-09-22T22:10:29.803Z"
+    },
+    {
+      "call_id": "bin-p1-881b59",
+      "formulation": "binary",
+      "pass": 1,
+      "pair_role": "pairA-expanded",
+      "unit_ids": [
+        "881b59"
+      ],
+      "ok": true,
+      "httpStatus": 200,
+      "errorType": null,
+      "latencyMs": 135,
+      "model_returned": "jev-1.13.0",
+      "usage": {
+        "input_tokens": 785,
+        "output_tokens": 39
+      },
+      "at": "2026-09-22T22:10:29.940Z"
+    },
+    {
+      "call_id": "bin-p1-8c7d41",
+      "formulation": "binary",
+      "pass": 1,
+      "pair_role": "pairB-poor",
+      "unit_ids": [
+        "8c7d41"
+      ],
+      "ok": true,
+      "httpStatus": 200,
+      "errorType": null,
+      "latencyMs": 109,
+      "model_returned": "jev-1.13.0",
+      "usage": {
+        "input_tokens": 755,
+        "output_tokens": 39
+      },
+      "at": "2026-09-22T22:10:30.049Z"
+    },
+    {
+      "call_id": "bin-p1-89d611",
+      "formulation": "binary",
+      "pass": 1,
+      "pair_role": "pairB-expanded",
+      "unit_ids": [
+        "89d611"
+      ],
+      "ok": true,
+      "httpStatus": 200,
+      "errorType": null,
+      "latencyMs": 170,
+      "model_returned": "jev-1.13.0",
+      "usage": {
+        "input_tokens": 819,
+        "output_tokens": 40
+      },
+      "at": "2026-09-22T22:10:30.220Z"
+    },
+    {
+      "call_id": "bin-p1-6a8f2f",
+      "formulation": "binary",
+      "pass": 1,
+      "pair_role": "clear-positive",
+      "unit_ids": [
+        "6a8f2f"
+      ],
+      "ok": true,
+      "httpStatus": 200,
+      "errorType": null,
+      "latencyMs": 124,
+      "model_returned": "jev-1.13.0",
+      "usage": {
+        "input_tokens": 809,
+        "output_tokens": 39
+      },
+      "at": "2026-09-22T22:10:30.346Z"
+    },
+    {
+      "call_id": "bin-p1-fc72cd",
+      "formulation": "binary",
+      "pass": 1,
+      "pair_role": "clear-negative",
+      "unit_ids": [
+        "fc72cd"
+      ],
+      "ok": true,
+      "httpStatus": 200,
+      "errorType": null,
+      "latencyMs": 214,
+      "model_returned": "jev-1.13.0",
+      "usage": {
+        "input_tokens": 852,
+        "output_tokens": 38
+      },
+      "at": "2026-09-22T22:10:30.561Z"
+    },
+    {
+      "call_id": "bin-p2-4a52e4",
+      "formulation": "binary",
+      "pass": 2,
+      "pair_role": "pairA-poor",
+      "unit_ids": [
+        "4a52e4"
+      ],
+      "ok": true,
+      "httpStatus": 200,
+      "errorType": null,
+      "latencyMs": 108,
+      "model_returned": "jev-1.13.0",
+      "usage": {
+        "input_tokens": 790,
+        "output_tokens": 46
+      },
+      "at": "2026-09-22T22:10:30.670Z"
+    },
+    {
+      "call_id": "bin-p2-f8d067",
+      "formulation": "binary",
+      "pass": 2,
+      "pair_role": "pairA-expanded",
+      "unit_ids": [
+        "f8d067"
+      ],
+      "ok": true,
+      "httpStatus": 200,
+      "errorType": null,
+      "latencyMs": 125,
+      "model_returned": "jev-1.13.0",
+      "usage": {
+        "input_tokens": 827,
+        "output_tokens": 46
+      },
+      "at": "2026-09-22T22:10:30.795Z"
+    },
+    {
+      "call_id": "bin-p2-a8ed0f",
+      "formulation": "binary",
+      "pass": 2,
+      "pair_role": "pairB-poor",
+      "unit_ids": [
+        "a8ed0f"
+      ],
+      "ok": true,
+      "httpStatus": 200,
+      "errorType": null,
+      "latencyMs": 181,
+      "model_returned": "jev-1.13.0",
+      "usage": {
+        "input_tokens": 785,
+        "output_tokens": 45
+      },
+      "at": "2026-09-22T22:10:30.978Z"
+    },
+    {
+      "call_id": "bin-p2-ce3746",
+      "formulation": "binary",
+      "pass": 2,
+      "pair_role": "pairB-expanded",
+      "unit_ids": [
+        "ce3746"
+      ],
+      "ok": true,
+      "httpStatus": 200,
+      "errorType": null,
+      "latencyMs": 144,
+      "model_returned": "jev-1.13.0",
+      "usage": {
+        "input_tokens": 838,
+        "output_tokens": 44
+      },
+      "at": "2026-09-22T22:10:31.123Z"
+    },
+    {
+      "call_id": "bin-p2-2dfc90",
+      "formulation": "binary",
+      "pass": 2,
+      "pair_role": "clear-positive",
+      "unit_ids": [
+        "2dfc90"
+      ],
+      "ok": true,
+      "httpStatus": 200,
+      "errorType": null,
+      "latencyMs": 134,
+      "model_returned": "jev-1.13.0",
+      "usage": {
+        "input_tokens": 825,
+        "output_tokens": 45
+      },
+      "at": "2026-09-22T22:10:31.257Z"
+    },
+    {
+      "call_id": "bin-p2-265ff0",
+      "formulation": "binary",
+      "pass": 2,
+      "pair_role": "clear-negative",
+      "unit_ids": [
+        "265ff0"
+      ],
+      "ok": true,
+      "httpStatus": 200,
+      "errorType": null,
+      "latencyMs": 130,
+      "model_returned": "jev-1.13.0",
+      "usage": {
+        "input_tokens": 808,
+        "output_tokens": 44
+      },
+      "at": "2026-09-22T22:10:31.388Z"
+    }
+  ]
+}

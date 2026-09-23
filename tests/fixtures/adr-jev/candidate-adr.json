@@ -1,0 +1,8 @@
+{
+  "note": "SYNTHETIC constructed candidate ADR (realistic snippet). NOT from any real ADR or archived source; NO real-ADR authority claimed. Fixed across all six pass2 states.",
+  "provenance": "NEW constructed synthetic control for this experiment; realistic ADR snippet; NOT from any real ADR or archived source; NO real-ADR authority claimed",
+  "candidate_adr": {
+    "heading": "Draft ADR: service-mediated writes",
+    "text": "Production writes are mediated by the service layer. Exceptions (for example bulk import jobs) must be explicitly recorded in the ADR as carve-outs. Status: candidate, under review."
+  }
+}

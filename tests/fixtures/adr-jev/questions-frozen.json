@@ -1,0 +1,185 @@
+{
+  "note": "EXACT question text sent per call. Only the target unit_id string differs between states of the same pass. Generated from lib/questions.mjs at freeze time.",
+  "calls": {
+    "bin-p1-de7113": {
+      "pass": 1,
+      "unit_id": "de7113",
+      "pair_role": "pairA-poor",
+      "question": {
+        "route__de7113": {
+          "type": "choice",
+          "instructions": "Task: choose how to route ONE passage for the Architect's ADR (Architecture Decision Record) curation view, selected from archived evidence. All original source documents remain available; this selection only assembles a curated view. \"low_priority\" means EXCLUDED FROM THIS VIEW ONLY - it never deletes any source. The passage is the entry in the state whose unit_id is \"de7113\" (fields: heading, text, context). Judge THIS passage on its own supplied text, heading and context. Source context is supplied up front where available; the Architect can request more later if needed. Routing options: include = forward the passage to the Architect's curation view. Include decision evidence - a chosen/proposed/rejected approach, a constraint or trade-off, a stated reason (rationale), or a decision-relevant consequence - AND ambiguous material that might hold such evidence: when in doubt, include; possibly useful material is forwarded, not silently discarded. low_priority = EXCLUDED FROM THIS VIEW ONLY (never deletion): clearly irrelevant operational chatter or routine logistics/event details (e.g. one-off status, job/branch coordinate bookkeeping, a single test/smoke result) with no decision, constraint, rationale, alternative or consequence information. A proposal or provisional status is NOT a reason to exclude - proposals and rejected options are still evidence. Selecting a passage does not imply approval and is not a claim of current validity. Do not fill gaps from general knowledge. Consider only unit \"de7113\".",
+          "criteria": {
+            "include": "Forward to the Architect's ADR curation view: decision / constraint / rationale / alternative / consequence evidence, or ambiguous material that might hold such evidence - when in doubt, include. Selection is not approval.",
+            "low_priority": "Excluded from this view only (never delete the source): clearly irrelevant operational chatter or routine logistics/event details with no such information."
+          }
+        }
+      }
+    },
+    "bin-p1-881b59": {
+      "pass": 1,
+      "unit_id": "881b59",
+      "pair_role": "pairA-expanded",
+      "question": {
+        "route__881b59": {
+          "type": "choice",
+          "instructions": "Task: choose how to route ONE passage for the Architect's ADR (Architecture Decision Record) curation view, selected from archived evidence. All original source documents remain available; this selection only assembles a curated view. \"low_priority\" means EXCLUDED FROM THIS VIEW ONLY - it never deletes any source. The passage is the entry in the state whose unit_id is \"881b59\" (fields: heading, text, context). Judge THIS passage on its own supplied text, heading and context. Source context is supplied up front where available; the Architect can request more later if needed. Routing options: include = forward the passage to the Architect's curation view. Include decision evidence - a chosen/proposed/rejected approach, a constraint or trade-off, a stated reason (rationale), or a decision-relevant consequence - AND ambiguous material that might hold such evidence: when in doubt, include; possibly useful material is forwarded, not silently discarded. low_priority = EXCLUDED FROM THIS VIEW ONLY (never deletion): clearly irrelevant operational chatter or routine logistics/event details (e.g. one-off status, job/branch coordinate bookkeeping, a single test/smoke result) with no decision, constraint, rationale, alternative or consequence information. A proposal or provisional status is NOT a reason to exclude - proposals and rejected options are still evidence. Selecting a passage does not imply approval and is not a claim of current validity. Do not fill gaps from general knowledge. Consider only unit \"881b59\".",
+          "criteria": {
+            "include": "Forward to the Architect's ADR curation view: decision / constraint / rationale / alternative / consequence evidence, or ambiguous material that might hold such evidence - when in doubt, include. Selection is not approval.",
+            "low_priority": "Excluded from this view only (never delete the source): clearly irrelevant operational chatter or routine logistics/event details with no such information."
+          }
+        }
+      }
+    },
+    "bin-p1-8c7d41": {
+      "pass": 1,
+      "unit_id": "8c7d41",
+      "pair_role": "pairB-poor",
+      "question": {
+        "route__8c7d41": {
+          "type": "choice",
+          "instructions": "Task: choose how to route ONE passage for the Architect's ADR (Architecture Decision Record) curation view, selected from archived evidence. All original source documents remain available; this selection only assembles a curated view. \"low_priority\" means EXCLUDED FROM THIS VIEW ONLY - it never deletes any source. The passage is the entry in the state whose unit_id is \"8c7d41\" (fields: heading, text, context). Judge THIS passage on its own supplied text, heading and context. Source context is supplied up front where available; the Architect can request more later if needed. Routing options: include = forward the passage to the Architect's curation view. Include decision evidence - a chosen/proposed/rejected approach, a constraint or trade-off, a stated reason (rationale), or a decision-relevant consequence - AND ambiguous material that might hold such evidence: when in doubt, include; possibly useful material is forwarded, not silently discarded. low_priority = EXCLUDED FROM THIS VIEW ONLY (never deletion): clearly irrelevant operational chatter or routine logistics/event details (e.g. one-off status, job/branch coordinate bookkeeping, a single test/smoke result) with no decision, constraint, rationale, alternative or consequence information. A proposal or provisional status is NOT a reason to exclude - proposals and rejected options are still evidence. Selecting a passage does not imply approval and is not a claim of current validity. Do not fill gaps from general knowledge. Consider only unit \"8c7d41\".",
+          "criteria": {
+            "include": "Forward to the Architect's ADR curation view: decision / constraint / rationale / alternative / consequence evidence, or ambiguous material that might hold such evidence - when in doubt, include. Selection is not approval.",
+            "low_priority": "Excluded from this view only (never delete the source): clearly irrelevant operational chatter or routine logistics/event details with no such information."
+          }
+        }
+      }
+    },
+    "bin-p1-89d611": {
+      "pass": 1,
+      "unit_id": "89d611",
+      "pair_role": "pairB-expanded",
+      "question": {
+        "route__89d611": {
+          "type": "choice",
+          "instructions": "Task: choose how to route ONE passage for the Architect's ADR (Architecture Decision Record) curation view, selected from archived evidence. All original source documents remain available; this selection only assembles a curated view. \"low_priority\" means EXCLUDED FROM THIS VIEW ONLY - it never deletes any source. The passage is the entry in the state whose unit_id is \"89d611\" (fields: heading, text, context). Judge THIS passage on its own supplied text, heading and context. Source context is supplied up front where available; the Architect can request more later if needed. Routing options: include = forward the passage to the Architect's curation view. Include decision evidence - a chosen/proposed/rejected approach, a constraint or trade-off, a stated reason (rationale), or a decision-relevant consequence - AND ambiguous material that might hold such evidence: when in doubt, include; possibly useful material is forwarded, not silently discarded. low_priority = EXCLUDED FROM THIS VIEW ONLY (never deletion): clearly irrelevant operational chatter or routine logistics/event details (e.g. one-off status, job/branch coordinate bookkeeping, a single test/smoke result) with no decision, constraint, rationale, alternative or consequence information. A proposal or provisional status is NOT a reason to exclude - proposals and rejected options are still evidence. Selecting a passage does not imply approval and is not a claim of current validity. Do not fill gaps from general knowledge. Consider only unit \"89d611\".",
+          "criteria": {
+            "include": "Forward to the Architect's ADR curation view: decision / constraint / rationale / alternative / consequence evidence, or ambiguous material that might hold such evidence - when in doubt, include. Selection is not approval.",
+            "low_priority": "Excluded from this view only (never delete the source): clearly irrelevant operational chatter or routine logistics/event details with no such information."
+          }
+        }
+      }
+    },
+    "bin-p1-6a8f2f": {
+      "pass": 1,
+      "unit_id": "6a8f2f",
+      "pair_role": "clear-positive",
+      "question": {
+        "route__6a8f2f": {
+          "type": "choice",
+          "instructions": "Task: choose how to route ONE passage for the Architect's ADR (Architecture Decision Record) curation view, selected from archived evidence. All original source documents remain available; this selection only assembles a curated view. \"low_priority\" means EXCLUDED FROM THIS VIEW ONLY - it never deletes any source. The passage is the entry in the state whose unit_id is \"6a8f2f\" (fields: heading, text, context). Judge THIS passage on its own supplied text, heading and context. Source context is supplied up front where available; the Architect can request more later if needed. Routing options: include = forward the passage to the Architect's curation view. Include decision evidence - a chosen/proposed/rejected approach, a constraint or trade-off, a stated reason (rationale), or a decision-relevant consequence - AND ambiguous material that might hold such evidence: when in doubt, include; possibly useful material is forwarded, not silently discarded. low_priority = EXCLUDED FROM THIS VIEW ONLY (never deletion): clearly irrelevant operational chatter or routine logistics/event details (e.g. one-off status, job/branch coordinate bookkeeping, a single test/smoke result) with no decision, constraint, rationale, alternative or consequence information. A proposal or provisional status is NOT a reason to exclude - proposals and rejected options are still evidence. Selecting a passage does not imply approval and is not a claim of current validity. Do not fill gaps from general knowledge. Consider only unit \"6a8f2f\".",
+          "criteria": {
+            "include": "Forward to the Architect's ADR curation view: decision / constraint / rationale / alternative / consequence evidence, or ambiguous material that might hold such evidence - when in doubt, include. Selection is not approval.",
+            "low_priority": "Excluded from this view only (never delete the source): clearly irrelevant operational chatter or routine logistics/event details with no such information."
+          }
+        }
+      }
+    },
+    "bin-p1-fc72cd": {
+      "pass": 1,
+      "unit_id": "fc72cd",
+      "pair_role": "clear-negative",
+      "question": {
+        "route__fc72cd": {
+          "type": "choice",
+          "instructions": "Task: choose how to route ONE passage for the Architect's ADR (Architecture Decision Record) curation view, selected from archived evidence. All original source documents remain available; this selection only assembles a curated view. \"low_priority\" means EXCLUDED FROM THIS VIEW ONLY - it never deletes any source. The passage is the entry in the state whose unit_id is \"fc72cd\" (fields: heading, text, context). Judge THIS passage on its own supplied text, heading and context. Source context is supplied up front where available; the Architect can request more later if needed. Routing options: include = forward the passage to the Architect's curation view. Include decision evidence - a chosen/proposed/rejected approach, a constraint or trade-off, a stated reason (rationale), or a decision-relevant consequence - AND ambiguous material that might hold such evidence: when in doubt, include; possibly useful material is forwarded, not silently discarded. low_priority = EXCLUDED FROM THIS VIEW ONLY (never deletion): clearly irrelevant operational chatter or routine logistics/event details (e.g. one-off status, job/branch coordinate bookkeeping, a single test/smoke result) with no decision, constraint, rationale, alternative or consequence information. A proposal or provisional status is NOT a reason to exclude - proposals and rejected options are still evidence. Selecting a passage does not imply approval and is not a claim of current validity. Do not fill gaps from general knowledge. Consider only unit \"fc72cd\".",
+          "criteria": {
+            "include": "Forward to the Architect's ADR curation view: decision / constraint / rationale / alternative / consequence evidence, or ambiguous material that might hold such evidence - when in doubt, include. Selection is not approval.",
+            "low_priority": "Excluded from this view only (never delete the source): clearly irrelevant operational chatter or routine logistics/event details with no such information."
+          }
+        }
+      }
+    },
+    "bin-p2-4a52e4": {
+      "pass": 2,
+      "unit_id": "4a52e4",
+      "pair_role": "pairA-poor",
+      "question": {
+        "route__4a52e4": {
+          "type": "choice",
+          "instructions": "Task: decide whether ONE evidence snippet should be forwarded to be considered TOGETHER with the candidate ADR in the state field candidate_adr, for the Architect's ADR (Architecture Decision Record) work. The candidate ADR and all evidence remain archived; this only assembles a combined consideration view. \"unrelated\" means EXCLUDED FROM THIS VIEW ONLY - it never deletes any source. The evidence snippet is the entry in the state whose unit_id is \"4a52e4\" (fields: heading, text, context). Judge THIS snippet against the candidate ADR using its own supplied text, heading and context. Source context is supplied up front where available; the Architect can request more later if needed. Options: consider_together = forward the snippet to be considered alongside the candidate ADR: it bears on the ADR's decision, constraint, rationale, alternative or consequence - or it is ambiguous and might do so: when in doubt, consider_together; possibly useful material is forwarded, not silently discarded. unrelated = EXCLUDED FROM THIS VIEW ONLY (never deletion): clearly unrelated material - operational chatter, routine logistics, or a scope with no bearing on the candidate ADR. Forwarding is not approval and not a claim of current validity. Do not fill gaps from general knowledge. Consider only unit \"4a52e4\".",
+          "criteria": {
+            "consider_together": "Forward alongside the candidate ADR: material bearing on its decision / constraint / rationale / alternative / consequence, or ambiguous material that might do so - when in doubt, forward. Forwarding is not approval.",
+            "unrelated": "Excluded from this combined view only (never delete the source): clearly unrelated material - operational chatter, logistics, or scope with no bearing on the candidate ADR."
+          }
+        }
+      }
+    },
+    "bin-p2-f8d067": {
+      "pass": 2,
+      "unit_id": "f8d067",
+      "pair_role": "pairA-expanded",
+      "question": {
+        "route__f8d067": {
+          "type": "choice",
+          "instructions": "Task: decide whether ONE evidence snippet should be forwarded to be considered TOGETHER with the candidate ADR in the state field candidate_adr, for the Architect's ADR (Architecture Decision Record) work. The candidate ADR and all evidence remain archived; this only assembles a combined consideration view. \"unrelated\" means EXCLUDED FROM THIS VIEW ONLY - it never deletes any source. The evidence snippet is the entry in the state whose unit_id is \"f8d067\" (fields: heading, text, context). Judge THIS snippet against the candidate ADR using its own supplied text, heading and context. Source context is supplied up front where available; the Architect can request more later if needed. Options: consider_together = forward the snippet to be considered alongside the candidate ADR: it bears on the ADR's decision, constraint, rationale, alternative or consequence - or it is ambiguous and might do so: when in doubt, consider_together; possibly useful material is forwarded, not silently discarded. unrelated = EXCLUDED FROM THIS VIEW ONLY (never deletion): clearly unrelated material - operational chatter, routine logistics, or a scope with no bearing on the candidate ADR. Forwarding is not approval and not a claim of current validity. Do not fill gaps from general knowledge. Consider only unit \"f8d067\".",
+          "criteria": {
+            "consider_together": "Forward alongside the candidate ADR: material bearing on its decision / constraint / rationale / alternative / consequence, or ambiguous material that might do so - when in doubt, forward. Forwarding is not approval.",
+            "unrelated": "Excluded from this combined view only (never delete the source): clearly unrelated material - operational chatter, logistics, or scope with no bearing on the candidate ADR."
+          }
+        }
+      }
+    },
+    "bin-p2-a8ed0f": {
+      "pass": 2,
+      "unit_id": "a8ed0f",
+      "pair_role": "pairB-poor",
+      "question": {
+        "route__a8ed0f": {
+          "type": "choice",
+          "instructions": "Task: decide whether ONE evidence snippet should be forwarded to be considered TOGETHER with the candidate ADR in the state field candidate_adr, for the Architect's ADR (Architecture Decision Record) work. The candidate ADR and all evidence remain archived; this only assembles a combined consideration view. \"unrelated\" means EXCLUDED FROM THIS VIEW ONLY - it never deletes any source. The evidence snippet is the entry in the state whose unit_id is \"a8ed0f\" (fields: heading, text, context). Judge THIS snippet against the candidate ADR using its own supplied text, heading and context. Source context is supplied up front where available; the Architect can request more later if needed. Options: consider_together = forward the snippet to be considered alongside the candidate ADR: it bears on the ADR's decision, constraint, rationale, alternative or consequence - or it is ambiguous and might do so: when in doubt, consider_together; possibly useful material is forwarded, not silently discarded. unrelated = EXCLUDED FROM THIS VIEW ONLY (never deletion): clearly unrelated material - operational chatter, routine logistics, or a scope with no bearing on the candidate ADR. Forwarding is not approval and not a claim of current validity. Do not fill gaps from general knowledge. Consider only unit \"a8ed0f\".",
+          "criteria": {
+            "consider_together": "Forward alongside the candidate ADR: material bearing on its decision / constraint / rationale / alternative / consequence, or ambiguous material that might do so - when in doubt, forward. Forwarding is not approval.",
+            "unrelated": "Excluded from this combined view only (never delete the source): clearly unrelated material - operational chatter, logistics, or scope with no bearing on the candidate ADR."
+          }
+        }
+      }
+    },
+    "bin-p2-ce3746": {
+      "pass": 2,
+      "unit_id": "ce3746",
+      "pair_role": "pairB-expanded",
+      "question": {
+        "route__ce3746": {
+          "type": "choice",
+          "instructions": "Task: decide whether ONE evidence snippet should be forwarded to be considered TOGETHER with the candidate ADR in the state field candidate_adr, for the Architect's ADR (Architecture Decision Record) work. The candidate ADR and all evidence remain archived; this only assembles a combined consideration view. \"unrelated\" means EXCLUDED FROM THIS VIEW ONLY - it never deletes any source. The evidence snippet is the entry in the state whose unit_id is \"ce3746\" (fields: heading, text, context). Judge THIS snippet against the candidate ADR using its own supplied text, heading and context. Source context is supplied up front where available; the Architect can request more later if needed. Options: consider_together = forward the snippet to be considered alongside the candidate ADR: it bears on the ADR's decision, constraint, rationale, alternative or consequence - or it is ambiguous and might do so: when in doubt, consider_together; possibly useful material is forwarded, not silently discarded. unrelated = EXCLUDED FROM THIS VIEW ONLY (never deletion): clearly unrelated material - operational chatter, routine logistics, or a scope with no bearing on the candidate ADR. Forwarding is not approval and not a claim of current validity. Do not fill gaps from general knowledge. Consider only unit \"ce3746\".",
+          "criteria": {
+            "consider_together": "Forward alongside the candidate ADR: material bearing on its decision / constraint / rationale / alternative / consequence, or ambiguous material that might do so - when in doubt, forward. Forwarding is not approval.",
+            "unrelated": "Excluded from this combined view only (never delete the source): clearly unrelated material - operational chatter, logistics, or scope with no bearing on the candidate ADR."
+          }
+        }
+      }
+    },
+    "bin-p2-2dfc90": {
+      "pass": 2,
+      "unit_id": "2dfc90",
+      "pair_role": "clear-positive",
+      "question": {
+        "route__2dfc90": {
+          "type": "choice",
+          "instructions": "Task: decide whether ONE evidence snippet should be forwarded to be considered TOGETHER with the candidate ADR in the state field candidate_adr, for the Architect's ADR (Architecture Decision Record) work. The candidate ADR and all evidence remain archived; this only assembles a combined consideration view. \"unrelated\" means EXCLUDED FROM THIS VIEW ONLY - it never deletes any source. The evidence snippet is the entry in the state whose unit_id is \"2dfc90\" (fields: heading, text, context). Judge THIS snippet against the candidate ADR using its own supplied text, heading and context. Source context is supplied up front where available; the Architect can request more later if needed. Options: consider_together = forward the snippet to be considered alongside the candidate ADR: it bears on the ADR's decision, constraint, rationale, alternative or consequence - or it is ambiguous and might do so: when in doubt, consider_together; possibly useful material is forwarded, not silently discarded. unrelated = EXCLUDED FROM THIS VIEW ONLY (never deletion): clearly unrelated material - operational chatter, routine logistics, or a scope with no bearing on the candidate ADR. Forwarding is not approval and not a claim of current validity. Do not fill gaps from general knowledge. Consider only unit \"2dfc90\".",
+          "criteria": {
+            "consider_together": "Forward alongside the candidate ADR: material bearing on its decision / constraint / rationale / alternative / consequence, or ambiguous material that might do so - when in doubt, forward. Forwarding is not approval.",
+            "unrelated": "Excluded from this combined view only (never delete the source): clearly unrelated material - operational chatter, logistics, or scope with no bearing on the candidate ADR."
+          }
+        }
+      }
+    },
+    "bin-p2-265ff0": {
+      "pass": 2,
+      "unit_id": "265ff0",
+      "pair_role": "clear-negative",
+      "question": {
+        "route__265ff0": {
+          "type": "choice",
+          "instructions": "Task: decide whether ONE evidence snippet should be forwarded to be considered TOGETHER with the candidate ADR in the state field candidate_adr, for the Architect's ADR (Architecture Decision Record) work. The candidate ADR and all evidence remain archived; this only assembles a combined consideration view. \"unrelated\" means EXCLUDED FROM THIS VIEW ONLY - it never deletes any source. The evidence snippet is the entry in the state whose unit_id is \"265ff0\" (fields: heading, text, context). Judge THIS snippet against the candidate ADR using its own supplied text, heading and context. Source context is supplied up front where available; the Architect can request more later if needed. Options: consider_together = forward the snippet to be considered alongside the candidate ADR: it bears on the ADR's decision, constraint, rationale, alternative or consequence - or it is ambiguous and might do so: when in doubt, consider_together; possibly useful material is forwarded, not silently discarded. unrelated = EXCLUDED FROM THIS VIEW ONLY (never deletion): clearly unrelated material - operational chatter, routine logistics, or a scope with no bearing on the candidate ADR. Forwarding is not approval and not a claim of current validity. Do not fill gaps from general knowledge. Consider only unit \"265ff0\".",
+          "criteria": {
+            "consider_together": "Forward alongside the candidate ADR: material bearing on its decision / constraint / rationale / alternative / consequence, or ambiguous material that might do so - when in doubt, forward. Forwarding is not approval.",
+            "unrelated": "Excluded from this combined view only (never delete the source): clearly unrelated material - operational chatter, logistics, or scope with no bearing on the candidate ADR."
+          }
+        }
+      }
+    }
+  }
+}
