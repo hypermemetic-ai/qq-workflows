@@ -774,9 +774,9 @@ try {
   // reduction of what the seat's own contract requires. The runner keeps the
   // command execution (tests, reproductions, diagnostics) every previous
   // runtime gave its seat; only the implementer writes.
-  assert.deepEqual(WORKER_PI_TOOLS.runner, ["read", "grep", "find", "ls", "bash", "zvec_grep_search"]);
-  assert.deepEqual(WORKER_PI_TOOLS.implementer, ["read", "grep", "find", "ls", "bash", "edit", "write", "zvec_grep_search"]);
-  assert.deepEqual(WORKER_PI_TOOLS.reviewer, ["read", "grep", "find", "ls", "bash", "zvec_grep_search"]);
+  assert.deepEqual(WORKER_PI_TOOLS.runner, ["read", "grep", "find", "ls", "bash", "zvec_grep_search", "search_web"]);
+  assert.deepEqual(WORKER_PI_TOOLS.implementer, ["read", "grep", "find", "ls", "bash", "edit", "write", "zvec_grep_search", "search_web"]);
+  assert.deepEqual(WORKER_PI_TOOLS.reviewer, ["read", "grep", "find", "ls", "bash", "zvec_grep_search", "search_web"]);
   for (const seat of ["runner", "implementer", "reviewer"]) {
     assert.ok(WORKER_PI_TOOLS[seat].includes("bash"), `${seat} must be able to run the commands its contract mandates`);
     assert.ok(WORKER_PI_TOOLS[seat].includes(PI_SEARCH_TOOL), `${seat} keeps the shared root-bound search tool`);
@@ -843,6 +843,12 @@ try {
     () => adaptPiSeatInstructions({ seat: "runner", body: foreignKnownTool, tools: WORKER_PI_TOOLS.runner }),
     (error) => error.code === "instruction_tool_unavailable" && /write_to_file/u.test(error.message),
   );
+  for (const seat of ["runner", "implementer", "reviewer"]) {
+    const body = "Use `search_web` for citations; `read_image` for images.";
+    assert.deepEqual(unavailablePiSeatTools({ body, tools: WORKER_PI_TOOLS[seat] }), []);
+    assert.deepEqual(unavailablePiSeatTools({ body: "Use `read_url_content`.", tools: WORKER_PI_TOOLS[seat] }), ["read_url_content"]);
+    assert.deepEqual(unavailablePiSeatTools({ body: "Use `search_web`.", tools: WORKER_PI_TOOLS[seat].filter((tool) => tool !== "search_web") }), ["search_web"]);
+  }
   const implementerView = adaptPiSeatInstructions({ seat: "implementer", body: foreignKnownTool, tools: WORKER_PI_TOOLS.implementer });
   assert.ok(
     implementerView.includes("`write_to_file`"),
@@ -901,7 +907,7 @@ try {
     },
   });
   await extension.register();
-  assert.deepEqual(registered.map((tool) => tool.name), [WORKER_SEARCH_TOOL_NAME]);
+  assert.deepEqual(registered.map((tool) => tool.name), [WORKER_SEARCH_TOOL_NAME, "search_web"]);
   assert.equal(registered[0].parameters.properties.root, undefined);
   const toolResult = await registered[0].execute("call-1", { query: "needle" }, undefined);
   assert.deepEqual(calls[0], { query: "needle" }, "only the caller's query reaches the gateway");

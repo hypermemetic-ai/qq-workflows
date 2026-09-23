@@ -140,9 +140,9 @@ export const WORKER_PI_AGENT_DIR_ENV = "QQ_WORKER_PI_AGENT_DIR";
 // contract each seat receives, and that no instruction names a tool outside its
 // allowlist).
 export const WORKER_PI_TOOLS = {
-  runner: ["read", "grep", "find", "ls", "bash", "zvec_grep_search"],
-  implementer: ["read", "grep", "find", "ls", "bash", "edit", "write", "zvec_grep_search"],
-  reviewer: ["read", "grep", "find", "ls", "bash", "zvec_grep_search"],
+  runner: ["read", "grep", "find", "ls", "bash", "zvec_grep_search", "search_web"],
+  implementer: ["read", "grep", "find", "ls", "bash", "edit", "write", "zvec_grep_search", "search_web"],
+  reviewer: ["read", "grep", "find", "ls", "bash", "zvec_grep_search", "search_web"],
 };
 
 export function defaultWorkerConfigFile(env = process.env) {

@@ -4,7 +4,8 @@
 // (`pi --no-extensions --extension <this file>`, one process per runner,
 // implementer, and reviewer turn). An ordinary pi session never loads it.
 //
-// It always contributes the shared, root-bound `zvec_grep_search` gateway. The
+// It contributes the shared, root-bound `zvec_grep_search` gateway and the
+// bounded, explicit-provider `search_web` tool. The
 // reviewed policy lives in the retained gateway module
 // (`prototype/deepseek-minimal/gateway/zvec-grep-tool.mjs`): the model-facing
 // schema is re-derived from the pinned upstream snapshot, the three
@@ -19,7 +20,7 @@
 // (`workflow_read_assignment`, `workflow_acknowledge_assignment`,
 // `workflow_report_progress`) inside this same extension file — the receiver
 // seam stays the one reviewed worker extension. An absent binding preserves the
-// exact prior surface (search tool only); a malformed binding refuses the whole
+// non-communication surface (the two search tools); a malformed binding refuses the whole
 // extension (never partially enabled). The fixture-only tools
 // (`fixture_acknowledge_amendment`, `fixture_report_progress`) are NOT exposed
 // here.
@@ -67,6 +68,7 @@ import {
 } from "../prototype/deepseek-minimal/gateway/zvec-grep-tool.mjs";
 import { COMMUNICATION_TOOL_NAMES, parseCommunicationBinding } from "../workflow/communication.mjs";
 import { registerCommunicationReceiver } from "../workflow/communication-receiver.mjs";
+import { createWebSearch, webSearchTool } from "./web-search.mjs";
 
 export const WORKER_TOOLS_EXTENSION_NAME = "qq-worker-tools";
 /** Worker seats that receive the shared search tool: every role, including the
@@ -329,11 +331,11 @@ function textOf(result) {
  * binding (the adapter validates it structurally before launch and binds the
  * observed session against the change record), the extension ALSO registers
  * the receiver and the three coordinator-authored workflow tools; the shared
- * search tool stays registered exactly as before. An absent binding preserves
- * the exact prior surface. A present-but-malformed binding throws: the
+ * root-bound search tool stays registered exactly as before alongside the web
+ * tool. An absent binding has no communication tools. A malformed binding throws: the
  * extension is never partially enabled.
  */
-export function createWorkerToolsExtension(pi, { env = process.env, cwd = process.cwd(), gateway = null, spawnImpl = spawn, communication = undefined } = {}) {
+export function createWorkerToolsExtension(pi, { env = process.env, cwd = process.cwd(), gateway = null, spawnImpl = spawn, communication = undefined, webSearch = null } = {}) {
   const binding = resolveWorkerSearchBinding({ seat: env[ENV_SEAT], root: env[ENV_ROOT] || cwd });
   let live = gateway;
   function searchGateway() {
@@ -369,7 +371,9 @@ export function createWorkerToolsExtension(pi, { env = process.env, cwd = proces
       Type = null;
     }
     pi.registerTool({ ...tool, parameters: Type ? Type.Unsafe(tool.parameters) : tool.parameters });
-    return { registered: receiver ? [tool.name, ...COMMUNICATION_TOOL_NAMES] : [tool.name], binding };
+    const web = webSearchTool(webSearch ?? createWebSearch());
+    pi.registerTool({ ...web, parameters: Type ? Type.Unsafe(web.parameters) : web.parameters });
+    return { registered: receiver ? [tool.name, web.name, ...COMMUNICATION_TOOL_NAMES] : [tool.name, web.name], binding };
   }
 
   return {
