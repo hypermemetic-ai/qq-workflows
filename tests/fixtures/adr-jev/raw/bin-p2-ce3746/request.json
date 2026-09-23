@@ -1,0 +1,30 @@
+{
+  "model": "jev-1.13.0",
+  "state": {
+    "candidate_adr": {
+      "heading": "Draft ADR: service-mediated writes",
+      "text": "Production writes are mediated by the service layer. Exceptions (for example bulk import jobs) must be explicitly recorded in the ADR as carve-outs. Status: candidate, under review."
+    },
+    "units": {
+      "ce3746": {
+        "unit_id": "ce3746",
+        "heading": "Network change notes",
+        "text": "Per the earlier agreement, ingest keeps the legacy path.",
+        "context": {
+          "prev": "Archive lookup result: the referenced agreement is genuinely ABSENT - no surviving record exists in the archive. This thread's scope is network routing only.",
+          "next": "Ingest hosts keep the legacy VPN path until the firewall migration completes; no data-write or service-layer changes."
+        }
+      }
+    }
+  },
+  "questions": {
+    "route__ce3746": {
+      "type": "choice",
+      "instructions": "Task: decide whether ONE evidence snippet should be forwarded to be considered TOGETHER with the candidate ADR in the state field candidate_adr, for the Architect's ADR (Architecture Decision Record) work. The candidate ADR and all evidence remain archived; this only assembles a combined consideration view. \"unrelated\" means EXCLUDED FROM THIS VIEW ONLY - it never deletes any source. The evidence snippet is the entry in the state whose unit_id is \"ce3746\" (fields: heading, text, context). Judge THIS snippet against the candidate ADR using its own supplied text, heading and context. Source context is supplied up front where available; the Architect can request more later if needed. Options: consider_together = forward the snippet to be considered alongside the candidate ADR: it bears on the ADR's decision, constraint, rationale, alternative or consequence - or it is ambiguous and might do so: when in doubt, consider_together; possibly useful material is forwarded, not silently discarded. unrelated = EXCLUDED FROM THIS VIEW ONLY (never deletion): clearly unrelated material - operational chatter, routine logistics, or a scope with no bearing on the candidate ADR. Forwarding is not approval and not a claim of current validity. Do not fill gaps from general knowledge. Consider only unit \"ce3746\".",
+      "criteria": {
+        "consider_together": "Forward alongside the candidate ADR: material bearing on its decision / constraint / rationale / alternative / consequence, or ambiguous material that might do so - when in doubt, forward. Forwarding is not approval.",
+        "unrelated": "Excluded from this combined view only (never delete the source): clearly unrelated material - operational chatter, logistics, or scope with no bearing on the candidate ADR."
+      }
+    }
+  }
+}

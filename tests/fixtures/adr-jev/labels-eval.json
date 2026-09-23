@@ -1,0 +1,115 @@
+{
+  "note": "EVALUATOR-ONLY provisional human labels/expected downstream actions, registered BEFORE any provider response. NEVER sent to the model. Provisional judgments, not unquestionable ground truth. No invented semantic status labels: categories describe content, not model-visible status.",
+  "evaluation_policy_rev3": "Operator threshold 0.4 (assignment revision 3): positive-class probability-like score (probabilities.include / probabilities.consider_together) >= 0.4 forwards, < 0.4 excludes. Report model argmax separately from the 0.4 policy. Initial test policy, NOT a calibrated probability claim. No threshold sweep.",
+  "labels": {
+    "de7113": {
+      "pair_role": "pairA-poor",
+      "kind": "synthetic-control",
+      "context_class": "missing-AVAILABLE (referent exists; supplied only in paired expanded state 881b59)",
+      "expected_label": "include",
+      "expected_downstream_action": "forward to Architect (ambiguous possibly useful; per policy forwarded not discarded)",
+      "reason": "Reference-dependent sentence ('That rule'); could be durable-rule exception evidence. Ambiguous => forward.",
+      "expected_confidence": "clear-on-policy / genuinely-ambiguous-content"
+    },
+    "881b59": {
+      "pair_role": "pairA-expanded",
+      "kind": "synthetic-control",
+      "context_class": "expanded (AVAILABLE context supplied; reveals relevance)",
+      "expected_label": "include",
+      "expected_downstream_action": "forward to Architect as exception evidence",
+      "reason": "Supplied referent makes it interpretable evidence about a durable write rule + bulk-import exception.",
+      "expected_confidence": "clear"
+    },
+    "8c7d41": {
+      "pair_role": "pairB-poor",
+      "kind": "synthetic-control",
+      "context_class": "missing-UNAVAILABLE (referent genuinely absent; no expansion source exists beyond documented absence)",
+      "expected_label": "include",
+      "expected_downstream_action": "forward to Architect (ambiguous possibly useful; flag that referenced record is absent)",
+      "reason": "'That exception ... the migration' could be architecture-relevant; ambiguous => forward. Referenced record genuinely absent - do not promise expansion.",
+      "expected_confidence": "clear-on-policy / genuinely-ambiguous-content"
+    },
+    "89d611": {
+      "pair_role": "pairB-expanded",
+      "kind": "synthetic-control",
+      "context_class": "expanded (documented ABSENCE + neighboring scope; reveals unrelated logistics)",
+      "expected_label": "low_priority",
+      "expected_downstream_action": "exclude from curation view (source stays archived)",
+      "reason": "Expansion documents the referent is absent and shows the thread is office access-card logistics with no decision/rationale/consequence evidence.",
+      "expected_confidence": "clear"
+    },
+    "6a8f2f": {
+      "pair_role": "clear-positive",
+      "kind": "real-excerpt (frozen pass1-real fixture 01f6e5)",
+      "context_class": "complete",
+      "expected_label": "include",
+      "expected_downstream_action": "forward to Architect",
+      "reason": "Real settled decision/constraint: ADR curation after landing; clear positive control.",
+      "expected_confidence": "clear"
+    },
+    "fc72cd": {
+      "pair_role": "clear-negative",
+      "kind": "real-excerpt (frozen pass1-real fixture e3adc0)",
+      "context_class": "complete",
+      "expected_label": "low_priority",
+      "expected_downstream_action": "exclude from curation view (source stays archived)",
+      "reason": "Real one-off dispatch status bookkeeping; clear negative control.",
+      "expected_confidence": "clear"
+    },
+    "4a52e4": {
+      "pair_role": "pairA-poor",
+      "kind": "synthetic-control",
+      "context_class": "missing-AVAILABLE (relation to candidate ADR resolvable only with paired expanded state f8d067)",
+      "expected_label": "consider_together",
+      "expected_downstream_action": "forward alongside candidate ADR (ambiguous possibly useful)",
+      "reason": "Cannot tell if bulk-load is the ADR's bulk-import carve-out or an unrelated pipeline; ambiguous => forward.",
+      "expected_confidence": "clear-on-policy / genuinely-ambiguous-content"
+    },
+    "f8d067": {
+      "pair_role": "pairA-expanded",
+      "kind": "synthetic-control",
+      "context_class": "expanded (AVAILABLE context supplied; reveals relevance)",
+      "expected_label": "consider_together",
+      "expected_confstream_note": null,
+      "expected_downstream_action": "forward alongside candidate ADR as carve-out evidence",
+      "reason": "Expansion shows bulk-load IS the recorded carve-out: directly decision-relevant.",
+      "expected_confidence": "clear"
+    },
+    "a8ed0f": {
+      "pair_role": "pairB-poor",
+      "kind": "synthetic-control",
+      "context_class": "missing-UNAVAILABLE (referenced agreement genuinely absent; no expansion source exists beyond documented absence)",
+      "expected_label": "consider_together",
+      "expected_downstream_action": "forward alongside candidate ADR (ambiguous possibly useful)",
+      "reason": "'ingest keeps the legacy path' could bear on write-path decisions; ambiguous => forward. Referenced agreement genuinely absent.",
+      "expected_confidence": "clear-on-policy / genuinely-ambiguous-content"
+    },
+    "ce3746": {
+      "pair_role": "pairB-expanded",
+      "kind": "synthetic-control",
+      "context_class": "expanded (documented ABSENCE + neighboring scope; reveals unrelated scope)",
+      "expected_label": "unrelated",
+      "expected_downstream_action": "exclude from combined view (source stays archived)",
+      "reason": "Expansion documents the agreement is absent and pins the thread to network/VPN routing logistics with no bearing on write mediation.",
+      "expected_confidence": "clear"
+    },
+    "2dfc90": {
+      "pair_role": "clear-positive",
+      "kind": "synthetic-control",
+      "context_class": "complete",
+      "expected_label": "consider_together",
+      "expected_downstream_action": "forward alongside candidate ADR",
+      "reason": "Directly about the ADR's carve-out; clear positive control.",
+      "expected_confidence": "clear"
+    },
+    "265ff0": {
+      "pair_role": "clear-negative",
+      "kind": "synthetic-control",
+      "context_class": "complete",
+      "expected_label": "unrelated",
+      "expected_downstream_action": "exclude from combined view (source stays archived)",
+      "reason": "Pure office logistics; clear negative control.",
+      "expected_confidence": "clear"
+    }
+  }
+}

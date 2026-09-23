@@ -1,0 +1,18 @@
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "route__fc72cd": {
+      "type": "choice",
+      "choice": "low_priority",
+      "confidence": 0.91,
+      "probabilities": {
+        "low_priority": 0.96,
+        "include": 0.04
+      }
+    }
+  },
+  "usage": {
+    "input_tokens": 852,
+    "output_tokens": 38
+  }
+}

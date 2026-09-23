@@ -1,0 +1,26 @@
+{
+  "model": "jev-1.13.0",
+  "state": {
+    "units": {
+      "89d611": {
+        "unit_id": "89d611",
+        "heading": "Migration notes",
+        "text": "That exception does not survive the migration.",
+        "context": {
+          "prev": "Archive lookup result: the referenced migration decision record is genuinely ABSENT - no surviving source for it exists in the archive. Nearest surviving section covers only the office badge-system migration (front-desk logistics).",
+          "next": "Temporary contractor badges are reissued at the front desk; this thread covers only office access-card logistics."
+        }
+      }
+    }
+  },
+  "questions": {
+    "route__89d611": {
+      "type": "choice",
+      "instructions": "Task: choose how to route ONE passage for the Architect's ADR (Architecture Decision Record) curation view, selected from archived evidence. All original source documents remain available; this selection only assembles a curated view. \"low_priority\" means EXCLUDED FROM THIS VIEW ONLY - it never deletes any source. The passage is the entry in the state whose unit_id is \"89d611\" (fields: heading, text, context). Judge THIS passage on its own supplied text, heading and context. Source context is supplied up front where available; the Architect can request more later if needed. Routing options: include = forward the passage to the Architect's curation view. Include decision evidence - a chosen/proposed/rejected approach, a constraint or trade-off, a stated reason (rationale), or a decision-relevant consequence - AND ambiguous material that might hold such evidence: when in doubt, include; possibly useful material is forwarded, not silently discarded. low_priority = EXCLUDED FROM THIS VIEW ONLY (never deletion): clearly irrelevant operational chatter or routine logistics/event details (e.g. one-off status, job/branch coordinate bookkeeping, a single test/smoke result) with no decision, constraint, rationale, alternative or consequence information. A proposal or provisional status is NOT a reason to exclude - proposals and rejected options are still evidence. Selecting a passage does not imply approval and is not a claim of current validity. Do not fill gaps from general knowledge. Consider only unit \"89d611\".",
+      "criteria": {
+        "include": "Forward to the Architect's ADR curation view: decision / constraint / rationale / alternative / consequence evidence, or ambiguous material that might hold such evidence - when in doubt, include. Selection is not approval.",
+        "low_priority": "Excluded from this view only (never delete the source): clearly irrelevant operational chatter or routine logistics/event details with no such information."
+      }
+    }
+  }
+}
