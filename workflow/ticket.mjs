@@ -267,11 +267,11 @@ research — investigation, spike, or benchmark.
 
 ## Problem
 
-The specific situation that is failing today.
+The objective and situation to change; state the desired outcome and hard boundaries.
 
 ## Testing plan
 
-Behavioral invariants that gate acceptance, and feasible real-world failures that must not happen.
+Completion evidence and feasible checks that gate acceptance; note material failures to avoid.
 
 ## [open]
 
@@ -281,7 +281,7 @@ Time we will spend. The solution fits this.
 
 ### Solution
 
-The approach: main pieces and how they connect. Leave room for the implementer.
+Intended outcome and any necessary constraints. Leave implementation methods and routine decisions to the worker.
 
 ### Rabbit holes
 

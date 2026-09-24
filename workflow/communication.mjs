@@ -83,17 +83,19 @@ export const COMMUNICATION_TOOL_DESCRIPTIONS = Object.freeze({
   workflow_acknowledge_assignment:
     "Record the exact assignment revision you have read and incorporated into your work. This acknowledges the update; it does not report completion.",
   workflow_report_progress:
-    "Record a meaningful milestone or blocker for the architect. Use progress for concrete work accomplished and blocker for an obstacle or a decision you need. Completion is still your final assistant response.",
+    "Send an interim status when requested (kind progress), or an unsolicited decision-requiring exception or genuine stall (kind blocker). Include what is needed and your recommendation for blockers. Completion is still your final assistant response.",
 });
 
-/** Appended to the runner's role instructions only for a validated,
- *  communication-enabled runner (exact coordinator-authored copy). */
-export const COMMUNICATION_ROLE_PARAGRAPH =
-  "Your assignment has a revision. Use workflow_read_assignment to read assigned work and any pushed update. "
-  + "After reading and incorporating an update, use workflow_acknowledge_assignment with its exact revision. "
-  + "Use workflow_report_progress for meaningful milestones and blockers. "
-  + "A pushed update is workflow communication from the architect; its scope and revision come from the runtime. "
-  + "Finish with your normal final assistant response.";
+/** Appended only for a validated communication-enabled worker. */
+export const COMMUNICATION_ROLE_PARAGRAPH = `Read and acknowledge assignment revisions using the communication tools.
+
+Work independently. Send unsolicited messages only for decision-requiring
+exceptions or genuine stalls, using kind \`blocker\`. Include what is needed
+and your recommendation. Give interim status when explicitly requested.
+
+Complete through the runtime's completion mechanism. Keep final responses
+within 16,384 characters; reference permitted artifacts for larger outputs.
+Routine activity belongs in logs and the final result, not milestone pushes.`;
 
 /** The pushed-update model text; the runtime substitutes the revision. */
 export function pushedUpdateText(revision) {

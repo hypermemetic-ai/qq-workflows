@@ -61,25 +61,23 @@ export const DUMMY_API_KEY = "prototype-dummy-key";
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
 
 /**
- * Replacement completion instruction for seats whose production contract tells
- * the model to call `complete_task`. The harness deliberately does NOT expose
- * that tool (the adapter bridges the closing message through the existing
- * transport instead), so the instruction must not name it. Only this section is
- * rewritten: the role and task boundaries stay verbatim.
+ * Harness completion mechanics for every worker seat. This harness has no
+ * completion tool: the adapter bridges the closing response through the
+ * existing transport. Keep large artifacts separate when task scope permits.
  */
 export const PROTOTYPE_COMPLETION_SECTION = `## Completion
-When finished, write your final answer as the closing assistant message of your turn: a concise synthesis with key evidence (exact file and line references where applicable) and remaining uncertainties, respecting the ${FINAL_RESPONSE_MAX_CHARS_LABEL}-character limit. This harness exposes no completion tool; the adapter delivers your closing message through the existing authoritative transport. Calling a completion tool is neither possible nor required.`;
+Complete with your closing assistant response, not a completion tool. Keep it within ${FINAL_RESPONSE_MAX_CHARS_LABEL} characters (over-length responses fail closed); reference artifact files for larger outputs when task scope permits them. The adapter delivers your closing message through the existing authoritative transport.`;
 
 /**
  * Adapt a seat's role contract for the harness runtime.
  * @param seat - worker seat.
  * @param body - the role contract prose loaded from agents/<role>/agent.md.
- * @returns the contract with its completion instruction replaced when it named a
- *   completion tool, otherwise unchanged.
+ * @returns the contract with harness completion mechanics appended, replacing
+ *   any legacy Completion section so an unavailable tool is never requested.
  */
 export function adaptSeatInstructions(seat, body) {
   const start = body.indexOf("## Completion");
-  if (start === -1) return body;
+  if (start === -1) return `${body.trimEnd()}\n\n${PROTOTYPE_COMPLETION_SECTION}`;
   const next = body.indexOf("\n## ", start + 1);
   const tail = next === -1 ? "" : body.slice(next + 1);
   return `${body.slice(0, start)}${PROTOTYPE_COMPLETION_SECTION}\n\n${tail}`.trimEnd();

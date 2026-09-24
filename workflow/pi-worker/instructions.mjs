@@ -2,29 +2,9 @@
 /**
  * Effective seat instructions for the one Pi worker runtime.
  *
- * The runtime surface is fixed before the model sees it: `pi --mode rpc` is
- * launched with a `--tools` allowlist plus exactly one extension tool
- * (`zvec_grep_search`) and with **no MCP server at all**
- * (`workflow/worker-config.mjs` `buildPiWorkerLaunch`). The shared role
- * contracts in `agents/<role>/agent.md` are written for the MCP/Codex era: the
- * runner's `## Completion` section mandates `mcp__qq_workflows__complete_task`,
- * and the shared workspace-search section names the MCP-qualified ZG spelling.
- * Appended verbatim to the system prompt, those sections order a worker to call
- * a tool this runtime cannot resolve - the instruction surface contradicting the
- * executable surface, which is the failure mode this module removes.
- *
- * Exactly two sections are adapted, in the terms of THIS runtime:
- *
- *   1. `## Completion` (the runner) is replaced by the transport the adapter
- *      actually implements - the closing assistant message, bridged through the
- *      existing authoritative completion modules - and names no tool at all;
- *   2. `## Workspace search` names the tool the runtime registers
- *      (`zvec_grep_search`), or states plainly that no search tool is exposed.
- *
- * Everything else (role boundaries, task instructions, reporting shape) stays
- * byte-identical to the shared contract, and every remaining tool reference is
- * checked against the seat's allowlist: a name that cannot resolve refuses the
- * launch (exit 2) instead of reaching the model as an impossible instruction.
+ * The runtime has a fixed tool allowlist and no MCP server. Append only
+ * Pi completion mechanics to the shared role body, and refuse unavailable
+ * tool references before the prompt reaches the model.
  *
  * @module pi-worker/instructions
  */
@@ -39,17 +19,10 @@ import { WORKER_PI_TOOLS, loadRoleContract } from "../worker-config.mjs";
  */
 export const PI_SEARCH_TOOL = "zvec_grep_search";
 
-const COMPLETION_HEADING = "## Completion";
-const SEARCH_INTRO = "When this runtime exposes `mcp__zvec_grep__zvec_grep_search`, use it to";
-
-/**
- * The completion instruction for a runtime that exposes no completion tool.
- * Deliberately free of tool names: the result is the closing assistant message,
- * which the adapter bridges through `completeTask` + the runner-result
- * validator (`workflow/pi-worker/adapter.mjs`).
- */
-export const PI_COMPLETION_SECTION = `## Completion
-When finished, write your final answer as the closing assistant message of your turn: a concise synthesis with key evidence (with exact file and line references where applicable) and remaining uncertainties, respecting the ${FINAL_RESPONSE_MAX_CHARS_LABEL}-character limit (an over-length final answer is rejected fail-closed, never truncated). This runtime exposes no completion tool, so calling one is neither possible nor required: the closing assistant message is the result, and the adapter delivers it through the existing authoritative transport. Retain voluminous logs in artifact files if needed.`;
+/** The adapter bridges the closing assistant response through the existing
+ * authoritative completion transport; Pi exposes no completion tool. */
+export const PI_COMPLETION_SECTION = `## Pi completion
+Complete with your closing assistant response, not a completion tool. Keep it within ${FINAL_RESPONSE_MAX_CHARS_LABEL} characters (over-length responses fail closed); reference artifact files for larger outputs when task scope permits them.`;
 
 /**
  * Legacy/MCP tool spellings that appear in the shared contracts, mapped to the
@@ -110,29 +83,8 @@ export function unavailablePiSeatTools({ body, tools = [] }) {
   return unavailable;
 }
 
-function introForTools(tools) {
-  return tools.includes(PI_SEARCH_TOOL)
-    ? `This runtime exposes \`${PI_SEARCH_TOOL}\` (root-bound to this worktree, the same shared tool for every worker seat); use it to`
-    : "This runtime exposes no semantic-search tool; use `grep`, `rg`, and direct file reads to";
-}
-
-function replaceSection(body, heading, replacement) {
-  const start = body.indexOf(heading);
-  if (start === -1) return body;
-  const next = body.indexOf("\n## ", start + heading.length);
-  const tail = next === -1 ? "" : body.slice(next + 1);
-  return `${body.slice(0, start)}${replacement}${tail === "" ? "" : `\n\n${tail}`}`.trimEnd();
-}
-
-function adaptBody({ seat, body, tools }) {
-  const adaptedSections = [];
-  let adapted = replaceSection(body, COMPLETION_HEADING, PI_COMPLETION_SECTION);
-  if (adapted !== body) adaptedSections.push("Completion");
-  if (adapted.includes(SEARCH_INTRO)) {
-    adapted = adapted.replace(SEARCH_INTRO, introForTools(tools));
-    adaptedSections.push("Workspace search");
-  }
-  return { body: adapted, adaptedSections };
+function adaptBody({ body }) {
+  return { body: `${body.trimEnd()}\n\n${PI_COMPLETION_SECTION}`, adaptedSections: ["Pi completion"] };
 }
 
 function assertResolvable({ seat, body, tools }) {
@@ -153,7 +105,7 @@ function assertResolvable({ seat, body, tools }) {
  * this runtime.
  */
 export function adaptPiSeatInstructions({ seat, body, tools = WORKER_PI_TOOLS[seat] ?? [] }) {
-  const { body: adapted } = adaptBody({ seat, body, tools });
+  const { body: adapted } = adaptBody({ body });
   assertResolvable({ seat, body: adapted, tools });
   return adapted;
 }
@@ -165,7 +117,7 @@ export function adaptPiSeatInstructions({ seat, body, tools = WORKER_PI_TOOLS[se
  */
 export function loadPiSeatInstructions(seat, { tools = WORKER_PI_TOOLS[seat] ?? [] } = {}) {
   const contract = loadRoleContract(seat);
-  const { body, adaptedSections } = adaptBody({ seat, body: contract.body, tools });
+  const { body, adaptedSections } = adaptBody({ body: contract.body });
   assertResolvable({ seat, body, tools });
   return { source: contract.path, body, adaptedSections, namedTools: referencedToolNames(body) };
 }

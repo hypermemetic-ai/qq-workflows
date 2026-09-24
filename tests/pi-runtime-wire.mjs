@@ -243,13 +243,13 @@ try {
     );
   }
   const systemPrompt = String(ok.wire[0].body.messages?.[0]?.content ?? "");
-  assert.ok(systemPrompt.includes("closing assistant message"), "the runtime receives the adapted seat contract");
+  assert.ok(systemPrompt.includes("closing assistant response"), "the runtime receives the adapted seat contract");
   assert.equal(systemPrompt.includes("complete_task"), false, "the runtime is never told to call a tool this session has no server for");
   assert.deepEqual(ok.summary?.selectedModel, { provider: PROVIDER, model: MODEL, confirmed: true }, "the runtime's reported selection is confirmed against the configuration");
   assert.deepEqual(ok.summary?.availableThinkingLevels, ["minimal", "low", "medium", "high", "xhigh"], "capability comes from the model's own registry map");
   assert.equal(ok.summary?.autoCompactionEnabled, true, "the configured compaction policy is verified on the runtime, not assumed");
   assert.match(String(ok.summary?.capacity?.note ?? ""), /not an enforced hard input bound/);
-  assert.deepEqual(ok.summary?.instructions?.adaptedSections, ["Completion"]);
+  assert.deepEqual(ok.summary?.instructions?.adaptedSections, ["Pi completion"]);
 
   // 2. Failure path: a message that ends in a non-retryable error carries the
   // text streamed before the failure. That partial text must never be delivered

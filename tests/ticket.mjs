@@ -21,6 +21,11 @@ assert.equal(ticketModule.applyTicketEdit, undefined);
 assert.equal(ticketModule.brainTicketPath, undefined);
 
 const template = await loadPackagedTemplate();
+assert.equal(readFileSync(join(import.meta.dirname, "..", ".architect", "template.md"), "utf8"), template,
+  "repository and packaged fallback templates stay identical");
+assert.match(template, /desired outcome and hard boundaries/);
+assert.match(template, /Completion evidence/);
+assert.match(template, /Leave implementation methods and routine decisions to the worker/);
 assert.match(template, /^# Ticket/m);
 assert.match(template, /^## Kind/m);
 assert.match(template, /^## \[open\]/m);
@@ -139,7 +144,7 @@ assert.deepEqual(sections, ["Kind", "Problem", "Testing plan", "[open]"]);
 // replaceSection: existing section
 const updatedProblem = ticketModule.replaceSection(template, "Problem", "Brand new problem statement.");
 assert.equal(ticketModule.extractSection(updatedProblem, "Problem"), "Brand new problem statement.");
-assert.equal(ticketModule.extractSection(updatedProblem, "Testing plan"), "Behavioral invariants that gate acceptance, and feasible real-world failures that must not happen.");
+assert.equal(ticketModule.extractSection(updatedProblem, "Testing plan"), "Completion evidence and feasible checks that gate acceptance; note material failures to avoid.");
 assert.deepEqual(ticketModule.listSections(updatedProblem), ["Kind", "Problem", "Testing plan", "[open]"]);
 
 // replaceSection: section with brackets

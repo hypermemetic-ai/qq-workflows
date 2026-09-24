@@ -14,6 +14,7 @@ import {
   WORKER_SEATS,
   buildWorkerLaunch,
   deepSeekMinimalRuntimeRoot,
+  loadRoleContract,
   loadWorkerConfig,
   resolveMessagesBaseUrl,
   validateWorkerConfig,
@@ -23,6 +24,7 @@ import {
 } from "../workflow/worker-config.mjs";
 import {
   GATEWAY_ENV_DEFAULTS,
+  adaptSeatInstructions,
   assertSearchArtifacts,
   harnessEnv,
   resolveSearchBinding,
@@ -38,6 +40,7 @@ import {
   readSearchToolSnapshot,
 } from "../prototype/deepseek-minimal/gateway/zvec-grep-tool.mjs";
 import { resolveRunnerTransport } from "../prototype/deepseek-minimal/adapter/worker.mjs";
+import { FINAL_RESPONSE_MAX_CHARS_LABEL } from "../workflow/limits.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "qq-deepseek-minimal-"));
 const ADAPTER = WORKER_DEEPSEEK_ADAPTER;
@@ -314,6 +317,29 @@ function writeConfig(name, extra) {
     );
     renameSync(backup, artifact);
   }
+}
+
+// 4c. Effective DeepSeek prompts, including seats without communication tools:
+// the shortened role contracts have no Completion heading, but every seat must
+// still learn the closing-response transport, final cap and artifact guidance.
+{
+  for (const seat of WORKER_SEATS) {
+    const body = loadRoleContract(seat).body;
+    assert.doesNotMatch(body, /^## Completion$/mu, `${seat} has the approved concise role body`);
+    const effective = adaptSeatInstructions(seat, body);
+    assert.ok(effective.startsWith(body.trimEnd()), `${seat}: role prose remains intact`);
+    assert.match(effective, /Complete with your closing assistant response, not a completion tool/u);
+    assert.ok(effective.includes(`${FINAL_RESPONSE_MAX_CHARS_LABEL} characters`), `${seat}: final-response character cap`);
+    assert.match(effective, /reference artifact files for larger outputs when task scope permits them/u);
+    assert.match(effective, /existing authoritative transport/u);
+    assert.doesNotMatch(effective, /Teaching|milestone|complete_task/u, `${seat}: no stale policy or unavailable tool`);
+    assert.equal((effective.match(/^## Completion$/gmu) ?? []).length, 1, `${seat}: one completion instruction`);
+  }
+  const legacy = "Role prose.\n\n## Completion\nCall `complete_task`.\n\n## Other\nKeep this section.";
+  const adapted = adaptSeatInstructions("runner", legacy);
+  assert.ok(adapted.startsWith("Role prose.\n\n## Completion\n"));
+  assert.ok(adapted.endsWith("## Other\nKeep this section."));
+  assert.doesNotMatch(adapted, /complete_task/u, "legacy completion tool is replaced, not duplicated");
 }
 
 // 5. Adapter fail-closed boundaries (no runtime, no provider contact needed).
