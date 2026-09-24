@@ -993,6 +993,11 @@ export function managedExecutionView({ stateDir, executionId, limit = {} }) {
   const execAttemptId = executionJob?.attemptOrder?.[0] ?? null;
   const execAttempt = execAttemptId ? views.attempt(executionId, execAttemptId) : null;
   const meta = execAttempt ? readLaunchMetadata({ stateDir, executionId }) : null;
+  let landingOutcome = null;
+  try {
+    const recorded = JSON.parse(execAttempt?.outcome?.result ?? "null");
+    if (recorded?.landingOutcome && typeof recorded.landingOutcome === "object") landingOutcome = recorded.landingOutcome;
+  } catch { /* old outcomes may contain non-JSON result strings */ }
 
   const roles = [];
   const reports = [];
@@ -1093,6 +1098,7 @@ export function managedExecutionView({ stateDir, executionId, limit = {} }) {
         evidence: execAttempt.evidence.slice(-1 * (limit.evidence ?? VIEW_EVIDENCE_MAX)).map((entry) => ({ seq: entry.seq, label: entry.label, reportId: entry.reportId })),
       }
       : null,
+    landingOutcome,
     activeRoleAttempt: resolveActiveRoleAttempt({ stateDir, executionId }),
     roles,
     updates,
@@ -1167,7 +1173,7 @@ export function reconcileManagedExecution({ stateDir, executionId, expectedOwner
           status,
           at: authoritative.at ?? nowMs,
           ok: status === "completed",
-          summary: `reconstructed from the authoritative change record (outcome ${status} at revision ${authoritative.revision})`,
+          summary: attempt.outcome?.summary ?? `reconstructed from the authoritative change record (outcome ${status} at revision ${authoritative.revision})`,
           reportId: authoritative.reportId ?? null,
           reportChars: 0,
           resultAvailable: Boolean(authoritative.reportId),

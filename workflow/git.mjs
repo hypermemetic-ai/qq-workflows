@@ -259,6 +259,104 @@ export async function buildReviewPacket(cwd, { base, head = "HEAD" } = {}) {
   return buildPacket({ baseSha, headSha, files });
 }
 
+// A remote PR receipt is independent of synchronization of the local default
+// checkout. Never use a cached tracking ref as proof of the remote tip.
+const syncDiagnostic = error => String(error?.message ?? error).slice(0, 300);
+const syncRecovery = "Inventory and save local edits first; compare git status and HEAD with the observed remote tip, then reconcile this checkout separately (preservation-first).";
+
+export async function synchronizeDefaultCheckout(cwd, { remote, base, mergeSha } = {}) {
+  const ref = `refs/heads/${base}`;
+  const disposition = { localCheckout: "not_synced", status: "local_sync_skipped", branch: base, ref,
+    checkout: null, localHead: null, observedRemoteSha: null, mergeSha, recovery: syncRecovery };
+  const fail = async (status, reason) => {
+    // A ref may have moved independently while inspecting it. Never report a
+    // count calculated against an earlier local OID as if it described HEAD.
+    disposition.localHead = await git(cwd, ["rev-parse", "--verify", ref]).catch(() => null);
+    delete disposition.behind;
+    if (disposition.localHead && disposition.observedRemoteSha) {
+      try {
+        await git(cwd, ["merge-base", "--is-ancestor", disposition.localHead, disposition.observedRemoteSha]);
+        disposition.behind = Number(await git(cwd, ["rev-list", "--count", `${disposition.localHead}..${disposition.observedRemoteSha}`]));
+        if (await git(cwd, ["rev-parse", "--verify", ref]).catch(() => null) !== disposition.localHead)
+          delete disposition.behind;
+      } catch { /* divergence or missing object: no safe count */ }
+    }
+    return { ...disposition, status, reason: syncDiagnostic(reason) };
+  };
+  try {
+    // Verify the remote's advertised default, not just a provider response or
+    // the local cached origin/HEAD. Never advance a different local branch.
+    const remoteHead = await git(cwd, ["ls-remote", "--symref", "--", remote, "HEAD"]);
+    if (!remoteHead.split("\n").includes(`ref: refs/heads/${base}\tHEAD`))
+      return fail("local_sync_skipped", "remote default branch could not be verified against the PR base");
+    // FETCH_HEAD is populated by this fetch, not by a possibly stale
+    // refs/remotes/* cache. Pin the fetched object and reject a moving tip.
+    await git(cwd, ["fetch", "--no-tags", "--", remote, `refs/heads/${base}`]);
+    const tip = await revParse(cwd, "FETCH_HEAD");
+    disposition.observedRemoteSha = tip;
+    await git(cwd, ["merge-base", "--is-ancestor", mergeSha, tip]);
+    const advertised = (await git(cwd, ["ls-remote", "--exit-code", "--", remote, `refs/heads/${base}`])).split(/\s+/)[0];
+    if (advertised !== tip) return fail("local_sync_skipped", "remote default advanced during observation; inspect the new tip before retrying");
+  } catch (error) {
+    return fail("local_sync_skipped", `remote default observation failed: ${syncDiagnostic(error)}`);
+  }
+  try {
+    const checkout = await worktreeCheckingOut(cwd, base);
+    disposition.checkout = checkout;
+    const old = await git(cwd, ["rev-parse", "--verify", ref]).catch(() => null);
+    disposition.localHead = old;
+    if (!old) return fail("local_sync_skipped", "local default branch is missing; create/reconcile it manually");
+    const tip = disposition.observedRemoteSha;
+    try {
+      await git(cwd, ["merge-base", "--is-ancestor", old, tip]);
+      disposition.behind = Number(await git(cwd, ["rev-list", "--count", `${old}..${tip}`]));
+    } catch { return fail("local_sync_conflicted", "local default diverged from the observed remote tip"); }
+    if (checkout) {
+      if (await git(checkout, ["symbolic-ref", "HEAD"]) !== ref || await revParse(checkout) !== old)
+        return fail("local_sync_skipped", "default checkout changed during inspection");
+      // Do not reuse isDirty: implementation status intentionally filters
+      // operational paths. Checkout safety requires full porcelain -z.
+      const status = await git(checkout, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+      if (status) return fail("local_sync_skipped", "default checkout has staged, unstaged or untracked changes; preserve and inventory them before reconciliation");
+      // Ignored files can also obstruct or be overwritten by a merge. The
+      // ordinary operational state directory is the sole safe exclusion.
+      const ignored = await git(checkout, ["status", "--porcelain=v1", "-z", "--ignored", "--untracked-files=all"]);
+      if (ignored.split("\0").some(entry => entry.startsWith("!! ") && !/^!! \.architect\/state(?:\/|$)/.test(entry)))
+        return fail("local_sync_skipped", "default checkout contains ignored files that may obstruct a merge; inventory them first");
+      if (await git(checkout, ["symbolic-ref", "HEAD"]) !== ref || await revParse(cwd, ref) !== old || await revParse(checkout) !== old)
+        return fail("local_sync_skipped", "default checkout or branch changed before fast-forward");
+      // A merge is not scoped to `ref`: it updates whatever HEAD is when the
+      // command starts. A concurrent branch switch (or a newly dirty file with
+      // merge.autoStash enabled) can mutate a *different* branch or a stash.
+      // Git offers no atomic compare-and-swap of HEAD identity, index and
+      // worktree for this operation. Preserve the checkout for manual FF.
+      if (old !== tip) return fail("local_sync_skipped", "clean default checkout is behind; automatic checked-out fast-forward cannot atomically guard branch, index and worktree against concurrent changes; preserve edits and reconcile manually");
+      disposition.localHead = await revParse(checkout);
+      if (await git(checkout, ["symbolic-ref", "HEAD"]) !== ref || await revParse(cwd, ref) !== tip || disposition.localHead !== tip ||
+          await git(checkout, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]))
+        return fail("local_sync_conflicted", "post-sync checkout/ref/status verification failed");
+    } else {
+      // update-ref's old-OID CAS does not check worktree ownership. A checkout
+      // of this ref immediately before the CAS leaves its index at the old
+      // tree while its HEAD moves to the new one. Do not run that CAS until
+      // there is an atomic Git primitive guarding checkout ownership too.
+      if (old !== tip) return fail("local_sync_skipped", "unchecked-out default branch is behind; ref CAS cannot atomically guard against a concurrent checkout; reconcile manually");
+      disposition.localHead = await revParse(cwd, ref);
+      if (disposition.localHead !== tip || await worktreeCheckingOut(cwd, base))
+        return fail("local_sync_conflicted", "post-sync ref or worktree verification failed");
+    }
+    const after = (await git(cwd, ["ls-remote", "--exit-code", "--", remote, `refs/heads/${base}`])).split(/\s+/)[0];
+    if (after !== tip) {
+      disposition.observedRemoteSha = after;
+      delete disposition.behind;
+      return fail("local_sync_conflicted", "remote default advanced after local synchronization; compare the new remote tip before retrying");
+    }
+    return { ...disposition, localCheckout: "synced", status: "local_sync_verified", behind: 0 };
+  } catch (error) {
+    return fail("local_sync_conflicted", `local synchronization failed: ${syncDiagnostic(error)}`);
+  }
+}
+
 export async function createAndMergePr(cwd, { title, body, branch, expectedHead, checkpoint = async () => {} } = {}) {
   const head = branch ?? await currentBranch(cwd);
   if (head === "HEAD") throw new Error("publication requires a named branch");
@@ -308,23 +406,10 @@ export async function createAndMergePr(cwd, { title, body, branch, expectedHead,
   }
   const actual = JSON.parse(await gh(["pr", "view", pr.url, "--repo", repo.nameWithOwner, "--json", fields]));
   if (actual.state !== "MERGED" || actual.headRefOid !== sha || !actual.mergeCommit?.oid) throw new Error("merged revision could not be verified");
-  await git(cwd, ["fetch", remote, `refs/heads/${base}`]);
-  await git(cwd, ["merge-base", "--is-ancestor", actual.mergeCommit.oid, "FETCH_HEAD"]);
-  try {
-    const checkout = await worktreeCheckingOut(cwd, base);
-    if (checkout) {
-      // Source landing must not mutate an independently dirty checkout.
-      if ((await git(checkout, ["status", "--porcelain"])).trim()) {
-        await checkpoint("local_sync_skipped", { reason: "dirty checkout", checkout });
-      } else await git(checkout, ["merge", "--ff-only", `refs/remotes/${remote}/${base}`]);
-    } else {
-      await git(cwd, ["update-ref", `refs/heads/${base}`, actual.mergeCommit.oid]);
-    }
-  } catch {
-    /* best effort local base ref synchronization */
-  }
-  await checkpoint("merged", actual);
-  return { pr: actual.url, merged: true, headSha: sha, mergeSha: actual.mergeCommit.oid };
+  const localSync = await synchronizeDefaultCheckout(cwd, { remote, base, mergeSha: actual.mergeCommit.oid });
+  // Checkpoints are supplementary telemetry, never the disposition transport.
+  await checkpoint("merged", { ...actual, localSync }).catch(() => {});
+  return { pr: actual.url, merged: true, headSha: sha, mergeSha: actual.mergeCommit.oid, localSync };
 }
 
 export function implementerBranchName(kind = "bounded", jobId) {
@@ -754,6 +839,7 @@ export async function landWorktree(cwd, { worktree, branch, message, title, body
     method: remote ? "pr" : "ff",
     pr: result.pr ?? null,
     mergeSha,
+    ...(remote ? { localSync: result.localSync } : {}),
     ticketArchived,
     ...(archivePath ? { archivePath } : {}),
     curation: curationState,
