@@ -1200,6 +1200,7 @@ export function createWorkflow({
       ...base,
       ...(reconstructed.ok ? {} : {ok:false,status:"reconciliation-required"}),
       authority,
+      ...(authority?.landingOutcome ? { landingOutcome: authority.landingOutcome } : {}),
       // Gap contract: disappearance is outcome-UNKNOWN, never a known failed
       // outcome. Known outcomes come from the authoritative record.
       outcomeKnown: !reconstructed.ok ? false : authority?.execution ? authority.execution.outcomeKnown : Boolean(terminal && terminal.status !== "interrupted"),

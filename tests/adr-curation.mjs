@@ -46,6 +46,7 @@ import { openChange } from "../workflow/change-record.mjs";
 import {
   managedExecutionPipelineHooks,
   managedExecutionView,
+  reconcileManagedExecution,
   readLaunchMetadata,
   recordHostStarted,
   recordManagedExecution,
@@ -53,6 +54,8 @@ import {
   registerRoleAttempt,
 } from "../workflow/execution-authority.mjs";
 import { publishExecutionResult } from "../workflow/execution-host.mjs";
+import { defaultCompletionText } from "../workflow/notify.mjs";
+import { buildExecutionTerminalMessage } from "../bin/mcp-server.mjs";
 import { createWorktree, landWorktree, revParse } from "../workflow/git.mjs";
 import { createJob, readJob, writeJob } from "../workflow/jobs.mjs";
 import { readReport, saveReport } from "../workflow/reports.mjs";
@@ -351,6 +354,25 @@ const TICKET_B = "# Phase B ticket\n\nTICKET-MARKER-B exact content.\n";
   assert.match(landResult.pr, /\/pull\/1$/);
   // The actual merge receipt from the merged PR is authoritative.
   assert.equal(landResult.mergeSha, await git(bare, ["rev-parse", "refs/heads/main"]));
+  assert.equal(landResult.localSync.localCheckout, "not_synced", "untracked ticket/root files must not be hidden from checkout safety");
+  assert.equal(await git(repo, ["rev-parse", "HEAD"]), landResult.localSync.localHead);
+  createJob({ stateDir, id: EXEC_B, role: "execution", kind: "open", workflow: { sessionKey: OWNER, root: repo }, cwd: repo, now: 1 });
+  const meta = readLaunchMetadata({ stateDir, executionId: EXEC_B });
+  recordHostStarted({ stateDir, executionId: EXEC_B, attemptId: meta.attemptId, identity: { host: true, pid: process.pid }, now: 20 });
+  const settled = publishExecutionResult({ stateDir, jobId: EXEC_B,
+    result: { ok: true, status: "completed", phase: "completed", result: { landingOutcome: landResult }, childAttempts: [] } });
+  assert.equal(settled.terminal.status, "completed", "remote success stands despite local skip");
+  const authoritative = managedExecutionView({ stateDir, executionId: EXEC_B });
+  assert.equal(authoritative.landingOutcome.localSync.status, "local_sync_skipped");
+  assert.equal(authoritative.execution.outcome.status, "completed");
+  assert.match(readReport(stateDir, settled.terminal.reportId).text, /local_sync_skipped/);
+  assert.match(defaultCompletionText(settled), /NOT synchronized/);
+  writeJob(stateDir, { ...readJob(stateDir, EXEC_B), status: "running", terminal: null });
+  const recovered = reconcileManagedExecution({ stateDir, executionId: EXEC_B });
+  assert.equal(recovered.projection.terminal.status, "completed");
+  assert.match(defaultCompletionText(recovered.projection), /NOT synchronized/);
+  assert.equal(recovered.view.landingOutcome.localSync.status, "local_sync_skipped");
+  assert.match(buildExecutionTerminalMessage({ id: EXEC_B, kind: "open", status: "completed", result: { landingOutcome: landResult } }), /NOT synchronized/);
 
   const view = adrCurationView({ stateDir, changeId: EXEC_B });
   assert.equal(view.processingStatus, "pending");

@@ -32,6 +32,7 @@ import {
   mainRepoRoot,
   parseWorktreePorcelain,
 } from "../workflow/git.mjs";
+import { localSyncWarning } from "../workflow/local-sync.mjs";
 import {
   COMPLETE_TASK_DATA_POINT_LEN_MAX,
   COMPLETE_TASK_DATA_POINTS_MAX,
@@ -1158,6 +1159,7 @@ export function buildExecutionTerminalMessage(execution) {
   if (execution?.status === "completed") {
     const result = execution.result || {};
     const landing = result.landingOutcome || {};
+    const syncWarning = localSyncWarning(landing);
     const landingBits = [];
     if (landing.method) landingBits.push(`method=${landing.method}`);
     if (landing.pr) landingBits.push(`pr=${landing.pr}`);
@@ -1170,7 +1172,7 @@ export function buildExecutionTerminalMessage(execution) {
     const review = result.reviewerSummary
       ? `\n\nReviewer summary:\n${sanitizeHeadTail(String(result.reviewerSummary), { headLen: 2000, tailLen: 2000 })}`
       : "";
-    return `Execution ${id} (${kind}) completed in ${elapsed}s — verified and landed.${branch}${landingLine}${story}${impl}${review}`;
+    return `Execution ${id} (${kind}) completed in ${elapsed}s — ${syncWarning ? "remote landing verified; local checkout not synchronized" : "verified and landed"}.${branch}${landingLine}${syncWarning ? `\n${syncWarning}` : ""}${story}${impl}${review}`;
   }
   const err = execution?.error || {};
   const phase = execution?.phase || err.phase || "unknown";
@@ -3848,7 +3850,9 @@ async function runExecutionPipeline(execution) {
   if (!execution.cancellation) execution.status = "completed";
   execution.result = {
     baseSelection: execution.baseSelection,
-    verifiedStory: `Worktree ${wt.branch} successfully verified and landed.`,
+    verifiedStory: localSyncWarning(landResult)
+      ? `Worktree ${wt.branch} verified; remote PR landed. Local default checkout not synchronized. ${localSyncWarning(landResult)}`
+      : `Worktree ${wt.branch} successfully verified and landed.`,
     landingOutcome: landResult,
     childAttempts: execution.childAttempts ?? [],
     implementerSummary: sanitizeHeadTail(implementerRes.output, { headLen: 2000, tailLen: 2000 }),

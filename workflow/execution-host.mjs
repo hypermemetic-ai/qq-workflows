@@ -31,6 +31,7 @@ import {
   verifyHostLaunch,
 } from "./execution-authority.mjs";
 import { completeAdrSourceRefs } from "./adr-curation.mjs";
+import { localSyncWarning } from "./local-sync.mjs";
 
 export function publishExecutionResult({ stateDir, jobId, result, now = Date.now() }) {
   const job = readJob(stateDir, jobId);
@@ -42,13 +43,17 @@ export function publishExecutionResult({ stateDir, jobId, result, now = Date.now
   let status = (meta ? view.execution.cancelIntent : job.cancellation) ? "cancelled"
     : result.ok === true && result.status === "completed" ? "completed"
     : result.status === "interrupted" ? "interrupted" : "failed";
-  const summary = result.error?.message ?? `managed execution ${status}`;
+  const warning = status === "completed" ? localSyncWarning(result.result?.landingOutcome) : null;
+  const summary = result.error?.message ?? (warning ? `managed execution completed. ${warning}` : `managed execution ${status}`);
   if (meta) {
     if (status === "interrupted") {
       recordAttemptEvidence({stateDir,executionId:jobId,jobId,attemptId:meta.attemptId,label:"pipeline-report",reportId:report.reportId,note:`pipeline interrupted; outcome unknown: ${summary}`,now});
     } else {
       const outcome = recordExecutionOutcome({stateDir,executionId:jobId,status,summary,
-        result:{ok:result.ok,status:result.status,phase:result.phase,childAttempts:result.childAttempts??[]},
+        result:{ok:result.ok,status:result.status,phase:result.phase,childAttempts:result.childAttempts??[],
+          ...(result.result?.landingOutcome ? { landingOutcome: { method:result.result.landingOutcome.method,
+            pr:result.result.landingOutcome.pr,mergeSha:result.result.landingOutcome.mergeSha,
+            ...(result.result.landingOutcome.localSync ? {localSync:result.result.landingOutcome.localSync} : {}) } } : {})},
         reportId:report.reportId,childReports:result.childAttempts??[],now});
       if (!outcome.ok) throw new Error(`managed result publication refused: ${outcome.reason}`);
       status = outcome.status;
