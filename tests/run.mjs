@@ -43,6 +43,7 @@ delete env.QQ_RELAY_INSTALL_ROOT;
 // reach a test child by inheritance (a foreign binding fails closed in the
 // adapter; tests never inherit another seat/attempt binding at all).
 delete env.QQ_WORKER_RESULT_BINDING;
+delete env.QQ_MANAGED_TEST_BINDING;
 env.QQ_WORKFLOW_STATE_DIR = join(mkdtempSync(join(tmpdir(), 'qq-workflow-state-')), 'state');
 // Scrub live notification routing/thread env from test runs.
 // Targeted actual live routing values (preserve needed config: CODEX_HOME, CODEX_MODEL, CODEX_BIN).

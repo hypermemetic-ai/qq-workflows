@@ -14,7 +14,7 @@ import {openChange,viewsFor} from '../workflow/change-record.mjs';
 
 for(const mode of ['ordinary','reopened','cancelled']) {
   const owner='6613a2b9-c4b8-437d-9511-537f18928693',phase='940d4149-ac31-4608-84cb-67ba4ac4e7cd';
-  const counts={implementer:0,reviewer:0},updates={},gates={},release={};
+  const counts={test_owner:0,implementer:0,reviewer:0},updates={},gates={},release={};
   for(const role of Object.keys(counts))gates[role]=new Promise(resolve=>release[role]=resolve);
   let fixture,id;
   const roleState=role=>{
@@ -25,24 +25,34 @@ for(const mode of ['ordinary','reopened','cancelled']) {
   fixture=await localPiProvider({respond:async({body})=>{
     const names=(body.tools??[]).map(tool=>tool.function?.name);assert.ok(names.includes('workflow_read_assignment'));
     const text=JSON.stringify(body.messages),prompt=body.messages.filter(message=>message.role==='user').map(message=>typeof message.content==='string'?message.content:JSON.stringify(message.content)).join('\n');
-    const match=prompt.match(/(Implement|Follow) '([^']+)\/\.architect\/ticket\.md'/);assert.ok(match);
-    const role=match[1]==='Implement'?'implementer':'reviewer',call=++counts[role];
+    const match=prompt.match(/(Prepare retained tests and the focused selection for|Implement|Review) '([^']+)\/\.architect\/ticket\.md'/);assert.ok(match);
+    const role=match[1]==='Implement'?'implementer':match[1]==='Review'?'reviewer':'test_owner',call=++counts[role];
     if(call===1)return {toolCalls:[{name:'workflow_read_assignment'}]};
     if(call===2)return {toolCalls:[{name:'workflow_acknowledge_assignment',arguments:{revision:roleState(role).attempt.launchIntent.revision}}]};
     if(call===3)return {toolCalls:[{name:'workflow_report_progress',arguments:{kind:'progress',message:`${role} is ready for the MCP amendment.`}}]};
     if(call===4){await gates[role];return {toolCalls:[{name:'workflow_read_assignment'}]};}
     if(call===5){assert.match(text,new RegExp(`${role} marker`));return {toolCalls:[{name:'workflow_acknowledge_assignment',arguments:{revision:updates[role]}}]};}
-    if(call===6)return role==='implementer'?{toolCalls:[{name:'write',arguments:{path:join(match[2],'proof.txt'),content:'implemented marker\n'}}]}:{toolCalls:[{name:'bash',arguments:{command:`test "$(cat '${join(match[2],'proof.txt')}')" = 'implemented marker'`}}]};
-    assert.equal(call,7,'no role retry or automatic relaunch');
-    return {text:role==='implementer'?'Implemented proof.txt with implementer marker.':'Verdict: PASS\nVerified proof.txt with reviewer marker.'};
+    if(role==='test_owner'){
+      if(call===6)return {toolCalls:[{name:'select_tests',arguments:{targets:['proof.mjs'],rationale:'Verify the approved proof content'}}]};
+      if(call===7)return {toolCalls:[{name:'run_selected_tests',arguments:{expectedRed:'proof has not been implemented'}}]};
+      assert.equal(call,8);return {text:'Selected proof test, checked expected red, and incorporated test_owner marker.'};
+    }
+    if(call===6)return role==='implementer'?{toolCalls:[{name:'write',arguments:{path:join(match[2],'proof.txt'),content:'implemented marker\n'}}]}:{toolCalls:[{name:'run_selected_tests'}]};
+    if(call===7)return role==='implementer'?{toolCalls:[{name:'run_selected_tests'}]}:{toolCalls:[{name:'submit_review',arguments:{verdict:'PASS'}}]};
+    assert.equal(call,8,'no role retry or automatic relaunch');
+    return {text:role==='implementer'?'Implemented proof.txt with implementer marker.':'Verdict: PASS; verified proof.txt with reviewer marker.'};
   }});
   if(!fixture){console.log('SKIP MCP execution communication: installed Pi unavailable');break;}
   const git=args=>execFileSync('git',args,{cwd:fixture.root,encoding:'utf8'}).trim();
   git(['init','-b','main']);git(['config','user.name','Fixture']);git(['config','user.email','fixture@example.invalid']);
   writeFileSync(join(fixture.root,'base.txt'),'base');git(['add','base.txt']);git(['commit','-m','fixture base']);
-  const base=git(['rev-parse','HEAD']);
   mkdirSync(join(fixture.root,'.architect','tickets'),{recursive:true});
-  writeFileSync(join(fixture.root,'.architect','tickets',`${phase}.md`),'# MCP managed communication proof\nCreate proof.txt containing implemented marker. Preserve all original constraints across amendments.\n');
+  mkdirSync(join(fixture.root,'tests'),{recursive:true});
+  writeFileSync(join(fixture.root,'.architect','test-runner.json'),JSON.stringify({schema:1,command:'node',args:[],directory:'tests',extension:'.mjs'}));
+  writeFileSync(join(fixture.root,'tests','proof.mjs'),"import {readFileSync} from 'node:fs'; if(readFileSync('proof.txt','utf8') !== 'implemented marker\\n') process.exitCode=1;\n");
+  git(['add','.architect/test-runner.json','tests/proof.mjs']);git(['commit','-m','fixture focused runner']);
+  const base=git(['rev-parse','HEAD']);
+  writeFileSync(join(fixture.root,'.architect','tickets',`${phase}.md`),'# MCP managed communication proof\nCreate proof.txt containing implemented marker. Preserve all original constraints across amendments.\n\n## Testing plan\nBroad regression: none\n');
   const notesPath=join(fixture.root,'notes.jsonl'),driver=join(fixture.root,'mcp.mjs');
   writeFileSync(driver,`import {startMcpServer} from ${JSON.stringify(new URL('../bin/mcp-server.mjs',import.meta.url).href)};import {appendFileSync} from 'node:fs';import {readJob} from ${JSON.stringify(new URL('../workflow/jobs.mjs',import.meta.url).href)};import {readReport} from ${JSON.stringify(new URL('../workflow/reports.mjs',import.meta.url).href)};globalThis.__QQ_TEST_NOTIFY_HANDLER=note=>{const job=readJob(process.env.QQ_WORKFLOW_STATE_DIR,note.trackerId);const registered=note.kind==='execution.terminal'?Boolean(job?.terminal?.reportId&&readReport(process.env.QQ_WORKFLOW_STATE_DIR,job.terminal.reportId).ok):null;appendFileSync(${JSON.stringify(notesPath)},JSON.stringify({...note,registered})+String.fromCharCode(10));};globalThis.__QQ_TEST_WATCHDOG={sweepMs:500};startMcpServer();`);
   const clients=[],notes=()=>existsSync(notesPath)?readFileSync(notesPath,'utf8').trim().split('\n').filter(Boolean).map(line=>JSON.parse(line)):[];
@@ -62,7 +72,7 @@ for(const mode of ['ordinary','reopened','cancelled']) {
     const tools=(await client.rpc('tools/list')).tools.map(tool=>tool.name);
     for(const name of ['dispatch_execution','check_execution','steer_execution','cancel_execution','read_report'])assert.ok(tools.includes(name));
     const started=await client.tool('dispatch_execution',{kind:'open',phaseId:phase,sessionId:owner,baseRef:base});id=started.id;assert.equal(started.ok,true);
-    for(const role of ['implementer','reviewer']) {
+    for(const role of Object.keys(counts)) {
       await wait(()=>notes().some(note=>note.kind==='execution.progress'&&note.message.includes(`(${role})`)));
       const bound=roleState(role);
       const forged=await client.tool('steer_execution',{id,message:'forged target',expectAttemptId:'not-the-active-attempt'});assert.equal(forged.ok,false);
@@ -89,10 +99,10 @@ for(const mode of ['ordinary','reopened','cancelled']) {
       const terminal=notes().filter(note=>note.kind==='execution.terminal');assert.equal(terminal.length,1);assert.equal(terminal[0].registered,true);
       const view=await client.tool('check_execution',{id});assert.equal(view.status,'completed');
       await assert.rejects(client.tool('check_execution',{id,sessionId:'foreign-owner'}),/another coordinating session/);
-      const reportIds=[view.reportId,...['implementer','reviewer'].map(role=>roleState(role).attempt.outcome.reportId)];
+      const reportIds=[view.reportId,...Object.keys(counts).map(role=>roleState(role).attempt.outcome.reportId)];
       assert.ok(reportIds.every(Boolean));
       for(const reportId of reportIds){const report=await client.tool('read_report',{reportId});assert.equal(report.ok,true);assert.ok(report.text.length>0);}
-      for(const role of ['implementer','reviewer']){assert.equal(counts[role],7);assert.equal(roleState(role).attempt.outcome.revision,updates[role]);}
+      for(const role of Object.keys(counts)){assert.equal(counts[role],8);assert.equal(roleState(role).attempt.outcome.revision,updates[role]);}
       assert.equal(git(['show','main:proof.txt']),'implemented marker');
     }
     console.log(`PASS production MCP managed execution ${mode}: owned host, scoped role communication, truthful updates, durable reports and automatic notification (external queue captured)`);

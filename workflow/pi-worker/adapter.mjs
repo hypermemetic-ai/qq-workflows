@@ -537,7 +537,7 @@ function resolveCommunicationLaunch({ seat, env }) {
   const parsed = parseCommunicationBinding(env);
   if (!parsed.enabled) return { enabled: false };
   const binding = parsed.binding;
-  if (!["runner", "implementer", "reviewer"].includes(seat) || binding.role !== seat) {
+  if (!["runner", "test_owner", "implementer", "reviewer"].includes(seat) || binding.role !== seat) {
     throw Object.assign(
       new Error(`a communication binding is only valid when its role matches the actual seat (binding role '${binding.role}', seat '${seat}'); refusing instead of partially enabling communication`),
       { code: "binding_invalid_seat" },
@@ -732,15 +732,17 @@ async function runOneTurn(args, env) {
     throw Object.assign(new Error(`worker pi settings at '${effective.file}' do not match the configured context policy`), { code: "context_policy_mismatch" });
   }
 
-  const tools = communication.enabled
-    ? [...workerPiAllowedTools(args.seat), ...COMMUNICATION_TOOL_NAMES]
-    : workerPiAllowedTools(args.seat);
+  const managedTools = env.QQ_MANAGED_TEST_BINDING
+    ? args.seat === 'reviewer' ? ['select_tests','run_selected_tests','run_regression_checkpoint','submit_review']
+      : args.seat === 'implementer' ? ['run_selected_tests'] : ['select_tests','run_selected_tests'] : [];
+  const tools = [...workerPiAllowedTools(args.seat), ...managedTools,
+    ...(communication.enabled ? COMMUNICATION_TOOL_NAMES : [])];
   // The instruction surface must describe THIS runtime: the shared contract is
   // adapted (no MCP completion tool, the ZG tool's real name) and a reference
   // that cannot resolve refuses the launch before any work starts. A validated
   // communication-enabled runner additionally carries the coordinator-authored
   // communication paragraph, verbatim.
-  const seatInstructions = loadPiSeatInstructions(args.seat, { tools });
+  const seatInstructions = loadPiSeatInstructions(args.seat, { tools, managed: Boolean(env.QQ_MANAGED_TEST_BINDING) });
   const instructions = communication.enabled
     ? {
       ...seatInstructions,

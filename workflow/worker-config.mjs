@@ -91,14 +91,15 @@ export const WORKER_CODEX_HOME_ENV = "QQ_WORKER_CODEX_HOME";
 export const WORKER_CODEX_BIN_ENV = "QQ_WORKER_CODEX_BIN";
 
 // Seats served by the central worker configuration, with the role contract
-// file that supplies each seat's instructions. There are exactly three worker
-// seats. Research/investigation work is ordinary runner work
+// file that supplies each seat's instructions. The test owner is admitted only
+// for a bound managed OPEN Pi execution. Research/investigation work is ordinary runner work
 // (`dispatch_runner`); there is no separate researcher seat, so an explicit
 // `--seat researcher` is rejected by the seat validation below rather than
 // silently aliased onto the runner.
-export const WORKER_SEATS = ["runner", "implementer", "reviewer"];
+export const WORKER_SEATS = ["runner", "test_owner", "implementer", "reviewer"];
 export const WORKER_ROLE_FILES = {
   runner: "runner",
+  test_owner: "test-owner",
   implementer: "implementer",
   reviewer: "reviewer",
 };
@@ -141,6 +142,7 @@ export const WORKER_PI_AGENT_DIR_ENV = "QQ_WORKER_PI_AGENT_DIR";
 // allowlist).
 export const WORKER_PI_TOOLS = {
   runner: ["read", "grep", "find", "ls", "bash", "zvec_grep_search", "search_web"],
+  test_owner: ["read", "grep", "find", "ls", "bash", "edit", "write", "zvec_grep_search", "search_web", "select_tests", "run_selected_tests"],
   implementer: ["read", "grep", "find", "ls", "bash", "edit", "write", "zvec_grep_search", "search_web"],
   reviewer: ["read", "grep", "find", "ls", "bash", "zvec_grep_search", "search_web"],
 };
@@ -722,6 +724,9 @@ export function buildWorkerLaunch({
     throw new Error(`unknown worker seat '${seat}'`);
   }
   const resolved = config ? validateWorkerConfig(config) : loadWorkerConfig({ env });
+  if (seat === 'test_owner' && (resolved.harness !== 'pi' || !mcpEnv?.QQ_MANAGED_TEST_BINDING)) {
+    throw new Error('test_owner is available only with a bound managed OPEN Pi execution');
+  }
   if (resolved.harness === "pi") {
     return buildPiWorkerLaunch({ seat, cwd, prompt, env, resolved, mcpEnv });
   }
@@ -804,6 +809,7 @@ function workerIsolationEnv(env) {
   // the wrong session). buildPiWorkerLaunch re-adds it deliberately.
   delete childEnv.QQ_WORKFLOW_COMMUNICATION;
   delete childEnv.QQ_WORKER_RESULT_BINDING;
+  delete childEnv.QQ_MANAGED_TEST_BINDING;
   return childEnv;
 }
 
@@ -881,6 +887,7 @@ function buildPiWorkerLaunch({ seat, cwd, prompt, env, resolved, mcpEnv }) {
   ];
   const childEnv = workerIsolationEnv(env);
   if (mcpEnv?.QQ_WORKER_RESULT_BINDING) childEnv.QQ_WORKER_RESULT_BINDING = mcpEnv.QQ_WORKER_RESULT_BINDING;
+  if (mcpEnv?.QQ_MANAGED_TEST_BINDING) childEnv.QQ_MANAGED_TEST_BINDING = mcpEnv.QQ_MANAGED_TEST_BINDING;
   delete childEnv.CODEX_HOME;
   delete childEnv.QQ_WORKER_CODEX_HOME;
   // The worker's own pi config root: our explicit context policy plus in-place

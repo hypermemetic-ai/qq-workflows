@@ -212,10 +212,11 @@ for (const name of ["prepare_worktree", "dispatch_execution"]) {
   }
 }
 
-// 1b. Seat support table: every worker seat is served by the centrally
-// configured provider, with no source-level share of a provider table left.
+// 1b. Seat support table: the Pi-only managed test owner joins the existing
+// seats in the central configuration; legacy harness launches remain limited
+// to runner, implementer and reviewer.
 assert.deepEqual(PROVIDERS, ["muse", "gemini", "deepseek", "codex", "astra"], "the legacy provider vocabulary survives only for ticket parsing");
-assert.deepEqual(WORKER_SEATS, ["runner", "implementer", "reviewer"]);
+assert.deepEqual(WORKER_SEATS, ["runner", "test_owner", "implementer", "reviewer"]);
 
 // 1c. Exactly one delegation command per worker seat: the canonical
 // bin/worker-exec.mjs launcher, whose own resolution is the central contract.

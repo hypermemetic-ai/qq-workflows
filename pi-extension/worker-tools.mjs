@@ -69,11 +69,12 @@ import {
 import { COMMUNICATION_TOOL_NAMES, parseCommunicationBinding } from "../workflow/communication.mjs";
 import { registerCommunicationReceiver } from "../workflow/communication-receiver.mjs";
 import { createWebSearch, webSearchTool } from "./web-search.mjs";
+import { TEST_BINDING_ENV, selectManagedTests, runManagedTests, runManagedCheckpoint, recordManagedReview } from "../workflow/managed-testing.mjs";
 
 export const WORKER_TOOLS_EXTENSION_NAME = "qq-worker-tools";
 /** Worker seats that receive the shared search tool: every role, including the
  *  runner: investigation needs the same search access). */
-export const WORKER_SEARCH_SEATS = ["runner", "implementer", "reviewer"];
+export const WORKER_SEARCH_SEATS = ["runner", "test_owner", "implementer", "reviewer"];
 export const WORKER_SEARCH_TOOL_NAME = TOOL_NAME;
 
 function positiveInt(value, fallback) {
@@ -344,6 +345,8 @@ export function createWorkerToolsExtension(pi, { env = process.env, cwd = proces
     return live;
   }
 
+  const testing = env[TEST_BINDING_ENV] ? JSON.parse(env[TEST_BINDING_ENV]) : null;
+  if (testing && (testing.role !== binding.seat || testing.worktree !== binding.root || !["test_owner", "implementer", "reviewer"].includes(binding.seat))) throw new Error("managed test binding/seat mismatch");
   const communicationBinding = communication === undefined ? parseCommunicationBinding(env) : communication;
   const receiver = communicationBinding.enabled ? registerCommunicationReceiver(pi, { binding: communicationBinding.binding, env }) : null;
 
@@ -373,7 +376,30 @@ export function createWorkerToolsExtension(pi, { env = process.env, cwd = proces
     pi.registerTool({ ...tool, parameters: Type ? Type.Unsafe(tool.parameters) : tool.parameters });
     const web = webSearchTool(webSearch ?? createWebSearch());
     pi.registerTool({ ...web, parameters: Type ? Type.Unsafe(web.parameters) : web.parameters });
-    return { registered: receiver ? [tool.name, web.name, ...COMMUNICATION_TOOL_NAMES] : [tool.name, web.name], binding };
+    const registered = [tool.name, web.name];
+    if (testing) {
+      const expose = (name, description, parameters, execute) => {
+        pi.registerTool({ name, label: name, description, parameters: Type ? Type.Unsafe(parameters) : parameters,
+          async execute(_id, params, signal) {
+            try { return textResult(JSON.stringify(await execute(params, signal))); }
+            catch (error) { return textResult(`${name} refused: ${error.message}`, { isError: true }); }
+          } });
+        registered.push(name);
+      };
+      if (testing.role !== 'implementer') expose('select_tests', 'Record explicit focused test targets and rationale; reviewer may only add existing targets. Does not execute tests.',
+        { type:'object', properties:{ targets:{type:'array',items:{type:'string'}}, rationale:{type:'string'} }, required:['targets','rationale'], additionalProperties:false },
+        params => selectManagedTests(testing, params));
+      expose('run_selected_tests', 'Run the current focused selection for this bound seat and worktree; no command or target override. Initial test owner may explain expected pre-implementation failures.',
+        {type:'object',properties:{expectedRed:{type:'string'}},additionalProperties:false}, (params,signal) => runManagedTests(testing,{signal,expectedRed:params?.expectedRed ?? null}));
+      if (testing.role === 'reviewer') {
+        expose('run_regression_checkpoint', 'Run the ticket-authorized broad regression once this review round after current focused PASS and a recorded READY review assessment; returns checkpoint evidence.',
+          {type:'object',properties:{},additionalProperties:false}, (_params,signal) => runManagedCheckpoint(testing,{signal}));
+        expose('submit_review', 'Record review judgment: FAIL identifies material repair destinations; DECISION_NEEDED records a consequential unresolved agreement and recommendation; INCOMPLETE identifies verification still needed; suggestions do not block PASS. READY admits a required checkpoint after focused PASS.',
+          {type:'object',properties:{ verdict:{type:'string',enum:['READY','PASS','FAIL','DECISION_NEEDED','INCOMPLETE']}, implementation:{type:'array',items:{type:'string'}}, tests:{type:'array',items:{type:'string'}}, selection:{type:'array',items:{type:'string'}}, decision:{type:'object',properties:{question:{type:'string'},recommendation:{type:'string'}},required:['question','recommendation'],additionalProperties:false}, incomplete:{type:'array',items:{type:'string'}}, suggestions:{type:'array',items:{type:'string'}} },required:['verdict'],additionalProperties:false},
+          params => recordManagedReview(testing,params));
+      }
+    }
+    return { registered: receiver ? [...registered, ...COMMUNICATION_TOOL_NAMES] : registered, binding };
   }
 
   return {

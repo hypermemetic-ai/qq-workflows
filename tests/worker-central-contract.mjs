@@ -156,7 +156,7 @@ for (const seat of WORKER_SEATS) {
 }
 
 for (const [label, repo] of [["A", repoA], ["B", repoB]]) {
-  for (const seat of WORKER_SEATS) {
+  for (const seat of ['runner','implementer','reviewer']) {
     const launch = buildCentralWorkerLaunch({
       seat,
       cwd: repo,
@@ -322,7 +322,7 @@ function runWorkerExec(args, env = centralEnv) {
 // A retired seat is refused rather than aliased onto a real one.
 const retiredSeat = runWorkerExec(["--seat", "researcher", "--cwd", repoA, "--prompt", "x"]);
 assert.equal(retiredSeat.status, 2);
-assert.match(retiredSeat.stderr, /--seat must be one of runner, implementer, reviewer/);
+assert.match(retiredSeat.stderr, /--seat must be one of runner, test_owner, implementer, reviewer/);
 
 // A delegated runner must be given its identity and transport explicitly: an
 // ambient identity alone is not accepted.

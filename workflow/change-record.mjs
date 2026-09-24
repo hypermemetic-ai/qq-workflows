@@ -224,7 +224,7 @@ export const EVENT_KINDS = Object.freeze([
 ]);
 
 export const ACTOR_KINDS = Object.freeze(["runtime", "worker", "operator"]);
-export const JOB_ROLES = Object.freeze(["runner", "implementer", "reviewer", "execution"]);
+export const JOB_ROLES = Object.freeze(["runner", "test_owner", "implementer", "reviewer", "execution"]);
 export const OUTCOME_STATUSES = Object.freeze(["completed", "failed", "cancelled"]);
 
 // Payload keys that would impersonate envelope identity are reserved.
