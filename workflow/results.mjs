@@ -226,7 +226,7 @@ export function parseSeatResultBinding(env, role) {
   const raw=env?.[SEAT_RESULT_BINDING_ENV];
   if (!raw) return null;
   const binding=JSON.parse(raw);
-  if (binding?.schema !== 1 || binding.role !== role || !["implementer","reviewer"].includes(role)
+  if (binding?.schema !== 1 || binding.role !== role || !["test_owner","implementer","reviewer"].includes(role)
     || !isAbsolute(binding.path ?? "") || !/^[A-Za-z0-9._-]{1,128}$/.test(binding.jobId ?? "")
     || !/^[A-Za-z0-9._-]{1,128}$/.test(binding.attemptId ?? "")) throw new Error("invalid managed seat result binding");
   return binding;

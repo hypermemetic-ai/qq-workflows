@@ -103,6 +103,9 @@ function adapterEnv({ configFile, name, extra = {} }) {
     QQ_WORKER_PI_BIN: fakePi,
     QQ_WORKER_PI_AGENT_DIR: join(root, `agent-${name}`),
     QQ_ZVEC_GREP_SEAT: undefined,
+    QQ_WORKFLOW_COMMUNICATION: undefined,
+    QQ_MANAGED_TEST_BINDING: undefined,
+    QQ_WORKER_RESULT_BINDING: undefined,
     ...extra,
   };
 }
@@ -842,7 +845,7 @@ try {
 
   // S1. Shared ZG tool: every worker seat gets it, root-bound, with the injected
   // fields removed from the model-facing schema.
-  assert.deepEqual([...WORKER_SEARCH_SEATS].sort(), ["implementer", "reviewer", "runner"]);
+  assert.deepEqual([...WORKER_SEARCH_SEATS].sort(), ["implementer", "reviewer", "runner", "test_owner"]);
   const schema = workerSearchToolSchema();
   for (const field of INJECTED_SEARCH_FIELDS) {
     assert.equal(schema.properties?.[field], undefined, `'${field}' must not be model-settable`);

@@ -61,6 +61,7 @@ import {
 } from "../workflow/runner-lifecycle.mjs";
 import { steerRoleAttempt } from "../workflow/execution-authority.mjs";
 import {prepareManagedRoleCommunication} from "../workflow/execution-communication.mjs";
+import { TEST_BINDING_ENV, initManagedTesting, activateTestingSeat, managedTestingView, advanceManagedRound, managedLandingReady, workingState } from "../workflow/managed-testing.mjs";
 import {createMcpExecutionSurface} from "../workflow/mcp-executions.mjs";
 import { cancelExecutionHost } from "../workflow/execution-supervisor.mjs";
 import { stateDirFor } from "../workflow/session.mjs";
@@ -3176,6 +3177,8 @@ export async function runChildSubagent(execution, { role, cwd, prompt, provider,
   const seatResultDir=join(trackerStateDir(execution,{cwd}),"seat-results");
   mkdirSync(seatResultDir,{recursive:true,mode:0o700});
   const seatBinding={schema:1,role,jobId:seatJobId,attemptId:seatAttemptId,path:join(seatResultDir,`${seatJobId}-${seatAttemptId}.json`)};
+  const testBinding = execution.managedTesting
+    ? activateTestingSeat({stateDir:execution.managedTesting.stateDir,id:execution.id,role,jobId:seatJobId,attemptId:seatAttemptId}) : null;
   const attempt={role,jobId:seatJobId,attemptId:seatAttemptId,resultFile:seatBinding.path,startedAt:Date.now(),status:"running"};
   execution.childAttempts ??= [];
   execution.childAttempts.push(attempt);
@@ -3191,7 +3194,12 @@ export async function runChildSubagent(execution, { role, cwd, prompt, provider,
   let launch;
   let roleCommunication = null;
   try {
-    launch = buildCentralWorkerLaunch({ seat: role, cwd, prompt, env: process.env,mcpEnv:{QQ_WORKER_RESULT_BINDING:JSON.stringify(seatBinding)} });
+    launch = buildCentralWorkerLaunch({ seat: role, cwd, prompt, env: process.env,mcpEnv:{QQ_WORKER_RESULT_BINDING:JSON.stringify(seatBinding),...(testBinding ? {[TEST_BINDING_ENV]:testBinding} : {})} });
+    if(execution.authority?.recordEvidence && execution.managedTesting) {
+      const plan = {role, harness:launch.config.harness, provider:launch.config.provider, model:launch.config.model, reasoningEffort:launch.config.reasoningEffort};
+      const saved = execution.authority.recordEvidence({jobId:seatJobId,attemptId:seatAttemptId,label:'testing-seat-launch',note:JSON.stringify(plan)});
+      if (!saved.ok) throw new Error(`seat launch provenance unavailable: ${saved.reason}`);
+    }
     if(execution.authority?.recordEvidence) {
       const capability={supported:launch.config.harness==="pi",harness:launch.config.harness,
         reason:launch.config.harness==="pi"?null:`assignment updates and progress push are unsupported for harness '${launch.config.harness}'`};
@@ -3202,7 +3210,7 @@ export async function runChildSubagent(execution, { role, cwd, prompt, provider,
       roleCommunication = await prepareManagedRoleCommunication({stateDir:execution.authority.stateDir,executionId:execution.authority.executionId,
         jobId:seatJobId,attemptId:seatAttemptId,role});
       launch = buildCentralWorkerLaunch({seat:role,cwd,prompt,env:process.env,config:launch.config,
-        mcpEnv:{QQ_WORKER_RESULT_BINDING:JSON.stringify(seatBinding),...roleCommunication.bindingEnv}});
+        mcpEnv:{QQ_WORKER_RESULT_BINDING:JSON.stringify(seatBinding),...(testBinding ? {[TEST_BINDING_ENV]:testBinding} : {}),...roleCommunication.bindingEnv}});
     }
   } catch (err) {
     await roleCommunication?.release();
@@ -3284,6 +3292,7 @@ export async function runChildSubagent(execution, { role, cwd, prompt, provider,
     }
 
     child.on("close", (code, signal) => {
+      attempt.endedAt = Date.now(); attempt.elapsedMs = attempt.endedAt - attempt.startedAt;
       execution.activeChild = null;
       execution.activeTool = null;
       const finalOutput = finishCleanOutput();
@@ -3359,6 +3368,7 @@ export async function runChildSubagent(execution, { role, cwd, prompt, provider,
     });
 
     child.on("error", (err) => {
+      attempt.endedAt = Date.now(); attempt.elapsedMs = attempt.endedAt - attempt.startedAt;
       execution.activeChild = null;
       execution.activeTool = null;
       delete execution._cleanOutput;
@@ -3552,6 +3562,72 @@ export function handleExecutionStreamEvent(execution, event) {
   }
 }
 
+// Pi OPEN path. The durable managed-testing record is the admission surface;
+// prose verdicts never substitute for recorded focused/checkpoint evidence.
+async function runTestingWorkflow(execution, wt) {
+  const dir = execution.managedTesting.stateDir, id = execution.id;
+  const ticket = join(wt.cwd,'.architect','ticket.md');
+  const firstJob = role => execution.childAttempts?.find(a => a.role === role)?.jobId ?? null;
+  const fail = async (phase,message,status='incomplete') => {
+    execution.status = 'failed'; execution.error = {phase,status,message};
+    await notifyTerminal(execution,'execution'); return null;
+  };
+  const seat = async (role,prompt,retry=false) => {
+    execution.phase = role === 'test_owner' ? 'testing' : role === 'implementer' ? 'implementing' : 'reviewing';
+    addTrajectory(execution,{action:`${role}${retry?'_repair':''}_started`,timestamp:Date.now()});
+    const result = await runChildSubagent(execution,{role,cwd:wt.cwd,prompt,
+      provider:resolveSeatProvider(role, execution.args),
+      ...(retry ? {roleJobId:firstJob(role)} : {})});
+    touchActivity(execution); assertExecutionActive(execution);
+    return result;
+  };
+  const ref = result => result?.reportId ? `report:${result.reportId}` : 'managed testing record';
+  const evidence = () => join(dir,'managed-tests',`${id}.json`);
+  const initial = await seat('test_owner',`Prepare retained tests and the focused selection for '${ticket}' in '${wt.cwd}'. Use \`select_tests\` and \`run_selected_tests\`; record expected pre-implementation failures.`);
+  if (!initial.ok) return fail('testing',initial.error?.message ?? 'test preparation did not complete');
+  let state = managedTestingView(dir,id);
+  const initialRun = [...state.runs].reverse().find(r => r.role === 'test_owner');
+  if (!state.selection || !initialRun || !['expected-red','pass'].includes(initialRun.status) || initialRun.hash !== workingState(state) || JSON.stringify(initialRun.selection) !== JSON.stringify(state.selection.targets)) return fail('testing','test owner did not execute the current selection in the tested working state');
+  let implementation = await seat('implementer',`Implement '${ticket}' in '${wt.cwd}'. Use \`run_selected_tests\` with the selection and test-owner evidence at '${ref(initial)}'.`);
+  if (!implementation.ok) return fail('implementing',implementation.error?.message ?? 'implementation did not complete');
+  // A completed failing focused run is evidence for the first reviewer, not
+  // grounds to skip review. PASS is still gated by reviewer focused evidence.
+  let reviewerSummary = null;
+  for (let round = 0; round < 2; round++) {
+    const prompt = round === 0
+      ? `Review '${ticket}' in '${wt.cwd}' using \`select_tests\` (for relevant existing tests) and \`run_selected_tests\` with execution evidence at '${evidence()}'. Submit your findings through the workflow's review interface and assess any required checkpoint result before your final verdict. Incomplete verification is not a code defect.`
+      : `Address the final review findings for the single shared repair round: ${evidence()}.\nCurrent managed evidence: ${evidence()}.`;
+    const reviewResult = await seat('reviewer',prompt,round > 0);
+    if (!reviewResult.ok) return fail('reviewing',reviewResult.error?.message ?? 'review process failed');
+    state = managedTestingView(dir,id);
+    const review = state.reviews.at(-1);
+    if (!review || review.round !== round || review.hash !== workingState(state)) return fail('reviewing','review verdict absent or stale');
+    if (review.verdict === 'PASS') { reviewerSummary = reviewResult.output; break; }
+    if (review.verdict === 'DECISION_NEEDED') return fail('reviewing',`Architect decision needed: ${review.decision.question} Recommended option: ${review.decision.recommendation}`,'decision-needed');
+    if (review.verdict !== 'FAIL') return fail('reviewing',`verification incomplete: ${review.groups.incomplete.join('; ') || 'no complete reviewer verdict'}; no product defect inferred`);
+    if (round === 1) return fail('reviewing','unresolved second-round findings require Architect decision','failed');
+    advanceManagedRound(dir,id);
+    // One coordinated repair: test owner first, then implementer if needed.
+    if (review.groups.tests.length || review.groups.selection.length) {
+      const testRepair = await seat('test_owner',`Address the test findings for the single shared repair round: ${evidence()}.\nCurrent managed evidence: ${evidence()}.`,true);
+      if (!testRepair.ok) return fail('testing',testRepair.error?.message ?? 'test repair incomplete');
+      state = managedTestingView(dir,id);
+      const repairedRun = [...state.runs].reverse().find(r => r.role === 'test_owner' && r.round === 1);
+      if (!repairedRun || !['pass','fail'].includes(repairedRun.status) || repairedRun.hash !== workingState(state) || JSON.stringify(repairedRun.selection) !== JSON.stringify(state.selection.targets)) return fail('testing','test repair has no complete execution of the current selection');
+    }
+    state = managedTestingView(dir,id);
+    const needImplementation = review.groups.implementation.length || state.runs.at(-1)?.status === 'expected-red' || state.runs.at(-1)?.status === 'fail';
+    if (needImplementation) {
+      implementation = await seat('implementer',`Address the implementation findings for the single shared repair round: ${evidence()}.\nCurrent managed evidence: ${evidence()}.`,true);
+      if (!implementation.ok) return fail('implementing',implementation.error?.message ?? 'implementation repair incomplete');
+      // Even an unsuccessful repair gets its final review; the second reviewer
+      // decides whether findings remain, without admitting a third repair.
+    }
+  }
+  if (!managedLandingReady(dir,id)) return fail('reviewing','review PASS lacks current managed verification');
+  return { implementerRes:implementation, reviewerSummary };
+}
+
 async function runExecutionPipeline(execution) {
   const { root, kind, sessionId, args } = execution;
   const phaseId = execution.phaseId ?? sessionId;
@@ -3578,6 +3654,27 @@ async function runExecutionPipeline(execution) {
     timestamp: Date.now(),
   });
 
+  if (kind === 'open') {
+    const ticket = readFileSync(join(wt.cwd,'.architect','ticket.md'),'utf8');
+    const worker = loadWorkerConfig({env:process.env});
+    const harness = worker.harness;
+    if (harness === 'pi') {
+      const stateDir = trackerStateDir(execution,{cwd:wt.cwd});
+      initManagedTesting({stateDir,id:execution.id,root,worktree:wt.cwd,ticket});
+      execution.managedTesting = {stateDir};
+    } else if (/Broad regression:\s*(?:none|required)|requires broad source regression for this project with the authorized workflow-owned command `npm test`|broad source regression command for this project is `npm test`/i.test(ticket)) {
+      throw new Error(`managed OPEN testing is unsupported on configured harness '${harness}'; no test owner or managed tool controls were launched`);
+    }
+  }
+
+  let managedResult = null;
+  if (execution.managedTesting) {
+    managedResult = await runTestingWorkflow(execution,wt);
+    if (!managedResult) return;
+  }
+
+  let legacyImplementerRes, legacyReviewerSummary = null;
+  if (!managedResult) {
   execution.phase = "implementing";
   const implementerProvider = resolveSeatProvider("implementer", args);
   addTrajectory(execution, {
@@ -3776,6 +3873,11 @@ async function runExecutionPipeline(execution) {
     }
   }
 
+  legacyImplementerRes = implementerRes;
+  legacyReviewerSummary = reviewerSummary;
+  } // end legacy seat flow
+  const implementerRes = managedResult?.implementerRes ?? legacyImplementerRes;
+  const reviewerSummary = managedResult?.reviewerSummary ?? legacyReviewerSummary;
   assertExecutionActive(execution);
   const hasChanges = await hasImplementationChanges(wt.cwd, wt.branch);
   assertExecutionActive(execution);
@@ -3797,6 +3899,11 @@ async function runExecutionPipeline(execution) {
     return;
   }
 
+  if (execution.managedTesting && !managedLandingReady(execution.managedTesting.stateDir,execution.id)) {
+    execution.status = 'failed';
+    execution.error = {phase:'landing',status:'incomplete',message:'managed test evidence is missing or stale; landing refused'};
+    await notifyTerminal(execution,'execution'); return;
+  }
   // The landing-admission boundary is serialized with cancellation and update
   // state through the authoritative record: an accepted cancellation or a
   // pending unacknowledged update newer than the validated result BLOCKS
@@ -3855,6 +3962,7 @@ async function runExecutionPipeline(execution) {
       : `Worktree ${wt.branch} successfully verified and landed.`,
     landingOutcome: landResult,
     childAttempts: execution.childAttempts ?? [],
+    ...(execution.managedTesting ? { managedTesting: { path:join(execution.managedTesting.stateDir,'managed-tests',`${execution.id}.json`), evidence:managedTestingView(execution.managedTesting.stateDir,execution.id) } } : {}),
     implementerSummary: sanitizeHeadTail(implementerRes.output, { headLen: 2000, tailLen: 2000 }),
     reviewerSummary: reviewerSummary !== null ? sanitizeHeadTail(reviewerSummary, { headLen: 2000, tailLen: 2000 }) : null,
   };

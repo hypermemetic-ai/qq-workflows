@@ -269,9 +269,13 @@ research — investigation, spike, or benchmark.
 
 The objective and situation to change; state the desired outcome and hard boundaries.
 
+## Acceptance
+
+State what must be true for this change to be acceptable in its intended use. Include only constraints, assumptions and accepted limitations that materially affect that judgment.
+
 ## Testing plan
 
-Completion evidence and feasible checks that gate acceptance; note material failures to avoid.
+Describe the evidence and checks needed to establish acceptance, including meaningful failure cases. Identify mandatory verification and any agreed limits on it.
 
 ## [open]
 

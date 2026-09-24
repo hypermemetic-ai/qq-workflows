@@ -69,11 +69,11 @@ function assertDeepSeekLaunch(launch) {
   assert.doesNotMatch(argv, ALT_PROVIDER, `worker argv must not name an alternative provider: ${argv}`);
 }
 
-// L1. Every worker seat launches through the same pinned DeepSeek path. There
-// are exactly three seats: the retired `researcher` seat is rejected, never
-// aliased.
-assert.deepEqual(WORKER_SEATS, ["runner", "implementer", "reviewer"], "there are exactly three worker seats");
-for (const seat of WORKER_SEATS) {
+// L1. Existing seats retain the same pinned DeepSeek path. The managed OPEN
+// test-owner seat is Pi-only and cannot silently launch this legacy harness.
+assert.deepEqual(WORKER_SEATS, ["runner", "test_owner", "implementer", "reviewer"], "managed OPEN adds one test-owner seat");
+assert.throws(() => buildWorkerLaunch({seat:'test_owner',cwd:'/tmp',prompt:'hi',env}),/bound managed OPEN Pi/);
+for (const seat of ['runner','implementer','reviewer']) {
   const launch = buildWorkerLaunch({ seat, cwd: "/tmp", prompt: "hi", env, mcpEnv: { QQ_RUNNER_ID: "r1", QQ_RUNNER_RESULT_FILE: "/tmp/r1.json" } });
   assertDeepSeekLaunch(launch);
   assert.equal(launch.config.provider, "deepseek");
@@ -193,7 +193,7 @@ for (const seat of WORKER_SEATS) {
   // Absent field: no default is invented and no override is emitted.
   const defaultConfig = loadWorkerConfig({ env, file: writeEffortConfig("absent") });
   assert.equal(defaultConfig.reasoningEffort, null);
-  for (const seat of WORKER_SEATS) {
+  for (const seat of ['runner','implementer','reviewer']) {
     const launch = buildWorkerLaunch({ seat, cwd: "/tmp", prompt: "hi", env, config: { ...baseConfig } });
     assert.equal(launch.config.reasoningEffort, null);
     assert.ok(
@@ -203,7 +203,7 @@ for (const seat of WORKER_SEATS) {
   }
 
   // Exact `max` override (never xhigh/ultra) for every configured seat.
-  for (const seat of WORKER_SEATS) {
+  for (const seat of ['runner','implementer','reviewer']) {
     const launch = buildWorkerLaunch({
       seat, cwd: "/tmp", prompt: "hi", env,
       config: { ...baseConfig, reasoning_effort: "max" },
@@ -316,7 +316,7 @@ for (const seat of WORKER_SEATS) {
     { env, encoding: "utf8" },
   );
   assert.equal(refused.status, 2, `worker-exec must reject --seat researcher: ${refused.stderr}`);
-  assert.match(refused.stderr, /--seat must be one of runner, implementer, reviewer/);
+  assert.match(refused.stderr, /--seat must be one of runner, test_owner, implementer, reviewer/);
   assert.doesNotMatch(refused.stderr, /--seat researcher/);
 }
 

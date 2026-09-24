@@ -75,7 +75,7 @@ function clampText(value, max) {
   return text.length <= max ? text : `${text.slice(0, max)}… [${text.length - max} chars omitted]`;
 }
 
-export const ROLE_SEATS = Object.freeze(["implementer", "reviewer"]);
+export const ROLE_SEATS = Object.freeze(["test_owner", "implementer", "reviewer"]);
 export const DEFAULT_RUNTIME_ACTOR = "qq-execution-authority";
 
 // Bounded view caps (check_execution projections never grow without bound).

@@ -44,6 +44,10 @@ import { FINAL_RESPONSE_MAX_CHARS_LABEL } from "../workflow/limits.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "qq-deepseek-minimal-"));
 const ADAPTER = WORKER_DEEPSEEK_ADAPTER;
+// The legacy harness keeps its existing seats; the managed OPEN test owner is
+// a Pi-only, bound seat and must not launch through DeepSeek Minimal.
+const LEGACY_SEATS = ["runner", "implementer", "reviewer"];
+assert.deepEqual(WORKER_SEATS, ["runner", "test_owner", "implementer", "reviewer"]);
 const BASE = {
   harness: "deepseek-minimal",
   provider: "deepseek",
@@ -150,7 +154,7 @@ function writeConfig(name, extra) {
   }
 }
 
-// 4. Production launch spec: every seat launches the adapter with an explicit
+// 4. Production launch spec: every legacy seat launches the adapter with an explicit
 // seat and no Codex argv, and the credential never rides in argv.
 {
   const configFile = writeConfig("launch", { harness: "deepseek-minimal", reasoning_effort: "max", max_output_tokens: 2048 });
@@ -182,7 +186,7 @@ function writeConfig(name, extra) {
 
   const runnerId = "offline-runner-1";
   const resultFile = join(tmpdir(), `qq-runner-result-${runnerId}.json`);
-  for (const seat of WORKER_SEATS) {
+  for (const seat of LEGACY_SEATS) {
     const launch = buildWorkerLaunch({
       seat, cwd: root, prompt: "hi", env, config: resolved,
       mcpEnv: { QQ_RUNNER_ID: runnerId, QQ_RUNNER_RESULT_FILE: resultFile },
@@ -226,6 +230,11 @@ function writeConfig(name, extra) {
     /bound runner identity/u,
   );
   assert.throws(
+    () => buildWorkerLaunch({ seat: "test_owner", cwd: root, prompt: "hi", env, config: resolved }),
+    /test_owner is available only with a bound managed OPEN Pi execution/u,
+    "the DeepSeek harness must not launch the Pi-only managed test owner",
+  );
+  assert.throws(
     () => buildWorkerLaunch({ seat: "runner", cwd: root, prompt: "hi", env, config: resolved, mcpEnv: { QQ_RUNNER_ID: runnerId } }),
     /explicit result transport path/u,
   );
@@ -244,7 +253,7 @@ function writeConfig(name, extra) {
 
   const worktree = join(root, "search-worktree");
   mkdirSync(worktree, { recursive: true });
-  for (const seat of WORKER_SEATS) {
+  for (const seat of LEGACY_SEATS) {
     const binding = resolveSearchBinding(seat, worktree);
     if (seat === "runner") assert.equal(binding, null, "the runner seat never binds search");
     else assert.deepEqual(binding, { root: worktree, seat }, `${seat} must bind its own worktree`);
@@ -323,7 +332,7 @@ function writeConfig(name, extra) {
 // the shortened role contracts have no Completion heading, but every seat must
 // still learn the closing-response transport, final cap and artifact guidance.
 {
-  for (const seat of WORKER_SEATS) {
+  for (const seat of LEGACY_SEATS) {
     const body = loadRoleContract(seat).body;
     assert.doesNotMatch(body, /^## Completion$/mu, `${seat} has the approved concise role body`);
     const effective = adaptSeatInstructions(seat, body);
@@ -358,7 +367,7 @@ function writeConfig(name, extra) {
       label: "retired researcher seat",
       args: ["--production", "--seat", "researcher", "--cwd", root, "--prompt", "p"],
       env: { DEEPSEEK_API_KEY: "sentinel-deepseek-key" },
-      code: /--seat must be one of runner, implementer, reviewer \(got "researcher"\)/u,
+      code: /--seat must be one of runner, test_owner, implementer, reviewer \(got "researcher"\)/u,
     },
     { label: "runner without identity", args: ["--production", "--seat", "runner", "--cwd", root, "--prompt", "p"], code: /runner_identity_required/u },
     {

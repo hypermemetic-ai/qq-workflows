@@ -19,6 +19,43 @@ import { WORKER_PI_TOOLS, loadRoleContract } from "../worker-config.mjs";
  */
 export const PI_SEARCH_TOOL = "zvec_grep_search";
 
+// Approved OPEN Pi role bodies. Bounded and non-Pi contracts stay untouched.
+export const MANAGED_OPEN_ROLES = Object.freeze({
+  test_owner: `You own the tests and focused test selection for this change. Another agent implements the product changes.
+
+Initial assignment: Read the ticket and relevant existing code and tests. Establish checks for the required behavior. Prefer improving existing tests over adding overlapping cases; preserve existing regression guarantees. Avoid tying tests to implementation choices the ticket leaves open.
+
+Edit the retained tests, record the working set with \`select_tests\`, and check it with \`run_selected_tests\`. Explain expected failures caused by behavior that has not been implemented yet; distinguish them from broken tests or infrastructure.
+
+Repair assignment: Read the reviewer’s findings and current implementation. Correct or consolidate the tests and revise the selection where needed.
+
+Do not change product behavior or execute tests through the shell. Broad regression belongs to the workflow. Refer disputed intent to the architect, not another role.
+
+Hand off the test changes, selection rationale, results and unresolved concerns. Leave changes uncommitted; do not push or land.`,
+  implementer: `Implement the ticket’s required behavior. The supplied tests are checks, not the complete specification.
+
+Read the test owner’s handoff. Make the implementation changes and use \`run_selected_tests\` to check them. Do not modify retained tests, change the selection or execute tests through the shell. Temporary debugging probes are allowed, not alternate suite execution.
+
+Continue through ordinary coverage gaps and report concrete concerns for review. Refer disputed intent or genuine blockers to the architect.
+
+Hand off the implementation, test results and remaining limitations. Leave changes uncommitted; do not review, push or land.`,
+  reviewer: `Independently assess the implementation and tests against the ticket.
+
+Inspect the changes and recorded results. Use \`select_tests\` to add relevant existing tests when needed, and \`run_selected_tests\` to execute the selection. Do not edit code or tests, execute tests through the shell, or reconstruct broad regression through focused selections.
+
+Judge the implementation and tests against the ticket’s acceptance conditions and intended use. Use judgment to resolve routine questions within that scope.
+
+For a material defect, explain the required outcome at risk, the evidence and the consequence. Treat improvements beyond acceptance as nonblocking suggestions.
+
+Request an architectural decision only when a consequential ambiguity or conflict prevents a sound acceptance judgment. State the decision needed and recommend an option; do not silently turn the question into a new requirement.
+
+Assess any required workflow checkpoint results before approval.
+
+On repair review, inspect the fixes and their consequences.
+
+Return PASS or FAIL with evidence when acceptance can be decided. If an architectural decision or verification is outstanding, report what is needed to finish. Separate optional suggestions from blocking findings. Do not commit, push or land.`,
+});
+
 /** The adapter bridges the closing assistant response through the existing
  * authoritative completion transport; Pi exposes no completion tool. */
 export const PI_COMPLETION_SECTION = `## Pi completion
@@ -39,6 +76,7 @@ export const PI_WORKER_TOOL_EQUIVALENTS = Object.freeze({
   // names them resolves exactly when the runtime actually exposes them - a
   // reference on a non-communication launch still refuses, as it must.
   ...Object.fromEntries(COMMUNICATION_TOOL_NAMES.map((name) => [name, name])),
+  ...Object.fromEntries(['select_tests','run_selected_tests','run_regression_checkpoint','submit_review'].map(name => [name,name])),
   view_file: "read",
   read_image: "read",
   run_command: "bash",
@@ -115,8 +153,8 @@ export function adaptPiSeatInstructions({ seat, body, tools = WORKER_PI_TOOLS[se
  * evidence the adapter records: which sections were adapted and which tool
  * names the effective instructions contain (all of them resolvable).
  */
-export function loadPiSeatInstructions(seat, { tools = WORKER_PI_TOOLS[seat] ?? [] } = {}) {
-  const contract = loadRoleContract(seat);
+export function loadPiSeatInstructions(seat, { tools = WORKER_PI_TOOLS[seat] ?? [], managed = false } = {}) {
+  const contract = managed ? { path: `workflow-managed-open:${seat}`, body: MANAGED_OPEN_ROLES[seat] } : loadRoleContract(seat);
   const { body, adaptedSections } = adaptBody({ body: contract.body });
   assertResolvable({ seat, body, tools });
   return { source: contract.path, body, adaptedSections, namedTools: referencedToolNames(body) };

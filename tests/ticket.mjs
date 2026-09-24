@@ -24,7 +24,9 @@ const template = await loadPackagedTemplate();
 assert.equal(readFileSync(join(import.meta.dirname, "..", ".architect", "template.md"), "utf8"), template,
   "repository and packaged fallback templates stay identical");
 assert.match(template, /desired outcome and hard boundaries/);
-assert.match(template, /Completion evidence/);
+assert.match(template, /State what must be true for this change to be acceptable in its intended use/);
+assert.ok(template.indexOf('## Acceptance') < template.indexOf('## Testing plan'));
+assert.match(template, /Describe the evidence and checks needed to establish acceptance, including meaningful failure cases/);
 assert.match(template, /Leave implementation methods and routine decisions to the worker/);
 assert.match(template, /^# Ticket/m);
 assert.match(template, /^## Kind/m);
@@ -139,13 +141,13 @@ try {
 
 // Test listSections and replaceSection
 const sections = ticketModule.listSections(template);
-assert.deepEqual(sections, ["Kind", "Problem", "Testing plan", "[open]"]);
+assert.deepEqual(sections, ["Kind", "Problem", "Acceptance", "Testing plan", "[open]"]);
 
 // replaceSection: existing section
 const updatedProblem = ticketModule.replaceSection(template, "Problem", "Brand new problem statement.");
 assert.equal(ticketModule.extractSection(updatedProblem, "Problem"), "Brand new problem statement.");
-assert.equal(ticketModule.extractSection(updatedProblem, "Testing plan"), "Completion evidence and feasible checks that gate acceptance; note material failures to avoid.");
-assert.deepEqual(ticketModule.listSections(updatedProblem), ["Kind", "Problem", "Testing plan", "[open]"]);
+assert.equal(ticketModule.extractSection(updatedProblem, "Testing plan"), "Describe the evidence and checks needed to establish acceptance, including meaningful failure cases. Identify mandatory verification and any agreed limits on it.");
+assert.deepEqual(ticketModule.listSections(updatedProblem), ["Kind", "Problem", "Acceptance", "Testing plan", "[open]"]);
 
 // replaceSection: section with brackets
 const updatedOpen = ticketModule.replaceSection(template, "open", "Custom open section content.");
@@ -154,7 +156,7 @@ assert.equal(ticketModule.extractSection(updatedOpen, "[open]"), "Custom open se
 // replaceSection: new section appended
 const appended = ticketModule.replaceSection(template, "Acceptance Criteria", "All tests pass.");
 assert.equal(ticketModule.extractSection(appended, "Acceptance Criteria"), "All tests pass.");
-assert.deepEqual(ticketModule.listSections(appended), ["Kind", "Problem", "Testing plan", "[open]", "Acceptance Criteria"]);
+assert.deepEqual(ticketModule.listSections(appended), ["Kind", "Problem", "Acceptance", "Testing plan", "[open]", "Acceptance Criteria"]);
 
 // archiveAndClearTicket test
 const archiveDir = mkdtempSync(join(tmpdir(), "architect-ticket-archive-"));
@@ -173,7 +175,7 @@ try {
   // Active ticket was reset to template
   const readBack = await ticketModule.readTicket(archiveDir, sess);
   assert.ok(readBack.content.includes("# Ticket"));
-  assert.deepEqual(readBack.sections, ["Kind", "Problem", "Testing plan", "[open]"]);
+  assert.deepEqual(readBack.sections, ["Kind", "Problem", "Acceptance", "Testing plan", "[open]"]);
 
   // Archiving when already template does nothing
   const archAgain = await ticketModule.archiveAndClearTicket(archiveDir, sess);
