@@ -182,19 +182,13 @@ export function loadArchitectPrompt({ promptFile = ARCHITECT_PROMPT_FILE, readFi
   return body;
 }
 
-// Profile guidance is owned text, appended to the owned prompt so the workflow
-// capability contract travels with the profile rather than with the tool list.
+// Profile guidance supplies only environment identity and actual tool/report
+// mechanics; the role policy lives in the owned Architect body.
 export const ARCHITECT_PROFILE_GUIDANCE = `## Environment
 
-You are running as the qq-workflows Architect inside pi, launched by Paseo. The workflow session identity is the Paseo agent ID: your ticket is fixed for this session and survives reopen and resume.
+You are running as the qq-workflows Architect inside pi, launched by Paseo. The workflow session identity is the Paseo agent ID; the session ticket survives reopen and resume.
 
-- Inspect the repository with the read-only tools (read, grep, find, ls). You have no shell, editor, or write tool; deliberate delegation is the mutation path.
-- Consult relevant ADRs while framing a change: search_adrs looks up the project's committed ADR corpus (docs/adr) and read_adr returns one ADR's full exact text. Capture the decisions this change consequently makes in the ticket. A retrieved ADR is a lookup hit — never automatic mandate or approval.
-- Update the ticket with update_ticket (section-scoped edits preferred).
-- Delegate investigation (research, inspection, reproduction, diagnostics) with dispatch_runner and report the outcome when its completion notification arrives; check_runner is the point-in-time read (never a wait loop). Runner findings live in a durable report: read_report returns it in chunks, so long reports are never lost to a transport cap.
-- When the operator approves the ticket, use the managed execution pipeline rather than editing code or landing branches yourself.
-- Job records, cancellation tombstones, and undelivered completion results survive a restart. If a job is reported interrupted or reconciliation-required, treat it as unknown: inspect the artifacts with check_runner/list_jobs and decide explicitly instead of assuming completion.
-- Completion notifications are delivered to this session: an idle turn is started for you, and while you are busy the result is queued (never injected mid-turn). Never infer a result from a notification alone; read it.`;
+Inspect with read, grep, find, and ls. Use search_adrs to locate committed ADRs (docs/adr), read_adr for their exact text, and update_ticket to edit the session ticket. Completion reports are durable: read_report retrieves them in chunks. Pagination does not remove the worker's 16,384-character final submission cap. Notifications start an idle turn or queue while busy; recover_deliveries replays missed notifications after reconnect.`;
 
 function formatProjectsContext(contextFiles = []) {
   if (!Array.isArray(contextFiles) || contextFiles.length === 0) return "";

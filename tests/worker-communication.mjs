@@ -557,6 +557,10 @@ try {
     }
     assert.equal(summary.instructions.communicationRoleParagraph, true, "the role paragraph flag is recorded");
     assert.ok(summary.piArgs.some((arg) => typeof arg === "string" && arg.includes(COMMUNICATION_ROLE_PARAGRAPH)), "the coordinator-authored paragraph reaches the runtime verbatim");
+    assert.match(COMMUNICATION_ROLE_PARAGRAPH, /unsolicited messages only for decision-requiring/);
+    assert.match(COMMUNICATION_ROLE_PARAGRAPH, /kind `blocker`/);
+    assert.match(COMMUNICATION_ROLE_PARAGRAPH, /16,384 characters/);
+    assert.doesNotMatch(COMMUNICATION_ROLE_PARAGRAPH, /meaningful milestones|Use progress for concrete work/);
     const attemptView = crHandle().views.attempt(JOB_ID, "attempt-1");
     assert.equal(attemptView.started.identity.piSession, SESSION_A, "the record bound the fake runtime's observed session");
     assert.equal(attemptView.started.identity.recipient, `agents/${SESSION_A}`, "the recorded recipient is derived, never supplied");

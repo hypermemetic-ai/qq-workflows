@@ -18,10 +18,10 @@ import {
   buildWorkerLaunch,
   loadWorkerConfig,
   loadRoleContract,
+  ensureWorkerRoleInstructions,
   workerRoleInstructionsPath,
 } from "../workflow/worker-config.mjs";
 import { runChildSubagent } from "../bin/mcp-server.mjs";
-import { FINAL_RESPONSE_MAX_CHARS_LABEL } from "../workflow/limits.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "qq-worker-launch-"));
 const configFile = join(root, "worker-config.json");
@@ -236,40 +236,28 @@ for (const seat of WORKER_SEATS) {
   assert.equal(typoConfig.reasoningEffort, null);
 }
 
-// L4. Role contracts are the repository contracts (prose preserved, frontmatter
-// dropped); the runner contract requires complete_task.
+// L4. Source contracts are concise; runtime-specific completion is materialized
+// for legacy/MCP seats only.
 {
   const runnerRole = loadRoleContract("runner");
-  // The runner contract requires complete_task, names the exact qualified
-  // client spelling mcp__qq_workflows__complete_task (not a discover-your-
-  // spelling deferral), and tells the worker to correct and retry a rejected
-  // call.
-  assert.match(runnerRole.body, /call `mcp__qq_workflows__complete_task`/);
-  assert.match(runnerRole.body, /`complete_task`/);
-  assert.doesNotMatch(runnerRole.body, /whatever qualified\/namespaced spelling/);
-  assert.doesNotMatch(runnerRole.body, /your harness registers/);
-  assert.match(runnerRole.body, /correct the call, and retry/);
+  assert.match(runnerRole.body, /Follow the runtime's/);
+  assert.doesNotMatch(runnerRole.body, /complete_task|16,384/);
   assert.ok(!runnerRole.body.startsWith("---"), "role frontmatter must be dropped");
-  // Every seat states the one shared final-answer cap (characters, not
-  // tokens); none may restate a stale literal.
-  const capPhrase = new RegExp(`${FINAL_RESPONSE_MAX_CHARS_LABEL}-character`, "u");
-  assert.match(runnerRole.body, capPhrase);
-  assert.match(runnerRole.body, /fail-closed, never truncated/u);
-  assert.doesNotMatch(runnerRole.body, /32,768/u);
   const implementerRole = loadRoleContract("implementer");
   assert.match(implementerRole.body, /You are the implementer/);
-  assert.match(implementerRole.body, capPhrase);
-  assert.doesNotMatch(implementerRole.body, /32,768/u);
   const reviewerRole = loadRoleContract("reviewer");
-  assert.match(reviewerRole.body, /Verdict: PASS or FAIL/);
-  assert.match(reviewerRole.body, capPhrase);
-  assert.doesNotMatch(reviewerRole.body, /32,768/u);
+  assert.match(reviewerRole.body, /Return PASS or FAIL/);
 
   const launch = buildWorkerLaunch({ seat: "runner", cwd: "/tmp", prompt: "x", env });
   const instructionsPath = workerRoleInstructionsPath("runner", env);
   assert.ok(launch.args.join(" ").includes(instructionsPath), "launch must point at the materialized role contract");
   assert.ok(existsSync(instructionsPath));
-  assert.match(readFileSync(instructionsPath, "utf8"), /complete_task/);
+  assert.match(readFileSync(instructionsPath, "utf8"), /mcp__qq_workflows__complete_task/);
+  assert.match(readFileSync(instructionsPath, "utf8"), /16,384 characters.*artifact files/);
+  for (const seat of ["implementer", "reviewer"]) {
+    const path = ensureWorkerRoleInstructions(seat, env);
+    assert.match(readFileSync(path, "utf8"), /final assistant response.*16,384 characters.*artifact files/);
+  }
 }
 
 // L5. runChildSubagent ignores its provider argument and always launches the

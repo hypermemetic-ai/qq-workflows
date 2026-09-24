@@ -229,11 +229,11 @@ try {
     // The runtime receives the ADAPTED contract and the seat's own allowlist: the
     // instruction surface and the executable surface agree.
     const summary = JSON.parse(readFileSync(summaryFile, "utf8"));
-    assert.deepEqual(summary.instructions.adaptedSections, ["Completion"]);
+    assert.deepEqual(summary.instructions.adaptedSections, ["Pi completion"]);
     assert.deepEqual(summary.instructions.namedTools, []);
     const runnerSystemPrompt = summary.piArgs[summary.piArgs.indexOf("--append-system-prompt") + 1];
     assert.equal(runnerSystemPrompt.includes("complete_task"), false, "the runtime is never told to call a tool it does not expose");
-    assert.match(runnerSystemPrompt, /closing assistant message/);
+    assert.match(runnerSystemPrompt, /closing assistant response/);
     assert.equal(
       summary.piArgs[summary.piArgs.indexOf("--tools") + 1],
       WORKER_PI_TOOLS.runner.join(","),
@@ -786,63 +786,29 @@ try {
   assert.equal(WORKER_PI_TOOLS.runner.includes("edit") || WORKER_PI_TOOLS.runner.includes("write"), false, "the runner does not own mutation");
   assert.equal(WORKER_PI_TOOLS.reviewer.includes("edit") || WORKER_PI_TOOLS.reviewer.includes("write"), false, "the reviewer does not change project code");
 
-  // A11. Effective seat instructions: the shared contract (written for a seat
-  // that has the qq-workflows MCP server) is adapted to this runtime, so what a
-  // seat is told and what it can actually call cannot contradict each other.
+  // A11. The approved role body is retained and runtime completion appended;
+  // Pi has no MCP completion tool, including on communication-disabled seats.
   const rawRunnerContract = loadRoleContract("runner").body;
-  assert.match(rawRunnerContract, /mcp__qq_workflows__complete_task/, "the shared contract still mandates complete_task where an MCP server exposes it");
   for (const seat of ["runner", "implementer", "reviewer"]) {
     const effective = loadPiSeatInstructions(seat);
     assert.equal(effective.source, loadRoleContract(seat).path);
-    assert.equal(/mcp__/u.test(effective.body), false, `${seat} instructions must name no MCP tool: this session has no MCP server`);
-    assert.equal(effective.body.includes("complete_task"), false, `${seat} instructions must not mandate a tool this runtime cannot expose`);
-    assert.ok(effective.body.includes(FINAL_RESPONSE_MAX_CHARS_LABEL), `${seat} instructions must state the shared narrative cap`);
+    assert.ok(effective.body.startsWith(loadRoleContract(seat).body));
+    assert.deepEqual(effective.adaptedSections, ["Pi completion"]);
+    assert.match(effective.body, /closing assistant response/);
+    assert.match(effective.body, /artifact files/);
+    assert.ok(effective.body.includes(FINAL_RESPONSE_MAX_CHARS_LABEL));
+    assert.doesNotMatch(effective.body, /mcp__|## Teaching|milestone/);
     assert.deepEqual(unavailablePiSeatTools({ body: effective.body, tools: WORKER_PI_TOOLS[seat] }), []);
-    for (const name of effective.namedTools) {
-      assert.ok(WORKER_PI_TOOLS[seat].includes(name), `tool '${name}' named by the ${seat} instructions must exist in that seat's Pi allowlist`);
-    }
   }
-  const effectiveRunner = loadPiSeatInstructions("runner");
-  assert.deepEqual(effectiveRunner.adaptedSections, ["Completion"]);
-  assert.deepEqual(effectiveRunner.namedTools, []);
-  assert.match(effectiveRunner.body, /write your final answer as the closing assistant message/);
-  assert.match(effectiveRunner.body, /no completion tool/);
-  assert.ok(
-    effectiveRunner.body.startsWith(rawRunnerContract.slice(0, rawRunnerContract.indexOf("## Completion"))),
-    "role boundaries stay verbatim: only the completion section is adapted",
-  );
-  const effectiveImplementer = loadPiSeatInstructions("implementer");
-  assert.deepEqual(effectiveImplementer.adaptedSections, ["Workspace search"]);
-  assert.deepEqual(effectiveImplementer.namedTools, [PI_SEARCH_TOOL]);
-  assert.match(effectiveImplementer.body, /This runtime exposes `zvec_grep_search`/);
-  assert.match(effectiveImplementer.body, /Read the actual files before editing them\./, "seat-specific wording survives adaptation");
-
-  // The shared contract as written is refused for this runtime, and the
-  // adaptation is exactly what removes the impossible reference.
-  assert.deepEqual(
-    unavailablePiSeatTools({ body: rawRunnerContract, tools: WORKER_PI_TOOLS.runner }),
-    ["complete_task", "mcp__qq_workflows__complete_task"],
-    "the shared runner contract names a tool this runtime cannot expose",
-  );
-  const adaptedRunner = adaptPiSeatInstructions({ seat: "runner", body: rawRunnerContract, tools: WORKER_PI_TOOLS.runner });
-  assert.equal(adaptedRunner.includes("complete_task"), false);
-  assert.deepEqual(unavailablePiSeatTools({ body: adaptedRunner, tools: WORKER_PI_TOOLS.runner }), []);
-
-  // The refusal guard is not vacuous: a tool named OUTSIDE the adapted sections
-  // (an MCP spelling this runtime has no server for, or a known tool the seat is
-  // not allowed) refuses the launch instead of reaching the model.
-  const foreignMcp = rawRunnerContract.replace("## Role & Boundaries", "## Role & Boundaries\n- Land your branch with `mcp__qq_workflows__land` when done.");
-  assert.throws(
-    () => adaptPiSeatInstructions({ seat: "runner", body: foreignMcp, tools: WORKER_PI_TOOLS.runner }),
-    (error) => error.code === "instruction_tool_unavailable"
-      && /mcp__qq_workflows__land/u.test(error.message)
-      && /refusing instead of instructing an impossible action/u.test(error.message),
-  );
-  const foreignKnownTool = rawRunnerContract.replace("## Role & Boundaries", "## Role & Boundaries\n- Persist notes with `write_to_file`.");
-  assert.throws(
-    () => adaptPiSeatInstructions({ seat: "runner", body: foreignKnownTool, tools: WORKER_PI_TOOLS.runner }),
-    (error) => error.code === "instruction_tool_unavailable" && /write_to_file/u.test(error.message),
-  );
+  assert.deepEqual(loadPiSeatInstructions("runner").namedTools, []);
+  assert.equal(adaptPiSeatInstructions({ seat: "runner", body: rawRunnerContract }), loadPiSeatInstructions("runner").body);
+  const foreignMcp = `${rawRunnerContract}\nLand with \`mcp__qq_workflows__land\`.`;
+  assert.throws(() => adaptPiSeatInstructions({ seat: "runner", body: foreignMcp }),
+    (error) => error.code === "instruction_tool_unavailable" && /mcp__qq_workflows__land/.test(error.message));
+  const foreignKnownTool = `${rawRunnerContract}\nPersist with \`write_to_file\`.`;
+  assert.throws(() => adaptPiSeatInstructions({ seat: "runner", body: foreignKnownTool }),
+    (error) => error.code === "instruction_tool_unavailable" && /write_to_file/.test(error.message));
+  assert.ok(adaptPiSeatInstructions({ seat: "implementer", body: foreignKnownTool }).includes("write_to_file"));
   for (const seat of ["runner", "implementer", "reviewer"]) {
     const body = "Use `search_web` for citations; `read_image` for images.";
     assert.deepEqual(unavailablePiSeatTools({ body, tools: WORKER_PI_TOOLS[seat] }), []);

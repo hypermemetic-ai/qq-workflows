@@ -4,121 +4,21 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = join(here, "..");
-
-const ACTIVE_ROLES = ["architect", "implementer", "reviewer"];
-const RETIRED_ROLES = ["teacher", "researcher"];
-
-// 1. Verify retired roles do not exist
-for (const role of RETIRED_ROLES) {
-  assert.ok(!existsSync(join(repoRoot, "agents", role)), `Retired role ${role} must not exist`);
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const anchors = {
+  architect: ["Own scope and consequential tradeoffs", "After explicit operator approval", "recover missed deliveries"],
+  runner: ["Own the assigned investigation", "Distinguish observations from recommendations"],
+  implementer: ["using the supplied ticket path", "Leave changes uncommitted", "Do not claim verification"],
+  reviewer: ["independent reviewer", "Own verification through completion", "Return PASS or FAIL"],
+};
+for (const role of ["architect", "runner", "implementer", "reviewer"]) {
+  const file = join(root, "agents", role, "agent.md");
+  const text = readFileSync(file, "utf8");
+  const [frontmatter, body] = text.split("\n---\n\n");
+  assert.match(frontmatter, new RegExp(`^---\\nname: ${role}\\n`));
+  assert.match(frontmatter, /inheritMcp: true/);
+  for (const anchor of anchors[role]) assert.ok(body.includes(anchor), `${role}: ${anchor}`);
+  assert.doesNotMatch(body, /## Teaching|milestone|mcp__/, `no old policy in ${role}`);
 }
-
-// 2. Verify all active roles exist and validate frontmatter & tools
-for (const role of ACTIVE_ROLES) {
-  const agentPath = join(repoRoot, "agents", role, "agent.md");
-  assert.ok(existsSync(agentPath), `agent.md must exist for ${role}`);
-  const content = readFileSync(agentPath, "utf8");
-  assert.match(content, /^---\n/, `frontmatter start in ${role}`);
-  assert.match(content, new RegExp(`name:\\s*${role}`), `name in ${role}`);
-  assert.match(content, /inheritMcp:\s*true/, `inheritMcp must be in ${role}`);
-}
-
-// 3. Architect checks
-const architectContent = readFileSync(join(repoRoot, "agents", "architect", "agent.md"), "utf8");
-assert.match(architectContent, /mainAgent:\s*true/);
-assert.match(architectContent, /inheritMcp:\s*true/);
-assert.match(architectContent, /write_to_file/);
-assert.doesNotMatch(architectContent, /replace_file_content/);
-assert.doesNotMatch(architectContent, /ticket_read/);
-assert.doesNotMatch(architectContent, /ticket_write/);
-assert.match(architectContent, /run_command/);
-assert.match(architectContent, /invoke_subagent/);
-assert.match(architectContent, /send_message/);
-assert.match(architectContent, /view_file/);
-assert.match(architectContent, /grep_search/);
-assert.match(architectContent, /find_by_name/);
-assert.match(architectContent, /list_dir/);
-assert.match(architectContent, /read_url_content/);
-assert.match(architectContent, /search_web/);
-
-const frontmatterMatch = architectContent.match(/^---\n([\s\S]*?)\n---/);
-const frontmatter = frontmatterMatch ? frontmatterMatch[1] : "";
-const toolsMatch = frontmatter.match(/tools:\n([\s\S]*?)(?:\n[a-zA-Z0-9_-]+:|$)/);
-const toolsList = toolsMatch
-  ? toolsMatch[1]
-      .split("\n")
-      .filter((l) => l.trim().startsWith("- "))
-      .map((l) => l.trim().replace(/^-\s*/, ""))
-  : [];
-assert.deepEqual(toolsList, [
-  "view_file",
-  "write_to_file",
-  "run_command",
-  "grep_search",
-  "find_by_name",
-  "list_dir",
-  "read_url_content",
-  "search_web",
-  "invoke_subagent",
-  "send_message",
-]);
-
-assert.match(architectContent, /The ticket is `\.architect\/tickets\/<sessionId>\.md`/);
-assert.match(architectContent, /## Teaching/);
-assert.match(architectContent, /teach until the user is informed enough to decide/);
-assert.match(architectContent, /call `dispatch_execution\(kind\)`/);
-// The blocking wait tools are absent from the active instruction surface.
-assert.doesNotMatch(architectContent, /await_execution/);
-assert.doesNotMatch(architectContent, /await_runner/);
-assert.match(architectContent, /There is no wait tool/);
-assert.match(architectContent, /check_execution/);
-assert.match(architectContent, /dispatch_runner/);
-assert.match(architectContent, /Ask questions one at a time with recommendations\./);
-assert.match(architectContent, /Populate ticket and testing plan collaboratively with the operator\./);
-assert.doesNotMatch(architectContent, /RequestFeedback: false/);
-assert.match(
-  architectContent,
-  /Do not call `dispatch_execution` until the operator explicitly approves\./,
-);
-assert.match(architectContent, /When the operator approves the ticket, call `dispatch_execution\(kind\)`\./);
-assert.doesNotMatch(architectContent, /prepare_worktree/);
-assert.doesNotMatch(architectContent, /call `land`/);
-
-// 4. Implementer checks
-const implementerContent = readFileSync(join(repoRoot, "agents", "implementer", "agent.md"), "utf8");
-assert.match(implementerContent, /write_to_file/);
-assert.match(implementerContent, /replace_file_content/);
-assert.match(implementerContent, /run_command/);
-assert.match(implementerContent, /Implement \.architect\/ticket\.md\./);
-assert.match(implementerContent, /Leave changes uncommitted\. Do not commit, push, review, or land\./);
-assert.match(implementerContent, /report your answer/);
-assert.doesNotMatch(implementerContent, /call done/);
-
-// 5. Reviewer checks
-const reviewerContent = readFileSync(join(repoRoot, "agents", "reviewer", "agent.md"), "utf8");
-assert.match(reviewerContent, /run_command/);
-assert.doesNotMatch(reviewerContent, /write_to_file/);
-assert.doesNotMatch(reviewerContent, /replace_file_content/);
-assert.match(reviewerContent, /Do not commit, push, or land\./);
-assert.doesNotMatch(reviewerContent, /Empty findings means it passed/);
-assert.match(reviewerContent, /Execute the testing plan to completion/);
-assert.match(reviewerContent, /Actively await background verification tasks/);
-assert.match(reviewerContent, /Incomplete tests are not code defects/);
-assert.match(reviewerContent, /Verdict: PASS or FAIL/);
-assert.doesNotMatch(reviewerContent, /call done/);
-
-// 6. Runner role checks: the completion contract names the exact qualified
-// client spelling (no "discover your namespaced spelling" deferral), while the
-// registered MCP tool name stays `complete_task`.
-const runnerContent = readFileSync(join(repoRoot, "agents", "runner", "agent.md"), "utf8");
-assert.match(runnerContent, /mcp__qq_workflows__complete_task/, "runner role must name the exact qualified complete_task tool");
-assert.match(runnerContent, /call `mcp__qq_workflows__complete_task`/, "runner role must tell the worker to call the completion tool");
-assert.match(runnerContent, /`complete_task`/, "runner role must still reference the registered tool name");
-assert.match(runnerContent, /Calling `complete_task` is strictly required/, "the completion call must stay strictly required");
-assert.doesNotMatch(runnerContent, /whatever qualified\/namespaced spelling/, "the discover-your-spelling deferral must be gone");
-assert.doesNotMatch(runnerContent, /your harness registers/, "no harness-specific spelling deferral");
-assert.match(runnerContent, /correct the call, and retry/, "runner role must tell the worker to correct and retry a rejected call");
-
+for (const retired of ["teacher", "researcher"]) assert.equal(existsSync(join(root, "agents", retired)), false);
 console.log("roles tests passed successfully.");

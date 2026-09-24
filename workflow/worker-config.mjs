@@ -674,9 +674,13 @@ export function workerRoleInstructionsPath(seat, env = process.env) {
 // Returns the absolute path used by model_instructions_file.
 export function ensureWorkerRoleInstructions(seat, env = process.env) {
   const { body } = loadRoleContract(seat);
+  const completion = seat === "runner"
+    ? "For legacy/MCP runner sessions, complete with `mcp__qq_workflows__complete_task` before terminating. If a call is rejected, correct it and retry."
+    : "Complete with your final assistant response.";
+  const instructions = `${body}\n\n${completion} Keep the final response within 16,384 characters (over-length submissions fail closed); reference artifact files for larger outputs when task scope permits them.`;
   const path = workerRoleInstructionsPath(seat, env);
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${body}\n`, "utf8");
+  writeFileSync(path, `${instructions}\n`, "utf8");
   return path;
 }
 

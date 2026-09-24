@@ -77,16 +77,17 @@ assert.equal(cleanOutput(parseLines(ok.result.stdout)), "FINAL: runner completed
 assert.equal(ok.summary.terminal, "completed");
 assert.equal(ok.summary.outcome, "completed");
 assert.equal(ok.summary.foreignEvents, 0);
-// The runner role contract names a completion tool; the prototype must hand the
-// model the adapted completion instruction instead (no unavailable tool).
+// The concise runner role has no completion heading; the harness must still
+// hand the model its closing-response instruction (no unavailable tool).
 const rawRunnerRole = loadRoleContract("runner").body;
-assert.match(rawRunnerRole, /complete_task/u, "the production runner contract does name the completion tool");
+assert.doesNotMatch(rawRunnerRole, /## Completion|complete_task/u);
 const adapted = adaptSeatInstructions("runner", rawRunnerRole);
 const sha256 = (text) => createHash("sha256").update(Buffer.from(text)).digest("hex");
 assert.equal(ok.firstRequest.systemPromptSha256, sha256(adapted), "the runtime must receive the adapted runner instructions");
 assert.equal(ok.firstRequest.systemPromptMentionsCompletionTool, false, "the runtime prompt must not name an unavailable completion tool");
 assert.ok(!adapted.includes("mcp__qq_workflows"), "the qualified completion tool name must be gone");
-assert.match(adapted, /bounded, capable engineering and research runner/u, "role boundaries are preserved verbatim");
+assert.ok(adapted.startsWith(rawRunnerRole.trimEnd()), "role boundaries are preserved verbatim");
+assert.match(adapted, /closing assistant response/u);
 
 // --- B. cap boundary: exactly the cap succeeds, one char past fails closed ---
 const atCapText = "A".repeat(COMPLETE_TASK_RESPONSE_MAX);
