@@ -28,7 +28,7 @@ export async function isGitRepo(cwd) {
 // Porcelain -z gives literal, repository-relative names (including the second
 // name of a rename/copy), without quoting or newline ambiguity. Do not pass
 // ignored operational directories as negative pathspecs to status or add.
-async function changedPaths(cwd) {
+export async function changedPaths(cwd) {
   const { stdout } = await exec("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd, encoding: "utf8" });
   if (!stdout) return [];
   const fields = stdout.split("\0");
@@ -49,7 +49,10 @@ async function changedPaths(cwd) {
   return changes;
 }
 
-function operationalPath(path) {
+// The runner profile is project-owned source, but only at this exact
+// repository-relative path. Every other architect/index path remains operational.
+export function operationalPath(path) {
+  if (path === ".architect/test-runner.json") return false;
   return [".zvec-grep", ".architect"].some(dir => path === dir || path.startsWith(`${dir}/`));
 }
 

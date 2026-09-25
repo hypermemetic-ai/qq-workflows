@@ -329,6 +329,38 @@ const TICKET_A = "# Phase A ticket\n\nExact ticket content — byte for byte.\nI
   pass("(a) ff landing identity, owner/phase binding, exact source text/provenance and full report refs");
 }
 
+// Config-only source landing is retained as verified changed-path evidence;
+// operational ticket/state/index and lookalikes do not inflate its count.
+{
+  const phaseId = "phasecfg001-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const executionId = "execcfg-0001";
+  const { repo, stateDir } = await mkRepo({ phaseId, ticketText: "# Config onboarding ticket\n" });
+  writeFileSync(join(repo, ".gitignore"), ".state/\n.zvec-grep/\n.architect/state/\n");
+  await git(repo, ["add", ".gitignore"]);
+  await git(repo, ["commit", "-m", "ignore operational records"]);
+  seedManaged({ stateDir, executionId, root: repo, phaseId, withUpdates: false });
+  const wt = await createWorktree(repo, { kind: "bounded", sessionId: phaseId });
+  mkdirSync(join(wt.cwd, ".architect", "test-runner.json.extra"));
+  mkdirSync(join(wt.cwd, ".zvec-grep"));
+  writeFileSync(join(wt.cwd, ".architect", "test-runner.json"), '{"schema":1}\n');
+  writeFileSync(join(wt.cwd, ".architect", "test-runner.json.extra", "nested"), "operational\n");
+  writeFileSync(join(wt.cwd, ".architect", "ticket.md"), "operational ticket\n");
+  writeFileSync(join(wt.cwd, ".zvec-grep", "index"), "operational index\n");
+  const hook = createAdrCurationHook({ stateDir, executionId, owner: OWNER, phaseId, root: repo });
+  const captured = await hook.capture({ mainRoot: repo, worktree: wt.cwd, branch: wt.branch });
+  const source = readAdrSourceManifest(stateDir, captured.manifestId);
+  assert.deepEqual(source.landing.intended.changedPaths, { verified: true, count: 1 },
+    "only exact runner config contributes to source-change provenance");
+  const result = await landWorktree(repo, { worktree: wt.cwd, branch: wt.branch, curation: hook, message: "onboard runner" });
+  assert.equal(result.method, "ff");
+  assert.equal(await git(repo, ["show", "main:.architect/test-runner.json"]), '{"schema":1}');
+  assert.deepEqual((await git(repo, ["diff-tree", "--no-commit-id", "--name-only", "-r", "main"])).split("\n"), [".architect/test-runner.json"]);
+  const manifest = readAdrSourceManifest(stateDir, result.curation.manifestId);
+  assert.deepEqual(manifest.landing.intended.changedPaths, { verified: true, count: 1 });
+  assert.equal(result.curation.status, "pending", "config onboarding retains evidence but does not require a new ADR gate");
+  pass("(a) config-only landing counts as one verified source path, excluding operational records");
+}
+
 // ---------------------------------------------------------------------------
 // (a) Successful PR landing through the deterministic fake `gh` seam
 // ---------------------------------------------------------------------------
