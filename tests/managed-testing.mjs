@@ -146,7 +146,7 @@ try {
 // Exercise the real managed OPEN seat order, not just the testing record API.
 // An initial implementation failure must reach the reviewer and the single
 // coordinated repair; an unsuccessful repair must reach final review, not land.
-for (const scenario of ['repair-passes', 'repair-fails', 'selection-drift', 'repair-selection-drift', 'config-drift']) {
+for (const scenario of ['repair-passes', 'repair-fails', 'selection-drift', 'repair-selection-drift', 'config-drift', 'initial-blocked', 'repair-blocked']) {
   const repairPasses = scenario === 'repair-passes';
   const repo = mkdtempSync(join(tmpdir(),'managed-pipeline-'));
   const previous = Object.fromEntries(['QQ_WORKER_CONFIG_FILE','QQ_WORKFLOW_STATE_DIR'].map(key => [key,process.env[key]]));
@@ -186,6 +186,8 @@ for (const scenario of ['repair-passes', 'repair-fails', 'selection-drift', 'rep
         if (scenario === 'selection-drift' || (scenario === 'repair-selection-drift' && repair))
           selectManagedTests(binding,{targets:['focused.mjs','other.mjs'],rationale:'widened but not executed'});
       } else if (role === 'implementer') {
+        if (scenario === 'initial-blocked' || (scenario === 'repair-blocked' && roles.filter(r => r === 'implementer').length === 2))
+          return {ok:false,status:'blocked',output:'Blocked; work remains in the worktree.',error:{message:'terminal implementer blocker'}};
         writeFileSync(join(cwd,'app.txt'),roles.filter(r => r === 'implementer').length === 2 && repairPasses ? 'v2' : 'v1');
         outcomes.push((await runManagedTests(binding)).status);
       } else {
@@ -204,7 +206,15 @@ for (const scenario of ['repair-passes', 'repair-fails', 'selection-drift', 'rep
       await new Promise(resolve => setTimeout(resolve,25));
     } while (Date.now()<deadline);
     assert.equal(done.pipelineSettled,true,'managed fixture must settle');
-    if (scenario === 'config-drift') {
+    if (scenario === 'initial-blocked') {
+      assert.deepEqual(roles,['test_owner','implementer'],'a terminal initial blocker stops before review');
+      assert.equal(done.status,'failed');
+      assert.match(done.error.message,/blocker/);
+    } else if (scenario === 'repair-blocked') {
+      assert.deepEqual(roles,['test_owner','implementer','reviewer','implementer'],'a terminal repair blocker stops before second review');
+      assert.equal(done.status,'failed');
+      assert.match(done.error.message,/blocker/);
+    } else if (scenario === 'config-drift') {
       assert.deepEqual(roles,['test_owner'],'modified test authority must stop before implementation');
       assert.deepEqual(outcomes,['expected-red']);
       assert.equal(done.status,'failed');

@@ -28,7 +28,7 @@ const fixture=await localPiProvider({respond:async({body})=>{
  if(role==='implementer'){
   if(call===1){entered=true;await gate;return {toolCalls:[{name:'write',arguments:{path:join(match[2],'proof.txt'),content:'finished\n'}}]};}
   if(call===2)return {toolCalls:[{name:'run_selected_tests'}]};
-  return {text:'Implemented proof.txt and checked the selected test.'};
+  return {text:'Implemented proof.txt and checked the selected test.\n<!-- qq-final-disposition: completed -->'};
  }
  if(call===1)return {toolCalls:[{name:'run_selected_tests'}]};
  if(call===2)return {toolCalls:[{name:'submit_review',arguments:{verdict:'PASS'}}]};

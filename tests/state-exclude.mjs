@@ -173,7 +173,14 @@ try {
       const ledgerBytes = readFileSync(ledger);
       const branch = `architect/open/direct-${config}-${route}`;
       const dest = worktreePathFor(fixture, branch);
-      if (route === "reused") git(fixture, "worktree", "add", "-q", "-b", branch, dest, "HEAD");
+      if (route === "reused") {
+        // Create the linked checkout before exclude registration so this route
+        // still tests an untouched effective exclude. Record its creation base:
+        // production reuse must not infer provenance from the current HEAD.
+        const creationBase = git(fixture, "rev-parse", "HEAD");
+        git(fixture, "worktree", "add", "-q", "-b", branch, dest, creationBase);
+        git(fixture, "update-ref", `refs/qq-workflow/bases/${branch}`, creationBase);
+      }
       const gitCwd = route === "new" ? fixture : dest;
       const exclude = resolve(gitCwd, git(gitCwd, "rev-parse", "--git-path", "info/exclude"));
       // Also cover an absent exclude file (Git init normally creates one).

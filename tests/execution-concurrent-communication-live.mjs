@@ -31,7 +31,7 @@ fixture=await localPiProvider({respond:async({body})=>{
   if(call===4){await gates[label];return {toolCalls:[{name:'workflow_read_assignment'}]};}
   if(call===5){assert.match(JSON.stringify(body.messages),new RegExp(`Amendment ${label}`));return {toolCalls:[{name:'workflow_acknowledge_assignment',arguments:{revision:revisions[label]}}]};}
   if(call===6)return {toolCalls:[{name:'write',arguments:{path:join(match[1],`${label}.txt`),content:`${label} done\n`}}]};
-  assert.equal(call,7,'no retry/relaunch');return {text:`Implemented ${label}.txt and acknowledged Amendment ${label}.`};
+  assert.equal(call,7,'no retry/relaunch');return {text:`Implemented ${label}.txt and acknowledged Amendment ${label}.\n<!-- qq-final-disposition: completed -->`};
 }});
 if(!fixture){console.log('SKIP concurrent execution communication: installed Pi unavailable');process.exit(0);}
 const git=args=>execFileSync('git',args,{cwd:fixture.root,encoding:'utf8'}).trim();

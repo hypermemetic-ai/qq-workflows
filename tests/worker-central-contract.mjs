@@ -384,10 +384,39 @@ assert.match(missingRuntime.stderr, /no prepared runtime at .*setup-runtime\.mjs
   assert.ok(!argv.includes("--preset"));
 }
 
+function installManagedTestFixture(repo) {
+  mkdirSync(join(repo, "tests"), { recursive: true });
+  mkdirSync(join(repo, ".architect"), { recursive: true });
+  writeFileSync(join(repo, "tests", "focused.mjs"), "// Fixture contract: passing test evidence is real.\n", "utf8");
+  writeFileSync(join(repo, ".architect", "test-runner.json"), JSON.stringify({
+    schema: 1, command: "node", args: [], directory: "tests", extension: ".mjs",
+  }));
+}
+
+function writeManagedDouble(path, log, { failReview }) {
+  // Write both authoritative bindings. stdout alone must not become a
+  // managed implementation completion, even when a process exits cleanly.
+  writeFileSync(path, `#!/usr/bin/env node\n` +
+    `import {appendFileSync,writeFileSync} from 'node:fs';\n` +
+    `import {writeSeatResult} from ${JSON.stringify(new URL('../workflow/results.mjs', import.meta.url).href)};\n` +
+    `import {selectManagedTests,runManagedTests,recordManagedReview} from ${JSON.stringify(new URL('../workflow/managed-testing.mjs', import.meta.url).href)};\n` +
+    `const args=process.argv.slice(2),seat=args[args.indexOf('--seat')+1];\n` +
+    `appendFileSync(${JSON.stringify(log)},seat+'\\t'+args.join(' ')+'\\n');\n` +
+    `const testing=JSON.parse(process.env.QQ_MANAGED_TEST_BINDING);\n` +
+    `if(seat==='test_owner')selectManagedTests(testing,{targets:['focused.mjs'],rationale:'real central launch and review evidence'});\n` +
+    `if(seat==='implementer')writeFileSync('implementation.txt','implemented\\n');\n` +
+    `const run=await runManagedTests(testing);\n` +
+    `if(run.status!=='pass')throw Error('fixture focused test failed: '+run.status);\n` +
+    `if(seat==='reviewer')recordManagedReview(testing,${failReview ? "{verdict:'FAIL',implementation:['review found an implementation defect']}" : "{verdict:'PASS'}"});\n` +
+    `writeSeatResult(JSON.parse(process.env.QQ_WORKER_RESULT_BINDING),{response:seat==='reviewer'?${JSON.stringify(failReview ? 'Verdict: FAIL\nDefect found.' : 'Verdict: PASS\nVerified.')}:'Implemented the ticket.',...(seat==='implementer'?{disposition:'completed'}:{})});\n`, "utf8");
+  execFileSync("chmod", ["+x", path]);
+}
+
 // ---------------------------------------------------------------------------
 // C4. The managed execution pipeline uses the SAME central contract for the
 // implementer and reviewer seats, refuses provider overrides, and still lands
-// only after a passing review.
+// only after a passing review. The deterministic worker doubles exercise the
+// managed OPEN test gates through their real bound selection/review interfaces.
 // ---------------------------------------------------------------------------
 {
   // Provider overrides are refused before any worktree, implementer, or
@@ -414,34 +443,28 @@ assert.match(missingRuntime.stderr, /no prepared runtime at .*setup-runtime\.mjs
   execFileSync("git", ["-C", managedRepo, "config", "user.name", "Central Contract Test"]);
   execFileSync("git", ["-C", managedRepo, "config", "user.email", "central@example.invalid"]);
   writeFileSync(join(managedRepo, "README.md"), "# managed\n", "utf8");
-  execFileSync("git", ["-C", managedRepo, "add", "README.md"]);
+  installManagedTestFixture(managedRepo);
+  execFileSync("git", ["-C", managedRepo, "add", "README.md", "tests", ".architect/test-runner.json"]);
   execFileSync("git", ["-C", managedRepo, "commit", "-q", "-m", "init"]);
+  // Managed implementer success requires the Pi harness's attempt-bound seat
+  // result, not an exit-0 stdout event. C1-C3 retain the DeepSeek pins above;
+  // this separate central config exercises the actual managed result protocol.
+  const managedConfig = join(staging, "managed-worker-config.json");
+  writeFileSync(managedConfig, `${JSON.stringify({ harness: "pi", provider: "muse", model: "muse-spark-1.3-contributor", reasoning_effort: "high", env_key: "MUSE_API_KEY" })}\n`);
   const managedSession = "cccccccc-1111-2222-3333-444444444444";
   mkdirSync(join(managedRepo, ".architect", "tickets"), { recursive: true });
-  writeFileSync(join(managedRepo, ".architect", "tickets", `${managedSession}.md`), "# Managed Ticket\n\n## Kind\nopen\n", "utf8");
+  writeFileSync(join(managedRepo, ".architect", "tickets", `${managedSession}.md`), "# Managed Ticket\n\n## Kind\nopen\n\n## Testing plan\nBroad regression: none\n", "utf8");
 
   const seatLog = join(staging, "managed-seats.txt");
-  const managedDouble = join(staging, "managed-worker-double.sh");
-  writeFileSync(
-    managedDouble,
-    `#!/usr/bin/env bash\n` +
-    `seat=""; prev=""\n` +
-    `for arg in "$@"; do if [ "$prev" = "--seat" ]; then seat="$arg"; fi; prev="$arg"; done\n` +
-    `printf '%s\\t%s\\n' "$seat" "$*" >> "${seatLog}"\n` +
-    `case "$seat" in\n` +
-    `  implementer) echo "implemented" > implementation.txt; printf '%s\\n' '{"payload_type":"run.terminal.completed","payload":{"kind":"run_terminal","terminal":"completed","text":"Implemented the ticket."}}' ;;\n` +
-    `  reviewer) printf '%s\\n' '{"payload_type":"run.terminal.completed","payload":{"kind":"run_terminal","terminal":"completed","text":"Verdict: PASS\\nVerified."}}' ;;\n` +
-    `  *) printf '%s\\n' '{"payload_type":"run.terminal.completed","payload":{"kind":"run_terminal","terminal":"completed","text":"unknown seat"}}' ;;\n` +
-    `esac\n`,
-    "utf8",
-  );
+  const managedDouble = join(staging, "managed-worker-double.mjs");
+  writeManagedDouble(managedDouble, seatLog, { failReview: false });
   execFileSync("chmod", ["+x", managedDouble]);
 
   const previousSubagentBin = process.env.QQ_SUBAGENT_BIN;
   const previousConfig = process.env.QQ_WORKER_CONFIG_FILE;
   const previousRuntime = process.env.QQ_DEEPSEEK_RUNTIME_ROOT;
   process.env.QQ_SUBAGENT_BIN = managedDouble;
-  process.env.QQ_WORKER_CONFIG_FILE = configFile;
+  process.env.QQ_WORKER_CONFIG_FILE = managedConfig;
   process.env.QQ_DEEPSEEK_RUNTIME_ROOT = runtimeRoot;
   try {
     const started = await dispatchExecution({ kind: "open", sessionId: managedSession, cwd: managedRepo });
@@ -455,14 +478,15 @@ assert.match(missingRuntime.stderr, /no prepared runtime at .*setup-runtime\.mjs
     assert.ok(notifications.some((entry) => entry.trackerId === started.id && entry.message.includes("successfully verified and landed")),
       "the simulated landing notification must be captured inside the test");
     const seats = readFileSync(seatLog, "utf8").trim().split("\n").map((line) => line.split("\t"));
-    assert.deepEqual(seats.map(([seat]) => seat), ["implementer", "reviewer"], "both managed seats launch through the central contract, in order");
+    assert.deepEqual(seats.map(([seat]) => seat), ["test_owner", "implementer", "reviewer"], "all managed seats launch through the central contract, in order");
     for (const [, argv] of seats) {
-      assert.ok(argv.includes(WORKER_DEEPSEEK_ADAPTER), `the central adapter is the managed worker entry: ${argv}`);
+      assert.ok(argv.includes(WORKER_PI_ADAPTER), `the configured central adapter is the managed worker entry: ${argv}`);
       assert.ok(argv.includes("--production"), "production mode is explicit");
       assert.ok(!argv.includes("--preset"), "no provider preset may appear");
     }
-    assert.ok(seats[0][1].includes("--seat implementer"));
-    assert.ok(seats[1][1].includes("--seat reviewer"));
+    assert.ok(seats[0][1].includes("--seat test_owner"));
+    assert.ok(seats[1][1].includes("--seat implementer"));
+    assert.ok(seats[2][1].includes("--seat reviewer"));
     // Review-before-land: the worktree landed only after the PASS verdict.
     const landed = execFileSync("git", ["-C", managedRepo, "log", "--oneline", "-1"], { encoding: "utf8" });
     assert.ok(/implement|open\/cccc/i.test(landed) || landed.trim().length > 0, "the execution landed a commit");
@@ -486,29 +510,21 @@ assert.match(missingRuntime.stderr, /no prepared runtime at .*setup-runtime\.mjs
     execFileSync("git", ["-C", failingRepo, "config", "user.name", "Central Contract Test"]);
     execFileSync("git", ["-C", failingRepo, "config", "user.email", "central@example.invalid"]);
     writeFileSync(join(failingRepo, "README.md"), "# managed-fail\n", "utf8");
-    execFileSync("git", ["-C", failingRepo, "add", "README.md"]);
+    installManagedTestFixture(failingRepo);
+    execFileSync("git", ["-C", failingRepo, "add", "README.md", "tests", ".architect/test-runner.json"]);
     execFileSync("git", ["-C", failingRepo, "commit", "-q", "-m", "init"]);
     const head = execFileSync("git", ["-C", failingRepo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     const session = "dddddddd-1111-2222-3333-444444444444";
     mkdirSync(join(failingRepo, ".architect", "tickets"), { recursive: true });
-    writeFileSync(join(failingRepo, ".architect", "tickets", `${session}.md`), "# Failing Review\n\n## Kind\nopen\n", "utf8");
+    writeFileSync(join(failingRepo, ".architect", "tickets", `${session}.md`), "# Failing Review\n\n## Kind\nopen\n\n## Testing plan\nBroad regression: none\n", "utf8");
 
-    const failDouble = join(staging, "managed-fail-double.sh");
-    writeFileSync(
-      failDouble,
-      `#!/usr/bin/env bash\n` +
-      `seat=""; prev=""
-` +
-      `for arg in "$@"; do if [ "$prev" = "--seat" ]; then seat="$arg"; fi; prev="$arg"; done\n` +
-      `if [ "$seat" = "reviewer" ]; then printf '%s\\n' '{"payload_type":"run.terminal.completed","payload":{"kind":"run_terminal","terminal":"completed","text":"Verdict: FAIL\\nDefect found."}}' ;\n` +
-      `else printf '%s\\n' '{"payload_type":"run.terminal.completed","payload":{"kind":"run_terminal","terminal":"completed","text":"Attempted implementation."}}' ; fi\n`,
-      "utf8",
-    );
+    const failDouble = join(staging, "managed-fail-double.mjs");
+    writeManagedDouble(failDouble, join(staging, "managed-fail-seats.txt"), { failReview: true });
     execFileSync("chmod", ["+x", failDouble]);
 
     const previousSubagentBin = process.env.QQ_SUBAGENT_BIN;
     process.env.QQ_SUBAGENT_BIN = failDouble;
-    process.env.QQ_WORKER_CONFIG_FILE = configFile;
+    process.env.QQ_WORKER_CONFIG_FILE = managedConfig;
     process.env.QQ_DEEPSEEK_RUNTIME_ROOT = runtimeRoot;
     try {
       const started = await dispatchExecution({ kind: "open", sessionId: session, cwd: failingRepo });
@@ -524,7 +540,11 @@ assert.match(missingRuntime.stderr, /no prepared runtime at .*setup-runtime\.mjs
       const actions = view.trajectory.map((entry) => entry.action);
       assert.ok(actions.includes("implementer_started"), `the implementer ran: ${actions.join(",")}`);
       assert.ok(actions.includes("reviewer_started"), `the reviewer ran: ${actions.join(",")}`);
-      assert.ok(actions.includes("review_failed_retrying"), `the FAIL verdict was recorded: ${actions.join(",")}`);
+      assert.ok(actions.includes("implementer_repair_started") && actions.includes("reviewer_repair_started"),
+        `the recorded FAIL verdict triggered the managed shared repair and second review: ${actions.join(",")}`);
+      assert.deepEqual(readFileSync(join(staging, "managed-fail-seats.txt"), "utf8").trim().split("\n").filter(line => line.includes("\t")).map(line => line.split("\t")[0]),
+        ["test_owner", "implementer", "reviewer", "implementer", "reviewer"], "review failure gets one shared repair, then a second review");
+      assert.match(view.error.message, /unresolved second-round findings/, "the second FAIL, not an untyped result, prevents landing");
       assert.ok(!actions.includes("landing_started"), "no landing may start on a failed review");
       const after = execFileSync("git", ["-C", failingRepo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
       assert.equal(after, head, "nothing may land without a passing review");
