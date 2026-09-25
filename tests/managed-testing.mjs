@@ -20,6 +20,10 @@ try {
   writeFileSync(test,'process.exitCode = 1;');
   const second = join(wt,'tests','other.mjs'); writeFileSync(second,'process.exitCode = 0;');
   writeFileSync(join(wt,'tests','run.mjs'),'process.exitCode = 0;');
+  // Admission reads the committed execution authority, not a test-owner-created config.
+  const git = (...args) => execFileSync('git',args,{cwd:wt,encoding:'utf8'});
+  git('init','-b','main'); git('config','user.name','Testing'); git('config','user.email','testing@example.com');
+  git('add','.architect/test-runner.json'); git('commit','-m','approved runner');
   const id = randomUUID();
   initManagedTesting({stateDir,id,root,worktree:wt,ticket:'## Testing plan\nBroad regression: required\nCommand: node tests/run.mjs\n\n## End'});
   const bind = role => JSON.parse(activateTestingSeat({stateDir,id,role,jobId:randomUUID(),attemptId:randomUUID()}));
@@ -142,7 +146,7 @@ try {
 // Exercise the real managed OPEN seat order, not just the testing record API.
 // An initial implementation failure must reach the reviewer and the single
 // coordinated repair; an unsuccessful repair must reach final review, not land.
-for (const scenario of ['repair-passes', 'repair-fails', 'selection-drift', 'repair-selection-drift']) {
+for (const scenario of ['repair-passes', 'repair-fails', 'selection-drift', 'repair-selection-drift', 'config-drift']) {
   const repairPasses = scenario === 'repair-passes';
   const repo = mkdtempSync(join(tmpdir(),'managed-pipeline-'));
   const previous = Object.fromEntries(['QQ_WORKER_CONFIG_FILE','QQ_WORKFLOW_STATE_DIR'].map(key => [key,process.env[key]]));
@@ -170,6 +174,15 @@ for (const scenario of ['repair-passes', 'repair-fails', 'selection-drift', 'rep
         selectManagedTests(binding,{targets:['focused.mjs'],rationale:'approved app behavior'});
         const repair = roles.filter(r => r === 'test_owner').length > 1;
         outcomes.push((await runManagedTests(binding,repair ? {} : {expectedRed:'v2 not yet implemented'})).status);
+        if (scenario === 'config-drift') {
+          // A changed execution profile cannot be made authoritative by a worker
+          // re-running tests after its own edit, even with current file hashes.
+          mkdirSync(join(cwd,'alternate'));
+          writeFileSync(join(cwd,'alternate','focused.mjs'),'process.exitCode=0;\n');
+          writeFileSync(join(cwd,'.architect','test-runner.json'),JSON.stringify({schema:1,command:'node',args:[],directory:'alternate',extension:'.mjs'}));
+          assert.throws(() => selectManagedTests(binding,{targets:['focused.mjs'],rationale:'adopt modified runner'}),/config|profile|authority|drift|committed/i);
+          await assert.rejects(runManagedTests(binding),/config|profile|authority|drift|committed/i);
+        }
         if (scenario === 'selection-drift' || (scenario === 'repair-selection-drift' && repair))
           selectManagedTests(binding,{targets:['focused.mjs','other.mjs'],rationale:'widened but not executed'});
       } else if (role === 'implementer') {
@@ -191,7 +204,11 @@ for (const scenario of ['repair-passes', 'repair-fails', 'selection-drift', 'rep
       await new Promise(resolve => setTimeout(resolve,25));
     } while (Date.now()<deadline);
     assert.equal(done.pipelineSettled,true,'managed fixture must settle');
-    if (scenario === 'selection-drift') {
+    if (scenario === 'config-drift') {
+      assert.deepEqual(roles,['test_owner'],'modified test authority must stop before implementation');
+      assert.deepEqual(outcomes,['expected-red']);
+      assert.equal(done.status,'failed');
+    } else if (scenario === 'selection-drift') {
       assert.deepEqual(roles,['test_owner'],'an unexecuted final selection must stop before implementation');
       assert.deepEqual(outcomes,['expected-red']);
       assert.equal(done.status,'failed');

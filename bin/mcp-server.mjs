@@ -61,7 +61,7 @@ import {
 } from "../workflow/runner-lifecycle.mjs";
 import { steerRoleAttempt } from "../workflow/execution-authority.mjs";
 import {prepareManagedRoleCommunication} from "../workflow/execution-communication.mjs";
-import { TEST_BINDING_ENV, initManagedTesting, activateTestingSeat, managedTestingView, advanceManagedRound, managedLandingReady, workingState } from "../workflow/managed-testing.mjs";
+import { TEST_BINDING_ENV, initManagedTesting, activateTestingSeat, managedTestingView, advanceManagedRound, managedLandingReady, workingState, currentManagedRunner } from "../workflow/managed-testing.mjs";
 import {createMcpExecutionSurface} from "../workflow/mcp-executions.mjs";
 import { cancelExecutionHost } from "../workflow/execution-supervisor.mjs";
 import { stateDirFor } from "../workflow/session.mjs";
@@ -3590,7 +3590,7 @@ async function runTestingWorkflow(execution, wt) {
   if (!initial.ok) return fail('testing',initial.error?.message ?? 'test preparation did not complete');
   let state = managedTestingView(dir,id);
   const initialRun = [...state.runs].reverse().find(r => r.role === 'test_owner');
-  if (!state.selection || !initialRun || !['expected-red','pass'].includes(initialRun.status) || initialRun.hash !== workingState(state) || JSON.stringify(initialRun.selection) !== JSON.stringify(state.selection.targets)) return fail('testing','test owner did not execute the current selection in the tested working state');
+  if (!currentManagedRunner(state) || !state.selection || state.selection.authority !== state.authority.digest || !initialRun || initialRun.authority !== state.authority.digest || !['expected-red','pass'].includes(initialRun.status) || initialRun.hash !== workingState(state) || JSON.stringify(initialRun.selection) !== JSON.stringify(state.selection.targets)) return fail('testing','test owner did not execute the current selection in the tested working state');
   let implementation = await seat('implementer',`Implement '${ticket}' in '${wt.cwd}'. Use \`run_selected_tests\` with the selection and test-owner evidence at '${ref(initial)}'.`);
   if (!implementation.ok) return fail('implementing',implementation.error?.message ?? 'implementation did not complete');
   // A completed failing focused run is evidence for the first reviewer, not
@@ -3604,7 +3604,7 @@ async function runTestingWorkflow(execution, wt) {
     if (!reviewResult.ok) return fail('reviewing',reviewResult.error?.message ?? 'review process failed');
     state = managedTestingView(dir,id);
     const review = state.reviews.at(-1);
-    if (!review || review.round !== round || review.hash !== workingState(state)) return fail('reviewing','review verdict absent or stale');
+    if (!currentManagedRunner(state) || !review || review.authority !== state.authority.digest || JSON.stringify(review.selection) !== JSON.stringify(state.selection?.targets) || review.round !== round || review.hash !== workingState(state)) return fail('reviewing','review verdict absent or stale');
     if (review.verdict === 'PASS') { reviewerSummary = reviewResult.output; break; }
     if (review.verdict === 'DECISION_NEEDED') return fail('reviewing',`Architect decision needed: ${review.decision.question} Recommended option: ${review.decision.recommendation}`,'decision-needed');
     if (review.verdict !== 'FAIL') return fail('reviewing',`verification incomplete: ${review.groups.incomplete.join('; ') || 'no complete reviewer verdict'}; no product defect inferred`);
@@ -3616,7 +3616,7 @@ async function runTestingWorkflow(execution, wt) {
       if (!testRepair.ok) return fail('testing',testRepair.error?.message ?? 'test repair incomplete');
       state = managedTestingView(dir,id);
       const repairedRun = [...state.runs].reverse().find(r => r.role === 'test_owner' && r.round === 1);
-      if (!repairedRun || !['pass','fail'].includes(repairedRun.status) || repairedRun.hash !== workingState(state) || JSON.stringify(repairedRun.selection) !== JSON.stringify(state.selection.targets)) return fail('testing','test repair has no complete execution of the current selection');
+      if (!currentManagedRunner(state) || !repairedRun || repairedRun.authority !== state.authority.digest || !['pass','fail'].includes(repairedRun.status) || repairedRun.hash !== workingState(state) || JSON.stringify(repairedRun.selection) !== JSON.stringify(state.selection.targets)) return fail('testing','test repair has no complete execution of the current selection');
     }
     state = managedTestingView(dir,id);
     const needImplementation = review.groups.implementation.length || state.runs.at(-1)?.status === 'expected-red' || state.runs.at(-1)?.status === 'fail';
