@@ -10,6 +10,7 @@ import {
   buildReviewPacket,
   commitIfDirty,
   isDirty,
+  hasImplementationChanges,
   createWorktree,
   defaultBaseRef,
   defaultLocalBranch,
@@ -368,7 +369,9 @@ async function stagingRepo(prefix) {
   await git(root, ["init", "-b", "main"]);
   await git(root, ["config", "user.name", "Architect Test"]);
   await git(root, ["config", "user.email", "architect@example.invalid"]);
-  writeFileSync(join(root, ".gitignore"), "/.zvec-grep/\n/.architect/\n");
+  // Mirror project policy: operational records are excluded, but the runner
+  // config is not ignored (no force-add or gitignore exception is needed).
+  writeFileSync(join(root, ".gitignore"), "/.zvec-grep/\n/.architect/state/\n/.architect/tickets/\n/.architect/ticket.md\n/.architect/credentials.yaml\n");
   writeFileSync(join(root, "root.txt"), "initial\n");
   await git(root, ["add", ".gitignore", "root.txt"]);
   await git(root, ["commit", "-m", "initial"]);
@@ -411,10 +414,20 @@ try {
 
 // A staged ignored credential, index, or boundary rename is an error even
 // when no eligible path is dirty. Never commit or silently unstage it.
-for (const scenario of ["architect-add", "index-add", "rename-in", "rename-out"]) {
+for (const scenario of ["architect-add", "index-add", "rename-in", "rename-out", "config-rename-in", "config-rename-out"]) {
   const root = await stagingRepo(`architect-excluded-${scenario}-`);
   try {
-    if (scenario === "rename-out") {
+    if (scenario === "config-rename-out") {
+      writeFileSync(join(root, ".architect", "test-runner.json"), "config\n");
+      await git(root, ["add", ".architect/test-runner.json"]);
+      await git(root, ["commit", "-m", "tracked config"]);
+      await git(root, ["mv", ".architect/test-runner.json", ".architect/credential"]);
+    } else if (scenario === "config-rename-in") {
+      writeFileSync(join(root, ".architect", "credential"), "secret\n");
+      await git(root, ["add", "-f", ".architect/credential"]);
+      await git(root, ["commit", "-m", "tracked excluded source"]);
+      await git(root, ["mv", ".architect/credential", ".architect/test-runner.json"]);
+    } else if (scenario === "rename-out") {
       writeFileSync(join(root, ".architect", "credential"), "secret\n");
       await git(root, ["add", "-f", ".architect/credential"]);
       await git(root, ["commit", "-m", "tracked excluded source"]);
@@ -430,7 +443,7 @@ for (const scenario of ["architect-add", "index-add", "rename-in", "rename-out"]
     writeFileSync(join(root, "eligible.txt"), "normal\n");
     const before = await git(root, ["rev-parse", "HEAD"]);
     await assert.rejects(() => commitIfDirty(root), /excluded operational path is already staged/);
-    if (scenario === "rename-in") {
+    if (scenario === "rename-in" || scenario === "config-rename-in" || scenario === "config-rename-out") {
       await git(root, ["branch", "architect/open/excluded-land"]);
       await git(root, ["checkout", "architect/open/excluded-land"]);
       await assert.rejects(
@@ -440,6 +453,79 @@ for (const scenario of ["architect-add", "index-add", "rename-in", "rename-out"]
     }
     assert.equal(await git(root, ["rev-parse", "HEAD"]), before);
     assert.equal(await git(root, ["status", "--porcelain", "--", "eligible.txt"]), "?? eligible.txt");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+// The exact runner file is source, including staged and tracked changes. Each
+// case lands through the real worktree path, and checks the resulting ref/tree.
+for (const scenario of ["new", "pre-staged", "modified", "deleted", "precommitted", "mixed"]) {
+  const root = await stagingRepo(`architect-config-${scenario}-`);
+  const wt = `${root}-wt`;
+  const path = ".architect/test-runner.json";
+  const initial = '{"schema":1,"command":"node","args":[],"directory":"tests","extension":".mjs"}\n';
+  const updated = '{"schema":2,"profile":"node-tsx-test","directory":"tests","extension":".test.ts"}\n';
+  try {
+    if (["modified", "deleted"].includes(scenario)) {
+      writeFileSync(join(root, path), initial);
+      await git(root, ["add", path]);
+      await git(root, ["commit", "-m", "onboard config"]);
+    }
+    const base = await git(root, ["rev-parse", "HEAD"]);
+    await git(root, ["worktree", "add", "-b", `architect/open/config-${scenario}`, wt]);
+    mkdirSync(join(wt, ".architect"), { recursive: true });
+    if (scenario === "deleted") rmSync(join(wt, path));
+    else writeFileSync(join(wt, path), scenario === "modified" ? updated : initial);
+    if (scenario === "mixed") {
+      mkdirSync(join(wt, ".architect", "state"), { recursive: true });
+      mkdirSync(join(wt, ".zvec-grep"), { recursive: true });
+      writeFileSync(join(wt, ".architect", "ticket.md"), "operational ticket\n");
+      writeFileSync(join(wt, ".architect", "state", "record"), "state\n");
+      writeFileSync(join(wt, ".architect", "credentials.yaml"), "credential\n");
+      writeFileSync(join(wt, ".zvec-grep", "index"), "index\n");
+    }
+    if (scenario === "pre-staged" || scenario === "precommitted") {
+      await git(wt, ["add", path]);
+      if (scenario === "precommitted") await git(wt, ["commit", "-m", "project onboarding"]);
+    }
+    assert.equal(await isDirty(wt), scenario !== "precommitted", scenario);
+    assert.equal(await hasImplementationChanges(wt, `architect/open/config-${scenario}`), true, scenario);
+    const head = await git(wt, ["rev-parse", "HEAD"]);
+    const receipt = await landWorktree(root, { worktree: wt, deleteBranch: false, clearTicket: false });
+    assert.equal(receipt.method, "ff", scenario);
+    assert.equal(receipt.mergeSha, await git(root, ["rev-parse", "main"]), scenario);
+    assert.notEqual(receipt.mergeSha, base, scenario);
+    if (scenario === "precommitted") assert.equal(receipt.mergeSha, head, "precommitted config diff lands without new commit");
+    const paths = (await git(root, ["diff", "--name-only", base, "main"])).split("\n");
+    assert.deepEqual(paths, [path], `${scenario}: only exact config landed`);
+    if (scenario === "deleted") {
+      await assert.rejects(() => git(root, ["show", `main:${path}`]));
+    } else {
+      assert.equal(await git(root, ["show", `main:${path}`]), (scenario === "modified" ? updated : initial).trim(), scenario);
+    }
+  } finally {
+    try { await git(root, ["worktree", "remove", "--force", wt]); } catch {}
+    rmSync(wt, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// Prefix and nested lookalikes are never eligible. Operational-only edits
+// must remain implementation-empty, including under the config-looking dir.
+{
+  const root = await stagingRepo("architect-config-lookalikes-");
+  try {
+    mkdirSync(join(root, ".architect", "test-runner.json"));
+    writeFileSync(join(root, ".architect", "test-runner.json", "nested"), "not config\n");
+    writeFileSync(join(root, ".architect", "test-runner.json.bak"), "not config\n");
+    writeFileSync(join(root, ".architect", "ticket.md"), "ticket changed\n");
+    assert.equal(await isDirty(root), false);
+    assert.equal(await hasImplementationChanges(root, "main"), false);
+    const before = await git(root, ["rev-parse", "HEAD"]);
+    assert.deepEqual(await commitIfDirty(root), { committed: false, sha: before });
+    assert.equal(await git(root, ["rev-parse", "HEAD"]), before);
+    await git(root, ["add", "-f", ".architect/test-runner.json/nested"]);
+    await assert.rejects(() => commitIfDirty(root), /excluded operational path is already staged/);
+    assert.equal(await git(root, ["rev-parse", "HEAD"]), before);
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 

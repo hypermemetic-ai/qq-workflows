@@ -86,7 +86,7 @@ import {
   openChange,
   viewsFor,
 } from "./change-record.mjs";
-import { currentBranch, defaultBaseRef, defaultLocalBranch, git } from "./git.mjs";
+import { changedPaths, currentBranch, defaultBaseRef, defaultLocalBranch, git, operationalPath } from "./git.mjs";
 import { readReportMeta } from "./reports.mjs";
 import { resolveTicketSource } from "./ticket.mjs";
 
@@ -234,17 +234,16 @@ async function defaultChangedPathsOf({ worktree, branch = null, mainRoot = null 
     verified = false;
   }
   try {
-    const status = await git(cwd, ["status", "--porcelain"]);
-    for (const line of status.split("\n")) {
-      if (!line.trim()) continue;
-      const entry = line.slice(3).trim().replace(/^"|"$/g, "");
-      for (const part of entry.split(" -> ")) if (part.trim()) paths.add(part.trim());
+    // Include individual untracked files rather than collapsed directory
+    // entries; parse both sides of renames literally, as managed staging does.
+    for (const change of await changedPaths(cwd)) {
+      for (const path of change.paths) paths.add(path);
     }
   } catch {
     verified = false;
   }
   const filtered = [...paths]
-    .filter((path) => path && !path.startsWith(".architect/") && !path.startsWith(".zvec-grep/"))
+    .filter((path) => path && !operationalPath(path))
     .sort();
   return { paths: filtered, verified, ...(verified ? {} : { reason: "the changed-path set could not be fully derived from git" }) };
 }

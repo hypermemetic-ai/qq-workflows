@@ -5,7 +5,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, sy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { dispatchExecution, checkExecution } from '../bin/mcp-server.mjs';
-import { createWorktree } from '../workflow/git.mjs';
+import { commitIfDirty, createWorktree } from '../workflow/git.mjs';
 import { initManagedTesting, activateTestingSeat, selectManagedTests, runManagedTests, runManagedCheckpoint, recordManagedReview, managedLandingReady, managedTestingView } from '../workflow/managed-testing.mjs';
 
 const legacy = {schema:1,command:'node',args:[],directory:'tests',extension:'.mjs'};
@@ -98,6 +98,33 @@ if (existsSync(installedTsx)) {
     assert.equal(managedTestingView(stateDir,id).runs.at(-1).at,previous.at);
   } finally { rmSync(repo,{recursive:true,force:true}); }
 } else console.log('real tsx integration not available; no real-loader proof claimed');
+
+// A separately authorized onboarding commit, not OPEN admission, supplies
+// authority. A fresh worktree admitted after that commit accepts the profile.
+{
+  const repo = fixture(legacy), first = randomUUID(), second = randomUUID();
+  let wt;
+  try {
+    git(repo,'rm','.architect/test-runner.json'); git(repo,'commit','-m','remove old runner');
+    mkdirSync(join(repo,'.architect'),{recursive:true});
+    writeFileSync(configPath(repo),JSON.stringify(typescript));
+    const original = git(repo,'rev-parse','HEAD').trim();
+    assert.throws(() => initManagedTesting({stateDir:join(repo,'.state'),id:first,root:repo,worktree:repo,ticket:plan}),/committed|configuration|authority/i);
+    assert.equal(git(repo,'rev-parse','HEAD').trim(),original,'failed OPEN admission cannot commit authority');
+    const onboarded = await commitIfDirty(repo,'project-owned runner onboarding');
+    assert.equal(onboarded.committed,true);
+    assert.equal(git(repo,'show','HEAD:.architect/test-runner.json').trim(),JSON.stringify(typescript));
+    mkdirSync(join(repo,'.architect','tickets'),{recursive:true});
+    writeFileSync(join(repo,'.architect','tickets',`${second}.md`),`# Fresh OPEN ticket\n\n${plan}`);
+    wt = (await createWorktree(repo,{kind:'open',sessionId:second})).cwd;
+    initManagedTesting({stateDir:join(repo,'.state'),id:second,root:repo,worktree:wt,ticket:plan});
+    const owner = binding(join(repo,'.state'),second,'test_owner');
+    selectManagedTests(owner,{targets:['one.test.ts'],rationale:'fresh admission uses committed project profile'});
+  } finally {
+    if (wt) git(repo,'worktree','remove','--force',wt);
+    rmSync(repo,{recursive:true,force:true});
+  }
+}
 
 // Configuration is execution authority: an absent, uncommitted, modified or
 // malformed file must fail admission before any managed worker can act.
