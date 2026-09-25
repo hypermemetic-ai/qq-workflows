@@ -9,6 +9,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { bytePage } from './tool-output.mjs';
 
 // Observed final-answer transport cap (DeepSeek worker `final_answer_over_cap`).
 export const REPORT_TRANSPORT_CAP = 16_384;
@@ -75,18 +76,11 @@ export function readReport(stateDir, reportId, { offset = 0, limit = REPORT_CHUN
   } catch {
     return { ok: false, reportId, error: `no persisted report '${reportId}'`, offset: start, limit: size };
   }
-  const slice = text.slice(start, start + size);
-  const nextOffset = start + slice.length;
-  return {
-    ok: true,
-    reportId,
-    offset: start,
-    limit: size,
-    totalChars: text.length,
-    nextOffset,
-    complete: nextOffset >= text.length,
-    text: slice,
-  };
+  // Native Pi exposes the page twice: JSON text and structured details. A
+  // page that fits the inner JSON alone can overflow the final serialized Pi
+  // frame (especially when the report contains escaped JSON). Reserve room for
+  // that second serialization so paging never returns a new over-budget ref.
+  return bytePage(text, start, size, { ok: true, reportId, offset: start, limit: size, totalChars: text.length }, 3_500);
 }
 
 export function listReports(stateDir) {

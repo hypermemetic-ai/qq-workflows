@@ -239,11 +239,11 @@ writeJob(stateDir, {
   events: [],
 });
 const recovered = await afterRestart.recoverDeliveries();
-const orphan = recovered.jobs.find((job) => job.id === orphanId);
+const orphan = afterRestart.checkRunner({ jobId: orphanId });
 assert.equal(orphan.status, "interrupted", "a job whose process is gone reports interruption, not success");
 assert.equal(orphan.terminal.ok, false);
-assert.equal(orphan.delivery, null);
-assert.equal(recovered.pendingDelivery.includes(orphanId), true, "the interrupted job is surfaced for a decision");
+assert.equal(orphan.delivery?.state, "delivered", "the current interrupted completion was delivered to its owner");
+assert.match(JSON.stringify(recovered), /job-restart-orphan/, "the current interrupted job is surfaced for a decision without listing historical jobs");
 const orphanNotice = restartTransport.delivered.find((notification) => notification.jobId === orphanId);
 assert.ok(orphanNotice, "recovery surfaces the interrupted job to its owning session");
 assert.match(orphanNotice.text, /job-restart-orphan interrupted/);

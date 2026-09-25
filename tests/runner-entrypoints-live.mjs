@@ -433,8 +433,20 @@ async function runNative() {
     }, 120_000, 200);
     assert.equal(terminal.terminal.status, "completed");
     assert.ok(terminal.terminal.reportId, "the terminal record points at the durable report");
-    const report = readReport(stateDir, terminal.terminal.reportId);
-    assert.ok(report.text.includes(FINAL_TEXT), "the durable report holds the valid final findings");
+    let reportText = "";
+    let reportOffset = 0;
+    let reportComplete = false;
+    for (let pageNo = 0; pageNo < 100; pageNo++) {
+      const page = readReport(stateDir, terminal.terminal.reportId, { offset: reportOffset });
+      assert.equal(page.ok, true, "the durable report remains readable");
+      assert.equal(page.offset, reportOffset, "report pages remain contiguous");
+      reportText += page.text;
+      if (page.complete) { reportComplete = true; break; }
+      assert.ok(page.nextOffset > reportOffset, "report paging advances");
+      reportOffset = page.nextOffset;
+    }
+    assert.equal(reportComplete, true, "the durable report is fully retrievable");
+    assert.ok(reportText.includes(FINAL_TEXT), "the durable report holds the valid final findings");
     const attemptFinal = attemptsOf(stateDir, jobId).views.job(jobId).attempts[attemptId];
     assert.equal(attemptFinal.outcome.status, "completed");
     assert.equal(attemptFinal.outcome.revision, 2, "the outcome is linked to the acknowledged revision");

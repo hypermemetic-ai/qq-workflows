@@ -40,6 +40,7 @@ import {
   updateAdrIndex,
 } from "./adr-index.mjs";
 import { REPORT_CHUNK_MAX } from "./reports.mjs";
+import { bytePage } from './tool-output.mjs';
 
 export const DEFAULT_SEARCH_LIMIT = 8;
 /** Bounded tool retrieval option (distinct from the backend's per-route recall depth). */
@@ -301,27 +302,12 @@ export async function readAdr({
   }
   const { entry, resolvedBy, sourceRevision, corpusHash, corpusDir: dir } = loaded;
   const text = entry.content;
-  const slice = text.slice(start, start + size);
-  const nextOffset = start + slice.length;
-  return {
-    ok: true,
-    status: "ok",
-    adrId: entry.adrId,
-    slug: entry.slug,
-    stem: entry.stem,
-    path: entry.path,
-    version: entry.version,
-    contentSha256: entry.contentSha256,
-    sourceRevision,
-    corpus: { corpusDir: dir, corpusHash, sourceRevision },
-    resolvedBy,
-    offset: start,
-    limit: size,
-    totalChars: text.length,
-    nextOffset,
-    complete: nextOffset >= text.length,
-    text: slice,
-  };
+  return bytePage(text, start, size, {
+    ok: true, status: 'ok', adrId: entry.adrId, slug: entry.slug, stem: entry.stem,
+    path: entry.path, version: entry.version, contentSha256: entry.contentSha256,
+    sourceRevision, corpus: { corpusDir: dir, corpusHash, sourceRevision },
+    resolvedBy, offset: start, limit: size, totalChars: text.length,
+  });
 }
 
 function stateGuard(projectRoot) {

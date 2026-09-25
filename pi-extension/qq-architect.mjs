@@ -71,6 +71,7 @@ import {
   readPiCompactionSettings,
 } from "../workflow/architect-profile.mjs";
 import { createWorkflow, WORKFLOW_TOOLS, WORKFLOW_TOOL_NAMES } from "../workflow/operations.mjs";
+import { outputFrame } from '../workflow/tool-output.mjs';
 import { loadManagedExecutionLauncher } from "./managed-execution.mjs";
 import { resolveSessionKey } from "../workflow/session.mjs";
 
@@ -696,12 +697,17 @@ export function createArchitectExtension(pi, options = {}) {
     promptSnippet: tool.description.split(". ")[0],
     parameters: tool.parameters,
     async execute(_toolCallId, params) {
-      const result = await ensureWorkflow().callTool(tool.name, params ?? {});
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        details: result,
-        isError: result && result.ok === false ? true : false,
-      };
+      const wf = ensureWorkflow();
+      try {
+        const result = await wf.callTool(tool.name, params ?? {});
+        if (tool.name === 'recover_deliveries' && result?.runtime) result.runtime.extensionModule ??= import.meta.url;
+        return outputFrame(result, { stateDir: wf.stateDir, name: tool.name, pi: true, isError: result?.ok === false,
+          identity: { sessionKey: result?.sessionKey, runtime: tool.name === 'recover_deliveries' ? result?.runtime : undefined } });
+      } catch (error) {
+        return outputFrame({ ok: false, code: error?.code ?? 'tool-error', outcomeKnown: false,
+          error: String(error?.message ?? error), note: 'Operation may have executed before this error; inspect durable state before retrying.' },
+          { stateDir: wf.stateDir, name: tool.name, pi: true, isError: true });
+      }
     },
   }));
 

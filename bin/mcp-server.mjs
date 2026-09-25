@@ -65,6 +65,7 @@ import { TEST_BINDING_ENV, initManagedTesting, activateTestingSeat, managedTesti
 import {createMcpExecutionSurface} from "../workflow/mcp-executions.mjs";
 import { cancelExecutionHost } from "../workflow/execution-supervisor.mjs";
 import { stateDirFor } from "../workflow/session.mjs";
+import { outputFrame, bytePage, serializedBytes } from '../workflow/tool-output.mjs';
 import { registerStateExclude } from "../workflow/state-exclude.mjs";
 import { readAdr, searchAdrs } from "../workflow/adr-retrieval.mjs";
 import {
@@ -321,6 +322,8 @@ export const TOOLS = [
           type: "boolean",
           description: "Optional boolean. If true, returns only the list of section headings without the full content.",
         },
+        offset: { type: 'integer', minimum: 0 },
+        limit: { type: 'integer', minimum: 1 },
       },
     },
   },
@@ -4215,9 +4218,10 @@ export async function readTicket(args = {}) {
     };
   }
 
+  let selected = content;
   if (args.section) {
-    const sectionContent = extractSection(content, args.section);
-    if (sectionContent === null) {
+    selected = extractSection(content, args.section);
+    if (selected === null) {
       return {
         ok: false,
         sessionId,
@@ -4227,23 +4231,15 @@ export async function readTicket(args = {}) {
         sections,
       };
     }
-    return {
-      ok: true,
-      sessionId,
-      path,
-      section: args.section,
-      content: sectionContent,
-      sections,
-    };
   }
-
-  return {
-    ok: true,
-    sessionId,
-    path,
-    content,
-    sections,
-  };
+  const offset = Math.min(selected.length, Math.max(0, Math.trunc(args.offset) || 0));
+  const limit = Math.min(8192, Math.max(1, Math.trunc(args.limit) || 2048));
+  const headings = serializedBytes(sections) > 1_000
+    ? { sectionCount: sections.length, sectionsComplete: false, sectionsRetrieval: 'read_ticket with sectionsOnly=true' }
+    : { sections };
+  const page = bytePage(selected, offset, limit, { ok: true, sessionId, path, ...(args.section ? { section: args.section } : {}), ...headings,
+    offset, limit, totalChars: selected.length }, 6500);
+  return { ...page, content: page.text, text: undefined };
 }
 
 export async function updateTicket(args = {}) {
@@ -4553,38 +4549,27 @@ export async function handleRpc(method, params = {}, options = {}) {
     const toolArgs = params?.arguments ?? {};
     try {
       const disabled = resolveDisabledTools(options.disabledTools);
-      if (disabled.has(toolName)) {
-        return {
-          isError: true,
-          content: [{ type: "text", text: `Tool '${toolName}' is disabled` }],
-        };
-      }
-      if (OPERATOR_ACTION_TOOL_NAMES.has(toolName) && !isOperatorActionEnabled(options)) {
-        return {
-          isError: true,
-          content: [{ type: "text", text: `Tool '${toolName}' is disabled` }],
-        };
+      if (disabled.has(toolName) || (OPERATOR_ACTION_TOOL_NAMES.has(toolName) && !isOperatorActionEnabled(options))) {
+        return outputFrame(`Tool '${String(toolName).slice(0, 120)}' is disabled`, { name: 'refused', isError: true });
       }
 
       const result = await callTool(toolName, toolArgs, options);
-      return {
-        content: [
-          {
-            type: "text",
-            text: typeof result === "string" ? result : JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      // A structured { ok: false } refusal is a normal tool outcome. MCP
+      // isError is reserved for disabled tools and thrown transport/tool errors.
+      // Match read_report's repository-root lookup even for nested cwd or a
+      // linked worktree. A presentation lookup failure after a completed action
+      // must not be mistaken for an action failure or trigger a replay.
+      let outputStateDir = null;
+      try {
+        const reportRoot = await mainRepoRoot(toolArgs.cwd ?? process.cwd());
+        outputStateDir = stateDirFor(reportRoot, process.env);
+      } catch { /* outputFrame will mark oversized details unavailable. */ }
+      return outputFrame(result, { name: String(toolName).slice(0, 120), stateDir: outputStateDir,
+        identity: { jobId: result?.jobId, status: result?.status } });
     } catch (err) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: err?.message || String(err),
-          },
-        ],
-        isError: true,
-      };
+      return outputFrame({ ok: false, code: err?.code ?? 'tool-error', outcomeKnown: false,
+        error: err?.message || String(err), note: 'Operation may have executed before this error; inspect durable state before retrying.' },
+        { name: String(toolName).slice(0, 120), isError: true });
     }
   }
 
