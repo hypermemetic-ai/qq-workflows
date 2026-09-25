@@ -92,7 +92,7 @@ assert.equal(inspectAssembledPrompt(assembled).ok, true);
 assert.ok(assembled.includes("Repository rule: never edit outside the worktree."), "repository instructions are preserved through one controlled mechanism");
 assert.ok(assembled.includes("paseo: Paseo reference"));
 assert.ok(!assembled.includes("expert coding assistant"), "the stock coding prompt is not part of the Architect prompt");
-assert.match(assembled, /Own scope and consequential tradeoffs/);
+assert.ok(assembled.includes(ownedPrompt), "the authoritative role body reaches the assembled prompt intact");
 assert.match(assembled, /read_report retrieves them in chunks/);
 assert.match(assembled, /Pagination does not remove the worker's 16,384-character final submission cap/);
 assert.doesNotMatch(assembled, /## Teaching|milestone|teach until|long reports are never lost to a transport cap/);
@@ -192,6 +192,7 @@ assert.ok(finalPrompt.includes(ARCHITECT_PROMPT_MARKER));
 assert.ok(!finalPrompt.includes("expert coding assistant"), "the stock pi coding prompt is fully replaced");
 assert.ok(finalPrompt.includes("Repository rule: never edit outside the worktree."));
 assert.equal(inspectAssembledPrompt(finalPrompt).ok, true);
+assert.ok(finalPrompt.includes(ownedPrompt), "before_agent_start keeps the approved role body intact");
 
 // Paseo's generated extension appends to the pi prompt after ours; the provider
 // boundary must still carry exactly the owned prompt.
@@ -201,6 +202,7 @@ const [enforcedPayload] = await callHandlers(pi, "before_provider_request", payl
 assert.ok(enforcedPayload.instructions.startsWith(ARCHITECT_PROMPT_MARKER), "the provider payload starts with the owned prompt");
 assert.ok(!enforcedPayload.instructions.includes("PASEO RUNTIME TOOL INSTRUCTIONS"), "an uncontrolled append is removed at the provider boundary");
 assert.equal(inspectAssembledPrompt(enforcedPayload.instructions).ok, true);
+assert.ok(enforcedPayload.instructions.includes(ownedPrompt), "the provider payload carries the authoritative role body intact");
 
 const capture = readFileSync(capturePath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
 const assembledCapture = capture.find((entry) => entry.kind === "assembled");
