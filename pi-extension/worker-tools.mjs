@@ -69,6 +69,8 @@ import {
 import { COMMUNICATION_TOOL_NAMES, parseCommunicationBinding } from "../workflow/communication.mjs";
 import { registerCommunicationReceiver } from "../workflow/communication-receiver.mjs";
 import { createWebSearch, webSearchTool } from "./web-search.mjs";
+import { outputFrame, serializedBytes, TOOL_OUTPUT_MAX } from '../workflow/tool-output.mjs';
+import { stateDirFor } from '../workflow/session.mjs';
 import { TEST_BINDING_ENV, selectManagedTests, runManagedTests, runManagedCheckpoint, recordManagedReview } from "../workflow/managed-testing.mjs";
 
 export const WORKER_TOOLS_EXTENSION_NAME = "qq-worker-tools";
@@ -347,8 +349,20 @@ export function createWorkerToolsExtension(pi, { env = process.env, cwd = proces
 
   const testing = env[TEST_BINDING_ENV] ? JSON.parse(env[TEST_BINDING_ENV]) : null;
   if (testing && (testing.role !== binding.seat || testing.worktree !== binding.root || !["test_owner", "implementer", "reviewer"].includes(binding.seat))) throw new Error("managed test binding/seat mismatch");
+  const stateDir = stateDirFor(binding.root, env);
+  // Register a final guard for every owned worker tool, including receiver,
+  // managed testing, web and gateway tools. Never expose unbounded Pi details.
+  const guardedPi = Object.assign(Object.create(pi), { registerTool(definition) {
+    pi.registerTool({ ...definition, async execute(...args) {
+      let result;
+      try { result = await definition.execute(...args); }
+      catch (error) { return outputFrame({ ok: false, error: String(error?.message ?? error) }, { name: definition.name, stateDir, pi: true, isError: true }); }
+      try { if (serializedBytes(result) <= TOOL_OUTPUT_MAX) return result; } catch { /* presentation failed after execution */ }
+      return outputFrame(result, { name: definition.name, stateDir, pi: true, isError: result?.isError === true });
+    } });
+  } });
   const communicationBinding = communication === undefined ? parseCommunicationBinding(env) : communication;
-  const receiver = communicationBinding.enabled ? registerCommunicationReceiver(pi, { binding: communicationBinding.binding, env }) : null;
+  const receiver = communicationBinding.enabled ? registerCommunicationReceiver(guardedPi, { binding: communicationBinding.binding, env }) : null;
 
   const tool = {
     name: WORKER_SEARCH_TOOL_NAME,
@@ -373,13 +387,13 @@ export function createWorkerToolsExtension(pi, { env = process.env, cwd = proces
     } catch {
       Type = null;
     }
-    pi.registerTool({ ...tool, parameters: Type ? Type.Unsafe(tool.parameters) : tool.parameters });
+    guardedPi.registerTool({ ...tool, parameters: Type ? Type.Unsafe(tool.parameters) : tool.parameters });
     const web = webSearchTool(webSearch ?? createWebSearch());
-    pi.registerTool({ ...web, parameters: Type ? Type.Unsafe(web.parameters) : web.parameters });
+    guardedPi.registerTool({ ...web, parameters: Type ? Type.Unsafe(web.parameters) : web.parameters });
     const registered = [tool.name, web.name];
     if (testing) {
       const expose = (name, description, parameters, execute) => {
-        pi.registerTool({ name, label: name, description, parameters: Type ? Type.Unsafe(parameters) : parameters,
+        guardedPi.registerTool({ name, label: name, description, parameters: Type ? Type.Unsafe(parameters) : parameters,
           async execute(_id, params, signal) {
             try { return textResult(JSON.stringify(await execute(params, signal))); }
             catch (error) { return textResult(`${name} refused: ${error.message}`, { isError: true }); }

@@ -54,6 +54,7 @@ import { registerStateExclude } from "./state-exclude.mjs";
 import { extractSection, listSections, loadPackagedTemplate, replaceSection, ticketPath } from "./ticket.mjs";
 import { readAdr, searchAdrs } from "./adr-retrieval.mjs";
 import { PI_HARNESS, planFingerprint, planToSpawn, resolveWorkerLaunchPlan } from "./worker-launch.mjs";
+import { bytePage, serializedBytes } from './tool-output.mjs';
 
 // Native tool surface for the Architect. Local inspection stays read-only
 // (read/grep/find/ls); workflow capabilities are scoped ticket updates and
@@ -87,6 +88,8 @@ export const WORKFLOW_TOOLS = [
       properties: {
         section: { type: "string", description: "Optional section heading to read." },
         sectionsOnly: { type: "boolean", description: "Return only the section headings." },
+        offset: { type: 'integer', minimum: 0 },
+        limit: { type: 'integer', minimum: 1 },
       },
       additionalProperties: false,
     },
@@ -259,6 +262,8 @@ export const WORKFLOW_TOOLS = [
       properties: {
         role: { type: "string" },
         scope: { type: "string", description: "'session' (default) or 'all'." },
+        offset: { type: 'integer', minimum: 0 },
+        limit: { type: 'integer', minimum: 1 },
       },
       additionalProperties: false,
     },
@@ -499,7 +504,7 @@ export function createWorkflow({
   }
 
   // ------------------------------------------------------------------ tickets
-  async function readTicketOp({ section, sectionsOnly } = {}) {
+  async function readTicketOp({ section, sectionsOnly, offset = 0, limit = 2048 } = {}) {
     const association = session();
     const path = ticketPath(root, association.sessionId);
     let content;
@@ -525,9 +530,16 @@ export function createWorkflow({
           sections,
         };
       }
-      return { ok: true, sessionId: association.sessionId, path, section, content: selected, sections };
+      content = selected;
     }
-    return { ok: true, sessionId: association.sessionId, path, content, sections };
+    const start = Math.min(content.length, Math.max(0, Math.trunc(offset) || 0));
+    const size = Math.min(8192, Math.max(1, Math.trunc(limit) || 2048));
+    const headings = serializedBytes(sections) > 1_000
+      ? { sectionCount: sections.length, sectionsComplete: false, sectionsRetrieval: 'read_ticket with sectionsOnly=true' }
+      : { sections };
+    const page = bytePage(content, start, size, { ok: true, sessionId: association.sessionId, path, ...(section ? { section } : {}), ...headings,
+      offset: start, limit: size, totalChars: content.length }, 6500);
+    return { ...page, content: page.text, text: undefined };
   }
 
   async function updateTicketOp({ content, section } = {}) {
@@ -1431,10 +1443,69 @@ export function createWorkflow({
         return steerExecutionOp(args ?? {});
       case "cancel_execution":
         return cancelExecutionOp(args ?? {});
-      case "list_jobs":
-        return { jobs: jobsView({ role: args?.role ?? null, scope: args?.scope === "all" ? "all" : "session" }) };
-      case "recover_deliveries":
-        return recoverDeliveriesOp({});
+      case "list_jobs": {
+        const jobs = jobsView({ role: args?.role ?? null, scope: args?.scope === 'all' ? 'all' : 'session' });
+        const offset = Math.min(jobs.length, Math.max(0, Math.trunc(args?.offset) || 0));
+        const limit = Math.min(100, Math.max(1, Math.trunc(args?.limit) || 12));
+        const entries = [];
+        for (const job of jobs.slice(offset, offset + limit)) {
+          const slim = { id: job.id, sessionKey: job.sessionKey, role: job.role, status: job.status, startedAt: job.startedAt,
+            reportId: job.terminal?.reportId ?? null, delivery: job.delivery?.state ?? null };
+          if (serializedBytes({ jobs: [...entries, slim] }) > 10_000) break;
+          entries.push(slim);
+        }
+        return { jobs: entries, total: jobs.length, offset, nextOffset: offset + entries.length,
+          complete: offset + entries.length >= jobs.length, detail: 'check_runner or check_execution by job ID; read_report by reportId',
+          consistency: 'point-in-time listing; offsets are not a snapshot across concurrent updates' };
+      }
+      case "recover_deliveries": {
+        const result = await recoverDeliveriesOp({});
+        // Reconciliation and replay have already completed. Only project the
+        // current call's outcomes; old job summaries remain in durable state.
+        const { jobs: historical, ...current } = result;
+        const receipt = { ...current,
+          history: { total: historical.length, detail: 'list_jobs then check_runner/check_execution by job ID' } };
+        // The per-call arrays may themselves be huge. Persist their exact
+        // content before reducing them; never rerun recovery to page it.
+        if (serializedBytes(receipt) > 3_500) {
+          // Save the *current invocation*, not the historical jobs. Reporting
+          // failure after reconciliation cannot undo it or justify replay.
+          let detail = { detailComplete: false, detailUnavailable: true,
+            retrieval: 'inspect durable job/action records by ID; do not repeat recovery just to page its result' };
+          try {
+            const saved = saveReport(stateDir, { jobId: 'recover-deliveries', role: 'tool-output', text: JSON.stringify(receipt) });
+            detail = { detailComplete: true, reportId: saved.reportId,
+              retrieval: 'read_report with reportId and nextOffset for exact current invocation outcomes' };
+          } catch (error) { detail.persistenceError = clamp(error?.message ?? error, 200); }
+          const categories = ['progress','reconstruction','delivery','communication'];
+          const exceptions = ['pendingDelivery','awaitingExplicitRetry','reconciled','deferred','uncertain','unreconciled'];
+          const summary = { ok: true, sessionKey: receipt.sessionKey, runtime: receipt.runtime,
+            history: receipt.history, ...detail, outputIncomplete: true,
+            note: 'Inline outcomes are partial; counts include omitted entries. Inspect the detail reference before declaring recovery clear.' };
+          for (const key of categories) {
+            summary[key] = Object.fromEntries(Object.entries(receipt[key] ?? {}).map(([field, value]) =>
+              [field, Array.isArray(value) ? { count: value.length } : value]));
+          }
+          for (const key of exceptions) summary[key] = { count: receipt[key].length };
+          // Unbounded scalar diagnostics and provenance also live in the exact
+          // report. Keep the exception counts and loaded module paths visible.
+          for (const key of categories) {
+            for (const [field, value] of Object.entries(summary[key])) {
+              if (typeof value === 'string' && serializedBytes(value) > 200)
+                summary[key][field] = { totalChars: value.length, detail: detail.reportId ?? 'unavailable' };
+            }
+          }
+          if (serializedBytes(summary) > 3_500) {
+            for (const key of categories) {
+              summary[key] = Object.fromEntries(Object.entries(receipt[key] ?? {})
+                .filter(([, value]) => Array.isArray(value)).map(([field, value]) => [field, { count: value.length }]));
+            }
+            summary.note = 'Inline counts are partial detail, not an all-clear; read the exact report for omitted outcomes.';
+          }
+          return summary;
+        }
+        return receipt;
+      }
       default:
         throw new Error(`unknown workflow tool '${name}'`);
     }

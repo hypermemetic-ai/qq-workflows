@@ -161,7 +161,7 @@ export async function runManagedCheckpoint(binding, { signal } = {}) {
   state.checkpoints.push(entry); state.totals.checkpointLaunches += 1; save(binding.stateDir,binding.id,state);
   // Only the workflow interprets the approved command. Not caller supplied.
   const [command, ...args] = state.plan.command.split(' ');
-  const result = await launch(command,args,state.worktree,600000,signal);
+  const result = await launch(command,args,state.worktree,900000,signal);
   Object.assign(entry,result);
   const fresh = bound(binding,['reviewer']);
   const recorded = fresh.checkpoints.find(c => c.round === state.round);

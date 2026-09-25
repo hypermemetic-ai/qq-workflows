@@ -75,7 +75,10 @@ for(const mode of ['ordinary','reopened','cancelled']) {
     for(const role of Object.keys(counts)) {
       await wait(()=>notes().some(note=>note.kind==='execution.progress'&&note.message.includes(`(${role})`)));
       const bound=roleState(role);
-      const forged=await client.tool('steer_execution',{id,message:'forged target',expectAttemptId:'not-the-active-attempt'});assert.equal(forged.ok,false);
+      const forgedFrame=await client.rpc('tools/call',{name:'steer_execution',arguments:{id,message:'forged target',expectAttemptId:'not-the-active-attempt'}});
+      assert.notEqual(forgedFrame.isError,true,'target-changed is a structured normal refusal, not an MCP tool error');
+      const forged=JSON.parse(forgedFrame.content[0].text);
+      assert.equal(forged.ok,false);assert.equal(forged.code,'target-changed');
       const update=await client.tool('steer_execution',{id,message:`Include ${role} marker.`,expectAttemptId:bound.attempt.id,expectJobId:bound.job.id});
       assert.equal(update.ok,true);assert.equal(update.acknowledged,false);updates[role]=update.revision;
       if(role==='implementer'&&mode==='cancelled') {
