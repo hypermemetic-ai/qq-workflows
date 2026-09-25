@@ -31,15 +31,18 @@ assert.match(template, /Leave implementation methods and routine decisions to th
 assert.match(template, /^# Ticket/m);
 assert.match(template, /^## Kind/m);
 assert.match(template, /^## \[open\]/m);
-assert.match(template, /bounded — straightforward work/);
-assert.match(template, /open — needs implementer judgment/);
+const boundedDescription = "bounded — direct execution, with targeted architect review and inexpensive correction where sufficient. A clear plan can make substantial work suitable for bounded.";
+const openDescription = "open — coordinated implementation and independent review when complexity and the choices left to the executor warrant the additional machinery.";
+assert.ok(template.includes(boundedDescription));
+assert.ok(template.includes(openDescription));
+assert.doesNotMatch(template, /bounded — straightforward work|open — needs implementer judgment/);
 assert.match(template, /research — investigation, spike, or benchmark/);
 assert.doesNotMatch(template, /scratch\.md/);
 
 assert.equal(parseKind(template), null);
 
 const templateKind =
-  "## Kind\n\nbounded — straightforward work.\nopen — needs implementer judgment.\nresearch — investigation, spike, or benchmark.\n";
+  `## Kind\n\n${boundedDescription}\n${openDescription}\nresearch — investigation, spike, or benchmark.\n`;
 
 const bounded = `${template.replace(
   templateKind,
