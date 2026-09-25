@@ -135,8 +135,35 @@ export async function defaultLocalBranch(cwd) {
   throw new Error("no local main or master branch");
 }
 
-export async function hasImplementationChanges(cwd, branch) {
-  if (await isDirty(cwd)) return true;
+// A branch-local immutable creation pin survives worktree reuse and remote
+// tracking movement. Managed callers additionally supply the pin recorded on
+// their execution; a missing or different ref is never replaced with HEAD.
+const basePinRef = branch => `refs/qq-workflow/bases/${branch}`;
+export async function worktreeBase(cwd, branch, expected = null) {
+  const actual = await currentBranch(cwd);
+  if (actual !== branch || branch === "HEAD") throw new Error("preserved worktree identity mismatch");
+  const head = await revParse(cwd);
+  if (await revParse(cwd, `refs/heads/${branch}`) !== head) throw new Error("worktree branch head changed");
+  const pin = await git(cwd, ["rev-parse", "--verify", basePinRef(branch)]).catch(() => null);
+  if (expected && (!pin || pin !== expected.sha || !/^[0-9a-f]{40,64}$/.test(expected.sha))) throw new Error("worktree base provenance missing or mismatched");
+  if (pin) {
+    if (!/^[0-9a-f]{40,64}$/.test(pin)) throw new Error("invalid worktree base pin");
+    await git(cwd, ["merge-base", "--is-ancestor", pin, head]);
+  }
+  return { pin, head };
+}
+
+export async function hasImplementationChanges(cwd, branch, expectedBase = null) {
+  const target = branch || await currentBranch(cwd);
+  const { pin, head } = await worktreeBase(cwd, target, expectedBase);
+  const dirty = await isDirty(cwd);
+  if (pin) {
+    const count = Number(await git(cwd, ["rev-list", "--count", `${pin}..${head}`]));
+    const after = await worktreeBase(cwd, target, expectedBase);
+    if (after.head !== head || after.pin !== pin) throw new Error("worktree identity changed during change detection");
+    return dirty || count > 0;
+  }
+  if (dirty) return true;
   let base = null;
   try {
     base = await defaultLocalBranch(cwd);
@@ -360,7 +387,7 @@ export async function synchronizeDefaultCheckout(cwd, { remote, base, mergeSha }
   }
 }
 
-export async function createAndMergePr(cwd, { title, body, branch, expectedHead, checkpoint = async () => {} } = {}) {
+export async function createAndMergePr(cwd, { title, body, branch, expectedHead, checkpoint = async () => {}, verifyIdentity = async () => {} } = {}) {
   const head = branch ?? await currentBranch(cwd);
   if (head === "HEAD") throw new Error("publication requires a named branch");
   const sha = await revParse(cwd, head);
@@ -374,6 +401,8 @@ export async function createAndMergePr(cwd, { title, body, branch, expectedHead,
   const base = repo.defaultBranchRef.name;
   if (head === base) throw new Error("publication requires a separate implementation branch");
   await checkpoint("push_pending", { remote, head, sha, repo: repo.nameWithOwner });
+  await verifyIdentity();
+  if (await isDirty(cwd)) throw new Error("worktree changed before publication");
   await git(cwd, ["push", remote, `${sha}:refs/heads/${head}`]);
   const remoteSha = (await git(cwd, ["ls-remote", remote, `refs/heads/${head}`])).split(/\s+/)[0];
   if (remoteSha !== sha) throw new Error("pushed branch revision does not match intended revision");
@@ -389,6 +418,8 @@ export async function createAndMergePr(cwd, { title, body, branch, expectedHead,
       const file = join(dir, "body.md");
       await writeFile(file, body ?? "");
       await checkpoint("pr_pending", { head, base, sha });
+      await verifyIdentity();
+      if (await isDirty(cwd)) throw new Error("worktree changed before PR creation");
       try {
         await gh(["pr", "create", "--repo", repo.nameWithOwner, "--head", head, "--base", base, "--title", title || `architect: ${head}`, "--body-file", file]);
       } catch (error) {
@@ -400,6 +431,7 @@ export async function createAndMergePr(cwd, { title, body, branch, expectedHead,
   }
   if (!pr) throw new Error("intended PR could not be identified");
   await checkpoint("merge_pending", { pr: pr.url, sha });
+  await verifyIdentity();
   if (pr.state !== "MERGED") {
     try { await gh(["pr", "merge", pr.url, "--repo", repo.nameWithOwner, "--merge", "--delete-branch", "--match-head-commit", sha]); }
     catch (error) {
@@ -481,13 +513,18 @@ export async function createWorktree(cwd, { kind = "bounded", sessionId, branch:
       const actualRoot = await mainRepoRoot(dest);
       const actualBranch = await currentBranch(dest);
       if (actualRoot !== root || actualBranch !== branch) throw new Error("preserved worktree identity mismatch");
-      if (explicitBaseSha) await git(dest, ["merge-base", "--is-ancestor", explicitBaseSha, "HEAD"]);
+      const {pin} = await worktreeBase(dest, branch);
+      if (!pin || (explicitBaseSha && pin !== explicitBaseSha)) throw new Error("preserved worktree base provenance missing or mismatched");
       registerStateExclude(dest, stateDirFor(dest));
       await copyTicketToWorktree(srcTicket, dest);
-      return { cwd: dest, worktree: dest, branch, reused: true, sessionId, ticketSource: srcTicket };
+      return { cwd: dest, worktree: dest, branch, reused: true, sessionId, ticketSource: srcTicket,
+        baseSelection: {ref:basePinRef(branch),sha:pin,source:"preserved-base"} };
     }
-    if (explicitBaseSha) await git(root, ["merge-base", "--is-ancestor", explicitBaseSha, branch]);
+    const pin = await git(root, ["rev-parse", "--verify", basePinRef(branch)]).catch(() => null);
+    if (!pin || (explicitBaseSha && pin !== explicitBaseSha)) throw new Error("preserved worktree base provenance missing or mismatched");
+    await git(root, ["merge-base", "--is-ancestor", pin, branch]);
     await git(root, ["worktree", "add", dest, branch]);
+    baseSelection = {ref:basePinRef(branch),sha:pin,source:"preserved-base"};
   } else {
     const selected = base == null
       ? await freshDefaultBase(root)
@@ -495,9 +532,11 @@ export async function createWorktree(cwd, { kind = "bounded", sessionId, branch:
     // Pin the verified commit: concurrent fetches cannot change the branch
     // between selection and creation. No root checkout or stash is modified.
     await git(root, ["worktree", "add", "-b", branch, dest, selected.sha]);
+    await git(root, ["update-ref", basePinRef(branch), selected.sha, "0000000000000000000000000000000000000000"]);
     baseSelection = selected;
   }
 
+  await worktreeBase(dest, branch, baseSelection);
   registerStateExclude(dest, stateDirFor(dest));
 
   await copyTicketToWorktree(srcTicket, dest);
@@ -577,7 +616,7 @@ export async function cleanWorktreeProjects(mainRoot, worktreePath, options = {}
   return unlinked;
 }
 
-export async function retireWorktree(cwd, { worktree, branch, force = true, home } = {}) {
+export async function retireWorktree(cwd, { worktree, branch, force = true, home, expectedHead = null } = {}) {
   const targetWorktree = worktree || cwd;
   const mainRoot = await mainRepoRoot(targetWorktree);
 
@@ -590,7 +629,12 @@ export async function retireWorktree(cwd, { worktree, branch, force = true, home
     }
   }
 
-  // 1. Remove the worktree
+  // 1. Remove the worktree. A managed no-op may only retire the exact
+  // inspected branch and revision, not a checkout switched during inspection.
+  if (expectedHead) {
+    if (!branch || (await worktreeBase(targetWorktree, branch)).head !== expectedHead || await isDirty(targetWorktree))
+      throw new Error("worktree changed before no-op retirement");
+  }
   if (existsSync(targetWorktree)) {
     const args = ["worktree", "remove"];
     if (force) args.push("--force");
@@ -605,7 +649,7 @@ export async function retireWorktree(cwd, { worktree, branch, force = true, home
     }
   }
 
-  // 2. Delete the local branch
+  // 2. Delete the local branch and its creation pin.
   if (targetBranch && targetBranch !== "HEAD" && targetBranch !== "main" && targetBranch !== "master") {
     try {
       await git(mainRoot, ["branch", "-d", targetBranch]);
@@ -618,13 +662,17 @@ export async function retireWorktree(cwd, { worktree, branch, force = true, home
     }
   }
 
+  if (targetBranch && targetBranch !== "HEAD" && !await git(mainRoot, ["show-ref", "--verify", `refs/heads/${targetBranch}`]).then(() => true, () => false)) {
+    await git(mainRoot, ["update-ref", "-d", basePinRef(targetBranch)]).catch(() => {});
+  }
+
   // 3. Clean up any project JSON files associated with this worktree
   await cleanWorktreeProjects(mainRoot, targetWorktree, { home });
 
   return { retired: true, worktree: targetWorktree, branch: targetBranch };
 }
 
-export async function landWorktree(cwd, { worktree, branch, message, title, body, deleteBranch = true, home, sessionId: explicitSessionId, clearTicket = true, curation = null } = {}) {
+export async function landWorktree(cwd, { worktree, branch, message, title, body, deleteBranch = true, home, sessionId: explicitSessionId, clearTicket = true, curation = null, expectedBase = null } = {}) {
   const targetWorktree = worktree || cwd;
   const mainRoot = await mainRepoRoot(targetWorktree);
 
@@ -632,6 +680,11 @@ export async function landWorktree(cwd, { worktree, branch, message, title, body
   if (targetBranch === "HEAD" || targetBranch === "main" || targetBranch === "master") {
     throw new Error(`cannot land branch '${targetBranch}'; requires a dedicated worktree branch`);
   }
+  const initialIdentity = await worktreeBase(targetWorktree, targetBranch, expectedBase);
+  const recheckIdentity = async (head = initialIdentity.head) => {
+    const current = await worktreeBase(targetWorktree, targetBranch, expectedBase);
+    if (current.head !== head || current.pin !== initialIdentity.pin) throw new Error("worktree identity changed during landing inspection");
+  };
 
   const resolveSessionTag = () => {
     if (explicitSessionId) return explicitSessionId;
@@ -729,12 +782,17 @@ export async function landWorktree(cwd, { worktree, branch, message, title, body
     }
   };
 
+  // Curation capture may be asynchronous. It must not silently replace the
+  // inspected branch/HEAD before the commit or no-change decision begins.
+  await recheckIdentity();
   const commitMsg = message || title || `architect: ${targetBranch}`;
   const commitResult = await commitIfDirty(targetWorktree, commitMsg);
 
+  await recheckIdentity(commitResult.sha);
   // Determine whether this worktree introduced any changes or commits against base
   let hasChanges = commitResult.committed;
-  if (!hasChanges) {
+  if (!hasChanges && initialIdentity.pin) hasChanges = Number(await git(targetWorktree, ["rev-list", "--count", `${initialIdentity.pin}..${commitResult.sha}`])) > 0;
+  if (!hasChanges && !initialIdentity.pin) {
     let base = null;
     try {
       base = await defaultLocalBranch(targetWorktree);
@@ -756,11 +814,15 @@ export async function landWorktree(cwd, { worktree, branch, message, title, body
   // If there are no changes or commits to merge (e.g. read-only research worktree),
   // safely retire the worktree and branch without erroring on an empty PR.
   if (!hasChanges) {
+    await recheckIdentity(commitResult.sha);
+    if (await isDirty(targetWorktree)) throw new Error("worktree changed during no-op inspection");
     // A no-op landing produces an EXPLICIT no-source-change disposition: no
     // commit is invented and architectural curation is never scheduled.
     await activateCuration({ method: "none", receipt: null, headSha: null, pr: null });
     if (deleteBranch && !preserveSoleEvidence) {
-      await retireWorktree(mainRoot, { worktree: targetWorktree, branch: targetBranch, force: true, home });
+      await recheckIdentity(commitResult.sha);
+      if (await isDirty(targetWorktree)) throw new Error("worktree changed before no-op retirement");
+      await retireWorktree(mainRoot, { worktree: targetWorktree, branch: targetBranch, force: true, home, expectedHead: commitResult.sha });
     }
     let ticketArchived = false;
     let archivePath = null;
@@ -788,6 +850,7 @@ export async function landWorktree(cwd, { worktree, branch, message, title, body
   }
 
   const remote = await hasRemote(targetWorktree);
+  await recheckIdentity(commitResult.sha);
   let result;
   if (remote) {
     result = await createAndMergePr(targetWorktree, {
@@ -795,8 +858,10 @@ export async function landWorktree(cwd, { worktree, branch, message, title, body
       body: body || commitMsg,
       branch: targetBranch,
       expectedHead: commitResult.sha,
+      verifyIdentity: () => recheckIdentity(commitResult.sha),
     });
   } else {
+    await recheckIdentity(commitResult.sha);
     result = await fastForwardMain(targetWorktree, { branch: targetBranch });
   }
 

@@ -113,7 +113,8 @@ import {
   buildResearcherPrompt,
   hasImplementationChanges,
 } from "../bin/mcp-server.mjs";
-import { git } from "../workflow/git.mjs";
+import { git, retireWorktree } from "../workflow/git.mjs";
+import { readReport } from "../workflow/reports.mjs";
 import { resolveTicketSource } from "../workflow/ticket.mjs";
 import { WORKER_LAUNCHER_PATH, buildWorkerStep } from "../bin/mcp-server.mjs";
 import { COMPLETE_TASK_RESPONSE_MAX } from "../workflow/results.mjs";
@@ -125,12 +126,9 @@ import { centralWorkerConfig } from "./support/architect-fixtures.mjs";
 const exec = promisify(execFile);
 
 async function retireTestWorktree(repo, result) {
-  try {
-    await git(repo, ["worktree", "remove", "--force", result.worktree]);
-  } catch {}
-  try {
-    await git(repo, ["branch", "-D", result.branch]);
-  } catch {}
+  // Production retirement also removes the immutable creation pin. A bare
+  // worktree/branch deletion leaves a stale pin when this fixture reuses an ID.
+  await retireWorktree(repo, { worktree: result.worktree, branch: result.branch });
 }
 
 // The authoritative result for a runner tracker: the transport/registry read
@@ -2915,10 +2913,9 @@ function makeStreamTestExecution() {
   }
 }
 
-// S7. Pipeline with a worker double for the central harness: the central
-// launcher argv is used (never a per-provider template), 30 streamed tool
-// events recycle the trajectory past provision_worktree, and the summary is
-// clean markdown rather than raw JSONL.
+// S7. Unsupported legacy implementer remains observable: the central launcher
+// argv is used and 30 streamed tools recycle the trajectory; stdout is retained
+// as findings, but cannot stand in for a typed final disposition or authorize landing.
 {
   const pipeRepo = mkdtempSync(join(tmpdir(), "architect-exec-stream-"));
   const fakeBin = mkdtempSync(join(tmpdir(), "architect-exec-fakebin-"));
@@ -2954,7 +2951,12 @@ function makeStreamTestExecution() {
     const disp = await dispatchExecution({ kind: "bounded", sessionId: streamSessId, cwd: pipeRepo });
     await waitForExecution(disp.id);
     const done = await checkExecution({ id: disp.id });
-    assert.equal(done.status, "completed");
+    assert.equal(done.status, "failed");
+    assert.equal(done.phase, "implementing");
+    assert.ok(done.error.reportId, "unsupported worker output remains a durable report");
+    const streamedReport = readReport(process.env.QQ_WORKFLOW_STATE_DIR, done.error.reportId).text;
+    assert.match(streamedReport, /Streamed implementation complete/);
+    assert.doesNotMatch(streamedReport, /payload_type|tool_batch/);
 
     const loggedArgs = readFileSync(argsLog, "utf8");
     assert.ok(loggedArgs.includes(WORKER_DEEPSEEK_ADAPTER), "the centrally configured adapter is the worker entry");
@@ -2964,18 +2966,11 @@ function makeStreamTestExecution() {
 
     await waitForExecution(disp.id);
     const check = await checkExecution({ id: disp.id });
-    // 3 milestones + 30 tools + 3 closing milestones = 36 entries -> keep last 25.
     assert.equal(check.trajectory.length, 25);
     assert.ok(!check.trajectory.some((t) => t.action === "provision_worktree"));
-    assert.equal(check.trajectory[0].action, "stream-tool-9");
-    assert.equal(check.trajectory[0].target, "workspace:file-9.mjs");
-    assert.equal(check.trajectory[22].action, "implementer_completed");
-    assert.equal(check.trajectory[23].action, "landing_started");
-    assert.equal(check.trajectory[24].action, "execution_completed");
-
-    assert.ok(done.result.implementerSummary.includes("Streamed implementation complete."));
-    assert.ok(!done.result.implementerSummary.includes("payload_type"));
-    assert.ok(!done.result.implementerSummary.includes("tool_batch"));
+    assert.ok(check.trajectory.some((t) => t.action === "stream-tool-30" && t.target === "workspace:file-30.mjs"));
+    assert.ok(!check.trajectory.some((t) => t.action === "landing_started" || t.action === "execution_completed"));
+    assert.equal(readFileSync(join(EXECUTIONS.get(disp.id).worktree, "stream-probe.txt"), "utf8"), "probe\n", "failed execution preserves its changes");
   } finally {
     if (prevSubagentBin === undefined) delete process.env.QQ_SUBAGENT_BIN;
     else process.env.QQ_SUBAGENT_BIN = prevSubagentBin;
@@ -3033,7 +3028,10 @@ function makeStreamTestExecution() {
     });
     await waitForExecution(disp.id);
     const done = await checkExecution({ id: disp.id });
-    assert.equal(done.status, "completed");
+    assert.equal(done.status, "failed");
+    assert.equal(done.phase, "implementing");
+    assert.ok(done.error.reportId);
+    assert.equal(readReport(process.env.QQ_WORKFLOW_STATE_DIR, done.error.reportId).text, "Codex finished the task.");
 
     const loggedArgs = readFileSync(argsLog, "utf8");
     assert.ok(loggedArgs.includes("--seat\nimplementer"), "the implementer seat comes from the pipeline, not a provider argument");
@@ -3046,8 +3044,7 @@ function makeStreamTestExecution() {
     const cmdEntry = check.trajectory.find((t) => t.action === "command_execution");
     assert.equal(cmdEntry.target, "cat package.json");
 
-    assert.equal(done.result.implementerSummary, "Codex finished the task.");
-    assert.ok(!done.result.implementerSummary.includes("item.completed"));
+    assert.ok(!actions.includes("landing_started"), "untyped stream cannot authorize publication");
   } finally {
     if (prevSubagentBin === undefined) delete process.env.QQ_SUBAGENT_BIN;
     else process.env.QQ_SUBAGENT_BIN = prevSubagentBin;
@@ -3093,9 +3090,13 @@ function makeStreamTestExecution() {
     });
     await waitForExecution(disp.id);
     const done = await checkExecution({ id: disp.id });
-    assert.equal(done.status, "completed");
-    assert.ok(done.result.implementerSummary.includes("Plain text implementation report."));
-    assert.ok(done.result.implementerSummary.includes(longLine));
+    assert.equal(done.status, "failed");
+    assert.equal(done.phase, "implementing");
+    assert.ok(done.error.reportId);
+    const textReport = readReport(process.env.QQ_WORKFLOW_STATE_DIR, done.error.reportId).text;
+    assert.match(textReport, /Plain text implementation report/);
+    assert.ok(textReport.includes(longLine));
+    assert.ok(!done.result?.landingOutcome, "untyped plain text cannot authorize landing");
 
     await waitForExecution(disp.id);
     const check = await checkExecution({ id: disp.id });

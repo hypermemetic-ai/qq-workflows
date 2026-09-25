@@ -231,9 +231,11 @@ export function parseSeatResultBinding(env, role) {
     || !/^[A-Za-z0-9._-]{1,128}$/.test(binding.attemptId ?? "")) throw new Error("invalid managed seat result binding");
   return binding;
 }
-export function writeSeatResult(binding,{response,revision=null}) {
+export function writeSeatResult(binding,{response,revision=null,disposition}={}) {
   if(typeof response!=="string" || !response.trim() || response.length>COMPLETE_TASK_RESPONSE_MAX) throw new Error("invalid managed seat final answer");
-  const payload={schema:"qq-seat-result/1",jobId:binding.jobId,attemptId:binding.attemptId,role:binding.role,response,revision,at:Date.now()};
+  if(binding.role==="implementer" && !["completed","blocked"].includes(disposition)) throw new Error("invalid managed implementer disposition");
+  if(binding.role!=="implementer" && disposition!==undefined) throw new Error("unexpected managed seat disposition");
+  const payload={schema:"qq-seat-result/1",jobId:binding.jobId,attemptId:binding.attemptId,role:binding.role,response,revision,at:Date.now(),...(binding.role==="implementer"?{disposition}:{})};
   mkdirSync(dirname(binding.path),{recursive:true,mode:0o700});
   const temporary=`${binding.path}.tmp-${process.pid}`;
   writeFileSync(temporary,JSON.stringify(payload),{flag:"wx",mode:0o600});
@@ -246,6 +248,9 @@ export function readSeatResult(binding) {
     if(payload.schema!=="qq-seat-result/1" || payload.jobId!==binding.jobId || payload.attemptId!==binding.attemptId || payload.role!==binding.role) return {ok:false,error:"managed seat result identity mismatch"};
     if(typeof payload.response!=="string" || !payload.response.trim() || payload.response.length>COMPLETE_TASK_RESPONSE_MAX) return {ok:false,error:"invalid managed seat final answer"};
     if(payload.revision!==null && (!Number.isInteger(payload.revision)||payload.revision<1)) return {ok:false,error:"invalid result revision"};
+    if(binding.role==="implementer" && !["completed","blocked"].includes(payload.disposition))
+      return {ok:false,error:"invalid or missing managed implementer disposition",response:payload.response,historical:payload.disposition===undefined};
+    if(binding.role!=="implementer" && payload.disposition!==undefined) return {ok:false,error:"unexpected managed seat disposition"};
     return {ok:true,...payload};
   } catch(error) {return {ok:false,error:`managed seat result unavailable: ${error.message}`};}
 }

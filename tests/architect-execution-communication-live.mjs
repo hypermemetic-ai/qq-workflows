@@ -45,7 +45,7 @@ for (const reload of (paseoReload?[true]:[false,true])) {
    assert.equal(names.includes('select_tests'),role!=='implementer');
    if(call===1){await gates[`${role}-start`];return {toolCalls:[{name:'workflow_read_assignment'}]};}
    if(call===2)return {toolCalls:[{name:'workflow_acknowledge_assignment',arguments:{revision:roleState(role).attempt.launchIntent.revision}}]};
-   if(call===3)return {toolCalls:[{name:'workflow_report_progress',arguments:{kind:'progress',message:`${role} inspected the original phase constraints and is ready for its amendment.`}}]};
+   if(call===3)return {toolCalls:[{name:'workflow_report_progress',arguments:{kind:role==='implementer'?'blocker':'progress',message:`${role} inspected the original phase constraints and is ready for its amendment.`}}]};
    if(call===4){await gates[`${role}-update`];return {toolCalls:[{name:'workflow_read_assignment'}]};}
    if(call===5){assert.match(text,new RegExp(`${role} marker`));return {toolCalls:[{name:'workflow_acknowledge_assignment',arguments:{revision:updates[role]}}]};}
    if(role==='test_owner'){
@@ -61,7 +61,7 @@ for (const reload of (paseoReload?[true]:[false,true])) {
     ? {toolCalls:[{name:'run_selected_tests'}]}
     : {toolCalls:[{name:'submit_review',arguments:{verdict:'PASS',suggestions:['Optional wording cleanup']}}]};
    assert.equal(call,8,'no automatic worker retry or relaunch');
-   return {text:role==='implementer'?'Implemented proof.txt with implementer marker.':'Verdict: PASS; verified focused proof test and incorporated reviewer marker.'};
+   return {text:role==='implementer'?'Implemented proof.txt with implementer marker.\n<!-- qq-final-disposition: completed -->':'Verdict: PASS; verified focused proof test and incorporated reviewer marker.'};
   }
   assert.ok(names.includes('steer_execution'),'Architect exposes scoped execution amendments');
   if(pendingAction?.kind==='update') {
@@ -130,6 +130,7 @@ for (const reload of (paseoReload?[true]:[false,true])) {
   for(const role of roles){
    const {job,attempt}=roleState(role);
    assert.equal(attempt.outcome.status,'completed');assert.equal(attempt.outcome.revision,updates[role]);assert.equal(job.pendingAmendments.length,0);
+   if(role==='implementer')assert.equal(attempt.blockers.length,1,'an advisory blocker is retained but does not poison later explicit completion');
    const report=readReport(fixture.env.QQ_WORKFLOW_STATE_DIR,attempt.outcome.reportId);
    assert.equal(report.ok,true);assert.match(report.text,new RegExp(`${role} marker`));assert.equal(counts[role],role==='test_owner'?9:8);
   }

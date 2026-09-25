@@ -18,7 +18,12 @@ record (`workflow/change-record.mjs`) before its host process exists, via
   coordinating owner (workflow session key), and the full host launch metadata
   (launch id, request path, kind);
 * selected worktree, branch, and actual base SHA as `worktree-base` evidence
-  before launching a role (`check_execution.authority.execution.worktreeSelection`);
+  before launching a role (`check_execution.authority.execution.worktreeSelection`).
+  A separate branch-local creation ref (`refs/qq-workflow/bases/<branch>`) pins
+  the original commit across worktree reuse, even when the remote or local
+  default branch moves. Managed change detection and landing require this pin
+  to match the recorded selection and remain an ancestor of the intended head;
+  missing or mismatched provenance refuses rather than guessing from HEAD;
 * immutable original constraints as assignment revision 1 (verbatim — an
   update never rewrites them);
 * child role/job/attempt identities and revisions for every implementer and
@@ -129,7 +134,19 @@ All full reports (pipeline report and per-role reports) are persisted **before
 any notification** and retrieved with `read_report`.
 If an adapter writes a valid role result and then exits unsuccessfully, its
 full findings are retained as the failed attempt's report. Model output alone
-does not turn that managed attempt into a success.
+does not turn that managed attempt into a success. Every Pi implementer with an
+attempt-bound result transport (including seats without communication tools)
+must end its final answer with exactly one line
+`<!-- qq-final-disposition: completed -->` or
+`<!-- qq-final-disposition: blocked -->`. This is a terminal outcome declaration,
+not the advisory `workflow_report_progress(kind="blocker")` entry: progress
+may be resolved before the worker explicitly completes. The adapter validates
+and binds that declaration to the job/attempt result file. Missing, invalid,
+or contradictory declarations cannot authorize completion. A validated final
+blocked result retains the report and phase worktree, records a non-success
+role outcome (so amendments are not fulfilled), and stops before reviewer,
+change detection or landing. Cancellation still takes precedence. Historical
+untyped results remain readable, but never authorize a new landing.
 
 When the coordinating parent owns delivery, the host disables the MCP Codex
 notifier explicitly (`notificationMode: "parent"`), never by relying on the
@@ -142,8 +159,12 @@ configurations) has **no** assignment updates and no progress push. Steering
 such an execution reports `code: "unsupported"` (native and MCP) with the
 configured harness in its reason. The recorded capability distinguishes an
 unsupported harness from a Pi receiver whose binding is still arriving — it
-is never a silent stdin write pretending delivery. Legacy successful and failed
-role reports still remain durable and linked to their attempt outcomes.
+is never a silent stdin write pretending delivery. Legacy role reports still remain durable and linked to their attempt outcomes.
+An implementer harness without a validated final disposition is unsupported
+for fresh managed success/landing; it fails closed instead of treating exit 0
+as completed work. Standalone Pi seats without an attempt-bound result
+transport retain their legacy completion behavior; every bound implementer
+requires the explicit declaration.
 
 Explicit binding validation covers the implementer/reviewer seats **only when
 the binding role matches the actual seat**; a binding naming another

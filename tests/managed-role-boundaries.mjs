@@ -1,5 +1,5 @@
 // Real production role launcher with deterministic process doubles, not model
-// inference: legacy communication refusal and result-before-adapter-failure.
+// inference: terminal disposition, legacy communication refusal and adapter failure.
 import assert from 'node:assert/strict';
 import {writeFileSync,existsSync} from 'node:fs';
 import {join} from 'node:path';
@@ -16,10 +16,14 @@ const executions=[];
 try {
   for(const key of keys)if(fixture.env[key]!==undefined)process.env[key]=fixture.env[key];
   process.env.QQ_WORKER_CODEX_HOME=join(fixture.root,'codex-home');process.env.DEEPSEEK_API_KEY='fixture-dummy';
-  for(const mode of ['legacy','published-then-failed']) {
+  for(const mode of ['legacy','published-then-failed','blocked','completed','missing-disposition','invalid-disposition']) {
     const id=randomUUID(),owner=randomUUID(),stateDir=fixture.env.QQ_WORKFLOW_STATE_DIR;
     const marker=join(fixture.root,`${mode}.ready`),gate=join(fixture.root,`${mode}.continue`),binary=join(fixture.root,`${mode}.mjs`);
-    writeFileSync(binary,`#!/usr/bin/env node\nimport {writeFileSync,existsSync} from 'node:fs';import {writeSeatResult} from ${JSON.stringify(new URL('../workflow/results.mjs',import.meta.url).href)};writeFileSync(${JSON.stringify(marker)},'ready');while(!existsSync(${JSON.stringify(gate)}))await new Promise(done=>setTimeout(done,20));${mode==='legacy'?"console.log('Legacy role findings retained.');":"writeSeatResult(JSON.parse(process.env.QQ_WORKER_RESULT_BINDING),{response:'Full model findings persisted before adapter failure.'});process.exitCode=9;"}\n`,{mode:0o700});
+    const finalText=mode==='blocked'?'Blocked; no host maintenance performed.':'Full model findings persisted before adapter failure.';
+    const terminal=mode==='legacy'?"console.log('Legacy role findings retained.');":mode==='invalid-disposition'
+      ? `const binding=JSON.parse(process.env.QQ_WORKER_RESULT_BINDING);writeFileSync(binding.path,JSON.stringify({schema:'qq-seat-result/1',jobId:binding.jobId,attemptId:binding.attemptId,role:binding.role,response:'invalid outcome',revision:null,disposition:'surprise'}));`
+      : `writeSeatResult(JSON.parse(process.env.QQ_WORKER_RESULT_BINDING),{response:${JSON.stringify(finalText)}${mode==='missing-disposition'?'':`,disposition:${JSON.stringify(mode==='blocked'?'blocked':'completed')}`}});${mode==='published-then-failed'?'process.exitCode=9;':''}`;
+    writeFileSync(binary,`#!/usr/bin/env node\nimport {writeFileSync,existsSync} from 'node:fs';import {writeSeatResult} from ${JSON.stringify(new URL('../workflow/results.mjs',import.meta.url).href)};writeFileSync(${JSON.stringify(marker)},'ready');while(!existsSync(${JSON.stringify(gate)}))await new Promise(done=>setTimeout(done,20));${terminal}\n`,{mode:0o700});
     process.env.QQ_SUBAGENT_BIN=binary;
     if(mode==='legacy') {
       const config=join(fixture.root,'legacy-config.json');writeFileSync(config,JSON.stringify({harness:'codex',provider:'deepseek',model:'deepseek-flash',base_url:'http://127.0.0.1:9',wire_api:'responses',env_key:'DEEPSEEK_API_KEY'}));process.env.QQ_WORKER_CONFIG_FILE=config;
@@ -42,13 +46,17 @@ try {
     writeFileSync(gate,'continue');
     const result=await completion,attempt=execution.childAttempts[0];
     const view=managedExecutionView({stateDir,executionId:id}).roles.find(role=>role.role==='implementer').attempts[0];
-    assert.equal(result.ok,mode==='legacy');assert.equal(view.outcome.status,mode==='legacy'?'completed':'failed');
-    assert.ok(attempt.reportId);assert.equal(view.outcome.reportId,attempt.reportId);
-    assert.match(readReport(stateDir,attempt.reportId).text,mode==='legacy'?/Legacy role findings/:/Full model findings persisted before adapter failure/);
-    if(mode!=='legacy')assert.equal(result.error.exitCode,9);
+    assert.equal(result.ok,mode==='completed',`${mode} cannot authorize success without an explicit final completion`);
+    if(mode==='completed')assert.equal(view.outcome.status,'completed');
+    else assert.notEqual(view.outcome.status,'completed',`${mode} must not settle as completed without valid completion`);
+    if(mode==='blocked')assert.match(String(view.outcome.status),/blocked|failed/);
+    assert.ok(attempt.reportId,`${mode} retains the worker report`);assert.equal(view.outcome.reportId,attempt.reportId);
+    if(mode!=='invalid-disposition'&&mode!=='missing-disposition')
+      assert.match(readReport(stateDir,attempt.reportId).text,mode==='legacy'?/Legacy role findings/:mode==='blocked'?/Blocked; no host maintenance performed/:/Full model findings persisted before adapter failure/);
+    if(mode==='published-then-failed')assert.equal(result.error.exitCode,9);
   }
   assert.equal(fixture.calls,0);
-  console.log('PASS managed role process doubles: legacy steering explicitly unsupported with durable outcome/report; validated output survives adapter failure without success');
+  console.log('PASS managed role process doubles: terminal blocked/invalid/missing cannot complete; explicit completion succeeds; reports survive adapter failure');
 } finally {
   for(const execution of executions)if(execution.activeChild)try{execution.activeChild.kill('SIGTERM');}catch{}
   for(const key of keys)if(old[key]===undefined)delete process.env[key];else process.env[key]=old[key];

@@ -743,13 +743,12 @@ async function runOneTurn(args, env) {
   // communication-enabled runner additionally carries the coordinator-authored
   // communication paragraph, verbatim.
   const seatInstructions = loadPiSeatInstructions(args.seat, { tools, managed: Boolean(env.QQ_MANAGED_TEST_BINDING) });
-  const instructions = communication.enabled
-    ? {
-      ...seatInstructions,
-      body: `${seatInstructions.body}\n\n${COMMUNICATION_ROLE_PARAGRAPH}`,
-      communicationRoleParagraph: true,
-    }
-    : seatInstructions;
+  const dispositionInstruction = 'For your terminal answer, append exactly one final line `<!-- qq-final-disposition: completed -->` if the implementation is complete, or `<!-- qq-final-disposition: blocked -->` if you cannot complete it. This is distinct from advisory blocker progress. Do not mark blocked work completed.';
+  const instructions = {
+    ...seatInstructions,
+    body: `${seatInstructions.body}${communication.enabled ? `\n\n${COMMUNICATION_ROLE_PARAGRAPH}` : ''}${seatTransport && args.seat === 'implementer' ? `\n\n${dispositionInstruction}` : ''}`,
+    ...(communication.enabled ? { communicationRoleParagraph: true } : {}),
+  };
   const extension = WORKER_PI_EXTENSION;
   const sessionPath = resolveNativeSessionPath({
     env,
@@ -952,7 +951,19 @@ async function runOneTurn(args, env) {
         const attempt=job.attempts[communication.binding.attemptId];
         revision=attempt.acknowledgements.at(-1)?.revision ?? attempt.launchIntent.revision ?? job.pinnedRevision;
       }
-      writeSeatResult(seatTransport,{response:finalText,revision});
+      let disposition;
+      if (args.seat === "implementer") {
+        const markers = [...finalText.matchAll(/<!-- qq-final-disposition: ([^>]*?) -->/g)];
+        const declarations = [...finalText.matchAll(/<!--\s*qq-final-disposition\s*:/g)];
+        if (declarations.length === 1 && markers.length === 1 && ["completed", "blocked"].includes(markers[0][1]) && finalText.trimEnd().endsWith(markers[0][0])) disposition = markers[0][1];
+        else {
+          // Preserve the answer as failure diagnostics; the missing declaration
+          // cannot produce a bound result or authorize completion.
+          emit({ type: "item.completed", item: { type: "agent_message", text: finalText } });
+          throw new Error("managed implementer final disposition is missing, invalid or conflicting");
+        }
+      }
+      writeSeatResult(seatTransport,{response:finalText,revision,disposition});
     }
     // Publish only AFTER the authoritative result file is durable.
     emit({ type: "item.completed", item: { type: "agent_message", text: finalText } });

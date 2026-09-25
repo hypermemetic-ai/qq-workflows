@@ -40,7 +40,7 @@ for(const mode of ['ordinary','reopened','cancelled']) {
     if(call===6)return role==='implementer'?{toolCalls:[{name:'write',arguments:{path:join(match[2],'proof.txt'),content:'implemented marker\n'}}]}:{toolCalls:[{name:'run_selected_tests'}]};
     if(call===7)return role==='implementer'?{toolCalls:[{name:'run_selected_tests'}]}:{toolCalls:[{name:'submit_review',arguments:{verdict:'PASS'}}]};
     assert.equal(call,8,'no role retry or automatic relaunch');
-    return {text:role==='implementer'?'Implemented proof.txt with implementer marker.':'Verdict: PASS; verified proof.txt with reviewer marker.'};
+    return {text:role==='implementer'?'Implemented proof.txt with implementer marker.\n<!-- qq-final-disposition: completed -->':'Verdict: PASS; verified proof.txt with reviewer marker.'};
   }});
   if(!fixture){console.log('SKIP MCP execution communication: installed Pi unavailable');break;}
   const git=args=>execFileSync('git',args,{cwd:fixture.root,encoding:'utf8'}).trim();

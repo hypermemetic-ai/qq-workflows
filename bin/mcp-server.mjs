@@ -1182,6 +1182,7 @@ export function buildExecutionTerminalMessage(execution) {
   const phase = execution?.phase || err.phase || "unknown";
   const message = err.message || "unknown error";
   const extras = [];
+  if (err.reportId) extras.push(`report:${err.reportId}`);
   if (err.exitCode !== undefined && err.exitCode !== null) extras.push(`exitCode=${err.exitCode}`);
   if (err.stderr) extras.push(`stderr:\n${sanitizeHeadTail(String(err.stderr), { headLen: 500, tailLen: 500 })}`);
   if (err.findings) extras.push(`findings:\n${sanitizeHeadTail(String(err.findings), { headLen: 1000, tailLen: 1000 })}`);
@@ -3328,29 +3329,37 @@ export async function runChildSubagent(execution, { role, cwd, prompt, provider,
         const result=readSeatResult(seatBinding);
         if(!result.ok){
           attempt.status= cancelled ? "cancelled" : "failed";
-          const report = failureReport(finalOutput || result.error);
+          const report = failureReport(result.response || finalOutput || result.error);
           Object.assign(attempt, { reportId: report?.reportId ?? null, reportChars: report?.chars ?? 0 });
           settleAuthority(cancelled ? "cancelled" : "failed", { summary: result.error, reportId: report?.reportId ?? null });
-          resolvePromise({ok:false,output:finalOutput,error:{message:result.error,exitCode:code}});return;
+          resolvePromise({ok:false,output:finalOutput,reportId:report?.reportId ?? null,error:{message:result.error,exitCode:code}});return;
         }
         const report=saveReport(trackerStateDir(execution,{cwd}),{jobId:seatJobId,role,text:result.response});
-        Object.assign(attempt,{status: cancelled ? "cancelled" : "completed", revision:result.revision, reportId:report.reportId, reportChars:report.chars});
+        const blocked = role === "implementer" && result.disposition === "blocked";
+        Object.assign(attempt,{status: cancelled ? "cancelled" : blocked ? "blocked" : "completed", revision:result.revision, reportId:report.reportId, reportChars:report.chars});
         // The validated result revision is the acknowledged/pinned revision the
         // record enforces — never whatever revision happens to exist later.
-        const accepted = settleAuthority(cancelled ? "cancelled" : "completed", { summary: result.response.slice(0, 400), reportId: report.reportId, claimedRevision: result.revision ?? null });
+        const accepted = settleAuthority(cancelled ? "cancelled" : blocked ? "failed" : "completed", { summary: result.response.slice(0, 400), reportId: report.reportId, claimedRevision: result.revision ?? null });
         if (!accepted.ok || cancelled) {
           attempt.status = cancelled ? "cancelled" : "reconciliation-required";
           resolvePromise({ok:false,status:attempt.status,output:result.response,reportId:report.reportId,error:{message:accepted.reason??"role was cancelled before result publication"}});return;
         }
+        if (blocked) {
+          resolvePromise({ok:false,status:"blocked",output:result.response,reportId:report.reportId,revision:result.revision,error:{message:"Implementer reported a terminal blocker"}});return;
+        }
         resolvePromise({ok:true,output:result.response,reportId:report.reportId,revision:result.revision,jobId:seatJobId,attemptId:seatAttemptId});
       } else if (code === 0) {
-        attempt.status= cancelled ? "cancelled" : "completed";
+        const unsupportedImplementer = role === "implementer";
+        attempt.status= cancelled ? "cancelled" : unsupportedImplementer ? "failed" : "completed";
         const report=saveReport(trackerStateDir(execution,{cwd}),{jobId:seatJobId,role,text:finalOutput||`${role} exited with code 0 without a text report.`});
         Object.assign(attempt,{reportId:report.reportId,reportChars:report.chars});
         const accepted=settleAuthority(attempt.status,{summary:cancelled?"cancelled before the seat result settled":finalOutput.slice(0,400),reportId:report.reportId});
         if(!accepted.ok||cancelled) {
           attempt.status=cancelled?"cancelled":"reconciliation-required";
           resolvePromise({ok:false,status:attempt.status,output:finalOutput,reportId:report.reportId,error:{message:accepted.reason??"role was cancelled before result publication"}});return;
+        }
+        if (unsupportedImplementer) {
+          resolvePromise({ok:false,status:"unsupported",output:finalOutput,reportId:report.reportId,error:{message:"implementer harness cannot publish a validated final disposition"}});return;
         }
         resolvePromise({ ok: true, output: finalOutput, reportId:report.reportId, jobId:seatJobId, attemptId:seatAttemptId });
       } else {
@@ -3365,6 +3374,7 @@ export async function runChildSubagent(execution, { role, cwd, prompt, provider,
         resolvePromise({
           ok: false,
           output: finalOutput,
+          reportId: report?.reportId ?? null,
           error: { message: `Child process ${exitReason}`, exitCode: code, signal, stderr: stderr.trim() },
         });
       }
@@ -3592,7 +3602,7 @@ async function runTestingWorkflow(execution, wt) {
   const initialRun = [...state.runs].reverse().find(r => r.role === 'test_owner');
   if (!currentManagedRunner(state) || !state.selection || state.selection.authority !== state.authority.digest || !initialRun || initialRun.authority !== state.authority.digest || !['expected-red','pass'].includes(initialRun.status) || initialRun.hash !== workingState(state) || JSON.stringify(initialRun.selection) !== JSON.stringify(state.selection.targets)) return fail('testing','test owner did not execute the current selection in the tested working state');
   let implementation = await seat('implementer',`Implement '${ticket}' in '${wt.cwd}'. Use \`run_selected_tests\` with the selection and test-owner evidence at '${ref(initial)}'.`);
-  if (!implementation.ok) return fail('implementing',implementation.error?.message ?? 'implementation did not complete');
+  if (!implementation.ok) return fail('implementing',implementation.status === 'blocked' ? `Terminal implementer blocker; report:${implementation.reportId}` : implementation.error?.message ?? 'implementation did not complete',implementation.status === 'blocked' ? 'blocked' : 'incomplete');
   // A completed failing focused run is evidence for the first reviewer, not
   // grounds to skip review. PASS is still gated by reviewer focused evidence.
   let reviewerSummary = null;
@@ -3622,7 +3632,7 @@ async function runTestingWorkflow(execution, wt) {
     const needImplementation = review.groups.implementation.length || state.runs.at(-1)?.status === 'expected-red' || state.runs.at(-1)?.status === 'fail';
     if (needImplementation) {
       implementation = await seat('implementer',`Address the implementation findings for the single shared repair round: ${evidence()}.\nCurrent managed evidence: ${evidence()}.`,true);
-      if (!implementation.ok) return fail('implementing',implementation.error?.message ?? 'implementation repair incomplete');
+      if (!implementation.ok) return fail('implementing',implementation.status === 'blocked' ? `Terminal implementer repair blocker; report:${implementation.reportId}` : implementation.error?.message ?? 'implementation repair incomplete',implementation.status === 'blocked' ? 'blocked' : 'incomplete');
       // Even an unsuccessful repair gets its final review; the second reviewer
       // decides whether findings remain, without admitting a third repair.
     }
@@ -3642,7 +3652,8 @@ async function runExecutionPipeline(execution) {
   assertExecutionActive(execution);
   execution.worktree = wt.cwd;
   execution.branch = wt.branch;
-  execution.baseSelection = wt.baseSelection ?? {ref:args.baseRef??wt.branch,sha:(await git(wt.cwd,["rev-parse","HEAD"])).trim(),source:wt.reused?"reused-worktree":"local-branch"};
+  if (!wt.baseSelection) throw new Error("managed worktree base provenance is unavailable");
+  execution.baseSelection = wt.baseSelection;
   if(execution.authority?.recordEvidence) {
     const parent=execution.authority.view().execution;
     const recorded=execution.authority.recordEvidence({jobId:parent.jobId,attemptId:parent.attemptId,label:"worktree-base",
@@ -3701,6 +3712,8 @@ async function runExecutionPipeline(execution) {
     execution.error = {
       phase: "implementing",
       message: implementerRes.error.message || "Implementer failed",
+      status: implementerRes.status === "blocked" ? "blocked" : "incomplete",
+      ...(implementerRes.reportId ? {reportId:implementerRes.reportId} : {}),
       exitCode: implementerRes.error.exitCode,
       stderr: implementerRes.error.stderr,
     };
@@ -3782,6 +3795,8 @@ async function runExecutionPipeline(execution) {
         execution.error = {
           phase: "retrying",
           message: retryImplRes.error.message || "Implementer retry failed",
+          status: retryImplRes.status === "blocked" ? "blocked" : "incomplete",
+          ...(retryImplRes.reportId ? {reportId:retryImplRes.reportId} : {}),
           exitCode: retryImplRes.error.exitCode,
           stderr: retryImplRes.error.stderr,
         };
@@ -3882,7 +3897,7 @@ async function runExecutionPipeline(execution) {
   const implementerRes = managedResult?.implementerRes ?? legacyImplementerRes;
   const reviewerSummary = managedResult?.reviewerSummary ?? legacyReviewerSummary;
   assertExecutionActive(execution);
-  const hasChanges = await hasImplementationChanges(wt.cwd, wt.branch);
+  const hasChanges = await hasImplementationChanges(wt.cwd, wt.branch, execution.baseSelection);
   assertExecutionActive(execution);
   if (!hasChanges) {
     execution.status = "failed";
@@ -3947,6 +3962,7 @@ async function runExecutionPipeline(execution) {
   const landResult = await landWorktree(root, {
     worktree: wt.cwd,
     branch: wt.branch,
+    expectedBase: execution.baseSelection,
     message: args.message || `feat: implement and verify ${wt.branch}`,
     // Record-backed managed landings carry the ADR source-evidence/curation
     // seam (capture before destructive cleanup, obligation only on a verified
