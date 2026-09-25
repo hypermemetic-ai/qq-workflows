@@ -4,14 +4,19 @@
 
 bounded — straightforward work.
 open — needs implementer judgment.
+research — investigation, spike, or benchmark.
 
 ## Problem
 
-The specific situation that is failing today.
+The objective and situation to change; state the desired outcome and hard boundaries.
+
+## Acceptance
+
+State what must be true for this change to be acceptable in its intended use. Include only constraints, assumptions and accepted limitations that materially affect that judgment.
 
 ## Testing plan
 
-Behavioral invariants that gate acceptance, and feasible real-world failures that must not happen.
+Describe the evidence and checks needed to establish acceptance, including meaningful failure cases. Identify mandatory verification and any agreed limits on it.
 
 ## [open]
 
@@ -21,7 +26,7 @@ Time we will spend. The solution fits this.
 
 ### Solution
 
-The approach: main pieces and how they connect. Leave room for the implementer.
+Intended outcome and any necessary constraints. Leave implementation methods and routine decisions to the worker.
 
 ### Rabbit holes
 
