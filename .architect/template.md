@@ -2,8 +2,8 @@
 
 ## Kind
 
-bounded — straightforward work.
-open — needs implementer judgment.
+bounded — direct execution, with targeted architect review and inexpensive correction where sufficient. A clear plan can make substantial work suitable for bounded.
+open — coordinated implementation and independent review when complexity and the choices left to the executor warrant the additional machinery.
 research — investigation, spike, or benchmark.
 
 ## Problem
