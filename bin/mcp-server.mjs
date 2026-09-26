@@ -234,7 +234,7 @@ export const TOOLS = [
   },
   {
     name: "dispatch_execution",
-    description: "Provision dedicated worktree, run implementer, run reviewer (for open kind) with retry loop, and automatically land on passing review.",
+    description: "Delegate the approved ticket to managed execution. Open work includes independent review; source changes use Git delivery. Only call this after the operator approves the ticket.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1176,7 +1176,8 @@ export function buildExecutionTerminalMessage(execution) {
     const review = result.reviewerSummary
       ? `\n\nReviewer summary:\n${sanitizeHeadTail(String(result.reviewerSummary), { headLen: 2000, tailLen: 2000 })}`
       : "";
-    return `Execution ${id} (${kind}) completed in ${elapsed}s — ${syncWarning ? "remote landing verified; local checkout not synchronized" : "verified and landed"}.${branch}${landingLine}${syncWarning ? `\n${syncWarning}` : ""}${story}${impl}${review}`;
+    const disposition = landing.method === "none" ? "outcome completed; no Git delivery" : syncWarning ? "remote landing verified; local checkout not synchronized" : "verified and landed";
+    return `Execution ${id} (${kind}) completed in ${elapsed}s — ${disposition}.${branch}${landingLine}${syncWarning ? `\n${syncWarning}` : ""}${story}${impl}${review}`;
   }
   const err = execution?.error || {};
   const phase = execution?.phase || err.phase || "unknown";
@@ -3347,7 +3348,7 @@ export async function runChildSubagent(execution, { role, cwd, prompt, provider,
         if (blocked) {
           resolvePromise({ok:false,status:"blocked",output:result.response,reportId:report.reportId,revision:result.revision,error:{message:"Implementer reported a terminal blocker"}});return;
         }
-        resolvePromise({ok:true,output:result.response,reportId:report.reportId,revision:result.revision,jobId:seatJobId,attemptId:seatAttemptId});
+        resolvePromise({ok:true,output:result.response,reportId:report.reportId,revision:result.revision,jobId:seatJobId,attemptId:seatAttemptId,validatedDisposition:result.disposition});
       } else if (code === 0) {
         const unsupportedImplementer = role === "implementer";
         attempt.status= cancelled ? "cancelled" : unsupportedImplementer ? "failed" : "completed";
@@ -3899,11 +3900,21 @@ async function runExecutionPipeline(execution) {
   assertExecutionActive(execution);
   const hasChanges = await hasImplementationChanges(wt.cwd, wt.branch, execution.baseSelection);
   assertExecutionActive(execution);
-  if (!hasChanges) {
+  // Only the bound, accepted typed implementer result qualifies an unchanged
+  // outcome. Legacy exit-0/prose output (including test hooks) is not proof
+  // of completion. Source state is inspected separately for Git delivery.
+  const completedResult = implementerRes.validatedDisposition === "completed"
+    && implementerRes.ok === true && Boolean(implementerRes.reportId)
+    && Number.isInteger(implementerRes.revision)
+    && (execution.childAttempts ?? []).some(attempt => attempt.role === "implementer"
+      && attempt.jobId === implementerRes.jobId && attempt.attemptId === implementerRes.attemptId
+      && attempt.reportId === implementerRes.reportId && attempt.revision === implementerRes.revision
+      && attempt.status === "completed");
+  if (!hasChanges && !completedResult) {
     execution.status = "failed";
     execution.error = {
       phase: "implementing",
-      message: "Implementation produced no code changes or commits (incomplete)",
+      message: "No source changes and no accepted typed implementer completion (incomplete)",
       status: "incomplete",
       noChange: true,
     };
@@ -3976,9 +3987,11 @@ async function runExecutionPipeline(execution) {
   if (!execution.cancellation) execution.status = "completed";
   execution.result = {
     baseSelection: execution.baseSelection,
-    verifiedStory: localSyncWarning(landResult)
-      ? `Worktree ${wt.branch} verified; remote PR landed. Local default checkout not synchronized. ${localSyncWarning(landResult)}`
-      : `Worktree ${wt.branch} successfully verified and landed.`,
+    verifiedStory: landResult.method === "none"
+      ? `Implementer reported completion (report:${implementerRes.reportId}); no source changes or Git delivery.${reviewerSummary !== null ? " Open verification completed." : ""}`
+      : localSyncWarning(landResult)
+        ? `Worktree ${wt.branch} verified; remote PR landed. Local default checkout not synchronized. ${localSyncWarning(landResult)}`
+        : `Worktree ${wt.branch} successfully verified and landed.`,
     landingOutcome: landResult,
     childAttempts: execution.childAttempts ?? [],
     ...(execution.managedTesting ? { managedTesting: { path:join(execution.managedTesting.stateDir,'managed-tests',`${execution.id}.json`), evidence:managedTestingView(execution.managedTesting.stateDir,execution.id) } } : {}),

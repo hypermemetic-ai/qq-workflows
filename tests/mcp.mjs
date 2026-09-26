@@ -3286,6 +3286,14 @@ DETECTED_CODEX_HOMES.delete("sess-detected");
   assert.ok(doneMsg.includes("https://x/pull/7"));
   assert.ok(doneMsg.includes("Implemented the thing."));
   assert.ok(doneMsg.includes("No defects found."));
+  const noSourceMsg = buildExecutionTerminalMessage({ ...doneExec, kind: "bounded", result: {
+    verifiedStory: "Implementer reported completion (report:role-1); no source changes or Git delivery.",
+    landingOutcome: { method: "none", pr: null, mergeSha: null },
+    implementerSummary: "Checked the approved outcome; report:role-1 retains evidence.",
+  } });
+  assert.match(noSourceMsg, /outcome completed; no Git delivery/);
+  assert.match(noSourceMsg, /method=none/);
+  assert.doesNotMatch(noSourceMsg, /verified and landed|remote landing verified/);
 
   const failExec = {
     id: "n5-fail", kind: "bounded", status: "failed", phase: "implementing",

@@ -188,7 +188,7 @@ export const WORKFLOW_TOOLS = [
     name: "dispatch_execution",
     label: "Dispatch execution",
     description:
-      "Delegate the approved ticket to the managed execution pipeline (worktree, implementer, reviewer, landing). Only call this after the operator approves the ticket.",
+      "Delegate the approved ticket to managed execution. Open work includes independent review; source changes use Git delivery. Only call this after the operator approves the ticket.",
     parameters: {
       type: "object",
       properties: {
