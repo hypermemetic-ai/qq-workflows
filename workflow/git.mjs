@@ -49,10 +49,10 @@ export async function changedPaths(cwd) {
   return changes;
 }
 
-// The runner profile is project-owned source, but only at this exact
-// repository-relative path. Every other architect/index path remains operational.
+// Only these exact project-owned configuration files are source. All other
+// architect/index paths, including records and credentials, are operational.
 export function operationalPath(path) {
-  if (path === ".architect/test-runner.json") return false;
+  if ([".architect/test-runner.json", ".architect/template.md"].includes(path)) return false;
   return [".zvec-grep", ".architect"].some(dir => path === dir || path.startsWith(`${dir}/`));
 }
 
@@ -294,6 +294,18 @@ export async function buildReviewPacket(cwd, { base, head = "HEAD" } = {}) {
 const syncDiagnostic = error => String(error?.message ?? error).slice(0, 300);
 const syncRecovery = "Inventory and save local edits first; compare git status and HEAD with the observed remote tip, then reconcile this checkout separately (preservation-first).";
 
+// Git's normal fast-forward may remove an ignored file while replacing a
+// directory with a tracked file. Check both ancestor directions, not just
+// exact names. Enumerate ignored files individually (not collapsed dirs).
+const intersectsPath = (a, b) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+async function ignoredCollisions(checkout, old, tip) {
+  const { stdout: names } = await exec("git", ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], { cwd: checkout, encoding: "utf8" });
+  if (!names) return [];
+  const { stdout: diff } = await exec("git", ["diff", "--name-only", "-z", "--no-renames", old, tip], { cwd: checkout, encoding: "utf8" });
+  const changed = diff.split("\0").filter(Boolean);
+  return names.split("\0").filter(Boolean).filter(path => changed.some(target => intersectsPath(path, target)));
+}
+
 export async function synchronizeDefaultCheckout(cwd, { remote, base, mergeSha } = {}) {
   const ref = `refs/heads/${base}`;
   const disposition = { localCheckout: "not_synced", status: "local_sync_skipped", branch: base, ref,
@@ -346,24 +358,23 @@ export async function synchronizeDefaultCheckout(cwd, { remote, base, mergeSha }
         return fail("local_sync_skipped", "default checkout changed during inspection");
       // Do not reuse isDirty: implementation status intentionally filters
       // operational paths. Checkout safety requires full porcelain -z.
-      const status = await git(checkout, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
-      if (status) return fail("local_sync_skipped", "default checkout has staged, unstaged or untracked changes; preserve and inventory them before reconciliation");
-      // Ignored files can also obstruct or be overwritten by a merge. The
-      // ordinary operational state directory is the sole safe exclusion.
-      const ignored = await git(checkout, ["status", "--porcelain=v1", "-z", "--ignored", "--untracked-files=all"]);
-      if (ignored.split("\0").some(entry => entry.startsWith("!! ") && !/^!! \.architect\/state(?:\/|$)/.test(entry)))
-        return fail("local_sync_skipped", "default checkout contains ignored files that may obstruct a merge; inventory them first");
-      if (await git(checkout, ["symbolic-ref", "HEAD"]) !== ref || await revParse(cwd, ref) !== old || await revParse(checkout) !== old)
-        return fail("local_sync_skipped", "default checkout or branch changed before fast-forward");
-      // A merge is not scoped to `ref`: it updates whatever HEAD is when the
-      // command starts. A concurrent branch switch (or a newly dirty file with
-      // merge.autoStash enabled) can mutate a *different* branch or a stash.
-      // Git offers no atomic compare-and-swap of HEAD identity, index and
-      // worktree for this operation. Preserve the checkout for manual FF.
-      if (old !== tip) return fail("local_sync_skipped", "clean default checkout is behind; automatic checked-out fast-forward cannot atomically guard branch, index and worktree against concurrent changes; preserve edits and reconcile manually");
+      const status = await changedPaths(checkout);
+      if (status.length) return fail("local_sync_skipped", `default checkout has staged, unstaged or untracked changes: ${status.flatMap(change => change.paths).slice(0, 5).join(", ")}`);
+      const collisions = await ignoredCollisions(checkout, old, tip);
+      if (collisions.length) return fail("local_sync_skipped", `ignored path collides with incoming change: ${collisions.slice(0, 5).join(", ")}`);
+      if (await git(checkout, ["symbolic-ref", "HEAD"]) !== ref || await revParse(cwd, ref) !== old || await revParse(checkout) !== old ||
+          await git(checkout, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]) ||
+          (await ignoredCollisions(checkout, old, tip)).length)
+        return fail("local_sync_skipped", "default checkout, branch, or paths changed before fast-forward");
+      if (old !== tip) {
+        // Git checks the index/worktree itself; explicitly disable autoStash so
+        // concurrent edits cannot be hidden. Never force an ignored overwrite.
+        await git(checkout, ["-c", "merge.autoStash=false", "merge", "--ff-only", "--no-autostash", tip]);
+      }
       disposition.localHead = await revParse(checkout);
       if (await git(checkout, ["symbolic-ref", "HEAD"]) !== ref || await revParse(cwd, ref) !== tip || disposition.localHead !== tip ||
-          await git(checkout, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]))
+          await git(checkout, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]) ||
+          (await ignoredCollisions(checkout, old, tip)).length)
         return fail("local_sync_conflicted", "post-sync checkout/ref/status verification failed");
     } else {
       // update-ref's old-OID CAS does not check worktree ownership. A checkout

@@ -29,7 +29,8 @@ import { deliveryPending, readJob, recordTerminal, createJob } from "../workflow
 import { createJob as _createJob } from "../workflow/jobs.mjs";
 import { agentTransport, callHandlers, fakeContext, fakePi, runnerSpawner, tempRepo, tickQueue, waitForJobTerminal } from "./support/architect-fixtures.mjs";
 
-const { root, env, agentDir } = await tempRepo({ agents: "Repository rule: never edit outside the worktree.\n" });
+const repositoryInstruction = readFileSync(join(import.meta.dirname, "..", "AGENTS.md"), "utf8");
+const { root, env, agentDir } = await tempRepo({ agents: repositoryInstruction });
 const capturePath = join(root, "prompt-capture.jsonl");
 const stateDir = join(root, ".architect", "state");
 const extensionEnv = {
@@ -82,14 +83,16 @@ assert.ok(!ownedPrompt.startsWith("---"), "frontmatter is stripped from the owne
 assert.ok(existsSync(ARCHITECT_EXTENSION_FILE), "the provider entry points at an installed extension file");
 assert.equal(ARCHITECT_PROVIDER_ID, "qq-architect");
 
+assert.equal(readFileSync(join(root, "AGENTS.md"), "utf8"), repositoryInstruction);
+assert.match(repositoryInstruction, /This repository owns the workflow machinery/);
 const assembled = assembleArchitectSystemPrompt({
   ownedPrompt,
-  contextFiles: [{ path: join(root, "AGENTS.md"), content: "Repository rule: never edit outside the worktree." }],
+  contextFiles: [{ path: join(root, "AGENTS.md"), content: repositoryInstruction }],
   skills: [{ name: "paseo", description: "Paseo reference" }],
   cwd: root,
 });
 assert.equal(inspectAssembledPrompt(assembled).ok, true);
-assert.ok(assembled.includes("Repository rule: never edit outside the worktree."), "repository instructions are preserved through one controlled mechanism");
+assert.ok(assembled.includes(repositoryInstruction.trim()), "approved repository instructions reach the Architect prompt");
 assert.ok(assembled.includes("paseo: Paseo reference"));
 assert.ok(!assembled.includes("expert coding assistant"), "the stock coding prompt is not part of the Architect prompt");
 assert.ok(assembled.includes(ownedPrompt), "the authoritative role body reaches the assembled prompt intact");
@@ -180,7 +183,7 @@ const beforeStart = await callHandlers(
     prompt: "hello",
     systemPrompt: "You are an expert coding assistant operating inside pi\nAvailable tools:\n- bash\n- edit",
     systemPromptOptions: {
-      contextFiles: [{ path: join(root, "AGENTS.md"), content: "Repository rule: never edit outside the worktree." }],
+      contextFiles: [{ path: join(root, "AGENTS.md"), content: repositoryInstruction }],
       skills: [{ name: "paseo", description: "Paseo reference" }],
       cwd: root,
     },
@@ -190,7 +193,7 @@ const beforeStart = await callHandlers(
 const finalPrompt = beforeStart[0].systemPrompt;
 assert.ok(finalPrompt.includes(ARCHITECT_PROMPT_MARKER));
 assert.ok(!finalPrompt.includes("expert coding assistant"), "the stock pi coding prompt is fully replaced");
-assert.ok(finalPrompt.includes("Repository rule: never edit outside the worktree."));
+assert.ok(finalPrompt.includes(repositoryInstruction.trim()));
 assert.equal(inspectAssembledPrompt(finalPrompt).ok, true);
 assert.ok(finalPrompt.includes(ownedPrompt), "before_agent_start keeps the approved role body intact");
 
