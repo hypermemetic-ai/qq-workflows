@@ -414,10 +414,15 @@ try {
 
 // A staged ignored credential, index, or boundary rename is an error even
 // when no eligible path is dirty. Never commit or silently unstage it.
-for (const scenario of ["architect-add", "index-add", "rename-in", "rename-out", "config-rename-in", "config-rename-out"]) {
+for (const scenario of ["architect-add", "index-add", "rename-in", "rename-out", "config-rename-in", "config-rename-out", "template-rename-out"]) {
   const root = await stagingRepo(`architect-excluded-${scenario}-`);
   try {
-    if (scenario === "config-rename-out") {
+    if (scenario === "template-rename-out") {
+      writeFileSync(join(root, ".architect", "template.md"), "source\n");
+      await git(root, ["add", ".architect/template.md"]);
+      await git(root, ["commit", "-m", "tracked template"]);
+      await git(root, ["mv", ".architect/template.md", ".architect/credential"]);
+    } else if (scenario === "config-rename-out") {
       writeFileSync(join(root, ".architect", "test-runner.json"), "config\n");
       await git(root, ["add", ".architect/test-runner.json"]);
       await git(root, ["commit", "-m", "tracked config"]);
@@ -456,16 +461,16 @@ for (const scenario of ["architect-add", "index-add", "rename-in", "rename-out",
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
-// The exact runner file is source, including staged and tracked changes. Each
-// case lands through the real worktree path, and checks the resulting ref/tree.
-for (const scenario of ["new", "pre-staged", "modified", "deleted", "precommitted", "mixed"]) {
+// Exact project-owned config files are source, including a tracked template
+// edit, staged changes and deletions. Land via the real worktree path.
+for (const scenario of ["new", "pre-staged", "modified", "deleted", "precommitted", "mixed", "template", "template-staged", "template-modified"]) {
   const root = await stagingRepo(`architect-config-${scenario}-`);
   const wt = `${root}-wt`;
-  const path = ".architect/test-runner.json";
+  const path = scenario.startsWith("template") ? ".architect/template.md" : ".architect/test-runner.json";
   const initial = '{"schema":1,"command":"node","args":[],"directory":"tests","extension":".mjs"}\n';
   const updated = '{"schema":2,"profile":"node-tsx-test","directory":"tests","extension":".test.ts"}\n';
   try {
-    if (["modified", "deleted"].includes(scenario)) {
+    if (["modified", "deleted", "template-modified"].includes(scenario)) {
       writeFileSync(join(root, path), initial);
       await git(root, ["add", path]);
       await git(root, ["commit", "-m", "onboard config"]);
@@ -474,7 +479,7 @@ for (const scenario of ["new", "pre-staged", "modified", "deleted", "precommitte
     await git(root, ["worktree", "add", "-b", `architect/open/config-${scenario}`, wt]);
     mkdirSync(join(wt, ".architect"), { recursive: true });
     if (scenario === "deleted") rmSync(join(wt, path));
-    else writeFileSync(join(wt, path), scenario === "modified" ? updated : initial);
+    else writeFileSync(join(wt, path), ["modified", "template-modified"].includes(scenario) ? updated : initial);
     if (scenario === "mixed") {
       mkdirSync(join(wt, ".architect", "state"), { recursive: true });
       mkdirSync(join(wt, ".zvec-grep"), { recursive: true });
@@ -483,7 +488,7 @@ for (const scenario of ["new", "pre-staged", "modified", "deleted", "precommitte
       writeFileSync(join(wt, ".architect", "credentials.yaml"), "credential\n");
       writeFileSync(join(wt, ".zvec-grep", "index"), "index\n");
     }
-    if (scenario === "pre-staged" || scenario === "precommitted") {
+    if (scenario === "pre-staged" || scenario === "precommitted" || scenario === "template-staged") {
       await git(wt, ["add", path]);
       if (scenario === "precommitted") await git(wt, ["commit", "-m", "project onboarding"]);
     }
@@ -500,7 +505,7 @@ for (const scenario of ["new", "pre-staged", "modified", "deleted", "precommitte
     if (scenario === "deleted") {
       await assert.rejects(() => git(root, ["show", `main:${path}`]));
     } else {
-      assert.equal(await git(root, ["show", `main:${path}`]), (scenario === "modified" ? updated : initial).trim(), scenario);
+      assert.equal(await git(root, ["show", `main:${path}`]), (["modified", "template-modified"].includes(scenario) ? updated : initial).trim(), scenario);
     }
   } finally {
     try { await git(root, ["worktree", "remove", "--force", wt]); } catch {}
@@ -517,6 +522,7 @@ for (const scenario of ["new", "pre-staged", "modified", "deleted", "precommitte
     mkdirSync(join(root, ".architect", "test-runner.json"));
     writeFileSync(join(root, ".architect", "test-runner.json", "nested"), "not config\n");
     writeFileSync(join(root, ".architect", "test-runner.json.bak"), "not config\n");
+    writeFileSync(join(root, ".architect", "template.md.bak"), "not template\n");
     writeFileSync(join(root, ".architect", "ticket.md"), "ticket changed\n");
     assert.equal(await isDirty(root), false);
     assert.equal(await hasImplementationChanges(root, "main"), false);
