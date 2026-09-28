@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const anchors = {
-  architect: ["The operator controls the depth of specification", "Use runners proactively to establish ground facts", "After explicit operator approval", "recover missed deliveries"],
+  architect: ["The operator controls the depth of specification", "Use runners proactively to establish ground facts", "Dispatch operator-authorized work", "recover missed deliveries"],
   runner: ["Own the assigned investigation", "Distinguish observations from recommendations"],
   implementer: ["using the supplied ticket path", "Leave changes uncommitted", "Do not claim verification"],
   reviewer: ["independent reviewer", "Own verification through completion", "Return PASS or FAIL"],
