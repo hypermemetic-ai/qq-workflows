@@ -61,6 +61,7 @@ import {
   PI_SEARCH_TOOL,
   adaptPiSeatInstructions,
   loadPiSeatInstructions,
+  MANAGED_OPEN_ROLES,
   referencedToolNames,
   unavailablePiSeatTools,
 } from "../workflow/pi-worker/instructions.mjs";
@@ -792,6 +793,14 @@ try {
   // A11. The approved role body is retained and runtime completion appended;
   // Pi has no MCP completion tool, including on communication-disabled seats.
   const rawRunnerContract = loadRoleContract("runner").body;
+  const approvedImplementerAddition = "Prefer focused tests while iterating. Run expensive suites for required final verification or a concrete diagnostic need. Use observed runtimes to set timeouts, and report test commands, outcomes and elapsed time.";
+  const sharedImplementer = loadRoleContract("implementer").body;
+  const boundedImplementer = loadPiSeatInstructions("implementer");
+  assert.equal(sharedImplementer.split(approvedImplementerAddition).length - 1, 1, "the shared contract includes the exact approved addition once");
+  assert.equal(boundedImplementer.body.split(approvedImplementerAddition).length - 1, 1, "the Pi adaptation retains the exact addition once");
+  assert.ok(boundedImplementer.body.startsWith(sharedImplementer), "the bounded Pi adaptation preserves the shared contract verbatim");
+  assert.equal(MANAGED_OPEN_ROLES.implementer.includes(approvedImplementerAddition), false, "the managed OPEN implementer keeps its distinct test controls");
+  assert.equal(loadPiSeatInstructions("implementer", { managed: true, tools: [...WORKER_PI_TOOLS.implementer, "run_selected_tests"] }).body.includes(approvedImplementerAddition), false, "the effective OPEN contract keeps its separate test controls");
   for (const seat of ["runner", "implementer", "reviewer"]) {
     const effective = loadPiSeatInstructions(seat);
     assert.equal(effective.source, loadRoleContract(seat).path);

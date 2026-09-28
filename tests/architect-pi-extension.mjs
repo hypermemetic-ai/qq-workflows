@@ -77,7 +77,10 @@ async function becomeReady({ pi, extension, scheduled }) {
 // ---------------------------------------------------------------------------
 // P1. Owned prompt: full replacement, controlled inclusion of repo instructions.
 // ---------------------------------------------------------------------------
+const approvedArchitectAddition = "Plan proportionate verification, separating development checks from final acceptance requirements. Don’t default to expensive full-suite runs during development.";
+const countAddition = (text) => text.split(approvedArchitectAddition).length - 1;
 const ownedPrompt = loadArchitectPrompt();
+assert.equal(countAddition(ownedPrompt), 1, "the owned Architect body carries the exact approved addition once");
 assert.ok(ownedPrompt.startsWith("You are the architect"), "the owned Architecture prompt is loaded from the repository role file");
 assert.ok(!ownedPrompt.startsWith("---"), "frontmatter is stripped from the owned prompt");
 assert.ok(existsSync(ARCHITECT_EXTENSION_FILE), "the provider entry points at an installed extension file");
@@ -96,6 +99,7 @@ assert.ok(assembled.includes(repositoryInstruction.trim()), "approved repository
 assert.ok(assembled.includes("paseo: Paseo reference"));
 assert.ok(!assembled.includes("expert coding assistant"), "the stock coding prompt is not part of the Architect prompt");
 assert.ok(assembled.includes(ownedPrompt), "the authoritative role body reaches the assembled prompt intact");
+assert.equal(countAddition(assembled), 1, "the assembled prompt includes the addition once, without duplicate role assembly");
 assert.match(assembled, /read_report retrieves them in chunks/);
 assert.match(assembled, /Pagination does not remove the worker's 16,384-character final submission cap/);
 assert.doesNotMatch(assembled, /## Teaching|milestone|teach until|long reports are never lost to a transport cap/);
@@ -196,6 +200,7 @@ assert.ok(!finalPrompt.includes("expert coding assistant"), "the stock pi coding
 assert.ok(finalPrompt.includes(repositoryInstruction.trim()));
 assert.equal(inspectAssembledPrompt(finalPrompt).ok, true);
 assert.ok(finalPrompt.includes(ownedPrompt), "before_agent_start keeps the approved role body intact");
+assert.equal(countAddition(finalPrompt), 1, "the effective Architect prompt includes the addition once");
 
 // Paseo's generated extension appends to the pi prompt after ours; the provider
 // boundary must still carry exactly the owned prompt.
@@ -206,6 +211,7 @@ assert.ok(enforcedPayload.instructions.startsWith(ARCHITECT_PROMPT_MARKER), "the
 assert.ok(!enforcedPayload.instructions.includes("PASEO RUNTIME TOOL INSTRUCTIONS"), "an uncontrolled append is removed at the provider boundary");
 assert.equal(inspectAssembledPrompt(enforcedPayload.instructions).ok, true);
 assert.ok(enforcedPayload.instructions.includes(ownedPrompt), "the provider payload carries the authoritative role body intact");
+assert.equal(countAddition(enforcedPayload.instructions), 1, "the provider-bound instructions include the addition once");
 
 const capture = readFileSync(capturePath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
 const assembledCapture = capture.find((entry) => entry.kind === "assembled");

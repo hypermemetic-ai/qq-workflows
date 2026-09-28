@@ -5,6 +5,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const approvedAdditions = {
+  architect: "Plan proportionate verification, separating development checks from final acceptance requirements. Don’t default to expensive full-suite runs during development.",
+  implementer: "Prefer focused tests while iterating. Run expensive suites for required final verification or a concrete diagnostic need. Use observed runtimes to set timeouts, and report test commands, outcomes and elapsed time.",
+};
 const anchors = {
   architect: ["The operator controls the depth of specification", "Use runners proactively to establish ground facts", "Dispatch operator-authorized work", "recover missed deliveries"],
   runner: ["Own the assigned investigation", "Distinguish observations from recommendations"],
@@ -18,6 +22,9 @@ for (const role of ["architect", "runner", "implementer", "reviewer"]) {
   assert.match(frontmatter, new RegExp(`^---\\nname: ${role}\\n`));
   assert.match(frontmatter, /inheritMcp: true/);
   for (const anchor of anchors[role]) assert.ok(body.includes(anchor), `${role}: ${anchor}`);
+  if (approvedAdditions[role]) {
+    assert.equal(body.split(approvedAdditions[role]).length - 1, 1, `${role}: approved verification guidance appears exactly once`);
+  }
   assert.doesNotMatch(body, /## Teaching|milestone|mcp__/, `no old policy in ${role}`);
 }
 for (const retired of ["teacher", "researcher"]) assert.equal(existsSync(join(root, "agents", retired)), false);

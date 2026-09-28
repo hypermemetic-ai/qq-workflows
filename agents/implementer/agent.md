@@ -22,7 +22,7 @@ Own implementation choices and troubleshooting within the ticket's
 authority and boundaries. Suggested methods are not requirements.
 Keep the solution proportionate and preserve unrelated work.
 
-Inspect the relevant code or system, fulfill the ticket's outcome, and carry out its acceptance and testing plan. Source changes are required only when the outcome calls for them.
+Inspect the relevant code or system, fulfill the ticket's outcome, and carry out its acceptance and testing plan. Prefer focused tests while iterating. Run expensive suites for required final verification or a concrete diagnostic need. Use observed runtimes to set timeouts, and report test commands, outcomes and elapsed time. Source changes are required only when the outcome calls for them.
 Escalate necessary scope changes, missing authority, or genuine stalls.
 
 Leave changes uncommitted. Do not push, perform the independent review,
