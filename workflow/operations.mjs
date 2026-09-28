@@ -9,7 +9,7 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -55,6 +55,7 @@ import { extractSection, listSections, loadPackagedTemplate, replaceSection, tic
 import { readAdr, searchAdrs } from "./adr-retrieval.mjs";
 import { PI_HARNESS, planFingerprint, planToSpawn, resolveWorkerLaunchPlan } from "./worker-launch.mjs";
 import { bytePage, serializedBytes } from './tool-output.mjs';
+import { spawnDetachedRunner } from './runner-launcher.mjs';
 
 // Native tool surface for the Architect. Local inspection stays read-only
 // (read/grep/find/ls); workflow capabilities are scoped ticket updates and
@@ -611,10 +612,11 @@ export function createWorkflow({
     delete spawnEnv[COMMUNICATION_BINDING_ENV];
 
     if (launchPlan.harness !== PI_HARNESS) {
-      // Legacy (non-Pi) dispatch: unchanged and fully synchronous. Steering
-      // such a runner is explicitly refused later — never a silent stdin write
-      // pretending delivery.
-      return launchRunnerProcess({ id, record, association, launchPlan, prompt, cwd, spawnEnv, communication: null, resultFile, reportFile });
+      // Legacy (non-Pi) steering is explicitly refused later — never a silent
+      // stdin write pretending delivery. The production launch also awaits the
+      // reparenting gate before returning an accepted runner.
+      const launched = launchRunnerProcess({ id, record, association, launchPlan, prompt, cwd, spawnEnv, communication: null, resultFile, reportFile });
+      return launched instanceof Promise ? { ok: true, jobId: id, status: 'launching', ready: launched } : launched;
     }
 
     // A Pi-harness runner is communication-enabled: the shared runner lifecycle
@@ -674,7 +676,7 @@ export function createWorkflow({
         // Persist the projection BEFORE any launch so every later failure path
         // finds the authoritative record and reports an honest outcome there.
         writeJob(stateDir, { ...(readJob(stateDir, id) ?? record), resultFile, communication });
-        resolveReady(launchRunnerProcess({ id, record, association, launchPlan, prompt, cwd, spawnEnv, communication, resultFile, reportFile }));
+        resolveReady(await launchRunnerProcess({ id, record, association, launchPlan, prompt, cwd, spawnEnv, communication, resultFile, reportFile }));
       } catch (error) {
         void finishJob(record, { status: "failed", error: { message: `runner dispatch failed: ${String(error?.message ?? error)}` } }).catch(() => {});
         resolveReady({ ok: false, jobId: id, runnerId: id, status: "failed", error: String(error?.message ?? error), launchPlan: record.launchPlan });
@@ -693,9 +695,9 @@ export function createWorkflow({
     };
   }
 
-  // Spawn one dispatched runner through the existing canonical worker launcher
-  // and wire its lifecycle. Shared verbatim by the synchronous legacy path and
-  // the communication continuation above — never implemented twice.
+  // Spawn one dispatched runner through the existing canonical worker launcher.
+  // Injected spawn doubles retain the old callback lifecycle for isolated
+  // compatibility tests; real launches use the independently gated supervisor.
   function launchRunnerProcess({ id, record, association, launchPlan, prompt, cwd, spawnEnv, communication, resultFile, reportFile }) {
 
     // The runner's bound identity and result transport are the caller's, and
@@ -718,6 +720,8 @@ export function createWorkflow({
       void finishJob(record, { status: "failed", error: { message: `runner launch rejected: ${err.message}` } }).catch(() => {});
       return { ok: false, jobId: id, status: "failed", error: err.message, launchPlan: record.launchPlan };
     }
+
+    if (spawnFn === nodeSpawn) return launchIndependentRunner({ id, record, association, launchPlan, launched, cwd, communication, resultFile, reportFile });
 
     const runner = { id, runnerId: id, sessionId: association.sessionId, sessionKey: association.sessionKey, resultFile, reportFile, cwd, status: RUNNING };
 
@@ -843,6 +847,83 @@ export function createWorkflow({
     };
   }
 
+  function runnerOutputChunk(path, offset = 0) {
+    const size = statSync(path).size;
+    const start = Math.max(offset, size - 64 * 1024);
+    const fd = openSync(path, 'r');
+    try {
+      const data = Buffer.alloc(size - start);
+      const count = readSync(fd, data, 0, data.length, start);
+      return { text: data.subarray(0, count).toString('utf8'), offset: start + count };
+    } finally { closeSync(fd); }
+  }
+
+  async function launchIndependentRunner({ id, record, association, launchPlan, launched, cwd, communication, resultFile, reportFile }) {
+    const directory = join(stateDir, 'runner-launches');
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const request = join(directory, `${id}.json`);
+    const stdout = `${request}.stdout`, stderr = `${request}.stderr`;
+    // The private request contains provider environment. Never use a pipe to
+    // the coordinator for either the worker stream or its final exit record.
+    writeFileSync(request, JSON.stringify({ command: launched.command, args: launched.args,
+      cwd, env: launched.env, stdout, stderr }), { mode: 0o600, flag: 'wx' });
+    let pid;
+    try { ({ pid } = await spawnDetachedRunner({ request, cwd })); }
+    catch (error) {
+      rmSync(request, { force: true });
+      void finishJob(record, { status: 'failed', error: { message: `runner launch failed: ${error.message}` } }).catch(() => {});
+      return { ok: false, jobId: id, status: 'failed', error: error.message, launchPlan: record.launchPlan };
+    }
+    const current = readJob(stateDir, id);
+    writeJob(stateDir, { ...current, resultFile, independentRunner: { request, stdout, stderr },
+      process: { pid, spawnedAt: now(), fingerprint: processFingerprint({ pid }) },
+      launchPlan: record.launchPlan, ...(communication ? { communication } : {}) });
+    const runner = { id, runnerId: id, sessionId: association.sessionId, sessionKey: association.sessionKey,
+      resultFile, reportFile, cwd, status: RUNNING };
+    const state = { independent: true, outputTail: '', activeTool: null, trajectory: [], lastObservedAt: now(), offset: 0, pending: '' };
+    live.set(id, state);
+    const poll = () => {
+      const fresh = readJob(stateDir, id);
+      if (!fresh || fresh.terminal) { clearInterval(timer); live.delete(id); return; }
+      try {
+        const chunkData = runnerOutputChunk(stdout, state.offset);
+        const chunk = chunkData.text;
+        state.offset = chunkData.offset;
+        const lines = (state.pending + chunk).split('\n');
+        state.pending = lines.pop();
+        for (const line of lines) {
+          state.outputTail = clamp(`${state.outputTail}${line}\n`, 4000);
+          try {
+            const event = interpretRunnerEvent(JSON.parse(line));
+            if (event.step) state.trajectory = [...state.trajectory.slice(-8), { at: now(), ...event.step }];
+            if (event.activeTool !== undefined) state.activeTool = event.activeTool;
+          } catch {}
+          state.lastObservedAt = now();
+        }
+        if (lines.length) updateRunningJob(stateDir, id, { telemetry: {
+          lastObservedAt: state.lastObservedAt, activeTool: state.activeTool, trajectory: state.trajectory } }, { now: now() });
+      } catch { /* unreadable output never fabricates a terminal result */ }
+      if (!existsSync(`${request}.exit`)) return;
+      clearInterval(timer); live.delete(id);
+      const settled = readJob(stateDir, id);
+      if (!settled || settled.terminal) return;
+      const authoritative = acceptRunnerResult(runner, { registry, stateDir, saveReport: (dir, options) => saveReport(dir, options) });
+      if (authoritative.ok) {
+        const findings = renderRunnerFindings(authoritative.result);
+        void finishJob(settled, { status: 'completed', findings, report: authoritative.report ?? null }).catch(() => {});
+      } else {
+        let exit;
+        try { exit = JSON.parse(readFileSync(`${request}.exit`, 'utf8')); } catch { exit = {}; }
+        void finishJob(settled, { status: 'failed', error: { message: `runner exited without an authoritative result: ${exit.error ?? authoritative.error}` } }).catch(() => {});
+      }
+    };
+    const timer = setInterval(poll, 250);
+    timer.unref();
+    return { ok: true, jobId: id, runnerId: id, status: RUNNING, sessionKey: association.sessionKey,
+      launchPlan: record.launchPlan, pid,
+      ...(communication ? { communication: { enabled: true, changeId: communication.changeId, attemptId: communication.attemptId } } : {}) };
+  }
+
   function checkRunnerOp({ jobId } = {}) {
     let record = requireJob(jobId);
     const state = live.get(jobId) ?? null;
@@ -852,7 +933,22 @@ export function createWorkflow({
     // into the authoritative change record BEFORE any lost process is
     // reconciled. Identity/owner/assignment/cwd are reconstructed from the
     // durable record here — never from an in-memory cache.
-    if (!state && record.role === "runner") {
+    if ((!state || state.independent) && record.role === "runner") {
+      if (!state && record.independentRunner?.stdout && !record.terminal) {
+        try {
+          const output = runnerOutputChunk(record.independentRunner.stdout);
+          const events = output.text.split('\n').slice(-12);
+          let activeTool = record.telemetry?.activeTool ?? null;
+          const trajectory = [...(record.telemetry?.trajectory ?? [])];
+          for (const line of events) try {
+            const event = interpretRunnerEvent(JSON.parse(line));
+            if (event.step) trajectory.push({ at: now(), ...event.step });
+            if (event.activeTool !== undefined) activeTool = event.activeTool;
+          } catch {}
+          const lastObservedAt = Math.min(now(), statSync(record.independentRunner.stdout).mtimeMs);
+          updateRunningJob(stateDir, jobId, { telemetry: { lastObservedAt, activeTool, trajectory: trajectory.slice(-9) } }, { now: now() });
+        } catch { /* output unavailable: retain earlier durable telemetry */ }
+      }
       const recovered = reconcileRunnerJob({ stateDir, jobId, now: now() });
       if (recovered.record) record = recovered.record;
     }

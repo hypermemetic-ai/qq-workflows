@@ -443,7 +443,13 @@ export function reconcileJob(
       },
     });
   }
-  if (!alive(pid)) {
+  // An independent supervisor may have exited and become a zombie briefly
+  // (or indefinitely under a container init that does not reap). Its durable
+  // exit file is decisive for process liveness, not a successful outcome.
+  const independentExit = record.independentRunner?.request && (() => {
+    try { readFileSync(`${record.independentRunner.request}.exit`); return true; } catch { return false; }
+  })();
+  if (!alive(pid) || independentExit) {
     return writeJob(stateDir, {
       ...record,
       status: "interrupted",

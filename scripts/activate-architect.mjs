@@ -8,6 +8,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { activationDir, readReceipt } from '../workflow/activation-receipt.mjs';
 import { ARCHITECT_PROVIDER_ID } from '../workflow/architect-profile.mjs';
+import { listJobs, processFingerprint } from '../workflow/jobs.mjs';
 
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
 const livePid = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } }; 
@@ -48,6 +49,28 @@ function preserve(before, after, previous) {
     before.ownerAgentId === after.ownerAgentId && before.sessionFile === after.sessionFile &&
     previous && next && previous.dev === next.dev && previous.ino === next.ino && next.size >= previous.size;
 }
+// Old launchers made their runner a direct child of the Architect. A reload's
+// recursive PPID stop will terminate it even while the agent reports idle.
+// Only those fingerprint-matching, still-running attached children defer uptake;
+// new independent supervisors never hold an idle refresh indefinitely.
+export function vulnerableRunners({ root, owner, architectPid, fingerprint = processFingerprint, parentOf = (pid) => {
+  try { return Number(readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1].split(' ')[1]); }
+  catch { return null; }
+} }) {
+  if (!root || !owner || !architectPid) return [];
+  return listJobs(join(root, '.architect', 'state'), { sessionKey: owner, role: 'runner' }).filter(job => {
+    if (job.terminal || job.status !== 'running' || job.independentRunner || !job.process?.pid || !job.process.fingerprint) return false;
+    const actual = fingerprint({ pid: job.process.pid });
+    if (!actual || actual.startTicks !== job.process.fingerprint.startTicks || actual.cmdlineHash !== job.process.fingerprint.cmdlineHash) return false;
+    let pid = job.process.pid;
+    for (let i = 0; i < 32 && pid > 1; i++) {
+      pid = parentOf(pid);
+      if (pid === architectPid) return true;
+      if (!pid) break;
+    }
+    return false;
+  }).map(job => job.id);
+}
 function save(path, state) {
   mkdirSync(activationDir(state.home), { recursive: true, mode: 0o700 });
   const tmp = `${path}.${process.pid}.tmp`;
@@ -55,7 +78,7 @@ function save(path, state) {
   renameSync(tmp, path);
 }
 export async function activateArchitects({ home, repoRoot, paseoBin = 'paseo', run = spawnSync,
-  sleep = pause, now = Date.now, isAlive = livePid, waitMs = 300_000, pollMs = 1500 } = {}) {
+  sleep = pause, now = Date.now, isAlive = livePid, atRisk = vulnerableRunners, waitMs = 300_000, pollMs = 1500 } = {}) {
   const path = journalPath(home, repoRoot);
   let previous = null;
   try { previous = JSON.parse(readFileSync(path, 'utf8')); } catch { /* first run */ }
@@ -100,6 +123,12 @@ export async function activateArchitects({ home, repoRoot, paseoBin = 'paseo', r
         const check = jsonCommand(run, paseoBin, ['agent', 'inspect', id, '--json']);
         if (!identity(id, check) || check.Cwd !== oldMeta.Cwd) throw new Error('agent identity changed before reload');
         if (check.Status !== 'idle') { await sleep(pollMs); continue; }
+        const vulnerable = atRisk({ root: before?.root ?? check.Cwd, owner: id, architectPid: before?.pid });
+        if (vulnerable.length) {
+          update(id, { status: 'pending', reason: 'waiting for attached runners before reload', vulnerable, before, cwd: oldMeta.Cwd, reloadedAt: null });
+          await sleep(pollMs);
+          continue;
+        }
         reloadAt = now();
         // Record intent before the external call. A timeout or malformed reply
         // may mean the reload was accepted; a later invocation must reconcile

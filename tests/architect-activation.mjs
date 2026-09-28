@@ -2,11 +2,30 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { activateArchitects, journalPath } from '../scripts/activate-architect.mjs';
+import { activateArchitects, journalPath, vulnerableRunners } from '../scripts/activate-architect.mjs';
+import { createJob, readJob, writeJob } from '../workflow/jobs.mjs';
 import { readReceipt, writeReceipt } from '../workflow/activation-receipt.mjs';
 import { tempDir } from './support/architect-fixtures.mjs';
 
 const repoRoot = resolve(import.meta.dirname, '..');
+// Only legacy attached live children postpone idle uptake; a fixed supervisor
+// or a stale/reused PID does not, even if the associated job is still running.
+{
+  const root = tempDir('qq-activation-runners-');
+  const stateDir = join(root, '.architect', 'state');
+  for (const runnerId of ['attached', 'independent', 'stale']) {
+    const job = createJob({ stateDir, id: runnerId, role: 'runner', workflow: { sessionKey: 'owner', root }, now: 1 });
+    writeJob(stateDir, { ...job, process: { pid: runnerId === 'stale' ? 12 : runnerId === 'attached' ? 10 : 11,
+      fingerprint: { startTicks: '1', cmdlineHash: 'same' } },
+      ...(runnerId === 'independent' ? { independentRunner: { request: 'private' } } : {}) });
+  }
+  const options = { root, owner: 'owner', architectPid: 9,
+    fingerprint: ({ pid }) => ({ startTicks: pid === 12 ? 'reused' : '1', cmdlineHash: 'same' }),
+    parentOf: pid => pid === 10 || pid === 11 ? 9 : 1 };
+  assert.deepEqual(vulnerableRunners(options), ['attached']);
+  assert.deepEqual(vulnerableRunners({ ...options, owner: 'other' }), []);
+  assert.deepEqual(vulnerableRunners({ ...options, fingerprint: () => null }), []);
+}
 const id = 'a1deb084-e29c-4c6b-8574-f2c845533a16';
 const other = 'cc67e366-089c-4ede-af31-9b0263b1b662';
 const home = tempDir('qq-activation-');
@@ -57,6 +76,28 @@ assert.equal(result.agents[id].recovery.deferred, 1);
 assert.equal(f.reloads, 1);
 assert.equal(result.agents[other], undefined);
 assert.equal(readFileSync(journalPath(home, repoRoot), 'utf8').includes('"applied"'), true);
+// An actual old-style attached child postpones the idle reload; after it
+// finishes the same activation continues, while independent work never waits.
+{
+  const transitionHome = tempDir('qq-activation-transition-');
+  const transitionSession = join(transitionHome, 'session.jsonl');
+  writeFileSync(transitionSession, 'history\n');
+  writeReceipt(id, { ...receipt(id, 800), sessionFile: transitionSession, extensionModule: 'file:///old/qq-architect.mjs' }, transitionHome);
+  f = fake({ caseHome: transitionHome, caseSessionFile: transitionSession });
+  let checks = 0;
+  result = await activateArchitects({ ...f.opts, atRisk: () => ++checks < 3 ? ['attached-child'] : [] });
+  assert.equal(result.status, 'complete');
+  assert.equal(f.reloads, 1);
+  assert.equal(checks, 3);
+  const independentHome = tempDir('qq-activation-independent-');
+  const independentSession = join(independentHome, 'session.jsonl');
+  writeFileSync(independentSession, 'history\n');
+  writeReceipt(id, { ...receipt(id, 800), sessionFile: independentSession, extensionModule: 'file:///old/qq-architect.mjs' }, independentHome);
+  f = fake({ caseHome: independentHome, caseSessionFile: independentSession });
+  result = await activateArchitects({ ...f.opts, atRisk: () => [] });
+  assert.equal(result.status, 'complete');
+  assert.equal(f.reloads, 1);
+}
 
 f = fake();
 result = await activateArchitects(f.opts);
