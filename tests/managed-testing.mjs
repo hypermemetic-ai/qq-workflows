@@ -132,7 +132,7 @@ try {
   assert.match(MANAGED_OPEN_ROLES.implementer,/Do not modify retained tests/);
   assert.match(MANAGED_OPEN_ROLES.reviewer,/Request an architectural decision only when a consequential ambiguity or conflict/);
   assert.match(readFileSync(join(import.meta.dirname,'..','agents','reviewer','agent.md'),'utf8'),/Treat improvements beyond acceptance as nonblocking suggestions/);
-  assert.match(readFileSync(join(import.meta.dirname,'..','agents','architect','agent.md'),'utf8'),/Treat worker findings as evidence, not new requirements/);
+  assert.match(readFileSync(join(import.meta.dirname,'..','agents','architect','agent.md'),'utf8'),/Treat findings as evidence, not new requirements/);
   for (const [seat,managedTools] of [['test_owner',['select_tests','run_selected_tests']],['implementer',['run_selected_tests']],['reviewer',['select_tests','run_selected_tests','run_regression_checkpoint','submit_review']]]) {
     const prompt = loadPiSeatInstructions(seat,{managed:true,tools:[...WORKER_PI_TOOLS[seat],...managedTools]});
     assert.equal(prompt.body,`${MANAGED_OPEN_ROLES[seat]}\n\n${PI_COMPLETION_SECTION}`);

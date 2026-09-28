@@ -234,7 +234,7 @@ export const TOOLS = [
   },
   {
     name: "dispatch_execution",
-    description: "Delegate the approved ticket to managed execution. Open work includes independent review; source changes use Git delivery. Only call this after the operator approves the ticket.",
+    description: "Dispatch operator-authorized work. Open work includes independent review; repository changes receive Git delivery. New consequential scope or effects require approval.",
     inputSchema: {
       type: "object",
       properties: {

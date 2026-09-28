@@ -69,8 +69,8 @@ try {
  assert.match(prompt,/description: Approved-ticket implementer working in a supplied directory\./);
  assert.match(prompt,/Inspect the relevant code or system, fulfill the ticket's outcome, and carry out its acceptance and testing plan\. Source changes are required only when the outcome calls for them\./);
  assert.match(prompt,/If no source changes were needed, explain how the outcome was fulfilled and identify the supporting evidence\./);
- const description='Delegate the approved ticket to managed execution. Open work includes independent review; source changes use Git delivery. Only call this after the operator approves the ticket.';
+ const description='Dispatch operator-authorized work. Open work includes independent review; repository changes receive Git delivery. New consequential scope or effects require approval.';
  assert.equal(WORKFLOW_TOOLS.find(tool=>tool.name==='dispatch_execution').description,description);
- assert.match(readFileSync(new URL('../bin/mcp-server.mjs',import.meta.url),'utf8'),/description: "Delegate the approved ticket to managed execution\. Open work includes independent review; source changes use Git delivery\. Only call this after the operator approves the ticket\."/);
+ assert.match(readFileSync(new URL('../bin/mcp-server.mjs',import.meta.url),'utf8'),/description: "Dispatch operator-authorized work\. Open work includes independent review; repository changes receive Git delivery\. New consequential scope or effects require approval\."/);
  console.log('PASS typed bounded no-source completion: durable report, method:none, no commit/PR/pending curation, truthful terminal and approved prompt surfaces');
 }finally{await fixture.stop();}
