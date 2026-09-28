@@ -406,6 +406,24 @@ const sameSource = installPaseoPlugin({ paths: installPaths({ home, repoRoot }),
   } });
 assert.equal(sameSource.reusedRunningPlugin, true);
 assert.equal(sameCalls.some((call) => call.startsWith('plugin install')), false);
+// Distinct immutable release paths with identical bytes must reuse the live
+// plugin; a changed source file (or missing tree) must not be called identical.
+const oldRelease = tempDir('qq-architect-old-release-');
+cpSync(join(repoRoot, 'paseo-plugin'), join(oldRelease, 'paseo-plugin'), { recursive: true });
+const releaseCalls = [];
+const releaseRun = (_bin, args) => {
+  releaseCalls.push(args.join(' '));
+  if (args[0] === 'plugin' && args[1] === 'ls') return { status: 0, stdout: JSON.stringify([{ id: 'qq-architect', status: 'running', enabled: true, path: join(oldRelease, 'paseo-plugin') }]) };
+  return { status: 0, stdout: '0.8.0' };
+};
+assert.equal(installPaseoPlugin({ paths: installPaths({ home, repoRoot }), run: releaseRun }).reusedRunningPlugin, true);
+assert.equal(releaseCalls.some((call) => call.startsWith('plugin install')), false);
+writeFileSync(join(oldRelease, 'paseo-plugin', 'server', 'architect.ts'), '// changed source\n');
+releaseCalls.length = 0;
+const changed = installPaseoPlugin({ paths: installPaths({ home, repoRoot }), run: releaseRun });
+assert.equal(changed.reusedRunningPlugin, false);
+assert.equal(changed.verified, false, 'a stale daemon source is not verified as this release');
+assert.equal(releaseCalls.some((call) => call.startsWith('plugin install')), true);
 const preflight = activationPreflight(report);
 assert.equal(preflight.status, 'not-activated', 'a rolled-back config cannot select this release');
 assert.equal((await activateInstalled({ ...report, dryRun: true })).status, 'not-activated');
@@ -427,6 +445,19 @@ for (let attempt = 0; attempt < 40; attempt++) {
   await new Promise((done) => setTimeout(done, 100));
 }
 assert.equal(actor?.status, 'complete', 'external activation actor continued after the owner returned');
+// Activation-only (the detached actor's entry point) uses the same content
+// predicate, not path identity. All calls go to the isolated fake executable.
+cpSync(join(repoRoot, 'paseo-plugin'), join(oldRelease, 'paseo-plugin'), { recursive: true, force: true });
+const selfStatePath = join(selfHome, 'fake-paseo-state.json');
+const selfState = JSON.parse(readFileSync(selfStatePath, 'utf8'));
+selfState.path = join(oldRelease, 'paseo-plugin');
+writeFileSync(selfStatePath, JSON.stringify(selfState));
+const activationArgs = ['--activation-only', '--home', selfHome, '--repo', repoRoot, '--paseo-bin', selfBin, '--json'];
+const activationEnv = { ...process.env, QQ_TEST_PASEO_HOME: selfHome, QQ_TEST_PASEO_LOG: join(selfHome, 'calls.log') };
+const backgroundCheck = () => JSON.parse(execFileSync(process.execPath, [join(repoRoot, 'scripts', 'install-architect.mjs'), ...activationArgs], { encoding: 'utf8', env: activationEnv })).activation;
+assert.equal(backgroundCheck().status, 'complete', 'background activation accepts the retained identical plugin');
+writeFileSync(join(oldRelease, 'paseo-plugin', 'server', 'architect.ts'), '// changed again\n');
+assert.equal(backgroundCheck().status, 'not-activated', 'background activation rejects a changed plugin');
 const restartHome = tempDir('qq-architect-restart-');
 mkdirSync(join(restartHome, '.paseo'), { recursive: true });
 writeFileSync(join(restartHome, '.paseo', 'config.json'), JSON.stringify(baselineConfig));

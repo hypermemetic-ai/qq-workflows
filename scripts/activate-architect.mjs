@@ -82,7 +82,7 @@ export async function activateArchitects({ home, repoRoot, paseoBin = 'paseo', r
       if (!identity(id, oldMeta)) throw new Error('agent identity/provider changed since listing');
       const pendingReload = previous?.repoRoot === resolve(repoRoot) && previous?.agents?.[id]?.status === 'pending' &&
         Number.isFinite(previous.agents[id].reloadedAt) && previous.agents[id].cwd === oldMeta.Cwd ? previous.agents[id] : null;
-      before = pendingReload?.before ?? readReceipt(id, home);
+      before = pendingReload ? (pendingReload.before ?? null) : readReceipt(id, home);
       oldNative = before && nativeFile(before.sessionFile);
       if (!pendingReload && provenance(before, id, repoRoot) && isAlive(before.pid)) {
         update(id, { status: 'already-current', pid: before.pid, extensionModule: before.extensionModule, operationsModule: before.operationsModule, sessionFile: before.sessionFile, recovery: before.recovery });
@@ -101,20 +101,48 @@ export async function activateArchitects({ home, repoRoot, paseoBin = 'paseo', r
         if (!identity(id, check) || check.Cwd !== oldMeta.Cwd) throw new Error('agent identity changed before reload');
         if (check.Status !== 'idle') { await sleep(pollMs); continue; }
         reloadAt = now();
+        // Record intent before the external call. A timeout or malformed reply
+        // may mean the reload was accepted; a later invocation must reconcile
+        // its receipt rather than blindly replaying it.
+        update(id, { status: 'pending', reason: 'reload result uncertain; awaiting receipt', before, reloadedAt: reloadAt, cwd: oldMeta.Cwd });
+        let refused = false, errorMessage = null;
         try {
-          const reply = jsonCommand(run, paseoBin, ['agent', 'reload', id, '--json']);
-          if (reply?.error || reply?.success === false) throw new Error(`reload refused: ${JSON.stringify(reply).slice(0, 240)}`);
-        } catch (error) {
-          update(id, { status: 'pending', reason: `reload failed or raced: ${error.message}`, before, cwd: oldMeta.Cwd });
-          await sleep(pollMs); continue;
+          const response = run(paseoBin, ['agent', 'reload', id, '--json'], { encoding: 'utf8' });
+          if (response?.error) throw response.error;
+          if (response?.status !== 0) {
+            const message = String(response?.stderr ?? `exit ${response?.status}`).trim().slice(0, 240);
+            // Only an explicit idle/busy refusal proves no reload was accepted.
+            // A transport/CLI failure can have succeeded before losing its reply.
+            refused = /\b(busy|not idle|running)\b/i.test(message);
+            throw new Error(message);
+          }
+          const reply = JSON.parse(String(response.stdout));
+          if (!reply || typeof reply !== 'object') throw new Error('malformed reload reply');
+          if (reply.error || reply.success === false) {
+            refused = true;
+            throw new Error(`reload refused: ${JSON.stringify(reply).slice(0, 240)}`);
+          }
+        } catch (error) { errorMessage = error.message; }
+        if (errorMessage && refused) {
+          // A refusal can race with a new receipt. Give the daemon a poll and
+          // reconcile any adoption before treating the refusal as retryable.
+          await sleep(pollMs);
+          const after = readReceipt(id, home);
+          if (!(after?.startedAt >= reloadAt && provenance(after, id, repoRoot) && isAlive(after.pid) &&
+              (!before || after.pid !== before.pid || after.startedAt > before.startedAt))) {
+            reloadAt = null;
+            update(id, { status: 'pending', reason: `reload failed or raced: ${errorMessage}`, before, cwd: oldMeta.Cwd });
+            continue;
+          }
         }
-        update(id, { status: 'pending', reason: 'reload accepted; awaiting session-bound recovery receipt', before, reloadedAt: reloadAt, cwd: oldMeta.Cwd });
+        update(id, { status: 'pending', reason: errorMessage ? `reload result uncertain: ${errorMessage}; awaiting receipt` :
+          'reload accepted; awaiting session-bound recovery receipt', before, reloadedAt: reloadAt, cwd: oldMeta.Cwd });
         break;
       }
       if (reloadAt !== null) {
         while (now() < deadline) {
           const after = readReceipt(id, home);
-          if (after?.startedAt >= reloadAt && (!before || after.pid !== before.pid || after.startedAt > before.startedAt) && provenance(after, id, repoRoot)) {
+          if (after?.startedAt >= reloadAt && (!before || after.pid !== before.pid || after.startedAt > before.startedAt) && provenance(after, id, repoRoot) && isAlive(after.pid)) {
             const current = jsonCommand(run, paseoBin, ['agent', 'inspect', id, '--json']);
             const sameNative = !before || (oldNative && preserve(before, after, oldNative));
             if (!identity(id, current) || current.Cwd !== oldMeta.Cwd || !sameNative || (before?.pid && before.pid === after.pid)) {
