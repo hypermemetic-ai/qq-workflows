@@ -21,6 +21,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
   renameSync,
@@ -230,6 +231,30 @@ export function readPluginState({ paseoBin = process.env.QQ_PASEO_BIN || "paseo"
   };
 }
 
+// Compare the complete plugin tree, including manifest and package metadata.
+// An unreadable, linked, missing or extra file is not evidence of equivalence.
+export function equivalentPluginSource(left, right) {
+  try {
+    const compare = (a, b) => {
+      if (!lstatSync(a).isDirectory() || !lstatSync(b).isDirectory()) return false;
+      const names = readdirSync(a).sort();
+      if (JSON.stringify(names) !== JSON.stringify(readdirSync(b).sort())) return false;
+      return names.every((name) => {
+        const x = join(a, name), y = join(b, name);
+        const xs = lstatSync(x), ys = lstatSync(y);
+        if (xs.isDirectory() && ys.isDirectory()) return compare(x, y);
+        return xs.isFile() && ys.isFile() && readFileSync(x).equals(readFileSync(y));
+      });
+    };
+    return compare(left, right);
+  } catch { return false; }
+}
+
+export function runningPluginMatches(state, paths) {
+  return state?.ok && state.status === 'running' && state.enabled &&
+    typeof state.path === 'string' && equivalentPluginSource(state.path, paths.pluginDir);
+}
+
 export function installPaseoPlugin({
   paths,
   dryRun = false,
@@ -257,8 +282,7 @@ export function installPaseoPlugin({
     };
   }
   const existing = readPluginState({ paseoBin, run });
-  const sameSource = existing.ok && existing.status === 'running' && existing.enabled &&
-    existing.path && resolve(existing.path) === resolve(paths.pluginDir);
+  const sameSource = runningPluginMatches(existing, paths);
   // A live byte-identical plugin should not be reinstalled for bookkeeping.
   const installed = sameSource ? { status: 0 } : run(command[0], command.slice(1), { encoding: "utf8" });
   if (installed?.error || installed?.status !== 0) {
@@ -300,8 +324,7 @@ export function installPaseoPlugin({
     state = readPluginState({ paseoBin, run });
   }
 
-  const verified = state.ok && state.status === "running" && state.enabled &&
-    typeof state.path === 'string' && resolve(state.path) === resolve(paths.pluginDir);
+  const verified = runningPluginMatches(state, paths);
   const requiredAction = verified
     ? null
     : state.ok
@@ -546,8 +569,7 @@ unrelated extensions/config/credentials, and never writes worker pins.`);
       const paths = installPaths({ home, repoRoot });
       const pluginState = readPluginState({ paseoBin: options.paseoBin });
       const check = activationPreflight({ home, repoRoot, paths,
-        plugin: { status: pluginState.ok && pluginState.status === 'running' && pluginState.enabled &&
-          resolve(pluginState.path ?? '') === resolve(paths.pluginDir) ? 'installed' : 'unavailable' },
+        plugin: { status: runningPluginMatches(pluginState, paths) ? 'installed' : 'unavailable' },
         paseoConfig: { status: 'already-installed' } });
       activation = check.status === 'ready' ? await activateArchitects({ home, repoRoot, paseoBin: options.paseoBin ?? 'paseo' }) : check;
     } else if (options.background || process.env.QQ_ARCHITECT_OWNER_AGENT_ID || process.env.QQ_WORKFLOW_SESSION_ID || process.env.PASEO_AGENT_ID) {

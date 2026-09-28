@@ -18,7 +18,8 @@ const receipt = (agentId, pid, startedAt = 20) => ({ agentId, sessionKey: agentI
   sessionId: agentId, ticketPath: `.architect/tickets/${agentId}.md`, root: '/project', sessionFile, pid, startedAt,
   extensionModule: moduleUrl, operationsModule: operationsUrl, recovery: { ok: true, deferred: 1 } });
 const meta = (agentId, Status = 'idle') => ({ Id: agentId, Provider: 'qq-architect', Status, Cwd: '/project', Archived: false });
-function fake({ busy = 0, wrong = false, failReload = false, receiptAfter = true, malformed = false, changedSession = false } = {}) {
+function fake({ busy = 0, wrong = false, failReload = false, uncertain = false, lostReply = false, receiptAfter = true, malformed = false, changedSession = false,
+  caseHome = home, caseSessionFile = sessionFile } = {}) {
   let tick = 20, reloads = 0, inspected = 0;
   const calls = [];
   const run = (_bin, args) => {
@@ -30,18 +31,18 @@ function fake({ busy = 0, wrong = false, failReload = false, receiptAfter = true
     if (args[1] === 'inspect') return { status: 0, stdout: JSON.stringify({ ...meta(id, ++inspected <= busy ? 'running' : 'idle'), Provider: wrong ? 'codex' : 'qq-architect' }) };
     if (args[1] === 'reload') {
       reloads++;
-      if (failReload) return { status: 1, stderr: 'busy race' };
+      if (failReload && reloads <= (typeof failReload === 'number' ? failReload : Infinity)) return { status: 1, stderr: 'busy race' };
       if (receiptAfter) {
-        writeFileSync(sessionFile, 'history\nnew entry\n');
-        const newSession = join(home, 'different-session.jsonl');
+        writeFileSync(caseSessionFile, 'history\nnew entry\n');
+        const newSession = join(caseHome, 'different-session.jsonl');
         if (changedSession) writeFileSync(newSession, 'different history\n');
-        writeReceipt(id, { ...receipt(id, 901, tick), sessionFile: changedSession ? newSession : sessionFile }, home);
+        writeReceipt(id, { ...receipt(id, 901, tick), sessionFile: changedSession ? newSession : caseSessionFile }, caseHome);
       }
-      return { status: 0, stdout: '{}' };
+      return lostReply ? { status: 1, stderr: 'transport lost reply' } : { status: 0, stdout: uncertain ? 'not json' : '{}' };
     }
     throw new Error(args.join(' '));
   };
-  const opts = { home, repoRoot, run, paseoBin: 'fake-paseo', now: () => tick,
+  const opts = { home: caseHome, repoRoot, run, paseoBin: 'fake-paseo', now: () => tick,
     sleep: async () => { tick += 10; }, pollMs: 10, waitMs: 70, isAlive: () => true };
   return { opts, calls, get reloads() { return reloads; } };
 }
@@ -87,13 +88,60 @@ result = await activateArchitects(f.opts);
 assert.equal(result.status, 'pending');
 assert.ok(f.reloads >= 1);
 assert.match(result.agents[id].reason, /reload failed/);
+// A refused reload at idle is retried in this operation; no manual retry is
+// necessary. Tests use fresh homes so no live daemon/receipt is touched.
+const transientHome = tempDir('qq-activation-transient-');
+const transientSession = join(transientHome, 'session.jsonl');
+writeFileSync(transientSession, 'history\n');
+f = fake({ caseHome: transientHome, caseSessionFile: transientSession, failReload: 1 });
+result = await activateArchitects(f.opts);
+assert.equal(result.agents[id].status, 'applied');
+assert.equal(f.reloads, 2);
+// Malformed success output is uncertain: persist intent, reconcile a later
+// receipt on the next invocation, and never issue a second reload.
+const uncertainHome = tempDir('qq-activation-uncertain-');
+const uncertainSession = join(uncertainHome, 'session.jsonl');
+writeFileSync(uncertainSession, 'history\n');
+f = fake({ caseHome: uncertainHome, caseSessionFile: uncertainSession, uncertain: true, receiptAfter: false });
+result = await activateArchitects(f.opts);
+assert.equal(result.agents[id].status, 'pending');
+assert.equal(f.reloads, 1);
+writeReceipt(id, { ...receipt(id, 901, 20), sessionFile: uncertainSession }, uncertainHome);
+f = fake({ caseHome: uncertainHome, caseSessionFile: uncertainSession });
+result = await activateArchitects(f.opts);
+assert.equal(result.agents[id].status, 'applied');
+assert.equal(f.reloads, 0);
+const lostHome = tempDir('qq-activation-lost-reply-');
+const lostSession = join(lostHome, 'session.jsonl');
+writeFileSync(lostSession, 'history\n');
+f = fake({ caseHome: lostHome, caseSessionFile: lostSession, lostReply: true, receiptAfter: false });
+result = await activateArchitects(f.opts);
+assert.equal(result.agents[id].status, 'pending');
+writeReceipt(id, { ...receipt(id, 901, 20), sessionFile: lostSession }, lostHome);
+f = fake({ caseHome: lostHome, caseSessionFile: lostSession });
+result = await activateArchitects(f.opts);
+assert.equal(result.agents[id].status, 'applied');
+assert.equal(f.reloads, 0, 'a lost CLI reply must not trigger a blind reload');
+// A receipt from a dead replacement process is not applied; when that PID is
+// live on a later pass the same accepted reload can be reconciled.
+const deadHome = tempDir('qq-activation-dead-');
+const deadSession = join(deadHome, 'session.jsonl');
+writeFileSync(deadSession, 'history\n');
+f = fake({ caseHome: deadHome, caseSessionFile: deadSession });
+result = await activateArchitects({ ...f.opts, isAlive: () => false });
+assert.equal(result.agents[id].status, 'pending');
+assert.equal(f.reloads, 1);
+f = fake({ caseHome: deadHome, caseSessionFile: deadSession });
+result = await activateArchitects(f.opts);
+assert.equal(result.agents[id].status, 'applied');
+assert.equal(f.reloads, 0);
 f = fake({ malformed: true });
 result = await activateArchitects(f.opts);
 assert.equal(result.status, 'failed');
 assert.match(result.error, /malformed JSON/);
 writeReceipt(id, receipt(id, 600), home);
 f = fake({ changedSession: true });
-result = await activateArchitects({ ...f.opts, isAlive: () => false });
+result = await activateArchitects({ ...f.opts, isAlive: (pid) => pid === 901 });
 assert.equal(result.agents[id].status, 'failed', 'different native history must never count as applied');
 assert.match(result.agents[id].reason, /continuity/);
 console.log('architect activation lifecycle tests passed');
