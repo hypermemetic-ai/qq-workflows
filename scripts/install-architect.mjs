@@ -16,7 +16,7 @@
 //     restores the previous value on rollback.
 //   - Worker provider/model/harness/effort pins are never written or changed.
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   existsSync,
   lstatSync,
@@ -31,6 +31,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { activateArchitects, journalPath } from './activate-architect.mjs';
 import {
   ARCHITECT_PROVIDER_ID,
   applyArchitectPaseoConfig,
@@ -255,7 +256,11 @@ export function installPaseoPlugin({
       reason: probe?.error?.message || `'${paseoBin} --version' exited ${probe?.status}`,
     };
   }
-  const installed = run(command[0], command.slice(1), { encoding: "utf8" });
+  const existing = readPluginState({ paseoBin, run });
+  const sameSource = existing.ok && existing.status === 'running' && existing.enabled &&
+    existing.path && resolve(existing.path) === resolve(paths.pluginDir);
+  // A live byte-identical plugin should not be reinstalled for bookkeeping.
+  const installed = sameSource ? { status: 0 } : run(command[0], command.slice(1), { encoding: "utf8" });
   if (installed?.error || installed?.status !== 0) {
     return {
       status: "failed",
@@ -286,24 +291,26 @@ export function installPaseoPlugin({
       payload = null;
     }
     activation = {
-      status: reloaded?.status === 0 && !reloaded?.error ? "reloaded" : "reload-failed",
+      status: reloaded?.status === 0 && !reloaded?.error && payload && Array.isArray(payload.restartRequiredPaths) ? "reloaded" : "reload-failed",
       command: reloadCommand,
       appliedPaths: Array.isArray(payload?.appliedPaths) ? payload.appliedPaths : null,
       restartRequiredPaths: Array.isArray(payload?.restartRequiredPaths) ? payload.restartRequiredPaths : null,
-      reason: reloaded?.status === 0 && !reloaded?.error ? null : reloaded?.error?.message || (reloaded?.stderr ?? "").toString().trim().slice(0, 300) || `exit ${reloaded?.status}`,
+      reason: reloaded?.status === 0 && !reloaded?.error && payload ? null : reloaded?.error?.message || (reloaded?.stderr ?? "").toString().trim().slice(0, 300) || 'malformed daemon reload reply',
     };
     state = readPluginState({ paseoBin, run });
   }
 
-  const verified = state.ok && state.status === "running";
+  const verified = state.ok && state.status === "running" && state.enabled &&
+    typeof state.path === 'string' && resolve(state.path) === resolve(paths.pluginDir);
   const requiredAction = verified
     ? null
     : state.ok
-      ? "the plugin is configured but not running: check 'paseo plugin logs qq-architect' (a plugin source change may need a daemon restart)"
+      ? "the plugin is not running from the target source: check 'paseo plugin logs qq-architect' (a plugin source change may need a daemon restart)"
       : "the daemon could not report the plugin status; run 'paseo plugin ls qq-architect' and reload or restart the daemon if needed";
   return {
     status: verified ? "installed" : "installed-not-running",
     command,
+    reusedRunningPlugin: Boolean(sameSource),
     enable,
     activation,
     verified,
@@ -374,6 +381,18 @@ export function install({
     paseoConfig: installPaseoConfig({ paths, dryRun, enablePlugins: installPlugin, now }),
     plugin: skipPlugin ? { status: "skipped-by-flag" } : installPaseoPlugin({ paths, dryRun, paseoBin, run, manifest: pluginManifest }),
   };
+  // Apply provider/profile changes even when the plugin is already running or
+  // --skip-plugin was requested. Plugin startup alone is not config uptake.
+  if (!dryRun && !skipPlugin && report.paseoConfig.status === 'installed' && report.plugin?.activation?.status !== 'reloaded') {
+    const response = run(paseoBin, ['daemon', 'reload', '--json'], { encoding: 'utf8' });
+    let payload;
+    try { payload = JSON.parse(String(response?.stdout ?? '')); } catch { payload = null; }
+    report.configActivation = { status: response?.status === 0 && !response.error && Array.isArray(payload?.restartRequiredPaths) ? 'reloaded' : 'failed',
+      appliedPaths: Array.isArray(payload?.appliedPaths) ? payload.appliedPaths : null,
+      restartRequiredPaths: Array.isArray(payload?.restartRequiredPaths) ? payload.restartRequiredPaths : null,
+      reason: response?.error?.message ?? (response?.status !== 0 ? String(response?.stderr ?? '') : payload ? null : 'malformed daemon reload reply') };
+  } else if (report.plugin?.activation?.status === 'reloaded') report.configActivation = report.plugin.activation;
+  else if (skipPlugin) report.configActivation = { status: 'config-only', reason: 'skip-plugin does not apply daemon config or refresh sessions' };
   report.manifest = dryRun ? null : existsSync(paths.manifestPath) && report.paseoConfig.status === "already-installed"
     ? readJson(paths.manifestPath)
     : writeManifest({ paths, report, now });
@@ -442,19 +461,47 @@ export function rollback({
 }
 
 function parseArgs(argv) {
-  const options = { dryRun: false, rollback: false, json: false, skipPlugin: false };
+  const options = { dryRun: false, rollback: false, json: false, skipPlugin: false, background: false, activationOnly: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--rollback" || arg === "--uninstall") options.rollback = true;
     else if (arg === "--json") options.json = true;
     else if (arg === "--skip-plugin") options.skipPlugin = true;
+    else if (arg === '--background') options.background = true;
+    else if (arg === '--activation-only') options.activationOnly = true;
     else if (arg === "--home" && argv[index + 1]) options.home = argv[++index];
     else if (arg === "--repo" && argv[index + 1]) options.repoRoot = argv[++index];
     else if (arg === "--paseo-bin" && argv[index + 1]) options.paseoBin = argv[++index];
     else if (arg === "--help" || arg === "-h") options.help = true;
   }
   return options;
+}
+
+// The synchronous install() API intentionally remains configuration-only for
+// existing embedders. The ordinary CLI couples it to actual session uptake.
+export function activationPreflight(report) {
+  if (report.dryRun || report.plugin?.status !== 'installed' || report.paseoConfig?.status === 'skipped-no-config' ||
+      (report.configActivation && report.configActivation.status !== 'reloaded') ||
+      (report.plugin?.activation?.status === 'reload-failed') ||
+      (report.configActivation?.restartRequiredPaths ?? []).length ||
+      (report.plugin.activation?.restartRequiredPaths ?? []).length) {
+    return { status: 'not-activated', reason: 'config/plugin not safely active; dry-run, config-only, failure or restart required' };
+  }
+  let actual;
+  try { actual = readJson(report.paths.paseoConfig); }
+  catch (error) { return { status: 'not-activated', reason: `unreadable daemon config: ${error.message}` }; }
+  const command = actual?.agents?.providers?.[ARCHITECT_PROVIDER_ID]?.command;
+  if (!Array.isArray(command) || command.indexOf('--extension') < 0 ||
+      resolve(command[command.indexOf('--extension') + 1] ?? '') !== resolve(report.paths.extensionFile)) {
+    return { status: 'not-activated', reason: 'daemon target provider command does not select this release' };
+  }
+  return { status: 'ready' };
+}
+export async function activateInstalled(report, options = {}) {
+  const check = activationPreflight(report);
+  if (check.status !== 'ready') return check;
+  return activateArchitects({ home: report.home, repoRoot: report.repoRoot, paseoBin: options.paseoBin ?? 'paseo', ...options });
 }
 
 const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
@@ -472,6 +519,7 @@ Usage: node scripts/install-architect.mjs [options]
   --dry-run           Report the plan without changing anything
   --rollback          Restore the pre-install Paseo config and remove the plugin
   --json              Machine-readable report
+  --background       Continue existing-session refresh externally (receipt in state dir)
 
 Installs the plugin through 'paseo plugin install' + 'paseo plugin enable',
 turns the daemon-wide plugin switch on (pluginsEnabled: true) because a plugin
@@ -482,7 +530,7 @@ Removes only the confirmed dangling pi extensions (qq, subagent), preserves
 unrelated extensions/config/credentials, and never writes worker pins.`);
     process.exit(0);
   }
-  const report = options.rollback
+  const report = options.activationOnly ? null : options.rollback
     ? rollback({ home: options.home ?? homedir(), repoRoot: options.repoRoot ?? REPO_ROOT, paseoBin: options.paseoBin, dryRun: options.dryRun })
     : install({
         home: options.home ?? homedir(),
@@ -491,20 +539,49 @@ unrelated extensions/config/credentials, and never writes worker pins.`);
         dryRun: options.dryRun,
         skipPlugin: options.skipPlugin,
       });
+  let activation = null;
+  if (!options.rollback && !options.dryRun && !options.skipPlugin) {
+    if (options.activationOnly) {
+      const home = options.home ?? homedir(), repoRoot = options.repoRoot ?? REPO_ROOT;
+      const paths = installPaths({ home, repoRoot });
+      const pluginState = readPluginState({ paseoBin: options.paseoBin });
+      const check = activationPreflight({ home, repoRoot, paths,
+        plugin: { status: pluginState.ok && pluginState.status === 'running' && pluginState.enabled &&
+          resolve(pluginState.path ?? '') === resolve(paths.pluginDir) ? 'installed' : 'unavailable' },
+        paseoConfig: { status: 'already-installed' } });
+      activation = check.status === 'ready' ? await activateArchitects({ home, repoRoot, paseoBin: options.paseoBin ?? 'paseo' }) : check;
+    } else if (options.background || process.env.QQ_ARCHITECT_OWNER_AGENT_ID || process.env.QQ_WORKFLOW_SESSION_ID || process.env.PASEO_AGENT_ID) {
+      // An Architect cannot finish its own active turn while a child waits for
+      // it to become idle. Launch an external actor; the journal is authoritative
+      // after this caller exits, and incomplete work remains inspectable.
+      const preflight = activationPreflight(report);
+      if (preflight.status !== 'ready') activation = preflight;
+      else {
+        const child = spawn(process.execPath, [fileURLToPath(import.meta.url), '--activation-only', '--home', report.home, '--repo', report.repoRoot, '--paseo-bin', options.paseoBin ?? 'paseo', '--json'],
+          { detached: true, stdio: 'ignore' });
+        child.on('error', () => { /* an absent actor leaves no uptake receipt; retry via the reported journal */ });
+        child.unref();
+        activation = child.pid ? { status: 'pending', actorPid: child.pid, journal: journalPath(report.home, report.repoRoot) }
+          : { status: 'not-activated', reason: 'could not launch external activation actor' };
+      }
+    } else activation = await activateInstalled(report, options);
+  }
+  if (report) report.activation = activation ?? { status: options.dryRun ? 'dry-run' : 'config-only' };
   if (options.json) {
-    console.log(JSON.stringify(report, null, 2));
+    console.log(JSON.stringify(report ?? { activation }, null, 2));
   } else {
     const lines = [];
-    lines.push(`qq-workflows Architect ${options.rollback ? "rollback" : "install"}${options.dryRun ? " (dry run)" : ""} — home ${report.home}`);
-    if (report.extensionLinks) {
+    lines.push(`qq-workflows Architect ${options.rollback ? "rollback" : "install"}${options.dryRun ? " (dry run)" : ""} — home ${report?.home ?? options.home ?? homedir()}`);
+    if (report?.extensionLinks) {
       for (const link of report.extensionLinks) lines.push(`  pi extension ${link.name}: ${link.status}`);
     }
-    if (report.extensionFile) lines.push(`  pi extension file: ${report.extensionFile.status} (${report.extensionFile.path})`);
-    if (report.paseoConfig) lines.push(`  paseo config: ${report.paseoConfig.status}${report.paseoConfig.changes?.length ? ` [${report.paseoConfig.changes.join(", ")}]` : ""}`);
-    if (report.plugin) lines.push(`  paseo plugin: ${report.plugin.status}${report.plugin.reason ? ` (${report.plugin.reason})` : ""}`);
-    if (report.config) lines.push(`  paseo config: ${report.config.status}`);
-    if (report.manifest) lines.push(`  install manifest: ${report.manifest.status ?? "written"}`);
-    if (report.note) lines.push(`  note: ${report.note}`);
+    if (report?.extensionFile) lines.push(`  pi extension file: ${report.extensionFile.status} (${report.extensionFile.path})`);
+    if (report?.paseoConfig) lines.push(`  paseo config: ${report.paseoConfig.status}${report.paseoConfig.changes?.length ? ` [${report.paseoConfig.changes.join(", ")}]` : ""}`);
+    if (report?.plugin) lines.push(`  paseo plugin: ${report.plugin.status}${report.plugin.reason ? ` (${report.plugin.reason})` : ""}`);
+    if (report?.config) lines.push(`  paseo config: ${report.config.status}`);
+    if (report?.manifest) lines.push(`  install manifest: ${report.manifest.status ?? "written"}`);
+    if (report?.note) lines.push(`  note: ${report.note}`);
+    lines.push(`  existing sessions: ${JSON.stringify(report?.activation ?? activation)}`);
     console.log(lines.join("\n"));
   }
 }

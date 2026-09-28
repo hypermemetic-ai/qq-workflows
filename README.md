@@ -45,9 +45,20 @@ npm run install:architect
 ```
 
 `install:architect` registers the Pi/Paseo Architect provider (`paseo-plugin`),
-installs the extension the provider entry points at, and reports what it
-observed. It never writes worker provider/model selection - that is
-configuration, not installation (see below).
+installs the extension the provider entry points at, applies daemon config,
+then refreshes existing `qq-architect` sessions using `paseo agent reload` only
+when each is idle. Detached jobs need not finish. Uptake requires a new
+session-bound startup/recovery receipt: file install or daemon reload alone is
+not reported as adoption. The normal CLI waits up to five minutes for busy
+sessions; a pending result remains resumable by running the installer again.
+When launched from an Architect-owned turn (or with `--background`), it starts
+an external actor so the initiating turn can become idle; inspect the reported
+journal under `~/.local/state/qq-workflows/architect-activation/` for final
+per-agent status and loaded PID/module paths. Dry-run/`--skip-plugin` are
+non-refresh/config-only; the exported synchronous `install()` API is likewise
+config-only (use `activateInstalled(report)` for programmatic live uptake).
+It never writes worker provider/model selection - that is configuration, not
+installation (see below).
 
 ## Central worker configuration
 
