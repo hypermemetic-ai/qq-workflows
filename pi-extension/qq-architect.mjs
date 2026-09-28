@@ -74,6 +74,7 @@ import { createWorkflow, WORKFLOW_TOOLS, WORKFLOW_TOOL_NAMES } from "../workflow
 import { outputFrame } from '../workflow/tool-output.mjs';
 import { loadManagedExecutionLauncher } from "./managed-execution.mjs";
 import { resolveSessionKey } from "../workflow/session.mjs";
+import { writeReceipt as writeActivationReceipt } from "../workflow/activation-receipt.mjs";
 
 export const ARCHITECT_EXTENSION_NAME = "qq-architect";
 export const ARCHITECT_ALLOWED_TOOLS = [...ARCHITECT_READ_ONLY_TOOLS, ...WORKFLOW_TOOL_NAMES];
@@ -747,6 +748,28 @@ export function createArchitectExtension(pi, options = {}) {
       const summary = { ...summarizeRecovery(recovered), deferred, receipts: receipts.acknowledged.length, reason, at: now() };
       state.recoveries.push(summary);
       recordCapture({ at: now(), kind: "recovery", reason, deferred, receipts: receipts.acknowledged, recovered: summarizeRecovery(recovered) }, env);
+      // The receipt is session-bound and written only after recovery, never on
+      // module import or merely because files/config changed. Missing evidence
+      // remains missing; no receipt writer may break normal session startup.
+      try {
+        const owner = env.QQ_ARCHITECT_OWNER_AGENT_ID;
+        const evidence = sessionEvidence(state.lastCtx);
+        const association = wf.session();
+        if (reason !== 'supervision' && owner && evidence?.sessionFile && association.sessionKey === owner) {
+          writeActivationReceipt(owner, {
+            agentId: owner, sessionKey: association.sessionKey,
+            ownerAgentId: association.ownerAgentId, ticketPath: association.ticketPath,
+            root: association.root, sessionId: association.sessionId,
+            sessionFile: evidence.sessionFile, pid: process.pid,
+            startedAt: state.startedAt, observedAt: Date.now(), reason,
+            extensionModule: import.meta.url,
+            operationsModule: new URL('../workflow/operations.mjs', import.meta.url).href,
+            recovery: summary,
+          }, options.activationHome);
+        }
+      } catch (error) {
+        recordCapture({ at: now(), kind: 'activation-receipt-failed', error: error?.message }, env);
+      }
       return recovered;
     } catch (err) {
       state.recovery = { ok: false, error: err?.message || String(err), reason };
@@ -766,6 +789,7 @@ export function createArchitectExtension(pi, options = {}) {
 
   pi.on("session_start", async (event, ctx) => {
     state.lastCtx = ctx;
+    state.startedAt = Date.now();
     state.operatorActive = false;
     state.sessionReady = options.interactive ?? false;
     ensurePrompt();
@@ -1057,7 +1081,7 @@ export function createArchitectExtension(pi, options = {}) {
 
 function summarizeRecovery(recovered) {
   return {
-    ok: recovered?.ok !== false,
+    ok: Boolean(recovered && recovered.ok !== false),
     replayed: recovered?.delivery?.replayed?.length ?? 0,
     duplicates: recovered?.delivery?.duplicates?.length ?? 0,
     reconciled: recovered?.delivery?.reconciled?.length ?? 0,

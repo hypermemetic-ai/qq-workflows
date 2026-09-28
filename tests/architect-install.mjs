@@ -26,6 +26,9 @@ import {
   PLUGIN_MANIFEST_KEYS,
   install,
   installPaths,
+  installPaseoPlugin,
+  activationPreflight,
+  activateInstalled,
   readPluginManifest,
   rollback,
   validatePluginManifest,
@@ -41,9 +44,9 @@ const repoRoot = resolve(fileURLToPath(import.meta.url), "..", "..");
 // (the daemon reloads config.json without restarting). Scenario state lives in
 // `<home>/fake-paseo-state.json`; `stuck: true` models a daemon that will not pick
 // the switch up (a restart is then required).
-function installFakePaseo({ home, log, stuck = false }) {
+function installFakePaseo({ home, log, stuck = false, restartRequired = false }) {
   const script = join(home, "fake-paseo.mjs");
-  writeFileSync(join(home, "fake-paseo-state.json"), JSON.stringify({ installed: false, enabled: false, switchLive: false, stuck }, null, 2), "utf8");
+  writeFileSync(join(home, "fake-paseo-state.json"), JSON.stringify({ installed: false, enabled: false, switchLive: false, stuck, restartRequired }, null, 2), "utf8");
   writeFileSync(
     script,
     `#!/usr/bin/env node
@@ -60,13 +63,14 @@ const configSwitchOn = () => {
   catch { return false; }
 };
 if (args[0] === "--version") { process.stdout.write("0.8.0\\n"); process.exit(0); }
-if (args[0] === "plugin" && (args[1] === "install" || args[1] === "enable")) { const s = read(); s.installed = true; s.enabled = true; write(s); process.exit(0); }
+if (args[0] === 'agent' && args[1] === 'ls') { process.stdout.write('[]\\n'); process.exit(0); }
+if (args[0] === "plugin" && (args[1] === "install" || args[1] === "enable")) { const s = read(); s.installed = true; s.enabled = true; if (args[1] === 'install') s.path = args[2]; write(s); process.exit(0); }
 if (args[0] === "plugin" && args[1] === "remove") { const s = read(); s.installed = false; s.enabled = false; write(s); process.exit(0); }
 if (args[0] === "plugin" && args[1] === "ls") {
   const s = read();
   if (!s.installed) { process.stderr.write("Error: Plugin is not configured: " + (args[2] ?? "") + "\\n"); process.exit(1); }
   const status = s.enabled && s.switchLive === true ? "running" : "disabled";
-  process.stdout.write(JSON.stringify([{ id: args[2] ?? "qq-architect", path: "/fake/paseo-plugin", enabled: s.enabled !== false, status }], null, 2) + "\\n");
+  process.stdout.write(JSON.stringify([{ id: args[2] ?? "qq-architect", path: s.path, enabled: s.enabled !== false, status }], null, 2) + "\\n");
   process.exit(0);
 }
 if (args[0] === "daemon" && args[1] === "reload") {
@@ -75,7 +79,7 @@ if (args[0] === "daemon" && args[1] === "reload") {
   // daemon that will not pick it up without a restart.
   s.switchLive = !s.stuck && configSwitchOn();
   write(s);
-  process.stdout.write(JSON.stringify({ appliedPaths: ["pluginsEnabled", "agents.providers.qq-architect"], restartRequiredPaths: [], overrideControlledPaths: [] }, null, 2) + "\\n");
+  process.stdout.write(JSON.stringify({ appliedPaths: ["pluginsEnabled", "agents.providers.qq-architect"], restartRequiredPaths: s.restartRequired ? ['agents.providers.qq-architect.command'] : [], overrideControlledPaths: [] }, null, 2) + "\\n");
   process.exit(0);
 }
 process.exit(0);
@@ -260,7 +264,7 @@ assert.equal(secondReport.plugin.status, "installed", "a rerun re-verifies the r
 assert.equal(secondReport.plugin.activation.status, "not-needed", "an already-running plugin needs no reload");
 const callsAfterFirst = pluginCalls.length;
 const secondCalls = readFileSync(fakePaseoLog, "utf8").trim().split("\n").slice(callsAfterFirst);
-assert.ok(secondCalls.some((line) => line === `plugin install ${join(repoRoot, "paseo-plugin")} --id ${ARCHITECT_PROVIDER_ID}`), "the plugin install stays idempotent");
+assert.equal(secondCalls.some((line) => line.startsWith('plugin install')), false, "an identical running plugin is not reinstalled");
 assert.equal(secondCalls.includes("daemon reload --json"), false, "a rerun does not reload the daemon for nothing");
 assert.ok(existsSync(join(fixtureExtensions, "orca-agent-status.ts")));
 assert.ok(existsSync(plainFile));
@@ -275,6 +279,11 @@ assert.deepEqual(dryRun.extensionLinks.map((entry) => entry.status), ["dry-run",
 assert.equal(dryRun.plugin.status, "dry-run");
 assert.deepEqual(JSON.parse(readFileSync(join(dryHome, ".paseo", "config.json"), "utf8")), baselineConfig, "a dry run changes nothing");
 assert.equal(existsSync(join(dryHome, "manifest.json")), false);
+const cliDry = JSON.parse(execFileSync(process.execPath, [join(repoRoot, 'scripts', 'install-architect.mjs'),
+  '--home', dryHome, '--repo', repoRoot, '--paseo-bin', join(dryHome, 'missing-paseo'), '--dry-run', '--json'],
+  { encoding: 'utf8' }));
+assert.equal(cliDry.activation.status, 'dry-run');
+assert.equal(existsSync(join(dryHome, 'manifest.json')), false);
 assert.equal(install({ home, repoRoot, env: manifestEnv, dryRun: true, paseoBin: fakePaseo }).paseoConfig.status, "already-installed");
 
 // Worker pins are never written by the installer.
@@ -387,4 +396,42 @@ assert.equal(installPaths({ home }).extensionFile, ARCHITECT_EXTENSION_FILE);
 assert.equal(readdirSync(fixtureExtensions).includes("qq"), false);
 assert.ok(existsSync(join(repoRoot, "scripts", "install-architect.mjs")), "the installer is a supported entry point");
 
+// Running identical plugin source is verified/enabled but never reinstalled.
+const sameCalls = [];
+const sameSource = installPaseoPlugin({ paths: installPaths({ home, repoRoot }),
+  run: (_bin, args) => {
+    sameCalls.push(args.join(' '));
+    if (args[0] === 'plugin' && args[1] === 'ls') return { status: 0, stdout: JSON.stringify([{ id: 'qq-architect', status: 'running', enabled: true, path: join(repoRoot, 'paseo-plugin') }]) };
+    return { status: 0, stdout: '0.8.0' };
+  } });
+assert.equal(sameSource.reusedRunningPlugin, true);
+assert.equal(sameCalls.some((call) => call.startsWith('plugin install')), false);
+const preflight = activationPreflight(report);
+assert.equal(preflight.status, 'not-activated', 'a rolled-back config cannot select this release');
+assert.equal((await activateInstalled({ ...report, dryRun: true })).status, 'not-activated');
+// An owner turn cannot wait on itself: the CLI hands the idle polling to an
+// external process, which completes after the caller has returned.
+const selfHome = tempDir('qq-architect-self-');
+mkdirSync(join(selfHome, '.paseo'), { recursive: true });
+writeFileSync(join(selfHome, '.paseo', 'config.json'), `${JSON.stringify(baselineConfig)}\n`);
+const selfBin = installFakePaseo({ home: selfHome, log: join(selfHome, 'calls.log') });
+const cli = JSON.parse(execFileSync(process.execPath, [join(repoRoot, 'scripts', 'install-architect.mjs'),
+  '--home', selfHome, '--repo', repoRoot, '--paseo-bin', selfBin, '--json'],
+  { encoding: 'utf8', env: { ...process.env, QQ_ARCHITECT_OWNER_AGENT_ID: 'a1deb084-e29c-4c6b-8574-f2c845533a16',
+    QQ_TEST_PASEO_HOME: selfHome, QQ_TEST_PASEO_LOG: join(selfHome, 'calls.log') } }));
+assert.equal(cli.activation.status, 'pending');
+let actor;
+for (let attempt = 0; attempt < 40; attempt++) {
+  try { actor = JSON.parse(readFileSync(cli.activation.journal, 'utf8')); } catch { /* actor starting */ }
+  if (actor?.status === 'complete') break;
+  await new Promise((done) => setTimeout(done, 100));
+}
+assert.equal(actor?.status, 'complete', 'external activation actor continued after the owner returned');
+const restartHome = tempDir('qq-architect-restart-');
+mkdirSync(join(restartHome, '.paseo'), { recursive: true });
+writeFileSync(join(restartHome, '.paseo', 'config.json'), JSON.stringify(baselineConfig));
+const restartBin = installFakePaseo({ home: restartHome, log: join(restartHome, 'calls.log'), restartRequired: true });
+const restartReport = install({ home: restartHome, repoRoot, paseoBin: restartBin });
+assert.equal(restartReport.plugin.status, 'installed');
+assert.equal(activationPreflight(restartReport).status, 'not-activated', 'required daemon restart is not a safe uptake');
 console.log("architect paseo plugin and installer tests passed");
