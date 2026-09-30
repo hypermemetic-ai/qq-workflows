@@ -38,9 +38,9 @@
 //       exception, no acknowledgement from the replaced session's entries, and
 //       no failure read as proof of absence
 //
-// pi runtime shapes/ordering follow the installed 0.84.1 source
-// (`dist/core/agent-session.js`, `dist/core/extensions/loader.js`,
-// `pi-agent-core/dist/agent-loop.js`); see tests/support/architect-fixtures.mjs.
+// Pi receipt shapes/ordering follow 0.84.1/0.99.1; idle custom triggerTurn
+// admission models 0.99.1. See tests/support/architect-fixtures.mjs and the
+// optional real-SDK check in architect-compaction-wakeup.mjs.
 
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -79,7 +79,7 @@ function sessionEnv(key) {
   return { ...env, PASEO_AGENT_ID: key, QQ_ARCHITECT_OWNER_AGENT_ID: key };
 }
 
-// The Architect extension on the pi 0.84.1 runtime double: same construction as
+// The Architect extension on the receipt/queue runtime double: same construction as
 // production (interactive declares the session already open, as the existing
 // suite does) with the receipt check driven by the test's tick queue.
 function buildExtension({ sessionKey: key, pi, response = "receipt findings", interactive = true, workflowFactory = null }) {
@@ -274,13 +274,13 @@ assert.equal(crashRecovery.delivery.uncertain.length, 0);
 assert.equal(crashRecovery.delivery.deferred.length, 0);
 assert.equal(readJob(stateDir, crashDispatch.jobId).delivery.state, "queued", "idle replay awaits a session receipt");
 assert.equal(readNotification(stateDir, crashEventId).state, "queued");
-assert.equal(crashPi.sent.filter((entry) => entry.kind === "user").length, 1, "the reopened session is woken once");
-assert.ok(crashPi.sent.find((entry) => entry.kind === "user").content.includes("CRASH-BEFORE-DRAIN-FINDINGS"));
+assert.equal(crashPi.sent.filter((entry) => entry.kind === "message").length, 1, "the reopened session is woken once");
+assert.ok(crashPi.sent.find((entry) => entry.kind === "message").message.content.includes("CRASH-BEFORE-DRAIN-FINDINGS"));
 assert.ok(readReport(stateDir, crashJob.terminal.reportId).text.includes("CRASH-BEFORE-DRAIN-FINDINGS"), "the report survives the crash");
 assert.equal(listReports(stateDir).filter((entry) => entry.reportId === crashJob.terminal.reportId).length, 1, "replay never duplicates the report");
 const crashAgain = await crashWorkflow.recoverDeliveries({ transport: crash.extension.transport, evidence: crash.extension.sessionEvidence(crashPi.ctx) });
 assert.deepEqual(crashAgain.delivery.replayed, [], "a completed replay is not repeated");
-assert.equal(crashPi.sent.filter((entry) => entry.kind === "user").length, 1);
+assert.equal(crashPi.sent.filter((entry) => entry.kind === "message").length, 1);
 
 // ---------------------------------------------------------------------------
 // R4. Crash after pi retained the event but before the receipt update: recovery
@@ -549,18 +549,19 @@ assert.equal(idleSettled.delivery.state, "queued", "idle invocation waits for it
 const idleRecord = readNotification(stateDir, idleEventId);
 assert.equal(idleRecord.state, "queued");
 assert.equal(idleRecord.receipt, null, "invoking the fire-and-forget API is not a receipt");
-const wakeText = idlePi.sent.find((entry) => entry.kind === "user").content;
-assert.ok(wakeText.includes("IDLE-RECEIPT-FINDINGS"));
+const wake = idlePi.sent.find((entry) => entry.kind === "message");
+assert.ok(wake.message.content.includes("IDLE-RECEIPT-FINDINGS"));
+assert.equal(wake.options.triggerTurn, true);
 
-// pi appends the wakeup as a regular user message; the receipt is confirmed.
-await idlePi.wakeUser(wakeText);
+// Pi retains the same identified custom message on idle and busy paths.
+await idlePi.drain();
 await idle.ticks.flush();
 const confirmed = readNotification(stateDir, idleEventId);
 assert.equal(confirmed.state, "delivered", "the observed session entry advances queued to delivered");
-assert.equal(confirmed.receipt.kind, "session-user-message");
+assert.equal(confirmed.receipt.kind, "pi-session-entry");
 assert.equal(confirmed.receipt.entryId, idlePi.entries.at(-1).id);
 assert.equal(confirmed.acknowledgedAt >= confirmed.deliveryAt, true);
-assert.equal(idlePi.sent.filter((entry) => entry.kind === "user").length, 1, "the confirmation never re-wakes the session");
+assert.equal(idlePi.sent.filter((entry) => entry.kind === "message").length, 1, "the confirmation never re-wakes the session");
 assert.equal(readJob(stateDir, idleDispatch.jobId).delivery.state, "delivered");
 
 // A rejected transport stays retryable and never fakes a receipt.
@@ -1473,13 +1474,13 @@ for (const legacyUnconfirmed of [false, true]) {
   await after.ticks.flush();
   const recovered = await after.extension.whenReady();
   assert.equal(recovered.delivery.replayed.filter(entry => entry.jobId === job.id).length, 1);
-  assert.equal(afterPi.sent.filter(entry => entry.kind === 'user').length, 1);
+  assert.equal(afterPi.sent.filter(entry => entry.kind === 'message').length, 1);
   const repeat = await after.extension.ensureWorkflow().recoverDeliveries({ transport: after.extension.transport, evidence: after.extension.sessionEvidence(afterPi.ctx) });
   assert.equal(repeat.delivery.replayed.length, 0, 'pending live invocation is not duplicated');
-  await afterPi.wakeUser(afterPi.sent.find(entry => entry.kind === 'user').content);
+  await afterPi.drain();
   await after.ticks.flush();
   assert.equal(readJob(stateDir, job.id).delivery.state, 'delivered');
-  assert.equal(readNotification(stateDir, eventId).receipt.kind, 'session-user-message');
+  assert.equal(readNotification(stateDir, eventId).receipt.kind, 'pi-session-entry');
   if (legacyUnconfirmed) assert.equal(readNotification(stateDir, eventId).legacyUnconfirmedReceipt.confirmed, false, 'historical evidence retained');
 }
 console.log('PASS idle wake crash gap: invocation is not a receipt; fresh and legacy unconfirmed events recover once and acknowledge from session evidence');

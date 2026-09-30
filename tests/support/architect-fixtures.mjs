@@ -265,8 +265,10 @@ export function callHandlersSync(pi, name, event, ctx) {
   }
 }
 
-// Minimal double of the pi 0.84.1 session runtime that the Architect completion
-// path is written against. Its ordering follows the installed source:
+// Minimal receipt/queue double of the Pi session runtime. Persistence ordering
+// is shared by 0.84.1 and 0.99.1; triggerTurn models 0.99.1 synchronous idle
+// admission. Actual AgentSession methods are checked separately by the optional
+// architect-compaction-wakeup SDK fixture. This double makes no model calls.
 //
 //   * `sendMessage({customType, details}, {deliverAs:"steer"})` queues the
 //     message on the agent (`agent.steer`) and returns immediately;
@@ -377,6 +379,9 @@ export function piRuntimeDouble({ idle = true, sessionFile = "/tmp/pi-session.js
     sendMessage(message, options) {
       sent.push({ kind: "message", message, options });
       if (options?.deliverAs === "steer") {
+        // 0.99.1 triggerTurn admission starts the idle run synchronously.
+        // Consumption/persistence is still controlled by the caller below.
+        if (options?.triggerTurn && ctx.idle) ctx.idle = false;
         queue.push({ role: "custom", ...message, timestamp: Date.now() });
         if (consume === "sync") {
           drainPromise = drain({ sync: true });
