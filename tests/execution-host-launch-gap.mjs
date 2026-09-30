@@ -20,6 +20,11 @@ try {
   host=await spawnExecutionHostProcess({requestPath,root,env:process.env,log});
 } finally {closeSync(log);}
 const expected=processFingerprint({pid:host.pid});
+if (process.platform==='linux' && /(?:^|\/)paseo\.service(?:\/|$)/m.test(readFileSync('/proc/self/cgroup','utf8'))) {
+  const cgroup=readFileSync(`/proc/${host.pid}/cgroup`,'utf8');
+  assert.match(cgroup,/qq-execution-.*\.scope/,'normal launch from Paseo establishes a transient user scope');
+  assert.doesNotMatch(cgroup,/(?:^|\/)paseo\.service(?:\/|$)/m,'host is independent BEFORE PID binding');
+}
 try {
   const until=Date.now()+10000;
   while(processFingerprint({pid:host.pid})&&Date.now()<until)await new Promise(resolve=>setTimeout(resolve,100));
