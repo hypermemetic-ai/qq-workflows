@@ -52,6 +52,7 @@ import {
   assertSelectedModel,
   buildPiArgs,
   classifyPiTerminal,
+  createTranslator,
   defaultNativeSessionDir,
   parseArgs,
   resolveNativeSessionPath,
@@ -336,6 +337,45 @@ try {
   assert.equal(classifyPiTerminal({ settled: true, finalText: "cut off", stopReason: "length" }).code, "final_answer_truncated");
   assert.equal(classifyPiTerminal({ settled: true, finalText: "x", stopReason: "stop" }).ok, true);
   assert.equal(classifyPiTerminal({ settled: true, finalText: "x", stopReason: "toolUse" }).ok, true, "the gate fails closed only on the named bad reasons");
+
+  // Retry activity is boolean, not starts-minus-settles: Pi settles the whole
+  // sequence once, while genuine post-settle injection starts fresh activity.
+  for (const success of [false, true]) {
+    const translator = createTranslator({ seat: "runner", onLine: () => {} });
+    assert.equal(translator.state.activeRun, false);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      translator.handle({ type: "agent_start" });
+      translator.handle({ type: "message_end", message: {
+        role: "assistant", content: [{ type: "text", text: `partial-${attempt}` }],
+        stopReason: "error", errorMessage: "fetch failed",
+      } });
+      translator.handle({ type: "agent_end", willRetry: true });
+      assert.equal(translator.state.activeRun, true, "agent_end between retries is not settlement");
+      assert.equal(translator.state.settles, 0);
+    }
+    if (success) translator.handle({ type: "message_end", message: {
+      role: "assistant", content: [{ type: "text", text: "LATEST-VALID-ANSWER" }], stopReason: "stop",
+    } });
+    translator.handle({ type: "agent_end", willRetry: false });
+    translator.handle({ type: "auto_retry_end", success, finalError: "fetch failed" });
+    assert.equal(translator.state.activeRun, true, "retry outcome alone is not settlement");
+    translator.handle({ type: "agent_settled" });
+    assert.equal(translator.state.activeRun, false, "one settlement clears all retry activity");
+    assert.equal(translator.state.settles, 1);
+    const verdict = classifyPiTerminal(translator.state);
+    assert.equal(verdict.ok, success);
+    if (success) assert.equal(translator.state.finalText, "LATEST-VALID-ANSWER");
+    else {
+      assert.equal(verdict.code, "auto_retry_failed");
+      assert.equal(verdict.diagnostic, "fetch failed");
+    }
+    translator.handle({ type: "agent_start" });
+    assert.equal(translator.state.activeRun, true, "post-settle injection is still tracked");
+    assert.equal(translator.state.settles, 1);
+    translator.handle({ type: "agent_settled" });
+    assert.equal(translator.state.activeRun, false);
+    assert.equal(translator.state.settles, 2, "settle counts remain available for waits/reporting");
+  }
 
   // A9c. Selection confirmation: the runtime's report of the provider/model is
   // checked against the central configuration, so a config-only swap is

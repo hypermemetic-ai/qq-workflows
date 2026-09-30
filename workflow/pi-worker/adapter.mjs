@@ -392,12 +392,11 @@ export function createTranslator({ seat, onLine }) {
     errorMessage: null,
     toolNames: new Map(),
     intermediate: 0,
-    // Communication drain bookkeeping: how many agent runs started and settled.
-    // An idle receiver injection starts a NEW run after a settle, so
-    // `turnStarts > settles` means a turn is in flight and final-result
-    // selection must wait for it (never report the earlier final message as the
-    // outcome of the updated assignment).
-    turnStarts: 0,
+    // Retry continuations emit multiple agent_start events but only ONE
+    // agent_settled for the sequence. Track current activity, not a surplus of
+    // starts; a genuine post-settle injection reactivates the run and must
+    // settle before final-result selection can use its updated answer.
+    activeRun: false,
     settles: 0,
     activity: 0,
   };
@@ -422,7 +421,7 @@ export function createTranslator({ seat, onLine }) {
       if (!event || typeof event !== "object") return;
       switch (event.type) {
         case "agent_start": {
-          state.turnStarts += 1;
+          state.activeRun = true;
           state.activity += 1;
           return;
         }
@@ -475,6 +474,7 @@ export function createTranslator({ seat, onLine }) {
           return;
         }
         case "agent_settled": {
+          state.activeRun = false;
           state.settled = true;
           state.settles += 1;
           return;
@@ -638,8 +638,8 @@ async function drainReceiverWindow({ client, translator, drainMs }) {
     // An exit while a drain-injected turn is in flight must not read as
     // success: the classifier would otherwise see the stale pre-injection
     // final message. Conservatively fail; the record stays honest.
-    if (translator.state.turnStarts > translator.state.settles) {
-      translator.state.error = {
+    if (translator.state.activeRun) {
+      translator.state.error ??= {
         code: "runtime_exit",
         message: `the pi runtime ended (${result?.reason ?? "unknown"}) while a drain-injected turn was still in flight`,
       };
@@ -648,9 +648,10 @@ async function drainReceiverWindow({ client, translator, drainMs }) {
     return report({ reason: "exit" });
   };
   while (Date.now() - started < drainMs) {
-    if (translator.state.turnStarts > translator.state.settles) {
+    if (translator.state.activeRun) {
       const remaining = Math.max(drainMs - (Date.now() - started), 1);
-      await waitForSettle(client, translator, translator.state.settles + 1, { timeoutMs: remaining });
+      const winner = await waitForSettle(client, translator, translator.state.settles + 1, { timeoutMs: remaining });
+      if (winner.reason === "exit") return exitReport(winner.result);
       continue;
     }
     const winner = await Promise.race([
@@ -659,8 +660,8 @@ async function drainReceiverWindow({ client, translator, drainMs }) {
     ]);
     if (winner) return exitReport(winner.result);
   }
-  if (translator.state.turnStarts > translator.state.settles) {
-    translator.state.error = {
+  if (translator.state.activeRun) {
+    translator.state.error ??= {
       code: "drain_turn_interrupted",
       message: "the communication drain window ended while an injected turn was still in flight; refusing to report the pre-injection final message as the outcome",
     };
