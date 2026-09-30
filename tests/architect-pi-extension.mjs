@@ -382,10 +382,11 @@ await callHandlers(deliveryPi, "session_start", { reason: "startup" }, idleCtx);
 await callHandlers(deliveryPi, "message_end", { message: { role: "user" } }, idleCtx);
 
 const idleDelivery = await deliveryExtension.transport.deliver({ eventId: "runner:1:terminal", text: "runner finished" });
-assert.equal(idleDelivery.state, "queued", "idle invocation has no receipt yet");
+assert.equal(idleDelivery.state, "unknown", "the bare API double proves neither active admission nor retention");
 assert.equal(idleDelivery.receipt, undefined, "a void Pi call is not evidence of a retained message");
-assert.equal(deliveryPi.sent.at(-1).kind, "user", "an idle completion starts a turn");
-assert.equal(deliveryPi.sent.at(-1).content, "runner finished");
+assert.equal(deliveryPi.sent.at(-1).kind, "message", "an idle completion requests an identified native turn");
+assert.equal(deliveryPi.sent.at(-1).message.content, "runner finished");
+assert.equal(deliveryPi.sent.at(-1).options.triggerTurn, true);
 
 idleCtx.idle = false;
 const busyDelivery = await deliveryExtension.transport.deliver({ eventId: "runner:2:terminal", jobId: "job-2", role: "runner", text: "runner finished while busy" });
@@ -442,10 +443,10 @@ assert.equal(deliveryPending(stateDir, readinessDispatch.jobId), true, "the unde
 const readyRecovery = await becomeReady({ pi: awaitingPi, extension: awaitingExtension, scheduled: awaitingScheduled });
 assert.equal(awaitingExtension.state.sessionReady, true, "the readiness tick opens delivery");
 assert.deepEqual(readyRecovery.delivery.replayed.map((entry) => entry.jobId), [readinessDispatch.jobId], "the readiness tick replays the pending completion");
-assert.equal(readJob(stateDir, readinessDispatch.jobId).delivery.state, "queued");
+assert.equal(readJob(stateDir, readinessDispatch.jobId).delivery.state, "unknown");
 assert.equal(awaitingExtension.state.operatorActive, false, "the operator never spoke in this session");
-assert.ok(awaitingPi.sent.some((entry) => entry.kind === "user" && entry.content.includes("readiness findings")), "an idle reopened session is woken by the recovered completion");
-assert.equal(awaitingPi.sent.filter((entry) => entry.kind === "user").length, 1, "the completion is delivered exactly once");
+assert.ok(awaitingPi.sent.some((entry) => entry.kind === "message" && entry.message.content.includes("readiness findings")), "an idle reopened session is woken by the recovered completion");
+assert.equal(awaitingPi.sent.filter((entry) => entry.kind === "message").length, 1, "the completion is offered exactly once");
 
 // ---------------------------------------------------------------------------
 // P6. Identity and recovery: durable state survives a session restart.
@@ -507,8 +508,8 @@ assert.ok(recoveredState, "a startup session triggers completion recovery");
 assert.equal(restartExtension.state.recoveries.at(-1).reason, "startup", "recovery records the reason the runtime emitted");
 assert.equal(restartExtension.state.operatorActive, false, "recovery does not wait for the operator to speak");
 assert.ok(recoveredState.delivery.replayed.some((entry) => entry.jobId === orphanDispatch.jobId), "the undelivered result is replayed to its owning session");
-assert.equal(readJob(stateDir, orphanDispatch.jobId).delivery.state, "queued");
-assert.ok(restartPi.sent.some((entry) => entry.kind === "user" && entry.content.includes("orphaned findings")), "the recovered completion wakes the reopened idle session");
+assert.equal(readJob(stateDir, orphanDispatch.jobId).delivery.state, "unknown");
+assert.ok(restartPi.sent.some((entry) => entry.kind === "message" && entry.message.content.includes("orphaned findings")), "the recovered completion wakes the reopened idle session");
 assert.equal(
   readFileSync(capturePath, "utf8").includes('"kind":"recovery"'),
   true,
@@ -541,7 +542,7 @@ for (const reason of ["startup", "new", "resume", "fork", "reload"]) {
   const reasonRecovery = await becomeReady({ pi: reasonPi, extension: reasonExtension, scheduled: reasonScheduled });
   assert.equal(reasonExtension.state.recoveries.at(-1).reason, reason, `recovery runs for the runtime reason '${reason}'`);
   assert.deepEqual(reasonRecovery.delivery.replayed.map((entry) => entry.jobId), [reasonDispatch.jobId], `'${reason}' replays the undelivered result exactly once`);
-  assert.equal(reasonPi.sent.filter((entry) => entry.kind === "user").length, 1, `'${reason}' wakes the idle session once`);
+  assert.equal(reasonPi.sent.filter((entry) => entry.kind === "message").length, 1, `'${reason}' wakes the idle session once`);
 }
 
 // A completion belonging to a different agent is never replayed into this session.
@@ -632,5 +633,44 @@ assert.equal(execSettled.role, "execution");
 const bare = createWorkflow({ root, sessionKey: null, env: { QQ_WORKER_CONFIG_FILE: env.QQ_WORKER_CONFIG_FILE } });
 assert.throws(() => bare.session(), /no workflow session identity/);
 assert.equal(agentTransport().delivered.length, 0);
+
+// Portable lifecycle regression; the optional architect-compaction-wakeup
+// check additionally measures actual AgentSession 0.99.1 turn admission.
+for (const outcome of ["completed", "failed", "cancelled"]) {
+  const owner = `compaction-${outcome}`;
+  const setup = buildExtension({
+    interactive: true,
+    compaction: { minIntervalMs: 0 },
+    env: { ...extensionEnv, PASEO_AGENT_ID: owner, QQ_ARCHITECT_OWNER_AGENT_ID: owner },
+    workflowFactory: config => createWorkflow({ ...config, spawnFn: runnerSpawner({ response: owner }) }),
+  });
+  const compactCtx = fakeContext({ tokens: 95_000, contextWindow: 100_000 });
+  await callHandlers(setup.pi, "session_start", { reason: "startup" }, compactCtx);
+  await setup.extension.maybeCompact(compactCtx);
+  assert.equal(setup.extension.state.compacting, true);
+  compactCtx.idle = false; // Pi's controller is now active
+  await callHandlers(setup.pi, "session_before_compact", {}, compactCtx);
+  const dispatch = setup.extension.ensureWorkflow().dispatchRunner({ task: owner });
+  const terminal = await waitForJobTerminal(stateDir, dispatch.jobId, { requireDelivery: true });
+  assert.equal(terminal.delivery.state, "failed");
+  assert.equal(terminal.delivery.reason, "session-compacting");
+  assert.equal(setup.extension.state.receipts.size, 0);
+  assert.equal(setup.pi.sent.length, 0);
+  const terminalEvent = outcome === "completed" ? "session_compact" : "session_compact_failed";
+  await callHandlers(setup.pi, terminalEvent, {}, compactCtx);
+  await setup.scheduled.flush();
+  assert.equal(setup.pi.sent.length, 0, "terminal event cannot wake before controller clearance");
+  compactCtx.idle = true;
+  compactCtx.tokens = 100;
+  if (outcome === "completed") compactCtx.compactCalls[0].onComplete({});
+  else compactCtx.compactCalls[0].onError(new Error(outcome));
+  await setup.scheduled.flush();
+  assert.equal(setup.pi.sent.length, 1, "profile callback autonomously recovers deferred completion");
+  assert.equal(setup.pi.sent[0].options.triggerTurn, true);
+  assert.equal(setup.pi.sent[0].message.details.jobId, dispatch.jobId);
+  assert.equal(readJob(stateDir, dispatch.jobId).terminal.reportId, terminal.terminal.reportId);
+  assert.equal(setup.extension.ensureWorkflow().session().sessionKey, owner);
+  await callHandlers(setup.pi, "session_shutdown", {}, compactCtx);
+}
 
 console.log("architect pi extension tests passed");

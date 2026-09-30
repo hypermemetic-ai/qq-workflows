@@ -32,7 +32,8 @@
 // job records advance to `delivered` with the observation recorded as evidence.
 // The check is deferred to a later task on purpose — pi writes the entry AFTER
 // its extension handlers returned, so acking inside the handler would claim more
-// than pi committed. Until a receipt exists the record stays `queued` (volatile)
+// than pi committed. Until a receipt exists the record stays volatile (`queued`
+// after proven live admission, `unknown` when the void binding proves nothing)
 // and recovery reconciles it from the same evidence: an event the session
 // retained is acknowledged, an event the session never held is re-delivered to
 // its owner, and anything that cannot be proven is retained as outcome-unknown
@@ -182,6 +183,8 @@ export function createArchitectExtension(pi, options = {}) {
     lastCtx: null,
     lastCompactionAt: 0,
     compacting: false,
+    nativeCompacting: false,
+    compactionFinished: false,
     compactionRuntime: null,
     compactionPolicy: null,
     compactionPolicyNotified: false,
@@ -556,24 +559,25 @@ export function createArchitectExtension(pi, options = {}) {
     });
     // message_start is the drain out of pi's queue: from here the message is
     // retention (the receipt), not a queued copy recovery could duplicate.
+    state.receipts.get(eventId).draining = true;
     releaseInFlight(eventId);
     return true;
   }
 
-  function steer(notification, text, reason) {
+  function steer(notification, text, reason, { idle = false, ctx = state.lastCtx } = {}) {
     const details = completionDetails(notification);
     // The expectation is registered BEFORE the send: a fake/early runtime that
     // consumes the message synchronously inside sendMessage must not be lost,
     // and nothing is claimed before the evidence check. The in-flight claim is
-    // registered before the send too: pi queues the custom steer on the agent
-    // synchronously, and a synchronous drain (message_start) must clear the
-    // claim rather than have it re-added after the fact.
+    // registered before a busy send too: pi queues the custom steer on the
+    // agent synchronously. Idle admission is observed after the send; a drain
+    // marker prevents that observation from re-adding a consumed claim.
     if (details.eventId) {
-      expectReceipt({ ...details, text, kind: "steer" });
-      holdInFlight(details.eventId);
+      expectReceipt({ ...details, text, kind: "steer" }).draining = false;
+      if (!idle) holdInFlight(details.eventId);
     }
     try {
-      pi.sendMessage({ customType: ARCHITECT_COMPLETION_CUSTOM_TYPE, content: text, display: true, details }, { deliverAs: "steer" });
+      pi.sendMessage({ customType: ARCHITECT_COMPLETION_CUSTOM_TYPE, content: text, display: true, details }, { deliverAs: "steer", triggerTurn: true });
     } catch (err) {
       // The send never reached pi's queue; nothing is in flight.
       if (details.eventId) releaseInFlight(details.eventId);
@@ -586,6 +590,20 @@ export function createArchitectExtension(pi, options = {}) {
       state.deliveries.push({ eventId: details.eventId, state: "delivered", reason, receiptKind: receipt.kind });
       return { state: "delivered", reason, receipt };
     }
+    // In 0.99.1 custom admission is synchronous: an idle trigger enters the
+    // agent run before the first await (unlike sendUserMessage preflight).
+    // A void binding can still swallow an early asynchronous refusal. If no
+    // active run is observable, claim neither acceptance nor a live queue.
+    // Genuine busy steers keep their pre-send claim, including reloads.
+    if (idle) {
+      if (ctx?.isIdle?.() !== false) {
+        scheduleReceiptCheck();
+        state.deliveries.push({ eventId: details.eventId, state: "unknown", reason: "awaiting-session-receipt" });
+        return { state: "unknown", reason: "awaiting-session-receipt" };
+      }
+      if (details.eventId && !state.receipts.get(details.eventId)?.draining) holdInFlight(details.eventId);
+    }
+    scheduleReceiptCheck();
     state.deliveries.push({ eventId: details.eventId, state: "queued", reason });
     return { state: "queued", reason };
   }
@@ -636,26 +654,22 @@ export function createArchitectExtension(pi, options = {}) {
           releaseInFlight(details.eventId);
           return { state: "delivered", receipt };
         }
-        if (!idle) return steer(notification, text, "session-busy");
-        // The idle branch wakes the session with a regular user message (the
-        // operator's live wakeup, unchanged). Its receipt is pi starting a turn
-        // for this text, confirmed later by the exact session entry.
-        if (details.eventId) {
-          expectReceipt({ ...details, text, kind: "user-message" });
-          holdInFlight(details.eventId);
+        if (details.eventId && evidence?.inFlight.includes(details.eventId)) {
+          return { state: "queued", reason: "pending-in-session" };
         }
-        // The installed extension API is fire-and-forget: it catches an
-        // asynchronous prompt failure internally and returns void. Invocation
-        // is not proof that a turn started or that the session retained it.
-        pi.sendUserMessage(text, { deliverAs: "steer" });
-        const observed = details.eventId ? state.acknowledged.get(details.eventId) ?? null : null;
-        if (observed) {
-          state.deliveries.push({ eventId: details.eventId, state: "delivered", receiptKind: observed.kind });
-          return { state: "delivered", receipt: observed };
+        // Compaction is not an agent queue. In Pi 0.99.1 isIdle excludes it,
+        // but a custom trigger would otherwise start a run during compaction.
+        // Refuse before registering any expectation or live queue claim.
+        settleCompaction(ctx);
+        if (state.compacting || state.nativeCompacting) {
+          state.deferred.push({ eventId: notification.eventId, role: notification.role ?? null, at: now() });
+          return { state: "failed", reason: "session-compacting" };
         }
-        scheduleReceiptCheck();
-        state.deliveries.push({ eventId: details.eventId, state: "queued", reason: "awaiting-session-receipt" });
-        return { state: "queued", reason: "awaiting-session-receipt" };
+        // Use the same identified native message for both paths. triggerTurn
+        // starts an idle run synchronously, closing both busy→idle and the
+        // user-prompt preflight→compaction gap. Retention remains the receipt;
+        // neither invocation nor model success is claimed as delivery.
+        return steer(notification, text, idle ? "session-idle" : "session-busy", { idle, ctx });
       } catch (err) {
         if (details.eventId) releaseInFlight(details.eventId);
         // A wake can lose a race with a prompt the operator (or Paseo) submitted
@@ -734,6 +748,7 @@ export function createArchitectExtension(pi, options = {}) {
   // runtime, and `reload` for `/reload`); ownership is checked per job inside
   // recovery, so a replay can never reach another session.
   async function runReadyTick(reason) {
+    settleCompaction(state.lastCtx);
     state.sessionReady = true;
     const wf = ensureWorkflow();
     const deferred = state.deferred.length;
@@ -839,7 +854,12 @@ export function createArchitectExtension(pi, options = {}) {
     // steer queue on it), so any in-flight claim still describes that queue and
     // must survive. Every other start reason replaces the session the claim was
     // about, so the claim is dropped with it.
-    if (reason !== "reload") releaseAllInFlight();
+    if (reason !== "reload") {
+      releaseAllInFlight();
+      state.compacting = false;
+      state.nativeCompacting = false;
+      state.compactionFinished = false;
+    }
     recordCapture({ at: now(), kind: "session_start", reason, recoveryDeferred: !state.sessionReady }, env);
     if (state.sessionReady) {
       // Already-open session (embedder/test): recover inline, under the caller.
@@ -901,6 +921,49 @@ export function createArchitectExtension(pi, options = {}) {
       : `'${name}' is not part of the Architect profile tool surface.`;
     return { block: true, reason };
   });
+
+  // session_compact is emitted BEFORE Pi clears its controller. Keep the
+  // barrier until a later task can observe idle, and use existing supervision
+  // as the fallback if another handler prolongs that dispatch. Failed/cancelled
+  // compaction also emits a supported terminal event in Pi 0.99.1.
+  function settleCompaction(ctx) {
+    if (!state.nativeCompacting || !state.compactionFinished || state.compacting) return;
+    try {
+      if (ctx?.isIdle?.()) {
+        state.nativeCompacting = false;
+        state.compactionFinished = false;
+      }
+    } catch { /* stale context is not proof of controller clearance */ }
+  }
+
+  let compactionRecoveryScheduled = false;
+  function scheduleCompactionRecovery(ctx) {
+    if (compactionRecoveryScheduled) return;
+    compactionRecoveryScheduled = true;
+    const generation = state.sessionGeneration;
+    schedule(async () => {
+      compactionRecoveryScheduled = false;
+      if (generation !== state.sessionGeneration || !state.sessionReady) return;
+      settleCompaction(ctx);
+      if (state.compacting || state.nativeCompacting) return;
+      await runReadyTick("compaction-finished");
+    });
+  }
+
+  pi.on("session_before_compact", async (_event, ctx) => {
+    state.lastCtx = ctx;
+    state.nativeCompacting = true;
+    state.compactionFinished = false;
+  });
+  for (const eventName of ["session_compact", "session_compact_failed"]) {
+    pi.on(eventName, async (_event, ctx) => {
+      state.lastCtx = ctx;
+      // Also covers failure before session_before_compact (e.g. preparation).
+      state.nativeCompacting = true;
+      state.compactionFinished = true;
+      scheduleCompactionRecovery(ctx);
+    });
+  }
 
   // Compaction policy. pi's shared setting disables auto-compaction; this
   // profile compacts itself before the context window is exhausted.
@@ -984,23 +1047,29 @@ export function createArchitectExtension(pi, options = {}) {
     state.compacting = true;
     state.lastCompactionAt = now();
     const attempt = { at: now(), tokens: usage.tokens, fraction, window: window ?? null, reason: overReserve ? "reserve" : "threshold" };
+    const generation = state.sessionGeneration;
     try {
       ctx.compact({
         customInstructions:
           "Preserve the ticket state, operator decisions, open questions, running job ids, report references, and the recovery boundary. Drop raw tool output that is already persisted in a report.",
         onComplete: () => {
+          if (generation !== state.sessionGeneration) return;
           state.compacting = false;
+          scheduleCompactionRecovery(ctx);
           state.compactions = [...(state.compactions ?? []), { ...attempt, outcome: "completed" }];
           recordCapture({ kind: "compaction", outcome: "completed", ...attempt }, env);
         },
         onError: (error) => {
+          if (generation !== state.sessionGeneration) return;
           state.compacting = false;
+          scheduleCompactionRecovery(ctx);
           state.compactions = [...(state.compactions ?? []), { ...attempt, outcome: "failed", error: error?.message }];
           recordCapture({ kind: "compaction", outcome: "failed", error: error?.message, ...attempt }, env);
         },
       });
     } catch (err) {
       state.compacting = false;
+      scheduleCompactionRecovery(ctx);
       return { compacted: false, reason: "compact-threw", error: err?.message };
     }
     return { compacted: true, attempt };
