@@ -8,7 +8,9 @@
 //
 //   QQ_FAKE_PI_LEVELS          comma-separated available thinking levels
 //   QQ_FAKE_PI_COMPACTION      "true" | "false"  (set_auto_compaction outcome)
-//   QQ_FAKE_PI_MODE            "ok" | "error" | "stall"
+//   QQ_FAKE_PI_MODE            "ok" | "error" | "stall" |
+//                              "retry-success" | "retry-exhausted"
+//                              retries emit multiple starts but ONE settlement
 //   QQ_FAKE_PI_ANSWER          final assistant text (default "OK")
 //   QQ_FAKE_PI_COMMAND_LOG     file to append every received command to
 //   QQ_FAKE_PI_CAPACITY        reported model contextWindow
@@ -29,6 +31,7 @@
 //                              message_end + agent_settled with
 //                              QQ_FAKE_PI_SECOND_ANSWER; "false" = it starts
 //                              and never settles (drain-deadline refusal path)
+//   QQ_FAKE_PI_INJECT_TURN_EXITS  "true" = child exits before injection settles
 //   QQ_FAKE_PI_SECOND_ANSWER   final text of the injected run (default "UPDATED")
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -46,6 +49,7 @@ const sessionId = env.QQ_FAKE_PI_SESSION_ID ?? "fake-session";
 const injectTurnDelayMs = Number(env.QQ_FAKE_PI_INJECT_TURN_DELAY_MS ?? 0);
 const injectTurnSettles = String(env.QQ_FAKE_PI_INJECT_TURN_SETTLES ?? "true") === "true";
 const secondAnswer = env.QQ_FAKE_PI_SECOND_ANSWER ?? "UPDATED";
+const injectTurnExits = env.QQ_FAKE_PI_INJECT_TURN_EXITS === "true";
 
 // The real runtime reports the model it resolved from the launch selection, so
 // the fake does the same unless a test overrides it to prove a refusal path.
@@ -74,6 +78,10 @@ function maybeInjectTurn() {
   injectedTurn = true;
   setTimeout(() => {
     write({ type: "agent_start" });
+    if (injectTurnExits) {
+      setTimeout(() => process.exit(1), 25);
+      return;
+    }
     if (!injectTurnSettles) return;
     write({
       type: "message_end",
@@ -158,6 +166,31 @@ rl.on("line", (line) => {
         streaming = false;
         return;
       }
+      if (mode === "retry-success" || mode === "retry-exhausted") {
+        // Pi retries are continuations of the same run: each continuation
+        // starts an agent, but only the whole sequence emits agent_settled.
+        for (let attempt = 1; attempt <= 2; attempt += 1) {
+          write({ type: "message_end", message: {
+            role: "assistant", content: [{ type: "text", text: `FAILED-PARTIAL-${attempt}` }],
+            stopReason: "error", errorMessage: "fetch failed",
+          } });
+          write({ type: "agent_end", messages: [], willRetry: true });
+          write({ type: "auto_retry_start", attempt, maxAttempts: 2, delayMs: 0, errorMessage: "fetch failed" });
+          write({ type: "agent_start" });
+        }
+        if (mode === "retry-exhausted") {
+          write({ type: "message_end", message: {
+            role: "assistant", content: [], stopReason: "error", errorMessage: "fetch failed",
+          } });
+          write({ type: "agent_end", messages: [], willRetry: false });
+          write({ type: "auto_retry_end", success: false, finalError: "fetch failed", attempt: 2 });
+          write({ type: "agent_settled" });
+          streaming = false;
+          firstTurnSettled = true;
+          maybeInjectTurn();
+          return;
+        }
+      }
       if (mode !== "stall") {
         write({ type: "message_start", message: { role: "assistant", content: [] } });
         write({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "partial " } });
@@ -172,6 +205,7 @@ rl.on("line", (line) => {
         });
         write({ type: "turn_end", message: { role: "assistant", content: [{ type: "text", text: answer }] }, toolResults: [] });
         write({ type: "agent_end", messages: [], willRetry: false });
+        if (mode === "retry-success") write({ type: "auto_retry_end", success: true, attempt: 2 });
         write({ type: "agent_settled" });
         streaming = false;
         firstTurnSettled = true;

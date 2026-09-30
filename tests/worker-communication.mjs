@@ -137,6 +137,9 @@ function adapterEnv({ configFile, name, extra = {} }) {
     QQ_WORKER_PI_AGENT_DIR: join(root, `agent-${name}`),
     MODEL_API_KEY: "test-key-not-a-real-secret",
     [COMMUNICATION_BINDING_ENV]: undefined, // never inherited: explicit per run
+    QQ_MANAGED_TEST_BINDING: undefined,
+    QQ_WORKER_RESULT_BINDING: undefined,
+    QQ_ZVEC_GREP_SEAT: undefined,
     ...extra,
   };
 }
@@ -662,6 +665,57 @@ try {
   }
   pass("adapter: unknown, terminal, and mismatched bindings all refuse before inference");
 
+  // Retry continuations are NOT injected runs: multiple agent_start events
+  // followed by one settlement must preserve the actual retry outcome.
+  for (const [mode, interruption] of [
+    ["retry-exhausted", null], ["retry-success", null],
+    ["retry-exhausted", "deadline"], ["retry-exhausted", "exit"],
+  ]) {
+    const name = `${mode}-${interruption ?? "settled"}`;
+    const summaryFile = join(root, `summary-${name}.json`);
+    const resultFile = join(root, `result-${name}.json`);
+    const result = runAdapter({
+      args: [...runnerArgs, "--summary-file", summaryFile],
+      env: {
+        ...runnerEnvBase,
+        QQ_RUNNER_ID: runnerId,
+        QQ_RUNNER_RESULT_FILE: resultFile,
+        QQ_FAKE_PI_SESSION_ID: SESSION_A,
+        QQ_FAKE_PI_MODE: mode,
+        QQ_FAKE_PI_ANSWER: "LATEST-RETRY-ANSWER",
+        ...(interruption ? {
+          QQ_FAKE_PI_INJECT_TURN_DELAY_MS: "120",
+          QQ_FAKE_PI_INJECT_TURN_SETTLES: "false",
+          QQ_FAKE_PI_INJECT_TURN_EXITS: interruption === "exit" ? "true" : "false",
+        } : {}),
+        [COMMUNICATION_BINDING_ENV]: JSON.stringify(bindingOf({ drainMs: 400 })),
+      },
+    });
+    const summary = JSON.parse(readFileSync(summaryFile, "utf8"));
+    const finals = parseEvents(result.stdout).filter((event) => event.item?.type === "agent_message");
+    assert.equal(summary.communication.drain.injectedTurns, 0, "retry starts do not count as injected settlements");
+    if (interruption) {
+      assert.equal(summary.communication.drain.interruptedTurn, true, "a genuine unfinished injection is still tracked");
+      assert.equal(summary.communication.drain.reason, interruption);
+    } else {
+      assert.equal(summary.communication.drain.interruptedTurn, undefined, "a settled retry sequence has no phantom active run");
+    }
+    if (mode === "retry-exhausted") {
+      assert.equal(result.status, ADAPTER_EXIT.failed, result.stderr);
+      assert.equal(summary.outcome, "auto_retry_failed", "preserve the concrete runtime failure, not a secondary drain error");
+      assert.match(result.stderr, /auto_retry_failed: fetch failed/);
+      assert.doesNotMatch(result.stderr, /drain_turn_interrupted/);
+      assert.equal(finals.length, 0, "failed partial retry text must never be published as success");
+      assert.equal(existsSync(resultFile), false, "exhausted retries write no authoritative result");
+    } else {
+      assert.equal(result.status, ADAPTER_EXIT.ok, result.stderr);
+      assert.equal(summary.outcome, "completed");
+      assert.deepEqual(finals.map((event) => event.item.text), ["LATEST-RETRY-ANSWER"]);
+      assert.equal(JSON.parse(readFileSync(resultFile, "utf8")).response, "LATEST-RETRY-ANSWER");
+    }
+  }
+  pass("adapter: retry starts with one settlement preserve exhausted failure and latest successful answer");
+
   // Idle injection during the drain: final-result selection is postponed until
   // the injected turn settles, so the post-update answer is the outcome.
   {
@@ -673,6 +727,7 @@ try {
         QQ_RUNNER_ID: runnerId,
         QQ_RUNNER_RESULT_FILE: join(tmpdir(), "comm-result-inject.json"),
         QQ_FAKE_PI_SESSION_ID: SESSION_A,
+        QQ_FAKE_PI_MODE: "retry-success",
         QQ_FAKE_PI_ANSWER: "FIRST-ANSWER",
         QQ_FAKE_PI_SECOND_ANSWER: "UPDATED-ANSWER",
         QQ_FAKE_PI_INJECT_TURN_DELAY_MS: "150",
@@ -693,12 +748,13 @@ try {
   // honestly instead of reporting the stale text as success.
   {
     const summaryFile = join(root, "summary-draincut.json");
+    const resultFile = join(root, "result-draincut.json");
     const result = runAdapter({
       args: [...runnerArgs, "--summary-file", summaryFile],
       env: {
         ...runnerEnvBase,
         QQ_RUNNER_ID: runnerId,
-        QQ_RUNNER_RESULT_FILE: join(tmpdir(), "comm-result-draincut.json"),
+        QQ_RUNNER_RESULT_FILE: resultFile,
         QQ_FAKE_PI_SESSION_ID: SESSION_A,
         QQ_FAKE_PI_ANSWER: "FIRST-ANSWER",
         QQ_FAKE_PI_INJECT_TURN_DELAY_MS: "120",
@@ -710,8 +766,37 @@ try {
     const summary = JSON.parse(readFileSync(summaryFile, "utf8"));
     assert.equal(summary.outcome, "drain_turn_interrupted", "the outcome names the interrupted drain turn");
     assert.equal(summary.communication.drain.interruptedTurn, true, "the drain report is honest about the interruption");
+    assert.equal(parseEvents(result.stdout).some((event) => event.item?.type === "agent_message"), false, "the stale answer is not published");
+    assert.equal(existsSync(resultFile), false, "unfinished injection writes no authoritative result");
   }
   pass("adapter: a drain window that ends mid-injected-turn fails honestly; the amendment stays pending");
+
+  // A child exit during a genuinely active injection also refuses stale text.
+  {
+    const summaryFile = join(root, "summary-inject-exit.json");
+    const resultFile = join(root, "result-inject-exit.json");
+    const result = runAdapter({
+      args: [...runnerArgs, "--summary-file", summaryFile],
+      env: {
+        ...runnerEnvBase,
+        QQ_RUNNER_ID: runnerId,
+        QQ_RUNNER_RESULT_FILE: resultFile,
+        QQ_FAKE_PI_SESSION_ID: SESSION_A,
+        QQ_FAKE_PI_ANSWER: "STALE-FIRST-ANSWER",
+        QQ_FAKE_PI_INJECT_TURN_DELAY_MS: "120",
+        QQ_FAKE_PI_INJECT_TURN_EXITS: "true",
+        [COMMUNICATION_BINDING_ENV]: JSON.stringify(bindingOf({ drainMs: 500 })),
+      },
+    });
+    assert.equal(result.status, ADAPTER_EXIT.failed, result.stderr);
+    const summary = JSON.parse(readFileSync(summaryFile, "utf8"));
+    assert.equal(summary.outcome, "runtime_exit");
+    assert.equal(summary.communication.drain.reason, "exit");
+    assert.equal(summary.communication.drain.interruptedTurn, true);
+    assert.equal(parseEvents(result.stdout).some((event) => event.item?.type === "agent_message"), false);
+    assert.equal(existsSync(resultFile), false, "child exit during injection writes no stale result");
+  }
+  pass("adapter: child exit during an in-flight injected turn refuses stale success");
 
   // ==========================================================================
   // PART 5: worker isolation scrubs the binding; the pi launch re-adds it.
