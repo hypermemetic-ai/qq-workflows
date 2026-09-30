@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "baseVersion": "0.10.2",
+  "piContract": "0.99.1",
+  "identity": "qq-pi-native-admission",
+  "baseTreeSha256": "e70462af96eee121aa7ae476ef7cc43262eb5559ae9c1f10bf2fc257f088bba3",
+  "serverTarballSha256": "21ce4b40adb3e30d2fad600b6d8d57b443d4f1c6123bcbc54cc218706fe844ce",
+  "patchSha256": "a2731fe4d41bd8625da5da6f2c08cfec138f793ecfdbba10fd1ebf4182dd6d81",
+  "files": [
+    {
+      "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/agent-manager.js",
+      "before": "09e1a170a75fc6b1f4eca29779feb7ada0c6d607bd33588f545e619174d7fa65",
+      "after": "391db1b67d28920c3a711d2bbacb33ecf17147263b6703818764f77992bf1ec8"
+    },
+    {
+      "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/agent-prompt.js",
+      "before": "a4d7a19d6f82cb4932d03db441a2bcf31fbe0b5fb506faf73e80b676e7a96f12",
+      "after": "22943944b912341f8c2891f6109d01c90f33363bb0e368bfab286d1ef6335780"
+    },
+    {
+      "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/provider-registry.js",
+      "before": "1d0ef573278650db46195322e9721bc376866c82c546c174e9e1dee4d81d4f53",
+      "after": "3ea463bf9fdd51fa230fd32ed58e6c158a47c4176e48abc82cbf554ae26259c8"
+    },
+    {
+      "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/jsonl-rpc-process.js",
+      "before": "37b4f3f2620c249d520ce1fa65a9f35366eef4c4fb89c1a0cdf13bc84597c12c",
+      "after": "2a3140423b8547e00e9752085f297579aa4cef6e3ab18b8328cd2011fc52c1b5"
+    },
+    {
+      "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/pi/agent.js",
+      "before": "fd208833b742ff0291a8acd9c2b76d2f67ff40edd6a82ee8cbc76c068861a7bc",
+      "after": "8b6e2a30c0851312cf36e7ac065f98b855b30b2d27dc2e9ab2c6ca9e5e591cf3"
+    },
+    {
+      "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/pi/cli-runtime.js",
+      "before": "64fe167d66ecd8a6429a8111bc5e289a9be564b08bdc8db9834ecd950c167ca9",
+      "after": "267b420b586e7d3527bd835863be94a373e2862572773dd4bceea07edc350066"
+    },
+    {
+      "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/pi/rpc-types.d.ts",
+      "before": "87701bdc837394b88c9062a8273af579071ccd1924a16c46c2bdbbece26acb32",
+      "after": "b9f3261212c3669bbf7dd88d9b69cd68396dadd7d78cc01c8a3facedf75a8480"
+    },
+    {
+      "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/pi/runtime.d.ts",
+      "before": "fb90e22fc26d1c8ae26e81f1d15a8c13b8c84fa86d1558a2a50d94b7409133d5",
+      "after": "21e1b4c0d96d0e81e893fac6499d56b57a66cbd8640f3853fe97cf1e35aa90ef"
+    },
+    {
+      "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/message-receipts/index.js",
+      "before": "e99ca1a266f038efbceaf398b45ccb2e904a58ca46e4422546dc22ea498c4559",
+      "after": "3bf322136cf9152aa59ef113b37948e5e0d1ead6cad321f0618d44ef7c77f6b9"
+    },
+    {
+      "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/session.js",
+      "before": "c2f86382599d05db9311a858b3883fca00e8c3c63658c91cd04521a85a0c9981",
+      "after": "64a924a23141531ec2ef2d9fd2f67bc3d7d25f3f4c0afb0f824411eebced16fe"
+    }
+  ]
+}
