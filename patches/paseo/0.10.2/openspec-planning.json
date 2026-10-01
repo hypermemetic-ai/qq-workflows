@@ -1,0 +1,17 @@
+{
+  "baseVersion": "0.10.2",
+  "baseIdentity": "0.10.2-qq-pi-admission.a2731fe4d41bd862",
+  "source": "https://github.com/qqp-dev/paseo",
+  "sourceCommit": "e5c4a073ee7011c50eddc42f70bedad6d558b4bd",
+  "patchSha256": "0b05cb223451f91742be363e9f83dd8d143c2955c2e1ecb71de1ae26c319c0d9",
+  "sha256": {
+    "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/agent-manager.js": "4a3dbdb54853b54319d4538abb32d87adacac3bc8a45333d5f94c08e03999d73",
+    "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/create-agent/create.js": "12201f49ca103fb546017fc5b48ddfc3bb1e898c26d46df19f5563b2250a3139",
+    "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/codex-app-server-agent.js": "47dd9adf475a66469bdc357e2d2e0da80b7e2cfc6a03efbfc103fb855ee9276c",
+    "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/codex-feature-definitions.js": "d53e11328d7c3da758616e11473cb2ffcdcd150dc65698f21250277ad78bf6c5",
+    "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/openspec-planning-preference.js": "ec75732a614b89d0affd2c7774d4b868cf54e1fe7c6e57c8ad3a6b5cff944835",
+    "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/openspec-planning-preference.d.ts": "b6fe63caa429716c7800019881f88df0e28737114a259cceab06a1e7e55b5234",
+    "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/openspec-planning-preference.js.map": "c340f04f3afd7205bad9af29514c0aff225e0934b516cf214afc84fe59c5bf60",
+    "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/openspec-planning-preference.d.ts.map": "4aa515a85f16513eb81a2ec2c49d3de663bbe7ab0410a95b230122c4d1647ab4"
+  }
+}
