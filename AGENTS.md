@@ -10,6 +10,6 @@ Keep remedies proportionate. Repair the process that failed without turning ever
 
 ## Git awareness
 
-Aim for zero unattended Git work. At task start and before completion, inspect the current checkout and give one compact status line: branch, changed/untracked files, ahead/behind counts, conflicts, and remote-check freshness. Refresh the relevant remote refs before claiming to be up to date; if unavailable, report the state as unknown. Check other worktrees or PRs only when relevant to the task.
+Aim for zero unattended Git work. At task start and before completion, run `node /home/qqp/projects/qq-workflows/scripts/git-status.mjs` from the checkout being worked on. It refreshes that branch's remote upstream (15-second timeout) and prints Git's status with explicit freshness. Use `--cached` for an offline check; remote freshness is then unknown. This is the routine check; investigate other worktrees or PRs only when the task involves them.
 
 Before finishing, reconcile your own completed work through commit, push, merge and checkout update as applicable within existing authority and repository policy. For anything remaining, state its owner and next step or concrete blocker. Active edits and intentionally preserved work are expected; preserve others' changes and running tasks. Use ordinary Git commands; no recurring scans or new tracking machinery.
