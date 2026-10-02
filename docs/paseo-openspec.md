@@ -1,31 +1,53 @@
-# OpenSpec planning in Paseo
+# OpenSpec in Paseo
 
-Enable **OpenSpec planning** in the conversation's existing feature menu beside
-the composer. Discuss and propose changes in that conversation. Ask it to
-implement when ready; implementation uses existing child agents. The child pill
-above the composer opens the child, and results return to the parent.
+Set **OpenSpec planning** in the conversation's existing feature menu beside the
+composer before sending the first message. On exposes the six stock OpenSpec
+skills and supplies the approved planning preference. Off omits both. Skills
+still use Codex's normal discovery and on-demand instruction loading.
 
-The preference is saved per conversation and disables native Plan mode, which
-prevents the file writes OpenSpec planning needs. New implementation sessions do
-not inherit the parent's planning preference. Stock OpenSpec skills stay intact.
-Android uses its existing feature menu and child UI; no custom APK is needed.
+The skills are installed once at `~/.local/share/openspec/skills`, outside Codex's
+automatically scanned skill directories. Paseo adds that collection through
+Codex's process-local `skills/extraRoots/set` when enabled. Each conversation has
+its own native process; the setting does not change other conversations or the
+user's global Codex configuration. After a skill's instructions have entered a
+conversation's history, use a fresh conversation with the toggle off for a clean
+start. There is no automatic clearing or additional lifecycle policy.
 
-The only added standing prompt is the approved text:
+Discuss and propose changes in the planning conversation. Ask it to implement
+when ready; existing child agents handle implementation. The pill above the
+composer opens the child, and results return to the parent. Native children can
+use their parent's native skill collection. A separate managed child can receive
+an explicit task to read `~/.local/share/openspec/skills/openspec-apply-change/SKILL.md`
+and apply the agreed change, without the parent's planning preference.
+
+Project-specific `openspec/` specs, configuration and change history remain in
+Git. Generic skill copies and their generation markers are removed from adopted
+repos. Custom project skills remain where their owners put them. Native Plan is
+mutually exclusive with this setting because it prevents OpenSpec artifact
+writes. Android uses its existing feature menu and child UI.
+
+The only added standing prompt remains the approved text:
 
 > The default focus of this conversation is discussion, investigation and OpenSpec planning. Implementation of agreed changes normally runs in a child agent, with decisions and follow-up continuing here.
 
+The unmodified OpenSpec 1.14.0 core collection is kept in
+`vendor/openspec/skills`. Install its shared link with:
+
+```sh
+mkdir -p ~/.local/share/openspec
+ln -s /home/qqp/projects/qq-workflows/vendor/openspec/skills ~/.local/share/openspec/skills
+```
+
+For an upstream update, generate the stock core skills with the installed
+OpenSpec CLI in a disposable project (`openspec init --tools codex --profile core`),
+then replace this collection with the generated files. No local template fork is
+maintained. Running `openspec update` inside an adopted project may regenerate
+local skill copies; update the central collection instead.
+
 Source: [compatible Paseo branch](https://github.com/qqp-dev/paseo/tree/qq/openspec-planning),
-commit `e5c4a073ee7011c50eddc42f70bedad6d558b4bd`, based on upstream 0.10.2.
-The daemon patch also gives CLI-created children the existing parent completion
-notification already used by MCP-created children.
-
-The versioned patch and manifest are in `patches/paseo/0.10.2/openspec-planning.*`.
-`node scripts/stage-paseo-openspec.mjs` copies the existing Pi-compatible release
-and layers this patch onto that copy; `--verify` checks the staged files. Normal
-activation selects its printed candidate in both the service and CLI, then
-restarts at an idle boundary. Preserve the previous release for rollback.
-
-Validation: 46 focused server tests, workspace typecheck/lint/build, real browser
-proposal → child implementation → child-tab acceptance, and 25 offline Pi
-integration checks against the staged release. Browser acceptance used the
-provider's default model; production model selections are unchanged.
+based on upstream 0.10.2. The versioned runtime patch and manifest are in
+`patches/paseo/0.10.2/openspec-planning.*`. Run
+`node scripts/stage-paseo-openspec.mjs` to stage its Pi-compatible candidate and
+`--verify` to check it. Normal activation selects the printed candidate in both
+the service and CLI, then restarts at an idle boundary. The previous release
+remains available for rollback.
