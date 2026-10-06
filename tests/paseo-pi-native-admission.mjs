@@ -268,8 +268,8 @@ try {
   console.log(`passed ${passed} offline integration checks`);
 } finally {
   for (const h of allHarnesses) {
-    h.session.usagePoller.stopTurn();
     h.runtimeSession.process.failAll(new Error('offline cleanup'));
+    await h.session.close();
     await rm(h.directory, { recursive: true, force: true });
   }
 }

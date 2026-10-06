@@ -1,0 +1,651 @@
+--- a/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/agent-manager.js
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/agent-manager.js
+@@ -1249,6 +1249,12 @@
+         await agent.session.setFeature(featureId, value);
+         await this.drainSessionEvents(agentId);
+         agent.config.featureValues = { ...agent.config.featureValues, [featureId]: value };
++        if (featureId === "openspec_planning" && value === true) {
++            agent.config.featureValues.plan_mode = false;
++        }
++        if (featureId === "plan_mode" && value === true) {
++            agent.config.featureValues.openspec_planning = false;
++        }
+         this.touchUpdatedAt(agent);
+         this.emitState(agent);
+     }
+@@ -1622,6 +1628,9 @@
+             this.runs.settleForegroundRun(agentId, pendingRun.token);
+             throw error;
+         }
++    }
++    requiresNativePromptAdmission(agentId) {
++        return this.requireSessionAgent(agentId).session.requiresNativePromptAdmission === true;
+     }
+     streamAgent(agentId, prompt, options) {
+         const existingAgent = this.requireSessionAgent(agentId);
+--- a/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/agent-prompt.js
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/agent-prompt.js
+@@ -74,13 +74,23 @@
+         providerSessionId: snapshot?.persistence?.sessionId ?? undefined,
+         shouldReplace: replaced,
+     }, "agent.session.start_stream.iterator_returned");
++    const nativeAdmission = agentManager.requiresNativePromptAdmission(agentId);
++    if (nativeAdmission) {
++        // Invoke the exact iterator once. Its first yield is the manager-owned
++        // accepted start, after native preflight; never a later global idle probe.
++        const first = await iterator.next();
++        if (first.done || first.value?.type !== "turn_started") {
++            throw new Error("Pi accepted-start missing; agent_request_outcome_unknown");
++        }
++    }
+     void (async () => {
+         try {
+             try {
+                 await drainAgentRunIterator(iterator);
+             }
+             catch (error) {
+-                if (!isStaleProviderSessionError(error))
++                // After Pi admission, even a stale-session failure must not replay.
++                if (nativeAdmission || !isStaleProviderSessionError(error))
+                     throw error;
+                 logger.info({ agentId, err: error }, "Provider session went stale; reopening from persistence");
+                 await agentManager.reloadAgentSession(agentId);
+@@ -103,7 +113,7 @@
+             logger.error({ err: error, agentId }, "Agent stream failed");
+         }
+     })();
+-    return { disposition: "turn_started" };
++    return { disposition: "turn_started", nativeAdmission };
+ }
+ /**
+  * Clear the archived flag from a stored agent record.
+@@ -204,7 +214,7 @@
+     const dispatchResult = await startAgentRun(params.agentManager, params.agentId, params.prompt, params.logger, {
+         runOptions: params.runOptions,
+     });
+-    if (dispatchResult.disposition === "turn_started") {
++    if (dispatchResult.disposition === "turn_started" && !dispatchResult.nativeAdmission) {
+         await waitForAgentRunStartWithTimeout(params.agentManager, params.agentId);
+     }
+     const refreshedSnapshot = params.agentManager.getAgent(params.agentId) ?? params.snapshot ?? null;
+--- a/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/create-agent/create.js
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/create-agent/create.js
+@@ -1,3 +1,4 @@
++import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
+ import { expandUserPath, resolvePathFromBase } from "../../path-utils.js";
+ import { toWorktreeRequestError } from "../../worktree-errors.js";
+ import { setupFinishNotification, startCreatedAgentInitialPrompt } from "../agent-prompt.js";
+@@ -51,12 +52,14 @@
+         liveSnapshot = sendResult.liveSnapshot;
+         initialPromptError = sendResult.error ?? null;
+     }
+-    if (input.kind === "mcp" && input.notifyOnFinish && input.callerAgentId && initialPromptStarted) {
++    const callerAgentId = input.kind === "mcp" ? input.callerAgentId : getParentAgentIdFromLabels(input.labels);
++    const notifyOnFinish = input.kind !== "mcp" || input.notifyOnFinish;
++    if (notifyOnFinish && callerAgentId && initialPromptStarted) {
+         setupFinishNotification({
+             agentManager: dependencies.agentManager,
+             agentStorage: dependencies.agentStorage,
+             childAgentId: snapshot.id,
+-            callerAgentId: input.callerAgentId,
++            callerAgentId,
+             requireParentOwnership: true,
+             logger: dependencies.logger,
+         });
+--- a/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/provider-registry.js
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/provider-registry.js
+@@ -231,6 +231,9 @@
+         },
+         usageSession: inner.usageSession?.bind(inner),
+         run: (prompt, options) => inner.run(prompt, options),
++        get requiresNativePromptAdmission() {
++            return inner.requiresNativePromptAdmission === true;
++        },
+         startTurn: (prompt, options) => inner.startTurn(prompt, options),
+         steerActiveTurn: inner.steerActiveTurn?.bind(inner),
+         subscribe: (callback) => inner.subscribe((event) => callback(mapStreamEvent(provider, event))),
+--- a/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/codex-app-server-agent.js
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/codex-app-server-agent.js
+@@ -18,6 +18,7 @@
+ import { spawnProcess } from "../../../utils/spawn.js";
+ import { extractCodexTerminalSessionId, nonEmptyString } from "./tool-call-mapper-utils.js";
+ import { buildCodexFeatures, CodexServiceTierSchema, readCodexServiceTier, } from "./codex-feature-definitions.js";
++import { OPENSPEC_PLANNING_PREFERENCE } from "./openspec-planning-preference.js";
+ import { CodexAppServerClient, CodexAppServerRpcError, parseCodexThreadForkResponse, parseCodexThreadRollbackResponse, } from "./codex/app-server-transport.js";
+ import { revertCodexConversation } from "./codex/rewind.js";
+ import { materializeProviderImage, renderProviderImageOutputAsAssistantMarkdown, } from "./provider-image-output.js";
+@@ -2606,13 +2607,19 @@
+         this.asyncQuestions = new CodexAsyncQuestions(resumeHandle?.metadata?.asyncQuestions);
+         this.codexHome = deps.codexHome ?? resolveCodexHomeDir(process.env);
+         this.config.thinkingOptionId = normalizeCodexThinkingOptionId(this.config.thinkingOptionId);
+-        this.serviceTier = readCodexServiceTier(this.config.featureValues);
+-        if (this.config.featureValues?.plan_mode) {
+-            this.planModeEnabled = true;
+-        }
++        this.initializeFeatures();
+         if (this.resumeHandle?.sessionId) {
+             this.currentThreadId = this.resumeHandle.sessionId;
+             this.historyPending = true;
++        }
++    }
++    initializeFeatures() {
++        this.serviceTier = readCodexServiceTier(this.config.featureValues);
++        if (this.config.featureValues?.openspec_planning === true) {
++            this.config.featureValues = { ...this.config.featureValues, plan_mode: false };
++        }
++        if (this.config.featureValues?.plan_mode) {
++            this.planModeEnabled = true;
+         }
+     }
+     get id() {
+@@ -2624,6 +2631,7 @@
+             serviceTier: this.serviceTier ?? "default",
+             planModeEnabled: this.planModeEnabled,
+             planModeAvailable: this.hasPlanCollaborationMode(),
++            openspecPlanningEnabled: this.config.featureValues?.openspec_planning === true,
+         });
+     }
+     async connect() {
+@@ -2675,6 +2683,7 @@
+             const initialized = toObjectRecord(await client.request("initialize", buildCodexAppServerInitializeParams()));
+             this.threadRollbackAvailable = codexServerHasThreadRollback(initialized?.userAgent);
+             client.notify("initialized", {});
++            await this.configureOpenSpecSkills(client, this.config.featureValues);
+             this.speedModels =
+                 CodexModelListResponseSchema.parse(await client.request("model/list", {})).data ?? [];
+             this.reconcileServiceTier();
+@@ -2783,12 +2792,20 @@
+         }
+         this.refreshResolvedCollaborationMode();
+     }
+-    async loadSkills() {
+-        if (!this.client)
++    async configureOpenSpecSkills(client, featureValues) {
++        const root = this.deps.openspecSkillsRoot ??
++            path.join(os.homedir(), ".local", "share", "openspec", "skills");
++        const extraRoots = featureValues?.openspec_planning === true ? [root] : [];
++        await client.request("skills/extraRoots/set", { extraRoots });
++        this.cachedSkills = null;
++    }
++    async loadSkills(client = this.client, options = {}) {
++        if (!client)
+             return;
+         try {
+-            const response = toObjectRecord(await this.client.request("skills/list", {
++            const response = toObjectRecord(await client.request("skills/list", {
+                 cwds: [this.config.cwd],
++                ...options,
+             }));
+             const entries = Array.isArray(response?.data) ? response.data : [];
+             const allSkills = [];
+@@ -2948,6 +2965,8 @@
+         try {
+             await client.request("initialize", buildCodexAppServerInitializeParams());
+             client.notify("initialized", {});
++            await this.configureOpenSpecSkills(client, this.config.featureValues);
++            await this.loadSkills(client);
+             await this.loadPersistedHistory(client);
+         }
+         finally {
+@@ -3134,6 +3153,9 @@
+     }
+     async buildTurnStartParams(prompt, options) {
+         const input = await this.buildUserInput(prompt);
++        if (this.config.featureValues?.openspec_planning === true) {
++            input.unshift(toCodexTextInput(OPENSPEC_PLANNING_PREFERENCE));
++        }
+         const preset = MODE_PRESETS[this.currentMode] ?? MODE_PRESETS[DEFAULT_CODEX_MODE_ID];
+         const params = {
+             threadId: this.currentThreadId,
+@@ -3528,11 +3550,27 @@
+             this.cachedRuntimeInfo = null;
+             return;
+         }
++        if (featureId === "openspec_planning") {
++            await this.setOpenSpecPlanning({ enabled: Boolean(value) });
++            if (value)
++                this.applyFeatureValue("plan_mode", false);
++            return;
++        }
+         if (featureId === "plan_mode") {
++            if (value)
++                await this.setOpenSpecPlanning({ enabled: false });
+             this.applyFeatureValue("plan_mode", Boolean(value));
+             return;
+         }
+         throw new Error(`Unknown Codex feature: ${featureId}`);
++    }
++    async setOpenSpecPlanning({ enabled }) {
++        const featureValues = { ...this.config.featureValues, openspec_planning: enabled };
++        if (this.client) {
++            await this.configureOpenSpecSkills(this.client, featureValues);
++        }
++        this.config.featureValues = featureValues;
++        await this.loadSkills(this.client, { forceReload: true });
+     }
+     getPendingPermissions() {
+         return [...this.pendingPermissions.values(), ...this.asyncQuestions.pending()];
+--- a/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/codex-feature-definitions.js
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/codex-feature-definitions.js
+@@ -32,11 +32,23 @@
+     tooltip: "Toggle plan mode",
+     icon: "list-todo",
+ };
++export const CODEX_OPENSPEC_PLANNING_FEATURE = {
++    type: "toggle",
++    id: "openspec_planning",
++    label: "OpenSpec planning",
++    description: "Plan here and apply agreed changes in a child agent",
++    tooltip: "Toggle OpenSpec planning preference",
++    icon: "list-todo",
++};
+ export function buildCodexFeatures(input) {
+     const features = buildCodexSpeedFeature(input.serviceTiers, input.serviceTier);
+     if (input.planModeAvailable !== false) {
+         features.push({ ...CODEX_PLAN_MODE_FEATURE, value: input.planModeEnabled });
+     }
++    features.push({
++        ...CODEX_OPENSPEC_PLANNING_FEATURE,
++        value: input.openspecPlanningEnabled === true,
++    });
+     return features;
+ }
+ export function readCodexServiceTier(values) {
+--- a/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/jsonl-rpc-process.js
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/jsonl-rpc-process.js
+@@ -26,6 +26,15 @@
+     assertChildWithPipes(child);
+     return child;
+ }
++// A correlated explicit refusal is distinct from transport/response ambiguity.
++export class JsonlRpcRefusal extends Error {
++    constructor(requestId, command, message) {
++        super(message);
++        this.name = "JsonlRpcRefusal";
++        this.requestId = requestId;
++        this.command = command;
++    }
++}
+ export class JsonlRpcProcess {
+     constructor(options) {
+         this.options = options;
+@@ -100,7 +109,7 @@
+                 this.pending.delete(id);
+                 reject(new Error(`${this.diagnosticName} request timed out phase=${command.type} elapsedMs=${Date.now() - startedAt} timeoutMs=${requestTimeoutMs}\n${this.stderrBuffer}`.trim()));
+             });
+-            this.pending.set(id, { resolve, reject, timer });
++            this.pending.set(id, { resolve, reject, timer, command: command.type });
+             this.send({ ...command, id });
+         });
+         return { id, promise };
+@@ -198,8 +207,17 @@
+             clearTimeout(pending.timer);
+         }
+         this.pending.delete(response.id);
++        if (this.diagnosticName === "Pi RPC" &&
++            (response.command !== pending.command || typeof response.success !== "boolean" ||
++                (response.success === false && typeof response.error !== "string"))) {
++            pending.reject(new Error("Pi RPC response malformed; agent_request_outcome_unknown"));
++            return;
++        }
+         if (!response.success) {
+-            pending.reject(new Error(response.error ?? `${this.diagnosticName} ${response.command ?? "request"} failed`));
++            const message = response.error ?? `${this.diagnosticName} ${response.command ?? "request"} failed`;
++            pending.reject(this.diagnosticName === "Pi RPC"
++                ? new JsonlRpcRefusal(response.id, pending.command, message)
++                : new Error(message));
+             return;
+         }
+         pending.resolve(response.data);
+--- /dev/null
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/openspec-planning-preference.d.ts
+@@ -0,0 +1,2 @@
++export declare const OPENSPEC_PLANNING_PREFERENCE = "The default focus of this conversation is discussion, investigation and OpenSpec planning. Implementation of agreed changes normally runs in a child agent, with decisions and follow-up continuing here.";
++//# sourceMappingURL=openspec-planning-preference.d.ts.map
+\ No newline at end of file
+--- /dev/null
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/openspec-planning-preference.js
+@@ -0,0 +1,3 @@
++// User-approved conversation preference. Keep this separate from role/system prompts.
++export const OPENSPEC_PLANNING_PREFERENCE = "The default focus of this conversation is discussion, investigation and OpenSpec planning. Implementation of agreed changes normally runs in a child agent, with decisions and follow-up continuing here.";
++//# sourceMappingURL=openspec-planning-preference.js.map
+\ No newline at end of file
+--- a/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/pi/agent.js
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/pi/agent.js
+@@ -858,6 +858,8 @@
+         this.activeToolCalls = new Map();
+         this.pendingExtensionUiRequests = new Map();
+         this.activeTurnId = null;
++        this.admittingTurnId = null;
++        this.pendingAdmissionExit = null;
+         this.activeClientMessageId = null;
+         this.activeAssistantMessageId = null;
+         this.activeTurnStarted = false;
+@@ -919,6 +921,9 @@
+     get id() {
+         return this.state.sessionId;
+     }
++    get requiresNativePromptAdmission() {
++        return true;
++    }
+     async run(prompt, options) {
+         return runProviderTurn({
+             prompt,
+@@ -930,7 +935,7 @@
+         });
+     }
+     async startTurn(prompt, options) {
+-        if (this.activeTurnId) {
++        if (this.activeTurnId || this.admittingTurnId) {
+             throw new Error("A Pi turn is already active");
+         }
+         const payload = convertPromptInput(prompt, { model: this.state.model });
+@@ -946,30 +951,26 @@
+         this.pendingSteerSubmissions.length = 0;
+         this.clearNoTurnBuffers();
+         this.activeNoTurnPromptText = payload.text;
+-        const shouldProbeForNoTurnPrompt = this.parseSlashCommandInput(payload.text) !== null;
+-        void (async () => {
+-            try {
+-                const ack = await this.runtimeSession.prompt(payload.text, payload.images);
+-                this.activePromptRequestId = ack.requestId ?? null;
+-                const correlatedResult = ack.requestId
+-                    ? this.pendingPromptResults.get(ack.requestId)
+-                    : undefined;
+-                if (ack.requestId) {
+-                    this.pendingPromptResults.delete(ack.requestId);
++        this.admittingTurnId = turnId;
++        try {
++            const ack = await this.runtimeSession.prompt(payload.text, payload.images);
++            // An exit after the response but before this continuation is a
++            // post-admission terminal, not a failed start or a reason to resend.
++            this.admittingTurnId = null;
++            if (this.pendingAdmissionExit !== null) {
++                this.handleProcessExit(this.pendingAdmissionExit);
++            }
++            // A fast terminal may already have cleared the turn. Do not resurrect it.
++            if (this.activeTurnId === turnId) {
++                this.activePromptRequestId = ack.requestId;
++                if (ack.disposition === "handled") {
++                    void this.completeNoTurnPrompt(turnId);
+                 }
+-                const agentInvoked = correlatedResult ?? ack.agentInvoked;
+-                if (agentInvoked === false) {
+-                    await this.completeNoTurnPrompt(turnId);
+-                    return;
+-                }
+-                if (agentInvoked === undefined && shouldProbeForNoTurnPrompt) {
+-                    await this.completePromptIfHandledWithoutTurn(turnId);
+-                }
+-            }
+-            catch (error) {
+-                if (this.activeTurnId !== turnId) {
+-                    return;
+-                }
++            }
++            return { turnId };
++        }
++        catch (error) {
++            if (this.activeTurnId === turnId) {
+                 this.usagePoller.stopTurn();
+                 this.activeTurnId = null;
+                 this.activeClientMessageId = null;
+@@ -979,24 +980,15 @@
+                 this.activeAssistantMessageId = null;
+                 this.pendingSteerSubmissions.length = 0;
+                 this.clearNoTurnBuffers();
+-                if (isPiRequestAbortError(error)) {
+-                    this.emit({
+-                        type: "turn_canceled",
+-                        provider: this.provider,
+-                        turnId,
+-                        reason: toDiagnosticErrorMessage(error),
+-                    });
+-                    return;
+-                }
+-                this.emit({
+-                    type: "turn_failed",
+-                    provider: this.provider,
+-                    turnId,
+-                    error: toDiagnosticErrorMessage(error),
+-                });
+-            }
+-        })();
+-        return { turnId };
++            }
++            // The manager owns failed-start publication; retain correlated metadata.
++            throw error;
++        }
++        finally {
++            this.admittingTurnId = null;
++            this.pendingAdmissionExit = null;
++            this.pendingPromptResults.clear();
++        }
+     }
+     async steerActiveTurn(prompt, options) {
+         if (this.closed || this.activeTurnId !== options.expectedTurnId) {
+@@ -1008,8 +1000,9 @@
+         if (this.parseSlashCommandInput(payload.text)) {
+             return { status: "unavailable" };
+         }
++        let ack;
+         try {
+-            await this.runtimeSession.steer(payload.text, payload.images);
++            ack = await this.runtimeSession.steer(payload.text, payload.images);
+         }
+         catch (error) {
+             if (isPiDefinitiveSteerRejection(error)) {
+@@ -1017,15 +1010,16 @@
+             }
+             throw error;
+         }
+-        // The steer is already queued inside pi; if the turn moved on meanwhile its fate
+-        // is ambiguous, so surface it instead of replacing the wrong turn.
++        // Once admitted, never fall back to interrupt/resend, even if the turn ended.
+         if (this.closed || this.activeTurnId !== options.expectedTurnId) {
+-            return { status: "unavailable" };
+-        }
+-        this.pendingSteerSubmissions.push({
+-            text: payload.text,
+-            clientMessageId: options.clientMessageId ?? null,
+-        });
++            return { status: "accepted" };
++        }
++        if (ack.disposition !== "handled") {
++            this.pendingSteerSubmissions.push({
++                text: payload.text,
++                clientMessageId: options.clientMessageId ?? null,
++            });
++        }
+         if (options.clearPendingPermissions) {
+             await this.clearPendingPermissionsForSteer();
+         }
+@@ -1689,6 +1683,10 @@
+     handleProcessExit(error) {
+         this.rejectAllExtensionResults(new Error(error));
+         this.interruptingTurn = null;
++        if (this.admittingTurnId) {
++            this.pendingAdmissionExit = error;
++            return;
++        }
+         if (!this.activeTurnId && !this.activeTurnStarted) {
+             return;
+         }
+--- a/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/pi/cli-runtime.js
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/pi/cli-runtime.js
+@@ -1,5 +1,5 @@
+ import { createExternalProcessEnv } from "../../../paseo-env.js";
+-import { JSONL_RPC_NO_TIMEOUT, JsonlRpcProcess, } from "../jsonl-rpc-process.js";
++import { JSONL_RPC_NO_TIMEOUT, JsonlRpcProcess, JsonlRpcRefusal, } from "../jsonl-rpc-process.js";
+ import { buildPiLaunch, } from "./runtime.js";
+ const DEFAULT_PI_COMMAND = [
+     process.env.PI_COMMAND ?? process.env.PI_ACP_PI_COMMAND ?? "pi",
+@@ -70,21 +70,16 @@
+             message,
+             ...(images?.length ? { images } : {}),
+         });
+-        const data = await promise;
+-        if (typeof data === "object" && data !== null && !Array.isArray(data)) {
+-            const { agentInvoked } = data;
+-            if (typeof agentInvoked === "boolean") {
+-                return { requestId, agentInvoked };
+-            }
+-        }
+-        return { requestId };
++        const data = await awaitAdmission(promise);
++        return { requestId, disposition: validateAdmission(data) };
+     }
+     async steer(message, images) {
+-        await this.request({
++        const data = await awaitAdmission(this.request({
+             type: "steer",
+             message,
+             ...(images?.length ? { images } : {}),
+-        });
++        }));
++        return { disposition: validateAdmission(data) };
+     }
+     async clearQueue() {
+         await this.requestStopWork({ type: "clear_queue" });
+@@ -183,4 +178,22 @@
+         }
+     }
+ }
++// Pi 0.99.1 admission contract. Legacy/missing acknowledgements are unknown,
++// not proof of rejection and never a reason to redispatch.
++async function awaitAdmission(promise) {
++    try {
++        return await promise;
++    }
++    catch (error) {
++        if (error instanceof JsonlRpcRefusal) throw error;
++        throw new Error("Pi transport/response failure; agent_request_outcome_unknown", { cause: error });
++    }
++}
++function validateAdmission(data) {
++    if (data && typeof data === "object" && !Array.isArray(data) &&
++        ["started", "queued", "handled"].includes(data.disposition)) {
++        return data.disposition;
++    }
++    throw new Error("Pi admission response malformed or legacy; agent_request_outcome_unknown");
++}
+ //# sourceMappingURL=cli-runtime.js.map
+\ No newline at end of file
+--- a/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/pi/rpc-types.d.ts
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/pi/rpc-types.d.ts
+@@ -5,11 +5,8 @@
+     mimeType: string;
+ }
+ export interface PiPromptAck {
+-    agentInvoked?: boolean;
+-}
+-export interface PiPromptAck {
+-    requestId?: string;
+-    agentInvoked?: boolean;
++    requestId: string;
++    disposition: "started" | "queued" | "handled";
+ }
+ export interface PiTextContent {
+     type: "text";
+--- a/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/pi/runtime.d.ts
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/pi/runtime.d.ts
+@@ -40,7 +40,7 @@
+         type: "image";
+         data: string;
+         mimeType: string;
+-    }>): Promise<void>;
++    }>): Promise<Pick<PiPromptAck, "disposition">>;
+     clearQueue(): Promise<void>;
+     compact(customInstructions?: string): Promise<void>;
+     setAutoCompaction(enabled: boolean): Promise<void>;
+--- a/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/message-receipts/index.js
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/message-receipts/index.js
+@@ -3,10 +3,16 @@
+ import path from "node:path";
+ import { z } from "zod";
+ import { writeJsonFileAtomic } from "../atomic-file.js";
++import { JsonlRpcRefusal } from "../agent/providers/jsonl-rpc-process.js";
+ const ReceiptSchema = z.object({
+     fingerprint: z.string(),
+     state: z.enum(["pending", "completed"]),
+     agentId: z.string(),
++    // Keep the official pending/completed schema rollback-readable. Official code
++    // strips this optional metadata and safely reports unknown, never accepted.
++    nativeRefusal: z.object({
++        requestId: z.string(), command: z.enum(["prompt", "steer"]), message: z.string(),
++    }).optional(),
+ });
+ /** Owns message delivery receipts; creation is owned by CreationService. */
+ export class MessageReceipts {
+@@ -35,6 +41,10 @@
+         if (existing) {
+             if (existing.fingerprint !== fingerprint)
+                 throw new Error("agent_request_key_conflict");
++            if (existing.state === "pending" && existing.nativeRefusal) {
++                const refusal = existing.nativeRefusal;
++                throw new JsonlRpcRefusal(refusal.requestId, refusal.command, refusal.message);
++            }
+             if (existing.state === "completed")
+                 return;
+             // A provider may have accepted the message before its receipt was committed.
+@@ -43,8 +53,31 @@
+         await input.prepare?.();
+         const receipt = { fingerprint, agentId: input.agentId };
+         await writeJsonFileAtomic(file, { ...receipt, state: "pending" });
+-        await input.send();
+-        await writeJsonFileAtomic(file, { ...receipt, state: "completed" });
++        try {
++            await input.send();
++        }
++        catch (error) {
++            if (error instanceof JsonlRpcRefusal && ["prompt", "steer"].includes(error.command)) {
++                try {
++                    await writeJsonFileAtomic(file, { ...receipt, state: "pending", nativeRefusal: {
++                        requestId: error.requestId, command: error.command, message: error.message,
++                    } });
++                }
++                catch {
++                    throw new Error("agent_request_outcome_unknown (refusal receipt commit failed)");
++                }
++                throw error;
++            }
++            if (!input.nativeAdmission?.()) throw error;
++            throw new Error("agent_request_outcome_unknown", { cause: error });
++        }
++        try {
++            await writeJsonFileAtomic(file, { ...receipt, state: "completed" });
++        }
++        catch (error) {
++            if (!input.nativeAdmission?.()) throw error;
++            throw new Error("agent_request_outcome_unknown (accepted receipt commit failed)", { cause: error });
++        }
+     }
+ }
+ async function readReceipt(file) {
+--- a/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/session.js
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/session.js
+@@ -3700,6 +3700,7 @@
+                     ...(draftConfig.thinkingOptionId
+                         ? { thinkingOptionId: draftConfig.thinkingOptionId }
+                         : {}),
++                    ...(draftConfig.featureValues ? { featureValues: draftConfig.featureValues } : {}),
+                 };
+                 const commands = await this.agentManager.listDraftCommands(sessionConfig);
+                 this.emit({
+@@ -6173,7 +6174,7 @@
+                     clearPendingPermissions: true,
+                     logger: this.sessionLogger,
+                 });
+-                if (result.disposition === "turn_started") {
++                if (result.disposition === "turn_started" && !result.nativeAdmission) {
+                     await waitForAgentRunStartWithTimeout(this.agentManager, agentId, this.delivery.requestSignal);
+                 }
+             };
+@@ -6181,6 +6182,7 @@
+                 await this.messageReceipts.send({
+                     agentId,
+                     messageId: msg.messageId,
++                    nativeAdmission: () => this.agentManager.requiresNativePromptAdmission(agentId),
+                     request: { prompt, activeTurnBehavior: msg.activeTurnBehavior ?? "interrupt" },
+                     prepare: async () => {
+                         await this.prepareAgentMessage(agentId, msg.text);
