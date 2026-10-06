@@ -44,10 +44,12 @@ then replace this collection with the generated files. No local template fork is
 maintained. Running `openspec update` inside an adopted project may regenerate
 local skill copies; update the central collection instead.
 
-Source: [compatible Paseo branch](https://github.com/qqp-dev/paseo/tree/qq/openspec-planning),
-based on upstream 0.10.2. The versioned runtime patch and manifest are in
-`patches/paseo/0.10.2/openspec-planning.*`. Run
-`node scripts/stage-paseo-openspec.mjs` to stage its Pi-compatible candidate and
-`--verify` to check it. Normal activation selects the printed candidate in both
-the service and CLI, then restarts at an idle boundary. The previous release
-remains available for rollback.
+The beta-compatible source is on
+[qq/openspec-planning-beta](https://github.com/qqp-dev/paseo/tree/qq/openspec-planning-beta),
+based on upstream 0.11.0-beta.5. Its combined runtime patch retains the Pi 0.99.1
+native-admission correction and beta Codex Speed selector. See
+`patches/paseo/0.11.0-beta.5/README.md` and run
+`node scripts/stage-paseo-beta.mjs --verify` to check the sealed candidate.
+Normal activation selects the verified candidate in both the service and CLI,
+then restarts at an idle boundary after preserving independent processes.
+The prior 0.10.2 source, patches and stagers remain available for rollback.
