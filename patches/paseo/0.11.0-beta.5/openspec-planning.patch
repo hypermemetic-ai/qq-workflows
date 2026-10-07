@@ -1,0 +1,212 @@
+--- a/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/agent-manager.js
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/agent-manager.js
+@@ -1249,6 +1249,12 @@
+         await agent.session.setFeature(featureId, value);
+         await this.drainSessionEvents(agentId);
+         agent.config.featureValues = { ...agent.config.featureValues, [featureId]: value };
++        if (featureId === "openspec_planning" && value === true) {
++            agent.config.featureValues.plan_mode = false;
++        }
++        if (featureId === "plan_mode" && value === true) {
++            agent.config.featureValues.openspec_planning = false;
++        }
+         this.touchUpdatedAt(agent);
+         this.emitState(agent);
+     }
+--- a/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/create-agent/create.js
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/create-agent/create.js
+@@ -1,3 +1,4 @@
++import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
+ import { expandUserPath, resolvePathFromBase } from "../../path-utils.js";
+ import { toWorktreeRequestError } from "../../worktree-errors.js";
+ import { setupFinishNotification, startCreatedAgentInitialPrompt } from "../agent-prompt.js";
+@@ -51,12 +52,14 @@
+         liveSnapshot = sendResult.liveSnapshot;
+         initialPromptError = sendResult.error ?? null;
+     }
+-    if (input.kind === "mcp" && input.notifyOnFinish && input.callerAgentId && initialPromptStarted) {
++    const callerAgentId = input.kind === "mcp" ? input.callerAgentId : getParentAgentIdFromLabels(input.labels);
++    const notifyOnFinish = input.kind !== "mcp" || input.notifyOnFinish;
++    if (notifyOnFinish && callerAgentId && initialPromptStarted) {
+         setupFinishNotification({
+             agentManager: dependencies.agentManager,
+             agentStorage: dependencies.agentStorage,
+             childAgentId: snapshot.id,
+-            callerAgentId: input.callerAgentId,
++            callerAgentId,
+             requireParentOwnership: true,
+             logger: dependencies.logger,
+         });
+--- a/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/codex-app-server-agent.js
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/codex-app-server-agent.js
+@@ -18,6 +18,7 @@
+ import { spawnProcess } from "../../../utils/spawn.js";
+ import { extractCodexTerminalSessionId, nonEmptyString } from "./tool-call-mapper-utils.js";
+ import { buildCodexFeatures, CodexServiceTierSchema, readCodexServiceTier, } from "./codex-feature-definitions.js";
++import { OPENSPEC_PLANNING_PREFERENCE } from "./openspec-planning-preference.js";
+ import { CodexAppServerClient, CodexAppServerRpcError, parseCodexThreadForkResponse, parseCodexThreadRollbackResponse, } from "./codex/app-server-transport.js";
+ import { revertCodexConversation } from "./codex/rewind.js";
+ import { materializeProviderImage, renderProviderImageOutputAsAssistantMarkdown, } from "./provider-image-output.js";
+@@ -2606,15 +2607,21 @@
+         this.asyncQuestions = new CodexAsyncQuestions(resumeHandle?.metadata?.asyncQuestions);
+         this.codexHome = deps.codexHome ?? resolveCodexHomeDir(process.env);
+         this.config.thinkingOptionId = normalizeCodexThinkingOptionId(this.config.thinkingOptionId);
+-        this.serviceTier = readCodexServiceTier(this.config.featureValues);
+-        if (this.config.featureValues?.plan_mode) {
+-            this.planModeEnabled = true;
+-        }
++        this.initializeFeatures();
+         if (this.resumeHandle?.sessionId) {
+             this.currentThreadId = this.resumeHandle.sessionId;
+             this.historyPending = true;
+         }
+     }
++    initializeFeatures() {
++        this.serviceTier = readCodexServiceTier(this.config.featureValues);
++        if (this.config.featureValues?.openspec_planning === true) {
++            this.config.featureValues = { ...this.config.featureValues, plan_mode: false };
++        }
++        if (this.config.featureValues?.plan_mode) {
++            this.planModeEnabled = true;
++        }
++    }
+     get id() {
+         return this.currentThreadId;
+     }
+@@ -2624,6 +2631,7 @@
+             serviceTier: this.serviceTier ?? "default",
+             planModeEnabled: this.planModeEnabled,
+             planModeAvailable: this.hasPlanCollaborationMode(),
++            openspecPlanningEnabled: this.config.featureValues?.openspec_planning === true,
+         });
+     }
+     async connect() {
+@@ -2675,6 +2683,7 @@
+             const initialized = toObjectRecord(await client.request("initialize", buildCodexAppServerInitializeParams()));
+             this.threadRollbackAvailable = codexServerHasThreadRollback(initialized?.userAgent);
+             client.notify("initialized", {});
++            await this.configureOpenSpecSkills(client, this.config.featureValues);
+             this.speedModels =
+                 CodexModelListResponseSchema.parse(await client.request("model/list", {})).data ?? [];
+             this.reconcileServiceTier();
+@@ -2783,12 +2792,20 @@
+         }
+         this.refreshResolvedCollaborationMode();
+     }
+-    async loadSkills() {
+-        if (!this.client)
++    async configureOpenSpecSkills(client, featureValues) {
++        const root = this.deps.openspecSkillsRoot ??
++            path.join(os.homedir(), ".local", "share", "openspec", "skills");
++        const extraRoots = featureValues?.openspec_planning === true ? [root] : [];
++        await client.request("skills/extraRoots/set", { extraRoots });
++        this.cachedSkills = null;
++    }
++    async loadSkills(client = this.client, options = {}) {
++        if (!client)
+             return;
+         try {
+-            const response = toObjectRecord(await this.client.request("skills/list", {
++            const response = toObjectRecord(await client.request("skills/list", {
+                 cwds: [this.config.cwd],
++                ...options,
+             }));
+             const entries = Array.isArray(response?.data) ? response.data : [];
+             const allSkills = [];
+@@ -2948,6 +2965,8 @@
+         try {
+             await client.request("initialize", buildCodexAppServerInitializeParams());
+             client.notify("initialized", {});
++            await this.configureOpenSpecSkills(client, this.config.featureValues);
++            await this.loadSkills(client);
+             await this.loadPersistedHistory(client);
+         }
+         finally {
+@@ -3134,6 +3153,9 @@
+     }
+     async buildTurnStartParams(prompt, options) {
+         const input = await this.buildUserInput(prompt);
++        if (this.config.featureValues?.openspec_planning === true) {
++            input.unshift(toCodexTextInput(OPENSPEC_PLANNING_PREFERENCE));
++        }
+         const preset = MODE_PRESETS[this.currentMode] ?? MODE_PRESETS[DEFAULT_CODEX_MODE_ID];
+         const params = {
+             threadId: this.currentThreadId,
+@@ -3528,12 +3550,28 @@
+             this.cachedRuntimeInfo = null;
+             return;
+         }
++        if (featureId === "openspec_planning") {
++            await this.setOpenSpecPlanning({ enabled: Boolean(value) });
++            if (value)
++                this.applyFeatureValue("plan_mode", false);
++            return;
++        }
+         if (featureId === "plan_mode") {
++            if (value)
++                await this.setOpenSpecPlanning({ enabled: false });
+             this.applyFeatureValue("plan_mode", Boolean(value));
+             return;
+         }
+         throw new Error(`Unknown Codex feature: ${featureId}`);
+     }
++    async setOpenSpecPlanning({ enabled }) {
++        const featureValues = { ...this.config.featureValues, openspec_planning: enabled };
++        if (this.client) {
++            await this.configureOpenSpecSkills(this.client, featureValues);
++        }
++        this.config.featureValues = featureValues;
++        await this.loadSkills(this.client, { forceReload: true });
++    }
+     getPendingPermissions() {
+         return [...this.pendingPermissions.values(), ...this.asyncQuestions.pending()];
+     }
+--- a/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/codex-feature-definitions.js
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/codex-feature-definitions.js
+@@ -32,11 +32,23 @@
+     tooltip: "Toggle plan mode",
+     icon: "list-todo",
+ };
++export const CODEX_OPENSPEC_PLANNING_FEATURE = {
++    type: "toggle",
++    id: "openspec_planning",
++    label: "OpenSpec planning",
++    description: "Plan here and apply agreed changes in a child agent",
++    tooltip: "Toggle OpenSpec planning preference",
++    icon: "list-todo",
++};
+ export function buildCodexFeatures(input) {
+     const features = buildCodexSpeedFeature(input.serviceTiers, input.serviceTier);
+     if (input.planModeAvailable !== false) {
+         features.push({ ...CODEX_PLAN_MODE_FEATURE, value: input.planModeEnabled });
+     }
++    features.push({
++        ...CODEX_OPENSPEC_PLANNING_FEATURE,
++        value: input.openspecPlanningEnabled === true,
++    });
+     return features;
+ }
+ export function readCodexServiceTier(values) {
+--- /dev/null
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/openspec-planning-preference.d.ts
+@@ -0,0 +1,2 @@
++export declare const OPENSPEC_PLANNING_PREFERENCE = "The default focus of this conversation is discussion, investigation and OpenSpec planning. Implementation of agreed changes normally runs in a child agent, with decisions and follow-up continuing here.";
++//# sourceMappingURL=openspec-planning-preference.d.ts.map
+\ No newline at end of file
+--- /dev/null
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/openspec-planning-preference.js
+@@ -0,0 +1,3 @@
++// User-approved conversation preference. Keep this separate from role/system prompts.
++export const OPENSPEC_PLANNING_PREFERENCE = "The default focus of this conversation is discussion, investigation and OpenSpec planning. Implementation of agreed changes normally runs in a child agent, with decisions and follow-up continuing here.";
++//# sourceMappingURL=openspec-planning-preference.js.map
+\ No newline at end of file
+--- a/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/session.js
++++ b/lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/session.js
+@@ -3700,6 +3700,7 @@
+                     ...(draftConfig.thinkingOptionId
+                         ? { thinkingOptionId: draftConfig.thinkingOptionId }
+                         : {}),
++                    ...(draftConfig.featureValues ? { featureValues: draftConfig.featureValues } : {}),
+                 };
+                 const commands = await this.agentManager.listDraftCommands(sessionConfig);
+                 this.emit({

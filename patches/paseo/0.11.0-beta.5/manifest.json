@@ -3,28 +3,17 @@
   "source": "https://github.com/qqp-dev/paseo",
   "sourceCommit": "188feb1ccbe0eac0cd8e1c630813005d6f9a519a",
   "upstreamCommit": "15d774d4a17c69bc0f8a62a85842764fab3c038d",
-  "piContract": "0.99.1",
-  "patchSha256": "3b72bbf6a51028097472a43d13af4ba61cf52fbb8d2ebc7160e1db7e0c5a109e",
+  "patchSha256": "3bff62b2e95b301a21584498cf18c073b76a37ee0b6b5318227d924523971a72",
   "files": [
     {
       "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/agent-manager.js",
       "before": "5baa385f48c1a06938ab3fcc073f4534fa0b04c1ec4a2c0228e653e929210450",
-      "after": "f4fdf81aaf2c1c24941d4f870c285722b8f0fe65e296bf899071b0f1a3bc6b61"
-    },
-    {
-      "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/agent-prompt.js",
-      "before": "a4d7a19d6f82cb4932d03db441a2bcf31fbe0b5fb506faf73e80b676e7a96f12",
-      "after": "22943944b912341f8c2891f6109d01c90f33363bb0e368bfab286d1ef6335780"
+      "after": "1ba0c396f72aad1bfb49594692ffa58c49ecccb602cf3a0f810edf73cfd019eb"
     },
     {
       "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/create-agent/create.js",
       "before": "3fcbea353af074d8d07dd1879b31511736edf304ea69c94b0cab6aab065a29fa",
       "after": "12201f49ca103fb546017fc5b48ddfc3bb1e898c26d46df19f5563b2250a3139"
-    },
-    {
-      "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/provider-registry.js",
-      "before": "6110780dbc6a72458b9fbaa4320d305b94283d449486c7f69ba38796b702a5f1",
-      "after": "b7cfcd54cd981785995f0c4065c86826568106e0f6e6b6d37089482f6674fba0"
     },
     {
       "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/codex-app-server-agent.js",
@@ -37,11 +26,6 @@
       "after": "59ac88cedfe3c05a947f7b437e91d5c328199595d0a79c94ae581f26827ead25"
     },
     {
-      "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/jsonl-rpc-process.js",
-      "before": "32ea469520d3eb9c65970e1c0dc09512182918518e8ef18d61fba463c99589a3",
-      "after": "3839470c595f632e0abbcb015754900e8c24cf0947197f4a5bcdb64aea4505ab"
-    },
-    {
       "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/openspec-planning-preference.d.ts",
       "before": null,
       "after": "b6fe63caa429716c7800019881f88df0e28737114a259cceab06a1e7e55b5234"
@@ -52,38 +36,13 @@
       "after": "ec75732a614b89d0affd2c7774d4b868cf54e1fe7c6e57c8ad3a6b5cff944835"
     },
     {
-      "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/pi/agent.js",
-      "before": "8e285b630e263a6084af767ff6d3c7ef3036d4ffe301fad1cdb28871f2ce2d2a",
-      "after": "98aa34b92e5df904efda9ab3c60a540f235f750015a6d1ba1c42658f55224d20"
-    },
-    {
-      "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/pi/cli-runtime.js",
-      "before": "32fbac847de1283e9435da9a2402489f79339fe448e7362e33ed60e3e92a8b96",
-      "after": "5fe39ffcd297e64d4fc133ec93075e6b47d2ad136ffc13939d785032d2be6d06"
-    },
-    {
-      "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/pi/rpc-types.d.ts",
-      "before": "87701bdc837394b88c9062a8273af579071ccd1924a16c46c2bdbbece26acb32",
-      "after": "b9f3261212c3669bbf7dd88d9b69cd68396dadd7d78cc01c8a3facedf75a8480"
-    },
-    {
-      "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/agent/providers/pi/runtime.d.ts",
-      "before": "aba1e035b3bd35d2a8cdb8ecfc9f6e33045eca7fe04f8b2621b5ec83f81b68c3",
-      "after": "d348bffe593ac5687606b225b5ba4842d6c0890fa040f88c38d3bffdca4c3758"
-    },
-    {
-      "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/message-receipts/index.js",
-      "before": "e99ca1a266f038efbceaf398b45ccb2e904a58ca46e4422546dc22ea498c4559",
-      "after": "3bf322136cf9152aa59ef113b37948e5e0d1ead6cad321f0618d44ef7c77f6b9"
-    },
-    {
       "path": "lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server/session.js",
       "before": "f01a5c51771f8014cb1fcab99fdb33b42609ec14b3a0012cdfaa7713167bbde6",
-      "after": "8f28edbcca4a6561de01a97d55cc5b05e5439f6d298b8bb81640fc5be70576f6"
+      "after": "2c9ea302436acc8573efb5567bfde3d3714db2a137eef3e4ef65458be19b5295"
     }
   ],
   "baseTreeSha256": "123a351659bcf3e17326cc19235942f7151defa59bf5ce80806269b46faf14fe",
-  "candidateTreeSha256": "102495f05bce16dfe810eb922402204723cc18abff9be0bcf423fb8355976d6c",
+  "candidateTreeSha256": "1c2f514a0020c99b4d36191eadb3229d2286b2878c7e12d85ec473726b91305c",
   "tarballs": {
     "getpaseo-server-0.11.0-beta.5.tgz": "b371690d3a01a4367bebb981e5ee86e72b62ffba6fd882bce3b667aef6812042",
     "getpaseo-cli-0.11.0-beta.5.tgz": "f53ed784ff0420cee99e43b17cecc5da3425c6b95926ae73e0b94892f22d8d7c"
