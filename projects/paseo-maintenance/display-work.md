@@ -29,3 +29,20 @@ Source validation for the ring: three focused real-browser lifecycle tests exerc
 Android builds use the pinned beta source, release Hermes optimizations, profiling support and one `arm64-v8a` ABI. Baseline and candidate share the same native build configuration and fork signer. Native comparisons use the supported `sh.paseo.debug` development package compiled as a profileable release, preserving the Play app until verification completes. This temporary comparison variant has the supported optional Firebase configuration absent; the delivered production `sh.paseo` variant preserves the existing installed app's Firebase client configuration locally. Normal QR/audio/notification modules remain present, without a source patch or published configuration values. Production notification behavior requires its own activation check.
 
 Native acceptance must record repeated controlled callback/wakeup/CPU evidence and interactions/resumption. Battery improvement is unmeasured unless an actual consumption comparison is added. Source merge alone is not completed Android delivery.
+
+## Native comparison checkpoint (2026-10-07)
+
+Physical Pixel 10, Android 17/API 37; all three Android animation scales remain zero. The isolated synthetic daemon supplies one idle 60-turn timeline and two streaming sessions in the same workspace. Both comparison APKs use the same release/profileable Hermes configuration, production source baseline above, temporary package, fork signer and all 32 identical native libraries. Only the JavaScript ring patch differs. Each artifact was installed and launched as a fresh app process before its measurements. Both visible-panel series held the test app in the foreground throughout, with Android thermal status 1 and battery temperature approximately 40.0–40.2 °C.
+
+| Visible running workspace ring, three repeats | Baseline `188feb1cc` | Ring `46ae2e2bb` |
+| --- | --- | --- |
+| Duration per sample | 10.154 / 10.163 / 10.193 s | 10.194 / 10.160 / 10.164 s |
+| App frames reported by `dumpsys gfxinfo` | 1266 / 1287 / 1275 | 1 / 3 / 1 |
+| Process CPU ticks per second | 89.7 / 90.9 / 92.6 | 9.6 / 12.7 / 12.3 |
+| Main-thread CPU ticks per sample | 343 / 349 / 344 | 94 / 105 / 120 |
+
+This provides native evidence of substantially less recurring rendering and CPU work for the ring under the operator's motion policy. It is not a comparison against Play 0.10.3 and does not establish faster actions or battery consumption. Motion-enabled native resumption is not measured because changing the selected animation settings is outside this task; focused lifecycle tests supply synchronization coverage.
+
+Three synthetic native message sends reached the fixture, began running 304–416 ms after injected input and completed 10.302–10.426 s after input. Local composer pixel observation bounded first visual feedback at 887–1557 ms, including capture/input overhead. Completion comes from separate daemon status events. No equivalent baseline action timing was collected, so these values do not support a latency improvement claim.
+
+Native acceptance remains pending. Rewind, question dismissal/submission, retained-panel transitions and final production activation still need completion. The baseline's recurring accessibility updates prevented fresh idle UI snapshots; measurements whose panel state could not be freshly verified are excluded from acceptance. The phone subsequently moved to another app, and device input was stopped pending a new uninterrupted test window. Task helpers now require a fresh accessibility snapshot and check the focused test package before input; unrelated screen content is not a verification artifact. Play Paseo remains installed and the main daemon remains untouched.
