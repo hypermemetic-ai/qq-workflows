@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Reproduce the owned compatibility port on the pinned published beta tree.
+// Reproduce the owned OpenSpec integration on the pinned published beta tree.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -11,17 +11,17 @@ import { fileURLToPath } from 'node:url';
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const artifact = path.join(repo, 'patches/paseo/0.11.0-beta.5');
 const manifest = JSON.parse(await readFile(path.join(artifact, 'manifest.json'), 'utf8'));
-const patchFile = path.join(artifact, 'compatibility.patch');
+const patchFile = path.join(artifact, 'openspec-planning.patch');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 assert.equal(manifest.baseVersion, '0.11.0-beta.5');
 assert.equal(hash(await readFile(patchFile)), manifest.patchSha256, 'patch hash mismatch');
 const releases = path.join(homedir(), '.local/share/paseo/releases');
 const official = path.join(releases, manifest.baseVersion);
-const candidate = path.join(releases, `${manifest.baseVersion}-qq-compat.${manifest.patchSha256.slice(0, 16)}`);
+const candidate = path.join(releases, `${manifest.baseVersion}-qq-openspec.${manifest.patchSha256.slice(0, 16)}`);
 const preparation = path.join(homedir(), '.local/state/paseo-beta-20261006');
 const serverRel = 'lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server';
-const provenanceName = 'qq-beta-compatibility.json';
-const sealName = 'qq-beta-seal.json';
+const provenanceName = 'qq-openspec-provenance.json';
+const sealName = 'qq-openspec-seal.json';
 const mode = process.argv[2] ?? '--stage';
 assert(['--stage', '--seal', '--verify'].includes(mode), 'use --stage, --seal or --verify');
 
