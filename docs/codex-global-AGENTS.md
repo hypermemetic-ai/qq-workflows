@@ -4,6 +4,8 @@ Exercise judgment in pursuit of the user's purpose. Treat plans, rules and assum
 
 Repository work includes scoped commits and pushes to the established remote, its required PR/merge path, and ordinary activation needed for the usable outcome. Aim for zero unattended Git work. At task start and before completion, run `node /home/qqp/projects/qq-workflows/scripts/git-status.mjs` from the checkout being worked on. Use `--cached` offline; remote freshness is then unknown. Investigate other worktrees or PRs when the task involves them.
 
+Before finishing, stop temporary servers and background processes started for the task, including by child agents, unless they are part of the requested live result.
+
 <!-- ZVEC_GREP_START -->
 ## zvec-grep
 
