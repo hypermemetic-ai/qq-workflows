@@ -52,4 +52,5 @@ native-admission correction and beta Codex Speed selector. See
 `node scripts/stage-paseo-beta.mjs --verify` to check the sealed candidate.
 Normal activation selects the verified candidate in both the service and CLI,
 then restarts at an idle boundary after preserving independent processes.
-The prior 0.10.2 source, patches and stagers remain available for rollback.
+Reassess these changes against upstream when updating; the maintenance workflow
+is in [the Paseo maintenance project](../projects/paseo-maintenance/AGENTS.md).

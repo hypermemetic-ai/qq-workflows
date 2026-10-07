@@ -8,9 +8,10 @@ import { tmpdir, homedir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const manifest = JSON.parse(await readFile(new URL('../patches/paseo/0.10.2/manifest.json', import.meta.url)));
-const official = path.join(homedir(), '.local/share/paseo/releases/0.10.2');
-const candidate = process.argv[2] ?? path.join(homedir(), `.local/share/paseo/releases/0.10.2-qq-pi-admission.${manifest.patchSha256.slice(0, 16)}`);
+const manifest = JSON.parse(await readFile(new URL('../patches/paseo/0.11.0-beta.5/manifest.json', import.meta.url)));
+const releases = path.join(homedir(), '.local/share/paseo/releases');
+const official = path.join(releases, manifest.baseVersion);
+const candidate = process.argv[2] ?? path.join(releases, `${manifest.baseVersion}-qq-compat.${manifest.patchSha256.slice(0, 16)}`);
 const moduleRoot = root => path.join(root, 'lib/node_modules/@getpaseo/cli/node_modules/@getpaseo/server/dist/server/server');
 const load = (root, file) => import(pathToFileURL(path.join(moduleRoot(root), file)));
 const logger = Object.fromEntries(['trace', 'debug', 'info', 'warn', 'error'].map(key => [key, () => {}]));

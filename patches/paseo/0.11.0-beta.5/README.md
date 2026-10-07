@@ -35,8 +35,28 @@ settle. Registry/native handles, modes, models, thinking, features, configuratio
 pairing, receipts and independent processes are checkpointed privately. Persistent
 identity remains stable; the local owner credential intentionally rotates.
 
-Rollback selects the retained prior patched release
-`0.10.2-qq-openspec.24ba90da26d605e3` in the CLI and service. Preserve candidate-era
-receipts, native histories and independent services. Never restore an old whole
-daemon home or downgrade Pi history. The admission/receipt semantics in
-`../0.10.2/README.md` still apply.
+## Admission and receipt behavior
+
+Pi start waits for the correlated, validated `started`, `queued` or `handled`
+acknowledgement, without waiting for model completion. The manager publishes
+accepted start, canonical prompt, then staged stream events. Configured
+`extends:pi` providers forward this contract; other providers keep their existing
+start behavior. An admitted steer is never replaced or resent automatically.
+
+Accepted keyed sends persist `completed`, including subsequent model failure;
+repeating the key and fingerprint returns acceptance without dispatch. Explicit
+correlated Pi refusals persist `pending` with `nativeRefusal` metadata and replay
+that refusal without dispatch. An intentional retry after a definite refusal
+uses a new message ID; changed fingerprints conflict.
+
+Timeouts, process/pipe loss, malformed or missing acknowledgements and receipt
+commit failures remain outcome unknown. Reconcile them before choosing a new-key
+retry; never infer that they were unsent or replay them automatically. Unkeyed
+requests have no durable deduplication. The official beta reader treats refusal
+metadata as pending/unknown and does not dispatch it.
+
+The offline admission test defaults to this manifest-derived candidate and
+official beta. It uses temporary receipts and a fake child, without launching Pi
+or making model requests. Preserve receipt files, native histories and independent
+services during authorized activation. Never restore an old whole daemon home
+or downgrade Pi history. Reassess the need for this patch on each upstream update.
