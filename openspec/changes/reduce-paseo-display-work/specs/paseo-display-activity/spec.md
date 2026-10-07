@@ -98,7 +98,7 @@ Paseo maintenance SHALL link the active plan and keep each retained patch's sour
 - **AND** update integration still finds every retained runtime patch
 
 ### Requirement: Runtime scope stays bounded
-This change SHALL contain at most two separately reviewable runtime patches. Additional optimizations SHALL require a measured problem and a new explicit scope decision. The change MUST preserve package and signing identities, pairings, running agents and daemon operation.
+This change SHALL contain at most two separately reviewable runtime patches. Additional optimizations SHALL require a measured problem and a new explicit scope decision. The change MUST preserve package identity, pairings, running agents and daemon operation. The selected fork signing identity SHALL remain stable across subsequent fork updates; any initial Play-to-fork signing transition SHALL be recorded.
 
 #### Scenario: Another candidate is discovered
 - **WHEN** implementation finds a possible Markdown, badge, networking or framework optimization
@@ -107,5 +107,14 @@ This change SHALL contain at most two separately reviewable runtime patches. Add
 
 #### Scenario: Verification build cannot replace the Play app
 - **WHEN** a native verification build has a different signing identity
-- **THEN** activation waits for an explicit distribution choice
-- **AND** the installed Play app is not wiped to force installation
+- **THEN** the explicitly selected replacement uses a reviewed signing-transition and data-transfer or recovery procedure
+- **AND** the installed Play app is not removed before recoverability is established
+
+### Requirement: Delivery includes the Android client replacement
+Delivery SHALL finish with the verified fork client replacing the existing Play Store client under the production Android package. It SHALL verify the installed artifact, restored connectivity and selected settings separately from source delivery. Any unrecoverable local-data loss SHALL require an explicit operator decision before removal.
+
+#### Scenario: Fork client is activated
+- **WHEN** the accepted client build is delivered
+- **THEN** the installed Android artifact is verified as the fork build
+- **AND** it connects to the existing daemon with pairings and selected settings preserved or restored
+- **AND** a source merge alone does not count as completed delivery

@@ -11,6 +11,7 @@ Paseo's native status rings continue publishing frame updates to mounted hidden 
 - Preserve status meaning, view identity, selected settings, taps and gestures.
 - Keep at most two separately reviewable runtime patches. Treat verified reductions in unnecessary native callbacks, wakeups or CPU as useful outcomes; faster actions and measured battery savings are additional outcomes.
 - Keep the plan and each retained patch's provenance, native evidence and upstream retirement condition linked from Paseo maintenance instructions for every update.
+- Finish by replacing the existing Android Play Store client with the verified fork client, using the production package and preserving or restoring pairings and selected settings.
 
 ## Capabilities
 
@@ -26,4 +27,4 @@ None.
 
 Planning and update ownership live in `qq-workflows/projects/paseo-maintenance/AGENTS.md` and this OpenSpec change. Implementation belongs in the Paseo source fork, using stock Codex children: first `packages/app/src/components/status-ring/`, then `packages/app/src/components/synced-loader.tsx` and `packages/app/src/agent-stream/turn-footer.tsx`. Reuse the existing loader subscription pattern and app-visibility hook. No protocol, daemon, dependency, framework-flag or global-instruction changes are proposed.
 
-The inspected source reference is upstream `0.11.0-beta.5`; native activation and signing are separate from source delivery and require an explicit distribution choice if the existing Play app cannot accept the build.
+The inspected source reference is upstream `0.11.0-beta.5`. The operator has explicitly selected replacement of the existing Android Play Store app as the delivery outcome. Source delivery alone is incomplete: verify the installed client separately, record any necessary signing transition, and establish a concrete data-transfer or recovery path before removing the existing installation. Do not silently clear unrecoverable local data.

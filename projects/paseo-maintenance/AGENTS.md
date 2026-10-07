@@ -21,8 +21,10 @@ Keep actively used custom behavior; delete obsolete or unused local additions.
 The active [OpenSpec design](../../openspec/changes/reduce-paseo-display-work/design.md)
 and [implementation tasks](../../openspec/changes/reduce-paseo-display-work/tasks.md)
 own the agreed scope, independent native evidence and per-patch retirement
-conditions. Both runtime patches are unimplemented. Start with the ring, measure
-it independently, then evaluate the second patch against the accepted ring
+conditions. The [delivery record](display-work.md) tracks source, native acceptance
+and Android activation separately. The ring source candidate is implemented but
+native acceptance is pending; the second patch is unimplemented. Start with the
+ring, measure it independently, then evaluate the second patch against the accepted ring
 baseline. Keep at most two small runtime patches unless a measured problem and
 an explicit decision justify more.
 
@@ -40,6 +42,13 @@ even if action latency is unchanged. Claim battery savings only when measured.
 The optional static working badge remains deferred: its existing panel gate and
 Reanimated reduction already stop animation. Adding it requires a separate scope
 decision and a measured gain.
+
+This change's selected delivery outcome includes replacing the existing Android
+Play Store client under the production package. Record any initial signing
+transition and keep the fork signing key stable for later updates. Verify a
+concrete pairing/settings recovery path before removing the existing app; any
+unrecoverable local-data loss requires an explicit operator decision. A source
+merge alone is not completed Android delivery.
 
 Preserve status meaning, taps and gestures. The operator's Android animation
 settings are all zero and must stay so unless asked to change them. The combined
