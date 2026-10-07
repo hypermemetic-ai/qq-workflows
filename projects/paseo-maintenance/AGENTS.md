@@ -16,17 +16,30 @@ planning/child behavior; its [beta artifact](../../patches/paseo/0.11.0-beta.5/R
 owns exact provenance. Reassess need and upstream equivalents on every update.
 Keep actively used custom behavior; delete obsolete or unused local additions.
 
-## Small performance shortlist
+## Small performance plan
 
-Both changes are unimplemented. Start with the ring; keep one or two small
-patches unless a measured problem and an explicit decision justify more.
+The active [OpenSpec design](../../openspec/changes/reduce-paseo-display-work/design.md)
+and [implementation tasks](../../openspec/changes/reduce-paseo-display-work/tasks.md)
+own the agreed scope, independent native evidence and per-patch retirement
+conditions. Both runtime patches are unimplemented. Start with the ring, measure
+it independently, then evaluate the second patch against the accepted ring
+baseline. Keep at most two small runtime patches unless a measured problem and
+an explicit decision justify more.
 
 - **Status ring** (`packages/app/src/components/status-ring/`): honor selected
-  reduced motion and retained-panel visibility. Detach inactive consumers from the
-  shared clock through local shared values; stop it when nobody needs animation.
-- **Optional working badge** (`packages/app/src/components/message.tsx`): test a
-  static native badge under reduced motion, keeping it only for a measured gain.
-  Its existing panel gate and Reanimated reduction already stop animation.
+  reduced motion, retained-panel visibility and app foreground state. Detach
+  inactive consumers from the shared clock through local shared values; stop it
+  when nobody needs animation and resume at the current shared phase.
+- **Background working indicators** (`packages/app/src/components/synced-loader.tsx`
+  and `packages/app/src/agent-stream/turn-footer.tsx`): reuse the existing
+  app-visibility hook to suspend loader and elapsed-time display work in the
+  background, refreshing from wall-clock time on return.
+
+Verified reductions in unnecessary native callbacks, wakeups or CPU are useful
+even if action latency is unchanged. Claim battery savings only when measured.
+The optional static working badge remains deferred: its existing panel gate and
+Reanimated reduction already stop animation. Adding it requires a separate scope
+decision and a measured gain.
 
 Preserve status meaning, taps and gestures. The operator's Android animation
 settings are all zero and must stay so unless asked to change them. The combined
@@ -42,6 +55,8 @@ flags, dependency changes or broad rewrites, especially flags affecting hit test
    at start and before completion; preserve other work.
 2. Use an isolated checkout at the pinned commit. Inventory necessary outcomes,
    inspect upstream fixes, retire equivalent deltas and adapt only what remains.
+   Review the linked performance plan and each retained patch independently;
+   upstream may replace either outcome without replacing the other.
 3. Follow the repo's focused tests and npm lint/typecheck/format commands; avoid
    the prohibited full local suite. Use synthetic long timelines, streaming,
    idle/hidden panels, typing, scrolling, taps, native gestures and keyboard use.
@@ -50,6 +65,8 @@ flags, dependency changes or broad rewrites, especially flags affecting hit test
 4. Update owned provenance and link each retained patch's source commit, native
    evidence and retirement condition here or in its owning PR/spec. Complete
    scoped commit, push and the required PR/merge path, plus authorized activation.
+   When archiving a plan, update this entry point to its durable spec, archive or
+   owning patch records so subsequent updates can still find every retained patch.
 
 Keep private data and credentials out of agent/cloud inputs and public artifacts.
 Preserve running agents, pairings, package/signing identities and selected settings.
