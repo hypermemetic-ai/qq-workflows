@@ -23,7 +23,7 @@ Exploratory native background observations showed ongoing process work while no 
 
 - Rewrite rendering, Markdown, networking, action sequencing or retained-panel architecture.
 - Add dependencies, speculative framework flags, global instruction machinery or a new lifecycle service.
-- Change daemon operation, Android settings, signing identity or distribution without the necessary existing authorization.
+- Change daemon operation or Android settings, or perform an unreviewed signing transition or local-data loss during the authorized Android replacement.
 - Claim faster actions or longer battery life from source inspection or desktop measurements.
 
 ## Decisions
@@ -48,7 +48,7 @@ These are display subscriptions only. Backgrounding does not cancel agent work o
 
 ### 3. Evaluate the patches separately on native Android
 
-Establish the requested stable or beta target, exact upstream base, fork changes and installed app/bundle before implementation. Use an isolated source checkout and compare equivalent builds on the same device with the same Android settings, workload, restart procedure and thermal conditions. A legitimate verification distribution must be established before installation; a differently signed candidate cannot replace the Play app by wiping it.
+Establish the requested stable or beta target, exact upstream base, fork changes and installed app/bundle before implementation. Use an isolated source checkout and compare equivalent builds on the same device with the same Android settings, workload, restart procedure and thermal conditions. The operator explicitly selected replacing the Play Store app with the production-package fork client. Establish the signing transition, a durable fork key and a concrete local-data transfer or recovery procedure before removing the existing app. Unrecoverable data loss needs its own explicit decision. Preserve an identified compatible rollback artifact.
 
 Use at least three repetitions per compared condition. Compare baseline with the ring patch, then the accepted ring baseline with the working-indicator patch. Include synthetic long timelines, idle and running states, streaming, hidden retained panels, background/foreground cycles, typing, scrolling, taps, native gestures, keyboard use and the reported actions. Measure first feedback and operation completion separately: rewind includes awaited server work that must not be mistaken for indicator scheduling cost. Exercise destructive-looking actions only in synthetic sessions owned by the verification task.
 
@@ -75,10 +75,12 @@ The static working-badge alternative remains deferred because its existing panel
 - **Static rings could lose recognizable status meaning.** Keep the existing arc and verify every status visually with motion disabled and through resumed animation.
 - **Background CPU has multiple possible sources.** Require per-patch comparison and callback evidence; do not attribute the exploratory totals to these components.
 - **A newer source build can confound the Play baseline.** Compare the same pinned source/build configuration with only the candidate patch changed; identify installed versions separately.
-- **Distribution may delay native verification.** Prepare a reviewable source candidate and verification plan, but leave native acceptance pending until an authorized, identity-preserving distribution is available.
+- **Signing may prevent an in-place update.** Prepare a reviewable source candidate and verification plan, verify certificate compatibility and data recoverability before removal, and leave acceptance pending until the authorized replacement path is usable.
 
 ## Migration Plan
 
-No data migration or daemon restart is needed. Implement and verify in an isolated pinned source checkout, deliver scoped commits through the fork's required PR/merge path, and record native acceptance separately from source delivery. Apply only an authorized app distribution; preserve package/signing identities, pairings, running agents and selected settings.
+No daemon restart is needed. Implement and verify in an isolated pinned source checkout, deliver scoped commits through the fork's required PR/merge path, and record native acceptance separately from source delivery. The requested finish line is an Android app swap replacing Play Paseo under `sh.paseo`, with pairings and selected settings preserved or restored. Verify the installed package, version, signing certificate and connectivity. Retain a durable private fork signing key for subsequent updates; keep it out of source and public artifacts.
 
-Each patch can be reverted independently in the app source and rebuilt using the same distribution. A regression stops that candidate's activation and returns to the prior compatible app artifact without clearing app data. Stop temporary verification processes owned by this task and run the Git-status helper from worked checkouts before finishing.
+Prefer a compatible in-place update when certificates permit it. If the fork certificate differs, establish a recoverable migration before removing Play Paseo; do not assume Android backup can restore data across signers. Capture recoverable configuration locally and keep it out of agent/cloud inputs and public artifacts. Prepare baseline and patched clients with the same fork key and build configuration for native comparison. If data cannot be preserved or restored, present the concrete candidate and affected data for an explicit loss decision before removal; candidate delivery alone does not complete this change.
+
+Each patch can be reverted independently in the app source and rebuilt using the same fork signing identity. A regression returns to the prior compatible fork app artifact without clearing app data; returning to the Play signer requires its own recovery procedure. Stop temporary verification processes owned by this task and run the Git-status helper from worked checkouts before finishing.
