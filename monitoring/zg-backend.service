@@ -20,6 +20,7 @@ Nice=5
 CPUQuota=200%
 MemoryHigh=2G
 MemoryMax=4G
+MemorySwapMax=512M
 TasksMax=128
 LimitNOFILE=32768
 NoNewPrivileges=yes

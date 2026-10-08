@@ -12,6 +12,7 @@ IOSchedulingClass=idle
 CPUQuota=25%
 MemoryHigh=256M
 MemoryMax=512M
+MemorySwapMax=128M
 TasksMax=64
 TimeoutStartSec=6h
 TimeoutStopSec=10s
