@@ -46,8 +46,10 @@ local skill copies; update the central collection instead.
 
 The beta-compatible source is on
 [qq/openspec-planning-beta](https://github.com/qqp-dev/paseo/tree/qq/openspec-planning-beta),
-based on upstream 0.11.0-beta.5. Its runtime patch contains only the planning/child
-integration and preserves upstream features, including Codex Speed. See
+based on upstream 0.11.0-beta.5. The staged daemon/CLI patch contains only the
+planning/child integration and preserves upstream features, including Codex Speed.
+The later client ring patch has its own
+[delivery record](../projects/paseo-maintenance/display-work.md). See
 `patches/paseo/0.11.0-beta.5/README.md` and run
 `node scripts/stage-paseo-beta.mjs --verify` to check the sealed candidate.
 Normal activation selects the verified candidate in both the service and CLI,

@@ -5,12 +5,14 @@ shared skill roots and existing child-session behavior. Upstream features,
 including Codex Speed and Pi MCP, remain intact. The unused local Pi admission
 correction has been removed; this artifact adds no Pi-specific customization.
 
-The source fork already contains only the two OpenSpec integration commits over
-upstream beta.5. Its exact source/upstream commits, pinned tarball hashes,
+This staged daemon/CLI artifact contains the two OpenSpec integration commits
+over upstream beta.5. Its exact source/upstream commits, pinned tarball hashes,
 dependency/link inventory and seven emitted-file hashes are in `manifest.json`.
 The patch reproduces those source-fork compiled files precisely. Existing source
 maps remain upstream metadata; consult the source commit for the patched code.
 Package versions stay `0.11.0-beta.5`; release-root provenance identifies the fork.
+The later Android ring patch is tracked separately in the
+[display-work delivery record](../../../projects/paseo-maintenance/display-work.md).
 
 Published inputs are at `~/.local/state/paseo-beta-20261006/`. Reproduce and verify
 without changing the live daemon or CLI:

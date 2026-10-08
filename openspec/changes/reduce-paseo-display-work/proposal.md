@@ -7,7 +7,7 @@ Paseo's native status rings continue publishing frame updates to mounted hidden 
 ## What Changes
 
 - Make native status-ring animation require an active retained panel, a foreground app and motion being enabled. Unsubscribe inactive consumers and stop the shared clock when its final eligible consumer leaves.
-- After measuring the ring independently, pause working elapsed-time updates and the existing loader clock while the app is backgrounded; refresh from wall-clock time on return.
+- After measuring the ring independently, evaluate existing native working-indicator suspension and wall-clock resumption. Add a second patch only for a measured gap; retain the ring alone when existing behavior satisfies the background checks.
 - Preserve status meaning, view identity, selected settings, taps and gestures.
 - Keep at most two separately reviewable runtime patches. Treat verified reductions in unnecessary native callbacks, wakeups or CPU as useful outcomes; faster actions and measured battery savings are additional outcomes.
 - Keep the plan and each retained patch's provenance, native evidence and upstream retirement condition linked from Paseo maintenance instructions for every update.
@@ -25,6 +25,6 @@ None.
 
 ## Impact
 
-Planning and update ownership live in `qq-workflows/projects/paseo-maintenance/AGENTS.md` and this OpenSpec change. Implementation belongs in the Paseo source fork, using stock Codex children: first `packages/app/src/components/status-ring/`, then `packages/app/src/components/synced-loader.tsx` and `packages/app/src/agent-stream/turn-footer.tsx`. Reuse the existing loader subscription pattern and app-visibility hook. No protocol, daemon, dependency, framework-flag or global-instruction changes are proposed.
+Planning and update ownership live in `qq-workflows/projects/paseo-maintenance/AGENTS.md` and this OpenSpec change. Implementation belongs in the Paseo source fork, using stock Codex children: `packages/app/src/components/status-ring/`, with an optional second patch in `packages/app/src/components/synced-loader.tsx` and `packages/app/src/agent-stream/turn-footer.tsx` only if evaluation establishes a gap. Reuse the existing loader subscription pattern and app-visibility hook. No protocol, daemon, dependency, framework-flag or global-instruction changes are proposed.
 
 The inspected source reference is upstream `0.11.0-beta.5`. The operator has explicitly selected replacement of the existing Android Play Store app as the delivery outcome. Source delivery alone is incomplete: verify the installed client separately, record any necessary signing transition, and establish a concrete data-transfer or recovery path before removing the existing installation. Do not silently clear unrecoverable local data.
