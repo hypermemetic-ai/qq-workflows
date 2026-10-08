@@ -52,6 +52,14 @@ confirmed when PID 1 is `systemd` or `init`. A sandbox whose PID 1 is another
 program has incomplete watcher coverage and a monitoring incident; its visible
 counts cannot open or resolve host watcher incidents. Activate the service in
 the host namespace and validate its coverage there.
+User-service filesystem sandboxing (including `ProtectSystem`) can implicitly
+create a child user namespace even while PID 1 remains visible. Its credentials
+then cannot read other host processes' `fdinfo`, cwd or executable links. The
+collector unit deliberately keeps host user credentials and avoids that mount
+sandbox; `NoNewPrivileges`, resource limits and private state files remain in
+effect. Validate both the process namespace indicator and actual readable
+watcher bytes/counts after activation. A visible host PID namespace alone does
+not establish access to process attribution.
 
 NVIDIA queries have a 3 second / 512 KiB budget. After timeout, the collector
 signals the process and retains a nonblocking handle. A driver-blocked process
