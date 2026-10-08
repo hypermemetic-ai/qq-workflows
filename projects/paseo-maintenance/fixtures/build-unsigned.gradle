@@ -1,0 +1,16 @@
+allprojects { p ->
+    ["com.android.application", "com.android.library"].each { pluginId ->
+        p.plugins.withId(pluginId) {
+            p.extensions.getByName("androidComponents").finalizeDsl { android ->
+                android.defaultConfig.externalNativeBuild.cmake.arguments.addAll([
+                    "-DCMAKE_JOB_POOLS=paseo_compile=1;paseo_link=1",
+                    "-DCMAKE_JOB_POOL_COMPILE=paseo_compile",
+                    "-DCMAKE_JOB_POOL_LINK=paseo_link"
+                ])
+                if (pluginId == "com.android.application") {
+                    android.buildTypes.getByName("release").signingConfig = null
+                }
+            }
+        }
+    }
+}
