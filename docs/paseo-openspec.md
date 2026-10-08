@@ -49,7 +49,9 @@ The beta-compatible source is on
 based on upstream 0.11.0-beta.5. The staged daemon/CLI patch contains only the
 planning/child integration and preserves upstream features, including Codex Speed.
 The later client ring patch has its own
-[delivery record](../projects/paseo-maintenance/display-work.md). See
+[delivery record](../projects/paseo-maintenance/display-work.md), followed by the
+approved [static-status presentation change](../projects/paseo-maintenance/status-indicators.md).
+These client records are separate from staged daemon/CLI provenance. See
 `patches/paseo/0.11.0-beta.5/README.md` and run
 `node scripts/stage-paseo-beta.mjs --verify` to check the sealed candidate.
 Normal activation selects the verified candidate in both the service and CLI,

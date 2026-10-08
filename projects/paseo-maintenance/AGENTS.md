@@ -38,9 +38,13 @@ runtime patches unless a measured problem and an explicit decision justify more.
 
 Verified reductions in unnecessary native callbacks, wakeups or CPU are useful
 even if action latency is unchanged. Claim battery savings only when measured.
-The optional static working badge remains deferred: its existing panel gate and
-Reanimated reduction already stop animation. Adding it requires a separate scope
-decision and a measured gain.
+The approved [static-status follow-up](../../openspec/changes/clarify-paseo-status-indicators/design.md)
+addresses reduced-motion legibility in the workspace ring and chat graphic,
+without new visible labels or changes to the existing timer. Its separate
+[delivery record](status-indicators.md) owns source, native resource checks and
+Android activation. Acceptance requires legibility and preserved resource use;
+additional CPU or battery savings are not presumed. This explicit presentation
+decision does not reopen the rejected background-timer patch.
 
 This change's selected delivery outcome includes replacing the existing Android
 Play Store client under the production package. Record any initial signing
