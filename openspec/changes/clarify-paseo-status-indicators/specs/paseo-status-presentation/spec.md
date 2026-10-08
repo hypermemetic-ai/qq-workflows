@@ -46,12 +46,17 @@ Static indicators SHALL update from existing status and theme changes without an
 - **AND** returning refreshes existing elapsed time normally without replaying missed ticks
 
 ### Requirement: Native acceptance preserves resource use and interactions
-Acceptance SHALL verify native legibility, status transitions, typing, scrolling, taps, gestures and background resumption, with repeated same-device CPU/frame comparisons against the ring-only fork. A resource regression MUST be investigated before activation. Battery savings MUST NOT be asserted without measurement.
+Acceptance SHALL verify native legibility, status transitions, typing, scrolling, taps, gestures and background resumption, with repeated same-emulator CPU/frame comparisons against the ring-only fork. A resource regression MUST be investigated before activation. Emulator results MUST be identified as such and MUST NOT be presented as physical-phone CPU or battery savings.
 
 #### Scenario: Static presentation is evaluated
-- **WHEN** the candidate is compared against the ring-only fork on the same controlled workload with all Android animation scales zero
+- **WHEN** the candidate is compared against the ring-only fork on the same isolated Android emulator and controlled workload with all animation scales zero
 - **THEN** at least three samples per artifact record CPU and rendering behavior
 - **AND** the evidence separates legibility from any demonstrated additional performance benefit
+
+#### Scenario: Emulator evidence is reported
+- **WHEN** native acceptance uses an Android emulator as requested by the operator
+- **THEN** its image/API, architecture/translation and rendering configuration are recorded
+- **AND** the prior ring's physical-device CPU evidence stays separate from this follow-up
 
 ### Requirement: Delivery and update ownership remain visible
 The follow-up SHALL record its source, upstream base, native evidence and retirement condition in Paseo maintenance. Android activation SHALL use an in-place update with the existing fork package and signer, preserving pairing, phone preferences and daemon sessions without restarting the daemon.

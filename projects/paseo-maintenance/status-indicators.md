@@ -10,7 +10,9 @@ rejected background-timer patch remain owned by [display-work.md](display-work.m
 This follow-up resolves the operator's observed legibility problem. Native
 acceptance requires intentional static presentation, correct status transitions
 and interaction/timer behavior, with repeated CPU/frame checks against the
-ring-only fork. Further CPU reduction and battery savings are not presumed.
+ring-only fork on an isolated Android emulator, as requested by the operator.
+Emulator results do not establish physical-phone CPU or battery savings. The
+original ring's physical-device evidence remains separate.
 
 Retire the presentation delta when upstream provides equivalent deliberate
 reduced-motion workspace and active-turn graphics with shared status colors and

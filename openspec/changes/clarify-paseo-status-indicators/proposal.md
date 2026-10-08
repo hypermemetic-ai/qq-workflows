@@ -9,7 +9,7 @@ Under the operator's reduced-motion Android settings, Paseo's frozen running rin
 - Render a deliberate static running mark in the workspace/project list under reduced motion, using the existing footprint and running color.
 - Replace the chat turn footer's reduced-motion dot-grid presentation with a static status-colored mark, using existing agent status and pending permissions.
 - Keep existing labels, elapsed time, footer visibility and actions; add no visible text, animation loop, timer, status protocol or preference.
-- Verify native legibility, state transitions and CPU against the installed ring-only fork. Acceptance is improved legibility without recurring-work regression; no additional CPU or battery reduction is presumed.
+- Verify native legibility, state transitions and CPU against the ring-only fork on an isolated Android emulator, as requested by the operator. Acceptance is improved legibility without recurring-work regression; emulator measurements do not establish phone CPU or battery savings.
 - Track this explicitly approved presentation follow-up separately from the completed ring optimization and deliver a verified Android update with the existing fork package and signing key.
 
 ## Capabilities

@@ -30,7 +30,7 @@ Use ordinary native views and Unistyles styles for theme changes. Do not put the
 
 ### Accept on legibility and resource preservation
 
-This user-approved second presentation patch resolves an observed legibility gap. It does not reopen the rejected background-timer patch and does not require a further CPU reduction for acceptance. Compare equivalent profileable release artifacts against the accepted ring-only baseline, with at least three controlled native samples per artifact. Record actual CPU/frame results and investigate discrepancies; do not infer battery savings.
+This user-approved second presentation patch resolves an observed legibility gap. It does not reopen the rejected background-timer patch and does not require a further CPU reduction for acceptance. The operator requested emulator testing rather than occupying the phone. Compare equivalent profileable release artifacts against the accepted ring-only baseline on one isolated Android emulator, with at least three controlled native samples per artifact. Record emulator version, image/API, ABI/translation and renderer alongside CPU/frame results. These samples check recurring-work regressions within the emulator; they do not establish physical-phone CPU or battery savings.
 
 Check native static shapes and colors in light/dark themes, running and needs-input transitions, existing timer progression and background resume, workspace/session switching, taps, typing, scrolling and gestures. Retain the existing focused ring lifecycle evidence. Add focused automated checks only where new state wiring warrants them; use existing suites and npm scripts, never the full local suite.
 
@@ -40,10 +40,10 @@ Check native static shapes and colors in light/dark themes, running and needs-in
 - A workspace may have a different bucket from the current chat → preserve aggregation priority and individual-agent derivation; do not force them to agree.
 - A permission update could leave a stale memoized footer → include its derived status input in existing render dependencies and verify the transition.
 - A visual change can accidentally reattach a clock or disturb a touch target → preserve clock eligibility, footprint and containing controls, then verify native CPU and interactions.
-- Android testing needs a fresh availability window → prepare the concrete signed candidate first and request a bounded window when ready; no unattended input into another app.
+- Emulator CPU and rendering differ from the physical phone → keep emulator results explicitly labeled, retain the prior ring's physical-device evidence separately, and avoid a new phone CPU/battery claim.
 
 ## Migration Plan
 
-Implement in an isolated source checkout through a child agent, deliver one scoped presentation commit/PR onto the existing beta fork, and retain its exact build provenance. Prepare equivalent comparison artifacts and a production APK using the existing private Firebase configuration and durable fork key. After native acceptance, update `sh.paseo` in place, verify installed bundle/certificate, pairing/settings/session continuity and unchanged motion scales, and stop task-owned verification processes. Keep the current signed ring-only APK locally for same-signer rollback.
+Implement in an isolated source checkout through a child agent, deliver one scoped presentation commit/PR onto the existing beta fork, and retain its exact build provenance. Prepare equivalent comparison artifacts and a production APK using the existing private Firebase configuration and durable fork key. Test on an isolated emulator with explicit ADB targeting, keeping the physical phone out of the test controls. After emulator acceptance, update the physical phone's `sh.paseo` in place, verify installed bundle/certificate, pairing/settings/session continuity and unchanged motion scales, and stop task-owned verification processes. Keep the current signed ring-only APK locally for same-signer rollback.
 
 Maintenance links this plan and a separate delivery record with the retained presentation delta's upstream retirement condition. The previous completed change and measurements remain intact.

@@ -10,7 +10,7 @@
 ## 2. Native acceptance and Android delivery
 
 - [ ] 2.1 Prepare equivalent ring-only and presentation profileable release comparison artifacts and a production APK, recording exact source/bundle hashes and build configuration; verify use of the durable fork signer, production package and private Firebase configuration without exposing private values.
-- [ ] 2.2 In a confirmed phone test window, compare at least three controlled same-device CPU/frame samples per artifact and verify native static legibility in light/dark themes, running/permission transitions, timer/background resume and taps, switching, typing, scrolling and native gestures; record results and investigate resource regressions before acceptance.
+- [ ] 2.2 On an isolated Android emulator, compare at least three controlled CPU/frame samples per artifact and verify native static legibility in light/dark themes, running/permission transitions, timer/background resume and taps, switching, typing, scrolling and native gestures; record image/API, ABI/translation and renderer, investigate regressions and keep results distinct from physical-phone CPU/battery evidence.
 - [ ] 2.3 Review and merge the accepted source PR through the existing fork workflow, verify the merge tree matches the audited build and run final source Git status; record its upstream retirement condition separately from the ring clock patch.
 - [ ] 2.4 Update the production Android fork in place with the same package/signer; verify the installed artifact, pairing, selected phone preferences, projects/session continuity and all-zero motion settings without restarting the main daemon.
 
