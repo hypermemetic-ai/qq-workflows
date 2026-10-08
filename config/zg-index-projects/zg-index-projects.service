@@ -1,0 +1,21 @@
+[Unit]
+Description=Reconcile explicitly configured local indexes when resources are available
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/zg-index-projects --config %h/.config/zg-index-projects.json
+Environment=PATH=/home/qqp/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin
+UnsetEnvironment=VK_DRIVER_FILES VK_ICD_FILENAMES ZVEC_GREP_EMBEDDING
+Nice=15
+IOSchedulingClass=idle
+CPUQuota=25%
+MemoryHigh=256M
+MemoryMax=512M
+TasksMax=64
+TimeoutStartSec=6h
+TimeoutStopSec=10s
+KillMode=control-group
+SuccessExitStatus=75
+StandardOutput=journal
+StandardError=journal

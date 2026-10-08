@@ -1,0 +1,24 @@
+{
+  "projectsDirectory": "/home/qqp/projects",
+  "projects": [
+    "deciq", "deciq-logic", "everything-box", "image-finder", "inbox",
+    "inference-box", "iso-notation", "iso-notation-deploy", "media-box", "money",
+    "openspec-codex-starter", "paseo", "paseo-beta", "qq-dictation", "qq-relay",
+    "qq-workflows", "sts2-companion", "voice-vault", "ytgrab"
+  ],
+  "maxFileSizeBytes": 512000,
+  "requiredGlobs": {
+    "sts2-companion": ["!data/**"],
+    "deciq-logic": ["!backlog", "!CONCEPTS.md", "!AGENTS.md"]
+  },
+  "jobTimeoutSeconds": 900,
+  "pressureGates": {
+    "memoryAvailableBytes": 8589934592,
+    "swapUsedBytes": 1073741824,
+    "loadPerCpu": 0.7,
+    "cpuBusyPercent": 60,
+    "cpuSomeAvg10": 10,
+    "ioSomeAvg10": 2,
+    "memorySomeAvg10": 1
+  }
+}
