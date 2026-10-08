@@ -95,6 +95,12 @@ the two user units. It activates the job slice and guard without restarting
 Paseo, the terminal app server, or existing agents. `--no-activate` installs the
 reviewed files without starting units.
 
+On qq-box, global `~/.codex/AGENTS.md` links to this repository's
+`docs/codex-global-AGENTS.md`. Install from the checkout that owns that link.
+The installer verifies its committed guidance and preserves the link and tracked
+file; it does not rewrite repository files during deployment. Other instruction
+symlinks require their owning setup to be reviewed first.
+
 After activation, include `qq-job-pressure-guard.service` in the existing host
 collector's `important_user_units` list and restart only `qq-host-health.service`
 to reload that policy. The collector then alerts if the guard stops or fails.
