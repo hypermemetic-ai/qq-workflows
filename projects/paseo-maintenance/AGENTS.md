@@ -22,20 +22,19 @@ The active [OpenSpec design](../../openspec/changes/reduce-paseo-display-work/de
 and [implementation tasks](../../openspec/changes/reduce-paseo-display-work/tasks.md)
 own the agreed scope, independent native evidence and per-patch retirement
 conditions. The [delivery record](display-work.md) tracks source, native acceptance
-and Android activation separately. The ring source candidate is implemented but
-native acceptance is pending; the second patch is unimplemented. Start with the
-ring, measure it independently, then evaluate the second patch against the accepted ring
-baseline. Keep at most two small runtime patches unless a measured problem and
-an explicit decision justify more.
+and Android activation separately. The ring is accepted, merged and installed on
+Android. The optional working-indicator source patch was rejected after the
+existing native background and resume checks passed. Keep at most two small
+runtime patches unless a measured problem and an explicit decision justify more.
 
 - **Status ring** (`packages/app/src/components/status-ring/`): honor selected
   reduced motion, retained-panel visibility and app foreground state. Detach
   inactive consumers from the shared clock through local shared values; stop it
   when nobody needs animation and resume at the current shared phase.
 - **Background working indicators** (`packages/app/src/components/synced-loader.tsx`
-  and `packages/app/src/agent-stream/turn-footer.tsx`): reuse the existing
-  app-visibility hook to suspend loader and elapsed-time display work in the
-  background, refreshing from wall-clock time on return.
+  and `packages/app/src/agent-stream/turn-footer.tsx`): reevaluate existing native
+  suspension and wall-clock refresh before adding a patch. The current runtime
+  passes under the selected motion policy; no second source patch is retained.
 
 Verified reductions in unnecessary native callbacks, wakeups or CPU are useful
 even if action latency is unchanged. Claim battery savings only when measured.

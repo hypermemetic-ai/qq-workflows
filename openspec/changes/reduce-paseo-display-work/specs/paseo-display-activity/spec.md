@@ -48,7 +48,7 @@ Native rings that become eligible SHALL resume at the current shared wall-clock 
 - **AND** no animation backlog is replayed
 
 ### Requirement: Background working indicators suspend display work
-The working elapsed-time display and native loader SHALL stop recurring display updates while the app is backgrounded, in addition to their existing panel-visibility and motion policies. Foregrounding SHALL refresh their output from current wall-clock time without replaying missed ticks.
+The working elapsed-time display and native loader SHALL stop recurring display updates while the app is backgrounded, in addition to their existing panel-visibility and motion policies. Existing native platform suspension MAY satisfy this requirement. Foregrounding SHALL refresh elapsed time from current wall-clock time on its next normal foreground update, without replaying missed ticks.
 
 #### Scenario: Backgrounded running turn
 - **WHEN** the app is backgrounded during a running turn
@@ -58,7 +58,7 @@ The working elapsed-time display and native loader SHALL stop recurring display 
 
 #### Scenario: Running turn is shown again
 - **WHEN** the app returns to the foreground and the running turn's panel is active
-- **THEN** elapsed time reflects the actual time since the turn began
+- **THEN** elapsed time reflects the actual time since the turn began on the next normal foreground update
 - **AND** the loader resumes only if its motion policy permits animation
 - **AND** missed ticks are not replayed
 
@@ -81,7 +81,9 @@ Each retained runtime patch SHALL have independent controlled native evidence of
 #### Scenario: Second patch is evaluated
 - **WHEN** working-indicator suspension is evaluated after the ring
 - **THEN** its baseline includes the accepted ring patch
-- **AND** the evidence distinguishes the second patch's contribution
+- **AND** the evidence records whether existing native behavior satisfies the outcome
+- **AND** an added second patch requires independent evidence of its contribution
+- **AND** no added patch is required when the evaluation justifies retaining the ring alone
 
 ### Requirement: Update integration keeps patches visible and replaceable
 Paseo maintenance SHALL link the active plan and keep each retained patch's source commit, upstream base, native evidence and retirement condition discoverable. Every upstream update SHALL reassess each patch independently and retire a local patch when upstream provides equivalent behavior.
