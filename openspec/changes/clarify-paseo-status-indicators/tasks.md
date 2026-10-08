@@ -16,5 +16,5 @@
 
 ## 3. Maintenance integration
 
-- [ ] 3.1 Link the approved presentation plan and its source/native/installed delivery record from the Paseo maintenance entry point, revise the old deferred-badge guidance to reflect this explicit legibility decision and validate OpenSpec strictly; preserve the completed ring evidence and optional background-patch rejection.
+- [ ] 3.1 Link the approved presentation plan and its source/native/installed delivery record from the Paseo maintenance entry point, revise the old deferred-badge guidance, document the verified reusable emulator/native QA build and synthetic fixture as the default client-update pipeline, and validate OpenSpec strictly; retain the stopped SDK/AVD/build cache and preserve the completed ring evidence and optional background-patch rejection.
 - [ ] 3.2 Deliver scoped maintenance commits through the required push/PR/merge path, verify clean tracked work and remote freshness in every worked checkout and stop task-owned temporary processes/device helpers; report source delivery and Android activation independently.

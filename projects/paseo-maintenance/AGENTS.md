@@ -70,10 +70,13 @@ flags, dependency changes or broad rewrites, especially flags affecting hit test
    Review the linked performance plan and each retained patch independently;
    upstream may replace either outcome without replacing the other.
 3. Follow the repo's focused tests and npm lint/typecheck/format commands; avoid
-   the prohibited full local suite. Use synthetic long timelines, streaming,
+   the prohibited full local suite. Start native client QA with the reusable
+   [Android emulator workflow](android-emulator.md). Use synthetic long timelines, streaming,
    idle/hidden panels, typing, scrolling, taps, native gestures and keyboard use.
    Compare repeated same-device/workload measurements with controlled restarts
-   and thermal conditions. Desktop-only results do not prove native improvement.
+   and thermal conditions. Reserve physical-device testing for hardware behavior
+   or physical CPU/battery evidence; keep emulator measurements labeled. Android
+   activation is separate from routine emulator QA.
 4. Update owned provenance and link each retained patch's source commit, native
    evidence and retirement condition here or in its owning PR/spec. Complete
    scoped commit, push and the required PR/merge path, plus authorized activation.

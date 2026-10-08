@@ -11,6 +11,7 @@ Under the operator's reduced-motion Android settings, Paseo's frozen running rin
 - Keep existing labels, elapsed time, footer visibility and actions; add no visible text, animation loop, timer, status protocol or preference.
 - Verify native legibility, state transitions and CPU against the ring-only fork on an isolated Android emulator, as requested by the operator. Acceptance is improved legibility without recurring-work regression; emulator measurements do not establish phone CPU or battery savings.
 - Track this explicitly approved presentation follow-up separately from the completed ring optimization and deliver a verified Android update with the existing fork package and signing key.
+- Retain the stopped emulator profile and document its native QA build, synthetic workload, explicit device targeting and cleanup as the default client-update test path, so routine changes do not occupy the operator's phone.
 
 ## Capabilities
 
