@@ -1,0 +1,12 @@
+[Unit]
+Description=Aggregate budget for disposable agent command jobs
+
+[Slice]
+MemoryAccounting=yes
+CPUAccounting=yes
+MemoryHigh=8G
+MemoryMax=12G
+MemorySwapMax=1G
+CPUWeight=50
+# Keep the aggregate cgroup's default memory.oom.group=0. Individual job scopes
+# use OOMPolicy=kill so an exhausted job cannot take every other job with it.

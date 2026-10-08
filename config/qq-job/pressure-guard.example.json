@@ -1,0 +1,19 @@
+{
+  "poll_seconds": 1,
+  "sustained_samples": 2,
+  "worker_rss_limit_bytes": 4294967296,
+  "rss_limits_by_cwd": {},
+  "pressure_reserve_bytes": 2147483648,
+  "pressure_reserve_ratio": 0.08,
+  "minimum_pressure_worker_rss_bytes": 536870912,
+  "memory_psi_some_threshold": 5,
+  "memory_psi_full_threshold": 1,
+  "term_grace_seconds": 3,
+  "progress_reduction_ratio": 0.1,
+  "action_cooldown_seconds": 5,
+  "incident_quiet_seconds": 600,
+  "scan_budget_seconds": 0.75,
+  "max_processes": 4096,
+  "managed_memory_ceiling_bytes": 12884901888,
+  "managed_swap_ceiling_bytes": 1073741824
+}

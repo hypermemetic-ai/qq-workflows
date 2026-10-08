@@ -1,0 +1,22 @@
+[Unit]
+Description=Emergency protection against disposable agent test worker memory growth
+After=qq-host-health.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/.local/share/qq-job/current/job-pressure-guard.py --config %h/.config/qq-job/pressure-guard.json
+Restart=always
+RestartSec=5s
+MemoryHigh=48M
+MemoryMax=64M
+MemorySwapMax=0
+CPUQuota=5%
+CPUQuotaPeriodSec=1s
+TasksMax=16
+NoNewPrivileges=yes
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

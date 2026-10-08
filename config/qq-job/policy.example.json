@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "slice": "qqjobs.slice",
+  "aggregate": {
+    "memory_high_bytes": 8589934592,
+    "memory_max_bytes": 12884901888,
+    "memory_swap_max_bytes": 1073741824
+  },
+  "default_profile": "default",
+  "profiles": {
+    "default": {
+      "memory_high_bytes": 3221225472,
+      "memory_max_bytes": 4294967296,
+      "memory_swap_max_bytes": 268435456,
+      "tasks_max": 256,
+      "cpu_weight": 50
+    },
+    "large": {
+      "memory_high_bytes": 6442450944,
+      "memory_max_bytes": 8589934592,
+      "memory_swap_max_bytes": 536870912,
+      "tasks_max": 512,
+      "cpu_weight": 50
+    },
+    "oom-proof": {
+      "memory_high_bytes": 67108864,
+      "memory_max_bytes": 67108864,
+      "memory_swap_max_bytes": 0,
+      "tasks_max": 32,
+      "cpu_weight": 50,
+      "runtime_seconds": 10
+    }
+  },
+  "state_dir": "~/.local/state/qq-job",
+  "monitor_state_dir": "~/.local/state/qq-host-monitor",
+  "max_job_records": 200
+}
