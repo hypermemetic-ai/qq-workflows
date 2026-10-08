@@ -1,0 +1,12 @@
+[Unit]
+Description=Retry admitted background indexing without a reboot catch-up sweep
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+OnUnitInactiveSec=1h
+AccuracySec=2min
+RandomizedDelaySec=3min
+Persistent=false
+
+[Install]
+WantedBy=timers.target
