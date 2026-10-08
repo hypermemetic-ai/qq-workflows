@@ -17,6 +17,7 @@ FILES = {
     'config/qq-job/policy.example.json': 'policy.example.json',
     'config/qq-job/pressure-guard.example.json': 'pressure-guard.example.json',
     'config/qq-job/agent-guidance.txt': 'agent-guidance.txt',
+    'docs/codex-global-AGENTS.md': 'codex-global-AGENTS.md',
 }
 
 
@@ -137,13 +138,16 @@ def main():
         else:
             previous_units[name] = None
     agreements = home / '.codex/AGENTS.md'
-    if agreements.is_symlink():
-        raise SystemExit('Refusing to replace a symlinked global AGENTS.md')
+    managed_agreements = agreements.is_symlink()
+    if managed_agreements and agreements.resolve(strict=True) != source / 'docs/codex-global-AGENTS.md':
+        raise SystemExit('Global AGENTS.md points outside this checkout; install from its owning checkout')
     previous_agreements = (agreements.read_bytes(), agreements.stat().st_mode & 0o777) if agreements.exists() else None
     original = previous_agreements[0].decode() if previous_agreements else ''
     guidance = content['config/qq-job/agent-guidance.txt'].decode().replace(
         '{{QQ_JOB}}', shlex.quote(str(launcher)))
     updated = agreement_text(original, guidance)
+    if managed_agreements and updated != original:
+        raise SystemExit('Commit the rendered resource guidance in docs/codex-global-AGENTS.md before installation')
     guard_enabled = unit_state('is-enabled', 'qq-job-pressure-guard.service') == 'enabled'
     guard_active = unit_state('is-active', 'qq-job-pressure-guard.service') == 'active'
 
@@ -174,7 +178,8 @@ def main():
 
         # Preserve the operator's other agreements, replacing only this owned block.
         agreements.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write(agreements, updated.encode())
+        if not managed_agreements:
+            atomic_write(agreements, updated.encode())
         replace_link(current, release)
         replace_link(launcher, expected_link)
         run('systemctl', '--user', 'daemon-reload')
@@ -193,7 +198,8 @@ def main():
             launcher.unlink(missing_ok=True)
         for name, previous in previous_units.items():
             restore_file(units / name, previous)
-        restore_file(agreements, previous_agreements)
+        if not managed_agreements:
+            restore_file(agreements, previous_agreements)
         subprocess.run(['systemctl', '--user', 'disable', 'qq-job-pressure-guard.service'],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
         run('systemctl', '--user', 'daemon-reload')

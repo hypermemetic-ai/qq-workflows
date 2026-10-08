@@ -34,3 +34,32 @@ Choose the evidence source before the retrieval mode.
 - Creating, rebuilding, or dropping a persistent index requires an explicit user request or authorization; never do so silently.
 
 <!-- ZVEC_GREP_END -->
+
+<!-- QQ_JOB_RESOURCE_START -->
+## Heavy command resources
+
+Where the current execution context already permits access to the user systemd
+manager, run tests, builds, package installation, data processing and other
+potentially heavy commands through /home/qqp/.local/bin/qq-job. Use its default profile for
+ordinary work, for example `/home/qqp/.local/bin/qq-job -- npm test`. Wrap an entire shell pipeline
+with `/home/qqp/.local/bin/qq-job --shell-command '<literal command>'`, keeping the tool's normal
+working directory, sandbox and approval settings. Quote the command as shell
+data; preserve literal variables and newlines.
+
+The launcher enforces total job RAM, swap and task limits before execution.
+The default Codex sandbox on this host denies its systemd socket. Preserve that
+sandbox and normal approval settings; do not request broader access solely to
+use the launcher. In that context, the independent host guard protects recognized
+Codex Node test workers. Use bounded inputs, compact assertion diagnostics and
+low test concurrency for other commands, whose total memory is not automatically
+contained. In a context with manager access, a placement or verification failure
+must be repaired before retrying that job. Lightweight read-only lookups may run
+directly. A persistent task service should have its own declared limits;
+background descendants of an ordinary qq-job invocation are cleaned up on exit.
+
+A resource intervention can reflect a job budget or host memory pressure. Reduce input,
+concurrency or oversized failure diagnostics before retrying. A larger named
+profile is appropriate for an understood workload whose budget fits the available
+host memory and aggregate job limit; do not repeatedly increase a runaway test's
+budget. Heap flags alone do not limit native buffers or a whole process tree.
+<!-- QQ_JOB_RESOURCE_END -->
