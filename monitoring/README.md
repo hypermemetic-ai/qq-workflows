@@ -81,7 +81,9 @@ also produces a local incident instead of silently disabling offbox coverage.
 
 `zg-backend.service` runs the repaired, pinned zvec-grep release in the foreground
 under the user manager. Its two-CPU quota, 2 GiB memory high watermark, 4 GiB memory
-maximum and 128-task cap apply to the shared backend itself. Background watcher,
+maximum, 512 MiB swap maximum and 128-task cap apply to the shared backend itself.
+The scheduler client separately has a 128 MiB swap maximum. The RAM limit alone
+does not bound swapping, so both limits are applied. Background watcher,
 eventual-refresh and freshness reconciliation use CPU embeddings at concurrency
 one; interactive query embedding retains its stored device. CPU embeddings use two
 threads; per-root and daemon watcher budgets are 2,048 and 8,192, with idle watcher
