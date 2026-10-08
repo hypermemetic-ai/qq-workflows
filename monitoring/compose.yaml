@@ -1,3 +1,5 @@
+name: qq-host-monitor
+
 services:
   netdata:
     image: netdata/netdata@sha256:43d81862b6044c08a4c014ddfa2c8dcc121524c52593a5550b5ff13d36613821
