@@ -1,0 +1,11 @@
+{
+  "desktop_notifications": false,
+  "netdata_url": "http://127.0.0.1:19999",
+  "paseo_binary": "paseo",
+  "paseo_agent_id": null,
+  "investigator_cooldown_seconds": 600,
+  "investigator_max_seconds": 180,
+  "watchdog_url": null,
+  "watchdog_ca": null,
+  "watchdog_token_file": null
+}

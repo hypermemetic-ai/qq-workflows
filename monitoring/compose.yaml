@@ -1,0 +1,40 @@
+services:
+  netdata:
+    image: netdata/netdata@sha256:43d81862b6044c08a4c014ddfa2c8dcc121524c52593a5550b5ff13d36613821
+    container_name: qq-netdata
+    hostname: qq-box
+    pid: host
+    network_mode: host
+    restart: unless-stopped
+    cpus: 0.50
+    mem_limit: 768m
+    pids_limit: 256
+    cap_add:
+      - SYS_PTRACE
+    environment:
+      DO_NOT_TRACK: "1"
+      DISABLE_TELEMETRY: "1"
+    volumes:
+      - ./netdata.conf:/etc/netdata/netdata.conf:ro
+      - ./prometheus.conf:/etc/netdata/go.d/prometheus.conf:ro
+      - ${MONITOR_EXPORT_DIR:?Set MONITOR_EXPORT_DIR}:/opt/qq-monitor-metrics:ro
+      - netdata-lib:/var/lib/netdata
+      - netdata-cache:/var/cache/netdata
+      - /:/host/root:ro,rslave
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /etc/passwd:/host/etc/passwd:ro
+      - /etc/group:/host/etc/group:ro
+      - /etc/os-release:/host/etc/os-release:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /var/log:/host/var/log:ro
+      - /run/dbus:/run/dbus:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  netdata-lib:
+  netdata-cache:

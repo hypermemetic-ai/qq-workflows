@@ -1,0 +1,22 @@
+[Unit]
+Description=Host alert export and bounded Paseo incident delivery
+After=qq-host-health.service network.target paseo.service
+Wants=qq-host-health.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/.local/share/qq-host-monitor/current/alert-bridge.py --state-dir %h/.local/state/qq-host-monitor --config %h/.config/qq-host-monitor/bridge.json
+Environment=PATH=/home/qqp/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Restart=always
+RestartSec=10
+Nice=10
+CPUQuota=50%
+MemoryHigh=128M
+MemoryMax=256M
+TasksMax=64
+UMask=0077
+NoNewPrivileges=yes
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target

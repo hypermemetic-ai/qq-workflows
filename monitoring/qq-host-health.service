@@ -1,0 +1,23 @@
+[Unit]
+Description=Host resource and uptime evidence collector
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/.local/share/qq-host-monitor/current/host-health.py --state-dir %h/.local/state/qq-host-monitor --policy %h/.config/qq-host-monitor/collector.json
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Restart=always
+RestartSec=10
+Nice=10
+CPUQuota=20%
+MemoryHigh=96M
+MemoryMax=192M
+TasksMax=32
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=%h/.local/state/qq-host-monitor
+TimeoutStopSec=5
+
+[Install]
+WantedBy=default.target
