@@ -7,9 +7,10 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location("scheduler", Path(__file__).parent.parent / "scripts/zg-index-projects.py")
 scheduler = importlib.util.module_from_spec(spec)
@@ -189,6 +190,8 @@ else:
     def test_missing_pressure_or_invalid_metric_defers(self):
         self.assertEqual(self.invoke(lambda: {})[0], 75)
         self.assertEqual(self.invoke(lambda: {**IDLE, "cpuBusyPercent": float("nan")})[0], 75)
+        self.assertEqual(self.invoke(lambda: {**IDLE, "swapUsedBytes": -1})[0], 75)
+        self.assertEqual(self.invoke(lambda: {**IDLE, "memorySomeAvg10": False})[0], 75)
         def unavailable():
             raise OSError("no PSI")
         self.assertEqual(self.invoke(unavailable)[0], 75)
@@ -225,6 +228,45 @@ else:
         self.assertIn("no terminal daemon result; client exit 3", output)
         self.assertEqual(self.invoke()[0], 75)
         self.assertEqual(len(self.captured_calls()), 1)
+
+    def test_exception_reading_launched_client_result_retains_handoff_and_blocks_retry(self):
+        output_path = self.state / "last-client.log"
+        real_open = Path.open
+
+        def open_path(path, *args, **kwargs):
+            mode = args[0] if args else kwargs.get("mode", "r")
+            if path == output_path and mode == "r":
+                raise OSError("terminal result cannot be read")
+            return real_open(path, *args, **kwargs)
+
+        with patch.object(Path, "open", open_path):
+            code, output = self.invoke()
+        self.assertEqual(code, 1)
+        self.assertEqual(len(self.captured_calls()), 1)  # The client actually launched.
+        marker = json.loads((self.state / "uncertain-job.json").read_text())
+        self.assertIn("cannot confirm daemon completion", marker["reason"])
+        self.assertNotIn("client did not start", output)
+        self.assertEqual(self.invoke()[0], 75)
+        self.assertEqual(len(self.captured_calls()), 1)
+
+    def test_subprocess_exception_after_launch_keeps_pre_submission_marker(self):
+        process = Mock()
+        process.wait.side_effect = subprocess.SubprocessError("lost client wait status")
+        with patch.object(scheduler.subprocess, "Popen", return_value=process) as launch:
+            code, output = self.invoke()
+        self.assertEqual(launch.call_count, 1)
+        self.assertEqual(code, 1)
+        self.assertIn("handoff-required", output)
+        self.assertTrue((self.state / "uncertain-job.json").exists())
+        self.assertEqual(self.invoke()[0], 75)
+
+    def test_launcher_error_retains_conservative_handoff_without_claiming_no_job(self):
+        with patch.object(scheduler.subprocess, "Popen", side_effect=OSError("ambiguous launcher failure")):
+            code, output = self.invoke()
+        self.assertEqual(code, 1)
+        self.assertNotIn("client did not start", output)
+        self.assertTrue((self.state / "uncertain-job.json").exists())
+        self.assertEqual(self.invoke()[0], 75)
 
     def test_lock_prevents_overlap_and_dry_run_never_calls_zg(self):
         config = {**self.policy, "projectsDirectory": str(self.projects)}

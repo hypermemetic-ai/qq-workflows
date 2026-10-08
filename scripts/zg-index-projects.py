@@ -118,7 +118,7 @@ def pressure_reasons(sample, gates):
     reasons = []
     for name, limit in gates.items():
         value = sample.get(name)
-        if not isinstance(value, (int, float)) or not math.isfinite(value):
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
             reasons.append("missing/invalid pressure metric: " + name)
         elif (name == "memoryAvailableBytes" and value < limit) or (name != "memoryAvailableBytes" and value > limit):
             reasons.append(name + "=" + str(value))
@@ -228,8 +228,14 @@ def sweep(policy, state, binary, sample, dry_run=False):
         try:
             succeeded, uncertain, reason = reconcile(project, binary, policy["jobTimeoutSeconds"], output_path)
         except (OSError, subprocess.SubprocessError) as error:
-            handoff.unlink()
-            log("failed", project=name, reason="client did not start: " + str(error))
+            # Exceptions can occur after Popen has submitted a daemon job, while
+            # waiting, signalling, closing output, or reading its terminal result.
+            # Retain the pre-submission marker unless a terminal result proves
+            # daemon completion; an exception does not prove launch never happened.
+            reason = "cannot confirm daemon completion after client error: " + str(error)
+            save_handoff(handoff, {"root": str(project), "reason": reason,
+                                   "clientLog": str(output_path)})
+            log("handoff-required", project=name, reason=reason, handoff=str(handoff))
             return 1
         if not succeeded:
             counts["failed"] += 1
