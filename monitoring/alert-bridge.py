@@ -110,7 +110,7 @@ class Bridge:
     def save(self):
         atomic_json(self.state / "dispatch-state.json", self.dispatch)
 
-    def command(self, args, timeout=8):
+    def command(self, args, timeout=15):
         return self.runner(args, capture_output=True, text=True, timeout=timeout, check=True)
 
     def pending(self):
@@ -170,6 +170,7 @@ class Bridge:
         binary = self.config.get("paseo_binary", "paseo")
         if now < self.dispatch["retry_after"]:
             return
+        operation = "inspect"
         try:
             status = json.loads(self.command([binary, "inspect", "--json", agent_id]).stdout)
             if not isinstance(status, dict):
@@ -184,6 +185,7 @@ class Bridge:
                     self.dispatch["last_dispatch"] = active
                     self.save()
                 if active is not None and now - active > self.config.get("investigator_max_seconds", 180):
+                    operation = "stop"
                     self.command([binary, "stop", agent_id])
                     self.dispatch["active_since"] = None
                     self.dispatch["failure_count"] = 0
@@ -206,16 +208,21 @@ class Bridge:
             self.dispatch["active_since"] = now
             self.save()
             # Only mark delivered after the daemon explicitly accepts the prompt.
+            operation = "send"
             self.command([binary, "send", "--no-wait", "--prompt-file", str(prompt_file), agent_id])
             self.dispatch["last_dispatch"] = now
             self.dispatch["active_since"] = now
             self.dispatch["failure_count"] = 0
             self.dispatch["retry_after"] = 0
+            self.dispatch.pop("last_error", None)
             for incident in batch:
                 self.dispatch["deliveries"].setdefault(incident["id"], {})["paseo"] = revision(incident)
             self.save()
-        except (OSError, ValueError, subprocess.SubprocessError):
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
             # Incident files survive provider/network outages for a later retry.
+            self.dispatch["last_error"] = {"timestamp": now, "operation": operation,
+                                           "type": type(error).__name__,
+                                           "returncode": getattr(error, "returncode", None)}
             failures = min(20, self.dispatch["failure_count"] + 1)
             self.dispatch["failure_count"] = failures
             delay = min(600, 30 * 2 ** (failures - 1))

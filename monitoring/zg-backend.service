@@ -1,0 +1,30 @@
+[Unit]
+Description=Resource-bounded shared zvec-grep search backend
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/home/linuxbrew/.linuxbrew/bin/node --liftoff-only --max-old-space-size=2048 %h/.local/share/zvec-grep/current/dist/cli/index.js --server run --listen 127.0.0.1:7999 --home %h/.zvec-grep --mcp-toolset agent
+Environment=ZVEC_GREP_CPU_THREADS=2
+Environment=ZVEC_GREP_BACKGROUND_DEVICE=cpu
+Environment=ZVEC_GREP_MAX_ROOT_WATCHERS=2048
+Environment=ZVEC_GREP_MAX_DAEMON_WATCHERS=8192
+Environment=ZVEC_GREP_WATCHER_IDLE_TIMEOUT_SECONDS=900
+Environment=ZVEC_GREP_DAEMON_AUTOSTART=0
+Environment=PATH=/home/qqp/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin
+Restart=always
+RestartSec=10
+Nice=5
+CPUQuota=200%
+MemoryHigh=2G
+MemoryMax=4G
+TasksMax=128
+LimitNOFILE=32768
+NoNewPrivileges=yes
+UMask=0077
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

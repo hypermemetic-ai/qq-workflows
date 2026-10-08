@@ -1,0 +1,34 @@
+[Unit]
+Description=Independent qq-box uptime watchdog and metrics archive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Root can read the private deployment files; the service has no Linux capabilities.
+User=root
+ExecStart=/usr/bin/python3 /srv/qq-host-monitor/offbox-watchdog.py --listen 10.99.0.66 --port 19997 --host qq-box --token-file /srv/qq-host-monitor/private/heartbeat-token --state-dir /var/lib/qq-host-monitor --tls-cert /srv/qq-host-monitor/private/server.crt --tls-key /srv/qq-host-monitor/private/server.key
+Restart=always
+RestartSec=5
+TimeoutStopSec=10
+UMask=0077
+StateDirectory=qq-host-monitor
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/qq-host-monitor
+MemoryMax=128M
+CPUQuota=10%
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target
