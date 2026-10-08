@@ -2,10 +2,10 @@
 
 ## 1. Source presentation
 
-- [ ] 1.1 In a source child agent, read checkout instructions and relevant design/native/testing docs, run Git status, pin the ring-only beta baseline and verify upstream equivalents and relevant worktrees/PRs; record sanitized provenance and preserve other work.
-- [ ] 1.2 Implement a deliberate complete static running mark in the native reduced-motion ring within the existing footprint/backdrop; verify all ring consumers retain their controls and the accepted clock eligibility remains unchanged.
-- [ ] 1.3 Replace only the chat footer's reduced-motion dot-grid graphic with a static theme-aware mark and wire existing selected-agent status/pending permissions; verify blue working and amber needs input, memo updates, existing elapsed timing, actions and completion visibility without new visible labels or recurring work.
-- [ ] 1.4 Run required focused npm lint/typecheck/format commands and any meaningful existing focused checks warranted by state wiring; record results, keep runtime scope small, commit/push a scoped presentation change and open its source PR without running the prohibited full suite.
+- [x] 1.1 In a source child agent, read checkout instructions and relevant design/native/testing docs, run Git status, pin the ring-only beta baseline and verify upstream equivalents and relevant worktrees/PRs; record sanitized provenance and preserve other work.
+- [x] 1.2 Implement a deliberate complete static running mark in the native reduced-motion ring within the existing footprint/backdrop; verify all ring consumers retain their controls and the accepted clock eligibility remains unchanged.
+- [x] 1.3 Replace only the chat footer's reduced-motion dot-grid graphic with a static theme-aware mark and wire existing selected-agent status/pending permissions; verify blue working and amber needs input, memo updates, existing elapsed timing, actions and completion visibility without new visible labels or recurring work.
+- [x] 1.4 Run required focused npm lint/typecheck/format commands and any meaningful existing focused checks warranted by state wiring; record results, keep runtime scope small, commit/push a scoped presentation change and open its source PR without running the prohibited full suite.
 
 ## 2. Native acceptance and Android delivery
 
