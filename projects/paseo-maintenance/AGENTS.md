@@ -38,9 +38,13 @@ runtime patches unless a measured problem and an explicit decision justify more.
 
 Verified reductions in unnecessary native callbacks, wakeups or CPU are useful
 even if action latency is unchanged. Claim battery savings only when measured.
-The optional static working badge remains deferred: its existing panel gate and
-Reanimated reduction already stop animation. Adding it requires a separate scope
-decision and a measured gain.
+The approved [static-status follow-up](../../openspec/changes/clarify-paseo-status-indicators/design.md)
+addresses reduced-motion legibility in the workspace ring and chat graphic,
+without new visible labels or changes to the existing timer. Its separate
+[delivery record](status-indicators.md) owns source, native resource checks and
+Android activation. Acceptance requires legibility and preserved resource use;
+additional CPU or battery savings are not presumed. This explicit presentation
+decision does not reopen the rejected background-timer patch.
 
 This change's selected delivery outcome includes replacing the existing Android
 Play Store client under the production package. Record any initial signing
@@ -66,15 +70,29 @@ flags, dependency changes or broad rewrites, especially flags affecting hit test
    Review the linked performance plan and each retained patch independently;
    upstream may replace either outcome without replacing the other.
 3. Follow the repo's focused tests and npm lint/typecheck/format commands; avoid
-   the prohibited full local suite. Use synthetic long timelines, streaming,
+   the prohibited full local suite. Start native client QA with the reusable
+   [Android emulator workflow](android-emulator.md). Use synthetic long timelines, streaming,
    idle/hidden panels, typing, scrolling, taps, native gestures and keyboard use.
    Compare repeated same-device/workload measurements with controlled restarts
-   and thermal conditions. Desktop-only results do not prove native improvement.
+   and thermal conditions. Reserve physical-device testing for hardware behavior
+   or physical CPU/battery evidence; keep emulator measurements labeled. Android
+   activation is separate from routine emulator QA.
 4. Update owned provenance and link each retained patch's source commit, native
    evidence and retirement condition here or in its owning PR/spec. Complete
    scoped commit, push and the required PR/merge path, plus authorized activation.
    When archiving a plan, update this entry point to its durable spec, archive or
    owning patch records so subsequent updates can still find every retained patch.
+
+For compatible JavaScript/TypeScript-only tweaks, follow the runbook's
+[small-change turnaround](android-emulator.md#small-change-turnaround): reuse the
+retained toolchain and native caches, avoid unconditional clean prebuilds, and
+use upstream's development-client/Metro workflow for iteration once its local
+setup is verified. Compile one fresh release bundle, reuse it only with audited
+matching inputs, and complete focused native release checks before activation.
+Repeat controlled benchmarks when performance/recurring work changes or the
+active plan requires them. Record stage timings; distinguish warm packaging from
+a fresh bundle and full delivery. This policy belongs here and in the runbook;
+add no app runtime patch or custom updater to accelerate development.
 
 Keep private data and credentials out of agent/cloud inputs and public artifacts.
 Preserve running agents, pairings, package/signing identities and selected settings.

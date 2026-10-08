@@ -13,6 +13,9 @@ maps remain upstream metadata; consult the source commit for the patched code.
 Package versions stay `0.11.0-beta.5`; release-root provenance identifies the fork.
 The later Android ring patch is tracked separately in the
 [display-work delivery record](../../../projects/paseo-maintenance/display-work.md).
+The installed reduced-motion presentation follow-up and reusable Android emulator
+QA pipeline are owned by the separate
+[status-indicators delivery record](../../../projects/paseo-maintenance/status-indicators.md).
 
 Published inputs are at `~/.local/state/paseo-beta-20261006/`. Reproduce and verify
 without changing the live daemon or CLI:
