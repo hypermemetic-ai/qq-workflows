@@ -1,6 +1,25 @@
 allprojects { p ->
     ["com.android.application", "com.android.library"].each { pluginId ->
         p.plugins.withId(pluginId) {
+            if (pluginId == "com.android.application" && p.findProperty("paseoUseAuditedBundle") == "true") {
+                def expectedSha = p.findProperty("paseoAuditedBundleSha256")?.toString()
+                if (expectedSha == null || !(expectedSha ==~ /[0-9a-f]{64}/)) {
+                    throw new GradleException("Supply paseoAuditedBundleSha256 when reusing an audited bundle")
+                }
+                p.tasks.matching { it.name == "createBundleReleaseJsAndAssets" }.configureEach { bundleTask ->
+                    onlyIf {
+                        def bundle = new File(bundleTask.jsBundleDir.get().asFile, bundleTask.bundleAssetName.get())
+                        if (!bundle.isFile()) {
+                            throw new GradleException("Audited bundle is missing")
+                        }
+                        def actualSha = java.security.MessageDigest.getInstance("SHA-256").digest(bundle.bytes).encodeHex().toString()
+                        if (actualSha != expectedSha) {
+                            throw new GradleException("Audited bundle SHA-256 differs")
+                        }
+                        return false
+                    }
+                }
+            }
             p.extensions.getByName("androidComponents").finalizeDsl { android ->
                 android.defaultConfig.externalNativeBuild.cmake.arguments.addAll([
                     "-DCMAKE_JOB_POOLS=paseo_compile=1;paseo_link=1",

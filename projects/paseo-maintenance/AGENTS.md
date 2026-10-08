@@ -83,6 +83,17 @@ flags, dependency changes or broad rewrites, especially flags affecting hit test
    When archiving a plan, update this entry point to its durable spec, archive or
    owning patch records so subsequent updates can still find every retained patch.
 
+For compatible JavaScript/TypeScript-only tweaks, follow the runbook's
+[small-change turnaround](android-emulator.md#small-change-turnaround): reuse the
+retained toolchain and native caches, avoid unconditional clean prebuilds, and
+use upstream's development-client/Metro workflow for iteration once its local
+setup is verified. Compile one fresh release bundle, reuse it only with audited
+matching inputs, and complete focused native release checks before activation.
+Repeat controlled benchmarks when performance/recurring work changes or the
+active plan requires them. Record stage timings; distinguish warm packaging from
+a fresh bundle and full delivery. This policy belongs here and in the runbook;
+add no app runtime patch or custom updater to accelerate development.
+
 Keep private data and credentials out of agent/cloud inputs and public artifacts.
 Preserve running agents, pairings, package/signing identities and selected settings.
 Never wipe the Play app to force a fork installation; different signing requires
