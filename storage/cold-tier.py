@@ -169,26 +169,54 @@ class Inotify:
         self.lib = ctypes.CDLL(None, use_errno=True)
         self.lib.inotify_init1.argtypes = [ctypes.c_int]
         self.lib.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+        self.lib.inotify_rm_watch.argtypes = [ctypes.c_int, ctypes.c_int]
         self.fd = self.lib.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
         if self.fd < 0: raise OSError(ctypes.get_errno(), 'inotify_init1')
-        self.limit = limit; self.paths = {}
+        self.limit = limit; self.paths = {}; self.by_path = {}; self.children = {}; self.by_root = {}
+        self.deferred = []; self.on_progress = None; self.rebuild_roots = set()
     def close(self): os.close(self.fd)
     def add(self, path, root):
-        if len(self.paths) >= self.limit: raise ValueError('watch budget exceeded')
+        path = Path(path)
+        if len(self.paths) >= self.limit and path not in self.by_path: raise ValueError('watch budget exceeded')
         wd = self.lib.inotify_add_watch(self.fd, os.fsencode(path), MASK)
         if wd < 0: raise OSError(ctypes.get_errno(), str(path))
-        self.paths[wd] = (Path(path), root)
+        if wd in self.paths:
+            previous, owner = self.paths[wd]
+            self.by_path.pop(previous,None); self.by_root.get(owner,set()).discard(wd)
+            self.children.get(previous.parent,set()).discard(previous)
+        self.paths[wd] = (path, root); self.by_path[path] = wd
+        self.by_root.setdefault(root,set()).add(wd)
+        self.children.setdefault(path.parent,set()).add(path)
+    def remove_path(self, path):
+        pending = [Path(path)]
+        while pending:
+            p = pending.pop(); pending.extend(self.children.pop(p,()))
+            wd = self.by_path.pop(p,None)
+            self.children.get(p.parent,set()).discard(p)
+            if wd is None: continue
+            _, key = self.paths.pop(wd)
+            self.by_root.get(key,set()).discard(wd)
+            self.lib.inotify_rm_watch(self.fd,wd)
+    def remove_root(self, key):
+        for wd in list(self.by_root.get(key,())):
+            if wd in self.paths: self.remove_path(self.paths[wd][0])
+        self.by_root.pop(key,None)
     def tree(self, path, root):
         info = path.lstat()
         if stat.S_ISLNK(info.st_mode): raise ValueError('watch root is a symlink')
         self.add(path, root)
         if not stat.S_ISDIR(info.st_mode): return
         def failed(error): raise error
+        visited = 0
         for directory, dirs, _ in os.walk(path, followlinks=False, onerror=failed):
             dirs[:] = [n for n in dirs if not (Path(directory) / n).is_symlink()]
-            for name in dirs: self.add(Path(directory) / name, root)
-    def events(self):
-        result = []
+            for name in dirs:
+                self.add(Path(directory) / name, root); visited += 1
+                if self.on_progress and visited % 64 == 0: self.on_progress()
+        if self.on_progress: self.on_progress()
+    def events(self, include_deferred=True):
+        result = self.deferred if include_deferred else []
+        if include_deferred: self.deferred = []
         # Bounded drain. Undrained events remain queued for the next iteration.
         for _ in range(16):
             try: raw = os.read(self.fd, 65536)
@@ -199,6 +227,9 @@ class Inotify:
                 name = os.fsdecode(raw[offset+16:offset+16+length].split(b'\0', 1)[0])
                 offset += 16 + length
                 parent, root = self.paths.get(wd, (None, None))
+                # Our own directory walks generate these too. They cannot describe
+                # file demand and must be drained during watch admission.
+                if mask & ISDIR and not mask & ~(ISDIR | ACCESS | OPEN): continue
                 result.append((root, parent / name if parent and name else parent, mask))
         return result
 
@@ -649,31 +680,47 @@ def decisions(store, cfg, now=None):
     return rows
 
 
-def consume_events(store, watcher, roots):
-    """Drain access events before a destructive action; return rebuild requirement."""
-    byid = {r['id']: r for r in roots}; rebuild = False; now = time.time()
-    for key, path, mask in watcher.events():
+def consume_events(store, watcher, roots, defer_topology=False):
+    """Coalesce demand; repair only changed subtrees, without full scan loops."""
+    byid = {r['id']: r for r in roots}; rebuild = False; now = time.time(); activity = {}
+    for key, path, mask in (watcher.events(include_deferred=False) if defer_topology else watcher.events()):
         if mask & OVERFLOW:
             store.db.execute('UPDATE roots SET coverage=0,since=0,error=?', ('inotify overflow: quiet clock reset',))
+            if hasattr(watcher,'rebuild_roots'): watcher.rebuild_roots.update(byid)
             rebuild = True; continue
         if key not in byid: continue
         root = byid[key]
         base = live_path(root)
         topology = mask & (DELETE_SELF | MOVE_SELF | IGNORED) or (mask & ISDIR and mask & (CREATE | MOVED_FROM | MOVED_TO | DELETE))
         if topology:
-            store.db.execute('UPDATE roots SET coverage=0,error=? WHERE id=?', ('directory topology changed: rebuilding coverage', key))
-            rebuild = True
-            if path and within(path, base) and mask & ISDIR and mask & (CREATE | MOVED_TO):
-                store.activity(key, str(path.relative_to(base)), MODIFY, now)
+            if defer_topology:
+                if len(watcher.deferred)>=65536:
+                    store.db.execute('UPDATE roots SET coverage=0,since=0,error=?',('topology queue overflow: quiet clock reset',))
+                    watcher.rebuild_roots.update(byid);watcher.deferred=[]
+                watcher.deferred.append((key,path,mask)); continue
+            try:
+                if path and within(path,base) and mask & ISDIR and mask & (CREATE | MOVED_TO):
+                    store.activity(key,str(path.relative_to(base)),MODIFY,now)
+                    if path.is_dir() and not path.is_symlink(): watcher.tree(path,key)
+                elif path and mask & (DELETE_SELF | MOVE_SELF | IGNORED | MOVED_FROM | DELETE):
+                    watcher.remove_path(path)
+                    if path==base:
+                        store.db.execute('UPDATE roots SET coverage=0,since=0,error=? WHERE id=?',('root changed: waiting for re-admission',key))
+                        watcher.rebuild_roots.add(key); rebuild=True
+            except (OSError,ValueError) as e:
+                store.db.execute('UPDATE roots SET coverage=0,since=0,error=? WHERE id=?',(str(e)[:200],key))
         if not mask & ISDIR and path and mask & (ACCESS | OPEN | MODIFY | ATTRIB | CREATE | MOVED_TO):
-            if within(path, base): store.activity(key, str(path.relative_to(base)), mask, now)
+            if within(path, base):
+                identity = (key,str(path.relative_to(base)))
+                activity[identity] = activity.get(identity,0) | mask
+    for (key,path),mask in activity.items(): store.activity(key,path,mask,now)
     store.db.commit()
     return rebuild
 
 
 def watch(store, cfg):
     with lock(store.state / 'watch.lock'):
-        watcher = None; signature = None; rebuilt = False; next_report = 0; next_adopt = 0; next_gc = time.time() + 3600
+        watcher = Inotify(cfg['max_watches']); signatures = {}; next_report = 0; next_adopt = 0; next_gc = time.time() + 3600
         store.db.execute('UPDATE roots SET coverage=0,since=0,error=?', ('watcher restarted: quiet clock reset',)); store.db.commit()
         try:
             while True:
@@ -682,11 +729,16 @@ def watch(store, cfg):
                     except (OSError, ValueError) as e: store.put('defaults_error', str(e)[:200]); store.db.commit()
                     next_adopt = time.time() + 60
                 roots = store.roots()
-                current = tuple((r['id'], r['location'], r['target'], r['source'], r['hot']) for r in roots)
-                if signature != current or rebuilt:
-                    old_watcher = watcher
-                    watcher = Inotify(cfg['max_watches']); rebuilt = False
-                    for root in roots:
+                current = {r['id']:(r['location'],r['target'],r['source'],r['hot']) for r in roots}
+                for key in set(signatures)-set(current): watcher.remove_root(key); signatures.pop(key)
+                def progress():
+                    consume_events(store,watcher,roots,defer_topology=True)
+                    store.put('heartbeat',time.time());store.db.commit()
+                watcher.on_progress=progress
+                for root in roots:
+                    key=root['id']
+                    if signatures.get(key)!=current[key] or key in watcher.rebuild_roots:
+                        watcher.rebuild_roots.discard(key);watcher.remove_root(key)
                         try:
                             path = live_path(root)
                             if Path(root['source']).resolve() != path:
@@ -696,14 +748,10 @@ def watch(store, cfg):
                                              (time.time(), '', root['id']))
                         except (OSError, ValueError) as e:
                             store.db.execute('UPDATE roots SET coverage=0,since=0,error=? WHERE id=?', (str(e)[:200], root['id']))
-                    # Overlap registrations to preserve access coverage for existing files.
-                    if old_watcher:
-                        rebuilt = consume_events(store, old_watcher, roots)
-                        old_watcher.close()
-                    signature = current; store.db.commit()
+                        signatures[key]=current[key];store.db.commit()
                 select.select([watcher.fd], [], [], 2)
                 now = time.time()
-                rebuilt = consume_events(store, watcher, roots) or rebuilt
+                consume_events(store,watcher,roots)
                 store.put('heartbeat', now); store.put('watches', len(watcher.paths)); store.db.commit()
                 if now >= next_report:
                     atomic_json(store.state / 'status.json', {'timestamp': now, 'watches': len(watcher.paths), 'roots': decisions(store, cfg)})
@@ -713,15 +761,14 @@ def watch(store, cfg):
                         try:
                             with lock(store.state / 'move.lock'):
                                 def barrier():
-                                    nonlocal rebuilt
-                                    rebuilt = consume_events(store, watcher, roots) or rebuilt
+                                    consume_events(store,watcher,roots)
                                 store.put('last_gc', gc(store, cfg, apply=True, barrier=barrier))
                                 store.put('gc_requested', False)
                         except BlockingIOError: pass
                     store.db.commit(); next_gc = now + DAY
         finally:
             store.db.execute('UPDATE roots SET coverage=0,since=0,error=?', ('watcher stopped',)); store.db.commit()
-            if watcher: watcher.close()
+            watcher.close()
 
 
 def queue_add(store, source, action='move'):

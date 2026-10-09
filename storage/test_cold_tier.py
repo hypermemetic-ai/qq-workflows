@@ -198,6 +198,29 @@ class ColdTierTests(unittest.TestCase):
         self.assertEqual((source/'data').read_text(),'keep')
         journal=m.bounded_json(self.store.state/'operation.json')
         self.assertEqual((Path(journal['destination'])/'data').read_text(),'keep')
+    def test_watch_admission_drains_its_own_directory_events(self):
+        path=self.home/'tree';path.mkdir()
+        for n in range(150):(path/str(n)).mkdir()
+        watcher=m.Inotify(200);calls=[]
+        def progress():calls.append(1);self.assertEqual(watcher.events(),[])
+        watcher.on_progress=progress
+        try:
+            watcher.tree(path,'root');self.assertGreaterEqual(len(calls),2)
+            self.assertEqual(len(watcher.paths),151)
+        finally:watcher.close()
+    def test_dynamic_subtree_admission_keeps_other_retention_clocks(self):
+        key,_,target,now=self.root();watcher=m.Inotify(50)
+        try:
+            watcher.tree(target,key);watcher.events()
+            new=target/'fresh';new.mkdir()
+            m.consume_events(self.store,watcher,self.store.roots())
+            self.assertIn(new,watcher.by_path)
+            root=self.store.root(key);self.assertEqual(root['coverage'],1)
+            self.assertTrue(m.quiet(self.store,root,'build/cold.bin',(target/'build/cold.bin').stat(),now,30))
+            new.rmdir();m.consume_events(self.store,watcher,self.store.roots())
+            self.assertNotIn(new,watcher.by_path)
+            self.assertEqual(self.store.root(key)['coverage'],1)
+        finally:watcher.close()
 
 
 if __name__=='__main__': unittest.main()
