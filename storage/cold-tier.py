@@ -46,6 +46,7 @@ DEFAULT = {
     'automatic_migration': True,
     'watch_original_ssd': True,
     'mirror_layout': False,
+    'cached_retention_watches_only': False,
 }
 
 
@@ -397,6 +398,29 @@ def database_file(path):
 def watch_enabled(root,cfg):
     if root['location']=='hdd' or cfg.get('watch_original_ssd',True): return True
     return bool(root['hot'] and within(absolute(root['hot']),absolute(cfg['hot_storage'])))
+
+
+def retention_paths(store,root,cfg):
+    if not watch_enabled(root,cfg):return []
+    base=live_path(root)
+    if not (cfg.get('cached_retention_watches_only',False) and root['location']=='hdd' and
+            any(within(base,absolute(p)) for p in cfg.get('block_cached_mounts',[]))):return [base]
+    paths=[]
+    for scope in store.db.execute('SELECT path FROM scopes WHERE root=? ORDER BY path',(root['id'],)):
+        relative=Path(scope['path'])
+        if relative.is_absolute() or '..' in relative.parts or str(relative)=='.':raise ValueError('invalid retention watch scope')
+        paths.append(base/relative)
+    return paths
+
+
+def watch_signature(store,root,cfg):
+    paths=retention_paths(store,root,cfg);identities=[];base=live_path(root)
+    for path in paths:
+        for parent in [path,*[p for p in path.parents if within(p,base)]]:
+            try:info=parent.lstat();identity=(info.st_dev,info.st_ino,stat.S_IFMT(info.st_mode))
+            except FileNotFoundError:identity=None
+            identities.append((str(parent),identity))
+    return (root['location'],root['target'],root['source'],root['hot'],tuple(identities))
 
 
 def exchange(a, b):
@@ -1171,7 +1195,10 @@ def consume_events(store, watcher, roots, defer_topology=False):
             try:
                 if path and within(path,base) and mask & ISDIR and mask & (CREATE | MOVED_TO):
                     store.activity(key,str(path.relative_to(base)),MODIFY,now)
-                    if path.is_dir() and not path.is_symlink(): watcher.tree(path,key)
+                    boundaries=getattr(watcher,'boundaries',{}).get(key,[base])
+                    if any(within(path,b) for b in boundaries):
+                        if path.is_dir() and not path.is_symlink():watcher.tree(path,key)
+                    elif any(within(b,path) for b in boundaries):watcher.rebuild_roots.add(key);rebuild=True
                 elif path and mask & (DELETE_SELF | MOVE_SELF | IGNORED | MOVED_FROM | DELETE):
                     watcher.remove_path(path)
                     if path==base:
@@ -1208,7 +1235,8 @@ def watch(store, cfg):
                 # HDD roots can be retained/pruned; prioritize their complete
                 # coverage over SSD roots which are ineligible for retention.
                 roots = sorted(store.roots(), key=lambda r: (r['location'] != 'hdd', r['created']))
-                current = {r['id']:(r['location'],r['target'],r['source'],r['hot'],watch_enabled(r,cfg)) for r in roots}
+                current = {r['id']:watch_signature(store,r,cfg) for r in roots}
+                watcher.boundaries={r['id']:retention_paths(store,r,cfg) for r in roots}
                 for key in set(signatures)-set(current): watcher.remove_root(key); signatures.pop(key)
                 def progress():
                     consume_events(store,watcher,roots,defer_topology=True)
@@ -1218,16 +1246,24 @@ def watch(store, cfg):
                     key=root['id']
                     if signatures.get(key)!=current[key] or key in watcher.rebuild_roots:
                         watcher.rebuild_roots.discard(key);watcher.remove_root(key)
-                        if not watch_enabled(root,cfg):
+                        paths=watcher.boundaries[key]
+                        if not paths:
+                            reason=('original SSD watches disabled; migration guard remains active' if root['location']=='ssd'
+                                    else 'unique data retained; native block cache handles demand; no retention scope')
                             store.db.execute('UPDATE roots SET coverage=0,since=0,error=? WHERE id=?',
-                                             ('original SSD watches disabled; migration guard remains active',key))
+                                             (reason,key))
                             signatures[key]=current[key];store.db.commit();continue
+                        if signatures.get(key)!=current[key]:
+                            store.db.execute('UPDATE roots SET coverage=0,since=0 WHERE id=?',(key,));store.db.commit()
                         for attempt in range(2):
                             try:
                                 path = live_path(root)
                                 if Path(root['source']).resolve() != path:
                                     raise ValueError('source symlink differs from ledger')
-                                watcher.tree(path, root['id'])
+                                for scope in paths:
+                                    if scope.resolve()!=scope or not scope.exists():raise ValueError('retention watch path changed')
+                                    for ancestor in [p for p in scope.parents if within(p,path)]:watcher.add(ancestor,key)
+                                    watcher.tree(scope,key)
                                 store.db.execute('UPDATE roots SET coverage=1,since=CASE WHEN since=0 THEN ? ELSE since END,error=? WHERE id=?',
                                                  (time.time(), '', root['id']))
                                 break
