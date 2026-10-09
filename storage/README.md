@@ -194,4 +194,36 @@ synthetic trial. No live paths or boot configuration are changed. Actual boot
 ordering, abrupt power loss and the performance of other applications remain
 unproven; the pilot does not authorize production migration.
 
+### Startup and controller-recovery drill
+
+After the application pilot passes, run:
+
+```sh
+sudo ~/.local/bin/qq-cold-tier-startup-test
+```
+
+The drill creates separate disposable 512 MiB HDD, 64 MiB SSD cache and 16 MiB
+metadata images. Actual temporary systemd services declare and verify HDD mount
+dependencies plus the same CPU, RAM, swap, task and physical I/O caps. Workers
+only attach the already-validated drill images; normal startup never formats or
+replaces a filesystem. A deliberately failed temporary dependency must prevent
+the startup worker from running. The real HDD mount and application services
+are never stopped. No boot-time service or configuration is installed.
+
+The controller is deliberately killed with SIGKILL after fsyncing a file and
+committing a SQLite transaction. A new service reconstructs the existing kernel
+mount and loop/mapper associations, verifies acknowledged data, then detaches
+them cleanly. The drill temporarily renames its detached cache image and verifies
+the HDD copy through a read-only, no-journal-replay mount. The cache is restored
+and its data checked again. Writable HDD bypass is deliberately excluded because
+it would require invalidating old cache metadata before reattachment.
+
+All temporary service units and images are cleaned up, or retained with a failed
+report when associations, mount ownership, cache mode or teardown are ambiguous.
+The helper recovers its own retained images before a new attempt and refuses to
+clean up alongside an active worker. Results go to `native-startup.json`. Passing
+this drill establishes runtime startup ordering and recovery from a controller
+process crash; it does not test an actual reboot, power loss or drive unplugging.
+Those distinctions remain explicit in the report. The drill migrates no live data.
+
 Validation: `qq-job -- python3 -m unittest discover -s storage -p 'test_*.py'`.
