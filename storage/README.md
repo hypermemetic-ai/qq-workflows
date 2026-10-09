@@ -53,6 +53,11 @@ references are limited to visible same-UID processes: sandboxes and root process
 can hide references. This is quiescent-user-data migration, not an online database
 mover. An interrupted publish keeps `operation.json` and both copies; inspect and
 recover them before retrying. It never deletes an ambiguous original on startup.
+`qq-job -- qq-cold-tier recover-published` can finish a published HDD move after
+interrupted retirement. It checks public and legacy aliases and compares every
+surviving original file with its published copy; changed or active originals
+remain intact. Read-only archive directories are made writable only in the
+retired copy, preserving the published file modes and any external hard links.
 For explicitly reviewed immutable SDK/build-cache directories, the optional
 `immutable_hardlink_scopes` policy permits copying shared files to independent HDD
 inodes. External aliases remain untouched; internal hard links remain shared.
