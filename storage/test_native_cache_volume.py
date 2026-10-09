@@ -1,4 +1,5 @@
 import importlib.util
+from collections import namedtuple
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,30 @@ volume=importlib.util.module_from_spec(spec);spec.loader.exec_module(volume)
 
 
 class VolumeSafety(unittest.TestCase):
+    def test_hdd_with_room_for_old_pilot_cannot_allocate_the_terabyte_volume(self):
+        Usage=namedtuple('Usage','total used free')
+        def usage(path):
+            return Usage(2*10**12,0,64*1024**3 if path=='/' else 100*1024**3)
+        with patch.object(volume,'manifest_path',return_value=Path('/missing-volume-test-manifest')),\
+                patch.object(Path,'is_mount',return_value=False),patch.object(volume.shutil,'disk_usage',side_effect=usage),\
+                patch.object(volume.base,'new_image') as allocate,patch.object(volume.base,'run') as command:
+            with self.assertRaisesRegex(ValueError,'Insufficient HDD reserve'):
+                volume.Volume().provision(Path('/report'))
+        allocate.assert_not_called();command.assert_not_called()
+
+    def test_old_eight_gib_manifest_cannot_be_adopted_by_terabyte_helper(self):
+        with tempfile.TemporaryDirectory() as d:
+            path=Path(d)/'volume.json'
+            path.write_text(json.dumps({'schema':1,'owner':1000,'filesystem_uuid':str(uuid.uuid4()),
+                'image_bytes':{'origin.img':8*1024**3,'cache.img':256*volume.base.MIB,'metadata.img':16*volume.base.MIB},
+                'output':str(Path(d)/'report')}));path.chmod(0o600)
+            actual=path.stat()
+            with patch.object(volume,'manifest_path',return_value=path),patch.object(Path,'lstat') as ls,\
+                    patch.object(volume.base,'output_path') as output:
+                ls.return_value=type('RootStat',(),{'st_mode':actual.st_mode,'st_uid':0,'st_nlink':1})()
+                with self.assertRaisesRegex(ValueError,'Unexpected persistent-volume identity'):volume.read_manifest()
+            output.assert_not_called()
+
     def test_committed_volume_cannot_be_reformatted(self):
         with tempfile.TemporaryDirectory() as d,patch.object(volume.base,'SSD_BASE',Path(d)):
             root=Path(d)/volume.IDENTIFIER;root.mkdir();(root/'volume.json').write_text('{}')

@@ -231,15 +231,15 @@ Those distinctions remain explicit in the report. The drill migrates no live dat
 
 ### Persistent volume pilot
 
-After the startup/recovery drill passes, provision the first small persistent
+After the startup/recovery drill passes, provision the persistent
 volume:
 
 ```sh
 sudo ~/.local/bin/qq-cold-tier-native-volume
 ```
 
-This creates new, exclusive 8 GiB HDD, 256 MiB SSD cache and 16 MiB metadata
-images on the verified sda/sdb filesystems, preserving at least 10 GiB free on
+This creates new, exclusive 1 TB (1,000,000,000,000-byte) HDD, 256 MiB SSD cache
+and 16 MiB metadata images on the verified sda/sdb filesystems, preserving at least 10 GiB free on
 the root SSD. It formats only the newly allocated origin image, verifies file,
 SQLite and filesystem integrity, then installs a root-owned, pinned helper and
 `qq-native-cache-pilot.service`. Startup attaches existing images and verifies
@@ -247,6 +247,14 @@ their UUID, associations, clean writethrough mode and HDD mount dependencies.
 The service is enabled for boot without changing existing application services.
 No startup or recovery path formats existing data. Physical reboot, power loss
 and unplugging remain untested.
+
+The HDD image reserves its full capacity immediately. Ext4 uses one inode per
+64 KiB (about 15 million files), with eager metadata initialization under the
+existing 8 MB/s I/O cap. Formatting and the read-only filesystem check each
+have a 30-minute limit; initial provisioning can therefore take tens of minutes.
+The whole provisioning worker is bounded to 65 minutes, with three extra minutes
+to allow worker cleanup. Startup and stop retain their shorter limits. An existing
+8 GiB volume is refused by the new helper rather than resized or reformatted.
 
 The volume mounts at `/srv/qqcachedpilot`; `/srv/qqcachedpilot/data` is owned by
 the operator. The underlying unmounted directory is empty, root-owned and mode

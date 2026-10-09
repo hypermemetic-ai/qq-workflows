@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Provision one small persistent HDD/SSD cache pilot without moving user paths."""
+"""Provision a 1 TB persistent HDD/SSD cache volume without moving user paths."""
 import argparse
 import fcntl
 import hashlib
@@ -20,9 +20,16 @@ startup=importlib.util.module_from_spec(spec);spec.loader.exec_module(startup)
 base=startup.base
 base.SSD_BASE=Path('/var/lib/qq-native-cache-volume')
 base.HDD_BASE=Path('/srv/media-box/.qq-native-cache-volume')
-base.SIZES={'origin.img':8*1024**3,'cache.img':256*base.MIB,'metadata.img':16*base.MIB}
+base.SIZES={'origin.img':10**12,'cache.img':256*base.MIB,'metadata.img':16*base.MIB}
 base.DATA_MIB=1
 base.TOOLS['blkid']=shutil.which('blkid',path='/usr/sbin:/usr/bin:/sbin:/bin')
+# About 15 million inodes at 1 TB. Initialize them under the existing 8 MB/s
+# I/O cap, with time budgets for both formatting and the full read-only check.
+INODE_RATIO=65536
+FORMAT_TIMEOUT=1800
+CHECK_TIMEOUT=1800
+PROVISION_TIMEOUT=FORMAT_TIMEOUT+CHECK_TIMEOUT+300
+LAUNCH_TIMEOUT=PROVISION_TIMEOUT+180
 IDENTIFIER='000000000001'
 SERVICE='qq-native-cache-pilot.service'
 SCOPE='qq-native-cache-pilot-provision.scope'
@@ -143,15 +150,17 @@ class Volume(base.Trial):
             path=root/(key+'.img');base.new_image(path,base.SIZES[key+'.img']);self.images.append(path)
             self.attach(key,path)
         self.check_loop('origin',self.hdd/'origin.img')
-        base.run('mkfs.ext4','-q','-F','-m','0','-L','qq-cache-pilot','-E',
-                 'lazy_itable_init=0,lazy_journal_init=0,nodiscard',self.loops['origin'],timeout=240)
+        self.save('formatting new 1 TB HDD volume')
+        base.run('mkfs.ext4','-q','-F','-m','0','-i',str(INODE_RATIO),'-L','qq-cache-pilot','-E',
+                 'lazy_itable_init=0,lazy_journal_init=0,nodiscard',self.loops['origin'],timeout=FORMAT_TIMEOUT)
         fs_uuid=self.origin_uuid();self.mapped();self.mount('/dev/mapper/'+self.name)
         health=self.mountpoint/'.health';health.mkdir(mode=0o700);base.populate(health);self.health()
         data=self.mountpoint/'data';data.mkdir(mode=0o700);os.chown(data,OWNER,OWNER)
         fd=os.open(self.mountpoint,os.O_RDONLY|os.O_DIRECTORY)
         try:os.fsync(fd)
         finally:os.close(fd)
-        self.remove_cache();base.run('e2fsck','-f','-n',self.loops['origin'],timeout=60)
+        self.remove_cache();self.save('checking new 1 TB HDD filesystem')
+        base.run('e2fsck','-f','-n',self.loops['origin'],timeout=CHECK_TIMEOUT)
         self.detach()
         base.atomic_json(manifest_path(),{'schema':1,'owner':OWNER,'filesystem_uuid':fs_uuid,
                          'image_bytes':base.SIZES,'output':str(output)})
@@ -166,7 +175,7 @@ def worker(action,output=None):
     t=Volume();identity=None
     def interrupted(signum,frame):raise InterruptedError('Pilot worker interrupted: '+str(signum))
     for sig in (signal.SIGTERM,signal.SIGINT,signal.SIGALRM):signal.signal(sig,interrupted)
-    signal.alarm(300 if action=='provision' else 120)
+    signal.alarm(PROVISION_TIMEOUT if action=='provision' else 120)
     try:
         limits,deps=startup.verified_limits(expected,verify_dependencies=action!='provision')
         t.report.update(action=action,verified_resource_limits=limits,verified_dependencies=deps,
@@ -258,7 +267,7 @@ def main():
             if setting.startswith(('RequiresMountsFor=','BindsTo=','After=','RuntimeMaxSec=')):continue
             command.append('--property='+setting)
         command+=['/usr/bin/python3',str(Path(__file__).resolve()),'--worker','provision','--output',str(output)]
-        result=subprocess.run(command,timeout=360)
+        result=subprocess.run(command,timeout=LAUNCH_TIMEOUT)
         if result.returncode:raise RuntimeError('Provisioning failed; inspect '+str(output))
     else:read_manifest()
     install_service()
