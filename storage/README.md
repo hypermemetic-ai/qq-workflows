@@ -7,6 +7,10 @@ children preserve their SSD inodes during the atomic parent cutover, including
 open file handles. A queued, checksum-verified move retires each old child once
 it is idle. Writes through an already-open parent FD are reconciled every minute.
 Files of every size and folders containing many small files participate.
+Existing SSD children and late writes through old directory handles enter the
+hourly migration queue automatically. Each unit still defers while busy or
+unverifiable. Explicit SSD promotions retain their separate hot paths. Set
+`automatic_migration` to false to disable this intake.
 
 After changing the archive to the native cached volume, run
 `qq-job -- qq-cold-tier route-defaults`. This atomically redirects new children
@@ -74,6 +78,17 @@ their references. The status report exposes watch coverage and errors.
 Use `qq-cold-tier split ROOT_ID relative/path` to admit a smaller file or folder
 as its own promotion unit. This avoids promoting a whole large tree for one hot
 child. Sources/results remain protected; splitting does not authorize deletion.
+
+Parent cutovers and mixed-directory partitioning may also be queued for the
+next worker pass, without competing with a copy in progress:
+
+```sh
+qq-cold-tier queue --action default ~/.var ~/.codex/sessions
+qq-cold-tier queue --action partition ROOT_ID
+```
+
+The worker releases its transaction lock between units, refreshes a queued
+unit's state before executing it, and preserves any interrupted-copy journal.
 
 SSD promotion requires both repeated reads (default 120 per rolling pair of hourly
 buckets) and a recent matched task measurement showing at least 50 ms and 20%
