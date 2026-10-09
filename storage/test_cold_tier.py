@@ -519,6 +519,39 @@ m.watch(m.Store(sys.argv[3]),c)
         self.assertEqual((source/'data').read_text(),'keep')
         journal=m.bounded_json(self.store.state/'operation.json')
         self.assertEqual((Path(journal['destination'])/'data').read_text(),'keep')
+    def test_read_only_archive_directories_are_retired_without_changing_file_modes(self):
+        source=self.home/'archive';source.mkdir();nested=source/'frozen';nested.mkdir()
+        (nested/'data').write_text('keep');(nested/'data').chmod(0o444);nested.chmod(0o555)
+        with patch.object(m,'references',return_value=[]):m.migrate(self.store,self.cfg,source)
+        self.assertEqual((source/'frozen/data').read_text(),'keep')
+        self.assertEqual((source/'frozen/data').stat().st_mode&0o777,0o444)
+        self.assertEqual((source/'frozen').stat().st_mode&0o777,0o555)
+        self.assertFalse((self.store.state/'operation.json').exists())
+    def test_published_recovery_finishes_partial_retirement_and_registered_alias(self):
+        source=self.home/'cache';source.mkdir();(source/'archive').mkdir()
+        (source/'archive/a').write_text('a');(source/'archive/b').write_text('b')
+        with patch.object(m,'references',return_value=[]):m.bridge_parent(self.store,self.cfg,source)
+        m.adopt_defaults(self.store,self.cfg);row=self.store.root(str(source/'archive'));physical=Path(row['hot'])
+        def partial(path,limit):
+            (Path(path)/'a').unlink();raise PermissionError('retirement interrupted')
+        with patch.object(m,'references',return_value=[]),patch.object(m,'remove_retired',side_effect=partial):
+            with self.assertRaises(PermissionError):m.migrate(self.store,self.cfg,source/'archive',demoting=row)
+        with patch.object(m,'references',return_value=[]):m.recover_published(self.store,self.cfg)
+        self.assertEqual((physical/'a').read_text(),'a');self.assertEqual((source/'archive/b').read_text(),'b')
+        self.assertEqual(self.store.root(row['id'])['location'],'hdd')
+        self.assertFalse((self.store.state/'operation.json').exists())
+    def test_published_recovery_preserves_divergent_or_active_retired_data(self):
+        source=self.home/'archive';source.mkdir();(source/'data').write_text('keep')
+        with patch.object(m,'references',return_value=[]),patch.object(m,'remove_retired',side_effect=PermissionError('interrupted')):
+            with self.assertRaises(PermissionError):m.migrate(self.store,self.cfg,source)
+        record=m.bounded_json(self.store.state/'operation.json');retired=Path(record['staged'])
+        with patch.object(m,'references',return_value=[42]):
+            with self.assertRaisesRegex(ValueError,'remains active'):m.recover_published(self.store,self.cfg)
+        (retired/'data').write_text('late work')
+        with patch.object(m,'references',return_value=[]):
+            with self.assertRaisesRegex(ValueError,'diverged'):m.recover_published(self.store,self.cfg)
+        self.assertTrue(retired.exists());self.assertEqual((source/'data').read_text(),'keep')
+        self.assertTrue((self.store.state/'operation.json').exists())
     def test_watch_admission_drains_its_own_directory_events(self):
         path=self.home/'tree';path.mkdir()
         for n in range(150):(path/str(n)).mkdir()

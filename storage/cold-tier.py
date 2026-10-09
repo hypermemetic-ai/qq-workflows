@@ -654,6 +654,97 @@ def flush_directory(path):
     finally: os.close(fd)
 
 
+def remove_retired(path, limit):
+    """Remove an owned retired copy, including read-only archived directories."""
+    path = Path(path)
+    if not os.path.lexists(path): return
+    inventory(path, limit, detached={})
+    if path.is_dir() and not path.is_symlink():
+        # Files can have surviving hard links elsewhere. Only directories need
+        # write permission for unlink, and never follow links while granting it.
+        pending = [path]
+        while pending:
+            directory = pending.pop()
+            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                info = os.fstat(fd)
+                if info.st_uid != os.getuid(): raise ValueError('foreign retired directory')
+                os.fchmod(fd, info.st_mode | stat.S_IWUSR | stat.S_IXUSR)
+                with os.scandir(fd) as entries:
+                    pending.extend(directory / e.name for e in entries if e.is_dir(follow_symlinks=False))
+            finally: os.close(fd)
+        if not shutil.rmtree.avoids_symlink_attacks: raise ValueError('safe directory removal unavailable')
+        shutil.rmtree(path)
+    else: path.unlink()
+
+
+def recover_published(store, cfg):
+    """Finish only an unambiguous published move; preserve divergent originals."""
+    archive = mount_ready(cfg)
+    journal = store.state / 'operation.json'
+    record = bounded_json(journal)
+    if record.get('phase') != 'published' or record.get('restore') is not False:
+        raise ValueError('only published HDD moves can be recovered automatically')
+    source, original, destination = [absolute(record[k]) for k in ('source','original','destination')]
+    expected = archive / 'data' / destination.parent.name / source.name
+    if (destination != expected or len(destination.parent.name) != 32 or
+            any(c not in '0123456789abcdef' for c in destination.parent.name) or
+            destination.resolve() != destination or destination.stat().st_dev != archive.stat().st_dev):
+        raise ValueError('unexpected recovery destination')
+    if not any(within(source, absolute(p)) for p in cfg['source_roots']):
+        raise ValueError('recovery source outside declared roots')
+    row = store.db.execute('SELECT * FROM roots WHERE source=?', (str(source),)).fetchone()
+    if original != source and (row is None or (row['location']=='ssd' and Path(row['hot'])!=original)):
+        raise ValueError('recovery original differs from ledger')
+    allowed = {Path(p) for p in json.loads(row['aliases'])} if row else set()
+    if original != source: allowed.add(original)
+    aliases = {absolute(p) for p in record.get('aliases',[])}
+    if aliases != allowed: raise ValueError('recovery aliases differ from ledger')
+    for link in {source, *aliases}:
+        if link.lstat().st_uid != os.getuid() or not link.is_symlink() or link.resolve()!=destination:
+            raise ValueError('published recovery path changed; both copies retained')
+    staged = source.with_name('.'+source.name+'.qq-tier-original')
+    retired = original.with_name('.'+original.name+'.qq-tier-original')
+    if record.get('staged') != str(staged) or record.get('original_staged',str(retired)) != str(retired):
+        raise ValueError('unexpected retired path')
+    if original != source and os.path.lexists(staged) and (not staged.is_symlink() or staged.resolve() not in (retired,destination)):
+        raise ValueError('unexpected public staging entry')
+    if references([retired]): raise ValueError('retired original remains active')
+    guard = Inotify(cfg['max_watches'],mask=MODIFY|ATTRIB|CREATE|DELETE|MOVED_FROM|MOVED_TO|DELETE_SELF|MOVE_SELF)
+    try:
+        if os.path.lexists(retired):
+            guard.tree(retired,'recovery')
+            before, _ = inventory(retired,cfg['max_scan_entries'],detached={})
+            budget = ReadBudget(cfg['verify_bytes_per_second'])
+            for rel, meta in before.items():
+                a = retired if rel=='.' else retired/rel
+                b = destination if rel=='.' else destination/rel
+                info = b.lstat()
+                if stat.S_IFMT(meta[0]) != stat.S_IFMT(info.st_mode):
+                    raise ValueError('retired original diverged from published copy')
+                if stat.S_ISREG(meta[0]) and (meta[1]!=info.st_size or budget.digest(a)!=budget.digest(b)):
+                    raise ValueError('retired original diverged from published copy')
+                if stat.S_ISLNK(meta[0]) and copied_link(source,rel,meta[4])!=os.readlink(b):
+                    raise ValueError('retired original link diverged from published copy')
+            after, _ = inventory(retired,cfg['max_scan_entries'],detached={})
+            if before != after or guard.events() or references([retired]):
+                raise ValueError('retired original changed during recovery')
+        _, size = inventory(destination,cfg['max_scan_entries'],detached={})
+        if row:
+            store.db.execute('UPDATE roots SET target=?,location=?,hot=?,aliases=?,since=0,coverage=0,error=? WHERE id=?',
+                             (str(destination),'hdd','',json.dumps(sorted(map(str,aliases))),'awaiting watcher',row['id']))
+        else: store.register(source,destination)
+        store.db.commit()
+        remove_retired(retired,cfg['max_scan_entries'])
+        if staged != retired and os.path.lexists(staged): staged.unlink()
+        record.update(phase='complete',completed=time.time(),allocated_bytes=size,recovered=True)
+        with (store.state/'moves.jsonl').open('a') as f:
+            f.write(json.dumps(record)+'\n');f.flush();os.fsync(f.fileno())
+        journal.unlink();flush_directory(store.state)
+        print('RECOVERED', source, flush=True)
+    finally: guard.close()
+
+
 def migrate(store, cfg, source, *, restoring=None, demoting=None):
     """Copy, compare, publish symlink atomically, then retire the verified original."""
     archive = mount_ready(cfg)
@@ -805,10 +896,8 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
             else: store.register(source, destination)
             if staged.is_symlink():
                 staged.unlink()
-                if retired.is_dir(): shutil.rmtree(retired)
-                else: retired.unlink()
-            elif staged.is_dir(): shutil.rmtree(staged)
-            else: staged.unlink()
+                remove_retired(retired,cfg['max_scan_entries'])
+            else: remove_retired(staged,cfg['max_scan_entries'])
         store.db.commit()
         record['phase'] = 'complete'; record['completed'] = time.time()
         record['allocated_bytes'] = size
@@ -1141,7 +1230,7 @@ def main():
     parser.add_argument('--state-dir', default=str(Path.home() / '.local/state/qq-cold-tier'))
     parser.add_argument('--config', default=str(Path.home() / '.config/qq-cold-tier.json'))
     sub = parser.add_subparsers(dest='command', required=True)
-    sub.add_parser('init'); sub.add_parser('watch'); sub.add_parser('status'); sub.add_parser('drain'); sub.add_parser('route-defaults')
+    sub.add_parser('init'); sub.add_parser('watch'); sub.add_parser('status'); sub.add_parser('drain'); sub.add_parser('route-defaults'); sub.add_parser('recover-published')
     p = sub.add_parser('discover'); p.add_argument('paths', nargs='+')
     p = sub.add_parser('defaults'); p.add_argument('paths', nargs='+')
     p = sub.add_parser('queue'); p.add_argument('--action',choices=('move','default','partition'),default='move');p.add_argument('paths', nargs='+')
@@ -1164,7 +1253,7 @@ def main():
     for key in ('max_watches', 'max_scan_entries', 'copy_kib_per_second', 'verify_bytes_per_second', 'max_gc_files', 'max_gc_bytes'):
         if not isinstance(cfg[key], int) or cfg[key] <= 0: raise ValueError('invalid budget ' + key)
     store = Store(args.state_dir)
-    if args.command in ('drain','move','restore','discover','route-defaults'): contain_job()
+    if args.command in ('drain','move','restore','discover','route-defaults','recover-published'): contain_job()
     if args.command == 'init': mount_ready(cfg); print('Initialized', store.state)
     elif args.command == 'watch': watch(store, cfg)
     elif args.command == 'status':
@@ -1189,6 +1278,8 @@ def main():
             registered = store.db.execute('SELECT * FROM roots WHERE source=?', (str(absolute(path)),)).fetchone()
             queue_add(store, registered['source'] if registered and registered['location']=='ssd' else valid_source(path, cfg),args.action)
     elif args.command == 'drain': drain(store, cfg)
+    elif args.command == 'recover-published':
+        with lock(store.state/'move.lock'): recover_published(store,cfg)
     elif args.command == 'route-defaults':
         with lock(store.state / 'move.lock'): route_defaults(store, cfg)
     elif args.command == 'partition':
