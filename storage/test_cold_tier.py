@@ -527,6 +527,64 @@ m.watch(m.Store(sys.argv[3]),c)
         self.assertEqual((source/'frozen/data').stat().st_mode&0o777,0o444)
         self.assertEqual((source/'frozen').stat().st_mode&0o777,0o555)
         self.assertFalse((self.store.state/'operation.json').exists())
+    def mirrored_project(self):
+        projects=self.home/'projects';projects.mkdir();project=projects/'app';project.mkdir()
+        packages=project/'packages';packages.mkdir();cli=packages/'cli';cli.mkdir()
+        (project/'project.json').write_text('{"marker":"works"}')
+        modules=project/'node_modules';modules.mkdir();library=modules/'fixture-lib';library.mkdir()
+        (library/'index.js').write_text('module.exports=":dependency"')
+        (cli/'index.cjs').write_text('module.exports=require("../../project.json").marker+require("fixture-lib")')
+        with patch.object(m,'references',return_value=[]):
+            m.bridge_parent(self.store,self.cfg,projects);m.adopt_defaults(self.store,self.cfg)
+            m.partition_root(self.store,self.cfg,self.store.root(str(project))['id'])
+        return project
+    def test_mirror_preserves_real_node_imports_across_migrated_siblings(self):
+        project=self.mirrored_project();self.cfg['mirror_layout']=True
+        with patch.object(m,'references',return_value=[]):
+            m.route_defaults(self.store,self.cfg)
+            for name in ('packages','node_modules','project.json'):
+                row=self.store.root(str(project/name));m.migrate(self.store,self.cfg,row['source'],demoting=row)
+        if not m.shutil.which('node'):self.skipTest('Node unavailable')
+        output=subprocess.check_output(['node','-e','console.log(require(process.argv[1]))',str(project/'packages/cli/index.cjs')],text=True)
+        self.assertEqual(output.strip(),'works:dependency')
+        row=self.store.root(str(project/'packages'))
+        self.assertEqual(Path(row['target']),m.mirror_path(self.store,self.archive,project/'packages'))
+        self.assertEqual((project/'packages/cli/index.cjs').resolve().parent.parent.parent,
+                         m.mirror_path(self.store,self.archive,project))
+    def test_existing_hdd_rehome_preserves_inodes_and_cached_node_filename(self):
+        project=self.mirrored_project();row=self.store.root(str(project/'packages'))
+        with patch.object(m,'references',return_value=[]):m.migrate(self.store,self.cfg,row['source'],demoting=row)
+        old=self.store.root(row['id']);legacy=Path(old['target'])/'cli/index.cjs';inode=legacy.stat().st_ino
+        self.cfg['mirror_layout']=True
+        with patch.object(m,'references',return_value=[]):
+            m.route_defaults(self.store,self.cfg);m.queue_add(self.store,old['source'],'rehome');m.drain(self.store,self.cfg)
+        new=self.store.root(row['id']);self.assertEqual(Path(new['target'])/'cli/index.cjs',legacy.resolve())
+        self.assertEqual(legacy.stat().st_ino,inode)
+        if not m.shutil.which('node'):self.skipTest('Node unavailable')
+        script='const r=require("node:module").createRequire(process.argv[1]);console.log(r("../../project.json").marker+r("fixture-lib"))'
+        self.assertEqual(subprocess.check_output(['node','-e',script,str(legacy)],text=True).strip(),'works:dependency')
+    def test_active_hdd_rehome_preserves_original_and_public_namespace(self):
+        source=self.home/'artifact';source.mkdir();(source/'data').write_text('keep')
+        with patch.object(m,'references',return_value=[]):m.migrate(self.store,self.cfg,source)
+        row=self.store.root(str(source));target=Path(row['target']);self.cfg['mirror_layout']=True
+        with patch.object(m,'references',return_value=[42]):
+            with self.assertRaisesRegex(ValueError,'live process'):m.migrate(self.store,self.cfg,source,demoting=row)
+        self.assertEqual(source.resolve(),target);self.assertTrue(target.is_dir());self.assertFalse(target.is_symlink())
+    def test_nested_mirror_route_recovers_interruption_immediately_after_directory_exchange(self):
+        project=self.mirrored_project();self.cfg['mirror_layout']=True
+        # Publish the outer default, then interrupt the nested route at the first
+        # namespace exchange, before its final ledger update or alias exchange.
+        real=m.exchange;calls=[]
+        def interrupt(a,b):
+            real(a,b);calls.append((Path(a),Path(b)))
+            if str(b).endswith('/projects/app'):raise OSError('interrupted nested route')
+        with patch.object(m,'exchange',side_effect=interrupt):
+            with self.assertRaisesRegex(OSError,'interrupted nested'):m.route_defaults(self.store,self.cfg)
+        self.assertTrue((self.store.state/'default-route-operation.json').exists())
+        m.recover_default_route(self.store);m.route_defaults(self.store,self.cfg)
+        self.assertEqual((project/'project.json').read_text(),'{"marker":"works"}')
+        self.assertFalse((self.store.state/'default-route-operation.json').exists())
+        self.assertFalse(any(p.name.endswith('.qq-tier-default-link') for p in project.parent.resolve().iterdir()))
     def test_published_recovery_finishes_partial_retirement_and_registered_alias(self):
         source=self.home/'cache';source.mkdir();(source/'archive').mkdir()
         (source/'archive/a').write_text('a');(source/'archive/b').write_text('b')
