@@ -495,6 +495,34 @@ m.watch(m.Store(sys.argv[3]),c)
             self.assertFalse(self.store.root(old)['coverage'])
             self.assertEqual(self.store.root(old)['since'],0)
             self.assertIn('migration guard remains active',self.store.root(old)['error'])
+    def test_cached_mount_watches_only_regeneration_scopes_with_small_budget(self):
+        key,source,target,_=self.root()
+        unrelated=target/'source';unrelated.mkdir()
+        for n in range(50):(unrelated/str(n)).mkdir()
+        self.cfg.update(cached_retention_watches_only=True,block_cached_mounts=[str(self.archive)],max_watches=4)
+        self.store.db.execute('UPDATE roots SET coverage=0,since=0 WHERE id=?',(key,));self.store.put('heartbeat',0);self.store.db.commit()
+        with self.running_watch():
+            self.await_coverage(key)
+            self.assertLessEqual(self.store.get('watches'),4)
+            (target/'build/cold.bin').read_bytes()
+            deadline=time.time()+5
+            while time.time()<deadline:
+                row=self.store.db.execute('SELECT reads FROM activity WHERE root=? AND path=?',(key,'build/cold.bin')).fetchone()
+                if row and row[0]:break
+                time.sleep(.1)
+            self.assertTrue(row and row[0])
+        row=self.store.root(key);signature=m.watch_signature(self.store,row,self.cfg)
+        (target/'build').rename(target/'previous-build');(target/'build').mkdir()
+        self.assertNotEqual(signature,m.watch_signature(self.store,row,self.cfg))
+    def test_cached_unique_data_without_scope_has_no_false_retention_coverage(self):
+        target=self.archive/'unique';target.mkdir();(target/'data').write_text('unique')
+        source=self.home/'unique';source.symlink_to(target);key=self.store.register(source,target)
+        self.cfg.update(cached_retention_watches_only=True,block_cached_mounts=[str(self.archive)])
+        with self.running_watch():
+            deadline=time.time()+5
+            while time.time()<deadline and not self.store.get('heartbeat'):time.sleep(.1)
+            row=self.store.root(key);self.assertFalse(row['coverage']);self.assertEqual(self.store.get('watches'),0)
+            self.assertIn('unique data retained',row['error'])
     def test_protected_descendant_prevents_entire_registered_tree_migration(self):
         source=self.home/'mixed';source.mkdir();protected=source/'paid';protected.mkdir()
         (protected/'source').write_text('preserve')

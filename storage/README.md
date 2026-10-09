@@ -70,6 +70,13 @@ links where possible, then retires the old directory namespace after checking
 for writers. Old opaque filenames retain sibling aliases for already loaded
 modules. Unique data remains preserved; rehoming creates no second payload copy
 when file identities and metadata match. Active units defer without publication.
+
+`cached_retention_watches_only: true` limits access watches on declared native
+block-cached mounts to regeneration scopes and their ancestor directories.
+SMQ handles demand for ordinary data without a second recursive watch tree.
+Unique data without a scope has no retention coverage and remains protected.
+Scope or ancestor inode changes reset the observation clock before deletion;
+unrelated new directories do not expand the watch budget.
 For explicitly reviewed immutable SDK/build-cache directories, the optional
 `immutable_hardlink_scopes` policy permits copying shared files to independent HDD
 inodes. External aliases remain untouched; internal hard links remain shared.
