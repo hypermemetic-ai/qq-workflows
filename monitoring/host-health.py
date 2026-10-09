@@ -627,7 +627,14 @@ class DiskScanner:
             self.previous_sizes = {path: size for path, size in self.sizes.items() if self.bucket_roots[path] not in self.incomplete_roots}
             self.previous_finished = now
             self.last_finished = clock
-        return {**self.result, "in_progress": bool(self.stack),
+        progress = {}
+        if self.stack:
+            progress = {"started_at": self.started, "entries_scanned": self.count, "complete": False,
+                        "note": "Lower bounds from the unfinished scan; do not treat as a growth comparison",
+                        "largest_directories": [{"path": path, "allocated_bytes": size} for path, size in
+                            sorted(self.sizes.items(), key=lambda item: item[1], reverse=True)[:12]],
+                        "largest_files": [{"path": path, "allocated_bytes": size} for size, path in sorted(self.files, reverse=True)]}
+        return {**self.result, "in_progress": bool(self.stack), "scan_progress": progress,
                 "age_seconds": max(0, now - self.result["finished_at"]) if self.result else None}
 
 
@@ -638,6 +645,7 @@ def diagnostic_context(snapshot):
     lists = [context.get(key) for key in ("top_memory_processes", "top_io_processes", "top_cpu_processes")]
     disk = context.get("disk_attribution") or {}
     lists += [disk.get(key) for key in ("largest_files", "largest_directories", "growing_directories")]
+    lists += [(disk.get("scan_progress") or {}).get(key) for key in ("largest_files", "largest_directories")]
     while len(json.dumps(context).encode()) > 20 * 1024:
         candidate = next((rows for rows in lists if isinstance(rows, list) and rows), None)
         if candidate is None:

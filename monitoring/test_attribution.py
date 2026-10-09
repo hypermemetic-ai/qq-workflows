@@ -87,7 +87,10 @@ class AttributionTests(unittest.TestCase):
             (self.root / f'a/{i}').write_text('x')
         self.policy.update(disk_path=str(self.root), disk_scan_roots=[str(self.root)], disk_scan_max_entries_per_sample=1)
         scanner = health.DiskScanner(self.policy, monotonic=lambda: 0)
-        self.assertTrue(scanner.sample(1000, 0)['in_progress'])
+        partial = scanner.sample(1000, 0)
+        self.assertTrue(partial['in_progress'])
+        self.assertFalse(partial['scan_progress']['complete'])
+        self.assertEqual(partial['scan_progress']['entries_scanned'], 1)
         for i in range(1, 10):
             result = scanner.sample(1000 + i, i)
         self.assertTrue(result['complete'])

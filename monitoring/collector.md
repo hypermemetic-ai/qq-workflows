@@ -125,6 +125,8 @@ limit hits, scan age and comparison timestamps are explicit; growth comparisons
 require both scans of that root to complete without errors. This does not cover
 deleted-open files or unconfigured roots. Available and used disk bytes also
 appear in `metrics`.
+Unfinished scans publish `scan_progress` with explicitly partial size lower
+bounds, so a long scan can still identify large artifacts before it completes.
 
 Temperature, I/O and disk incidents now embed the diagnostic sample at detection,
 retain initial and peak evidence, and save recovery evidence. Journal incidents
