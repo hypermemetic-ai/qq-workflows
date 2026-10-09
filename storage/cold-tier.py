@@ -119,6 +119,11 @@ class Store:
     def roots(self): return list(self.db.execute('SELECT * FROM roots ORDER BY created'))
     def root(self, key):
         row = self.db.execute('SELECT * FROM roots WHERE id=? OR source=?', (key, key)).fetchone()
+        if row is None and Path(key).is_absolute():
+            wanted=Path(key).resolve()
+            matches=[r for r in self.roots() if Path(r['source']).resolve()==wanted]
+            if len(matches)==1:row=matches[0]
+            elif len(matches)>1:raise ValueError('ambiguous public alias: '+key)
         if row is None: raise ValueError('unknown root: ' + key)
         return row
     def get(self, key, default=None):
@@ -379,6 +384,15 @@ def live_path(root):
     return Path(root['target']) if root['location'] == 'hdd' else Path(root['hot'] or root['source'])
 
 
+def database_file(path):
+    if path.name.endswith(('.db','.sqlite','.sqlite3','-wal','-shm','-journal')):return True
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):raise ValueError('root file changed type; defer cutover')
+        return os.read(fd,16)==b'SQLite format 3\0'
+    finally:os.close(fd)
+
+
 def watch_enabled(root,cfg):
     if root['location']=='hdd' or cfg.get('watch_original_ssd',True): return True
     return bool(root['hot'] and within(absolute(root['hot']),absolute(cfg['hot_storage'])))
@@ -405,6 +419,9 @@ def bridge_parent(store, cfg, raw):
     info = source.stat(); os.chmod(bridge, stat.S_IMODE(info.st_mode))
     children = list(source.iterdir())
     root_files = [p for p in children if p.is_file() and not p.is_symlink()]
+    if any(database_file(p) for p in root_files):
+        shutil.rmtree(bridge)
+        raise ValueError('database and sidecars at parent root must move together as one directory')
     if root_files and references(root_files):
         shutil.rmtree(bridge)
         raise ValueError('active files at parent root; keep database/sidecars together and defer cutover')
@@ -566,6 +583,7 @@ def route_defaults(store, cfg):
 def partition_root(store, cfg, key):
     """Keep existing inodes while admitting a mixed SSD root's children separately."""
     root = store.root(key); original = live_path(root)
+    if '.git' in original.parts: raise ValueError('keep Git administrative metadata in one migration unit')
     if excluded_unit(original,cfg): raise ValueError('partition contains protected data; deferred')
     if root['location'] != 'ssd' or not original.is_dir() or original.is_symlink() or json.loads(root['aliases']):
         raise ValueError('partition requires an original SSD directory')
@@ -573,8 +591,18 @@ def partition_root(store, cfg, key):
         raise ValueError('partition would change a regeneration scope; deferred')
     journal = store.state/'partition-operation.json'
     if journal.exists(): raise ValueError('unfinished partition; original inodes preserved for review')
+    if (store.state/'default-operation.json').exists():raise ValueError('unfinished default cutover; preserve it for review')
+    identity=original.lstat()
     atomic_json(journal, {'root': root['id'], 'original': str(original), 'source': root['source']})
-    parent = bridge_parent(store, cfg, original)
+    try:parent = bridge_parent(store, cfg, original)
+    except BaseException:
+        # A busy root file can defer before any exchange. Do not leave a false
+        # recovery barrier when the original directory is demonstrably intact.
+        if not (store.state/'default-operation.json').exists() and original.exists():
+            current=original.lstat()
+            if (current.st_dev,current.st_ino,current.st_mode)==(identity.st_dev,identity.st_ino,identity.st_mode):
+                journal.unlink();flush_directory(store.state)
+        raise
     # The old public proxy still resolves through the physical path, now to a
     # native directory of proxies. No child inode has been copied or removed.
     if Path(root['source']).resolve() != Path(parent['hdd']):
@@ -647,6 +675,8 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
     for p in (original, source):
         if p.lstat().st_uid != os.getuid(): raise ValueError('migration requires operator-owned paths')
     if references([original, source, *aliases]): raise ValueError('live process references; deferred')
+    if original.is_file() and database_file(original):
+        raise ValueError('database and sidecars must move together as one directory')
     detached = {} if immutable_scope(original,cfg) else None
     before, size = inventory(original, cfg['max_scan_entries'], detached=detached)
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1040,7 +1070,9 @@ def drain(store, cfg):
             for row in decisions(store, cfg):
                 if row['decision'] == 'promote' and cfg['automatic_promotion']: queue_add(store, row['source'], 'restore')
                 if row['decision'] == 'demote' and cfg['automatic_demotion']: queue_add(store, row['source'], 'demote')
-        jobs=list(store.db.execute("SELECT * FROM queue WHERE status IN ('pending','deferred') ORDER BY updated"))
+        jobs=list(store.db.execute("""SELECT * FROM queue WHERE status IN ('pending','deferred')
+          ORDER BY CASE action WHEN 'default' THEN 0 WHEN 'partition' THEN 1 ELSE 2 END,
+          CASE WHEN action='default' THEN length(source) ELSE 0 END, updated"""))
     for job in jobs:
         # Release between units so newly requested parent cutovers and daily GC
         # are not blocked for the duration of an entire large rollout.
@@ -1055,7 +1087,15 @@ def drain(store, cfg):
                     parent=next((p for p in store.get('defaults',[]) if p['source']==str(source)),None)
                     if parent:
                         if not source.is_symlink() or source.resolve()!=Path(parent['hdd']): raise ValueError('default path changed; review required')
-                    else: bridge_parent(store,cfg,source)
+                    else:
+                        try:registered=store.root(str(source))
+                        except ValueError as e:
+                            if not str(e).startswith('unknown root:'):raise
+                            registered=None
+                        if registered:
+                            if Path(registered['source']).resolve()!=live_path(registered).resolve():raise ValueError('tracked public path changed; review required')
+                            if registered['location']=='ssd':partition_root(store,cfg,registered['id'])
+                        else:bridge_parent(store,cfg,source)
                     adopt_defaults(store,cfg)
                 elif job['action'] == 'partition':
                     root=store.root(str(source))
@@ -1140,6 +1180,12 @@ def main():
         for path in args.paths:
             if args.action=='partition':
                 queue_add(store,store.root(path)['source'],'partition');continue
+            if args.action=='default':
+                try:registered=store.root(str(absolute(path)))
+                except ValueError as e:
+                    if not str(e).startswith('unknown root:'):raise
+                    registered=None
+                queue_add(store,registered['source'] if registered else valid_source(path,cfg),'default');continue
             registered = store.db.execute('SELECT * FROM roots WHERE source=?', (str(absolute(path)),)).fetchone()
             queue_add(store, registered['source'] if registered and registered['location']=='ssd' else valid_source(path, cfg),args.action)
     elif args.command == 'drain': drain(store, cfg)
