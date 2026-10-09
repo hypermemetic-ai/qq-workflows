@@ -86,6 +86,16 @@ same public objects, so its private path spelling does not enter the HDD layout.
 This changes namespace metadata, preserving both real directories and open
 inodes. Cross-filesystem HDD relocation keeps the ordinary shared-inode guard;
 only rehoming within the same HDD filesystem can retain arbitrary hard links.
+
+`migration_cpu_quota_percent` defaults to 20 and can be set from 1 to 100 percent
+of one CPU core for an understood rollout. Job placement verifies this quota;
+the RAM, swap, task and transfer budgets still apply independently.
+Real-parent intake waits `intake_min_age_seconds` (one hour by default) after a
+child's last top-level directory change, keeping new transient work in place.
+Its migration still requires the ordinary ownership, writer and mutation checks.
+`migration_memory_high_mib` defaults to 512; an understood directory-heavy
+rollout can use 256–2048 MiB with a hard ceiling of 125% of that high watermark.
+The launcher profile and aggregate limits can only lower these requested caps.
 For explicitly reviewed immutable SDK/build-cache directories, the optional
 `immutable_hardlink_scopes` policy permits copying shared files to independent HDD
 inodes. External aliases remain untouched; internal hard links remain shared.
