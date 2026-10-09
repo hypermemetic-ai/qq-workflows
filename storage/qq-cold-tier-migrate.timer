@@ -1,0 +1,10 @@
+[Unit]
+Description=Reconsider deferred HDD moves and measured SSD promotion
+
+[Timer]
+OnBootSec=10min
+OnUnitInactiveSec=1h
+Persistent=yes
+
+[Install]
+WantedBy=timers.target
