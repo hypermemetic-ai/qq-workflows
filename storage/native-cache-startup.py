@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import shlex
 import signal
 import stat
 import subprocess
@@ -36,7 +37,9 @@ def unit_name(identifier,phase):
 def properties(dependency=None):
     if dependency and not re.fullmatch(r'qq-cache-startup-[0-9a-f]{12}-block\.service',dependency):
         raise ValueError('Unexpected drill dependency')
-    mount=base.run('systemd-escape','--path','--suffix=mount','/srv/media-box')
+    # systemd-run parses backslash escapes in dependency assignments. Preserve
+    # the literal escape in srv-media\\x2dbox.mount through that extra parser.
+    mount=base.run('systemd-escape','--path','--suffix=mount','/srv/media-box').replace('\\','\\\\')
     result=['CPUQuota=10%','MemoryMax=512M','MemorySwapMax=0','TasksMax=32',
             'IOWeight=10','IOAccounting=yes','RuntimeMaxSec=120',
             'RequiresMountsFor=/srv/media-box','BindsTo='+mount,
@@ -45,6 +48,11 @@ def properties(dependency=None):
         result += ['IOReadBandwidthMax='+device+' 8M','IOWriteBandwidthMax='+device+' 8M']
     if dependency:result += ['Requires='+dependency]
     return result
+
+
+def dependency_names(raw):
+    # systemctl show quotes and doubles literal backslashes in unit lists.
+    return shlex.split(raw)
 
 
 def verified_limits(expected):
@@ -64,8 +72,8 @@ def verified_limits(expected):
     actual=dict(line.split('=',1) for line in base.run('systemctl','show',expected,
             '--property=RequiresMountsFor','--property=Requires','--property=After','--property=BindsTo').splitlines())
     mount=base.run('systemd-escape','--path','--suffix=mount','/srv/media-box')
-    if '/srv/media-box' not in actual.get('RequiresMountsFor','').split() or any(
-            mount not in actual.get(key,'').split() for key in ('Requires','After','BindsTo')):
+    if '/srv/media-box' not in dependency_names(actual.get('RequiresMountsFor','')) or any(
+            mount not in dependency_names(actual.get(key,'')) for key in ('Requires','After','BindsTo')):
         raise ValueError('HDD startup dependencies were not applied')
     return limits,actual
 
@@ -206,15 +214,21 @@ def run_phase(identifier,phase,dependency=None):
     command += ['--property='+value for value in properties(dependency)]
     command += ['/usr/bin/python3',str(Path(__file__).resolve()),'--worker',identifier,'--phase',phase]
     result=subprocess.run(command,capture_output=True,text=True,timeout=150)
+    diagnostic=(result.stderr or result.stdout).strip()[-2000:]
+    try:report=read_record(identifier)
+    except (OSError,ValueError) as error:
+        raise RuntimeError('Startup '+phase+' did not produce a worker report (launcher exit '+
+                           str(result.returncode)+'): '+(diagnostic or str(error))) from error
     if phase=='denied':
-        if read_record(identifier).get('drill_phase')=='denied':
+        if report.get('drill_phase')=='denied':
             raise ValueError('Startup worker ran despite its failed dependency')
         failed=unit_result(dependency)
         if failed.get('ActiveState')!='failed' or failed.get('Result')!='exit-code':
             raise ValueError('The required dependency did not remain in its deliberately failed state')
         return {'worker_started':False,'waiter_exit_code':result.returncode,'failed_dependency':failed}
-    report=read_record(identifier)
-    if report.get('drill_phase')!=phase:raise ValueError('Startup worker did not publish its phase result')
+    if report.get('drill_phase')!=phase:
+        raise RuntimeError('Startup '+phase+' did not publish its phase result (launcher exit '+
+                           str(result.returncode)+'): '+(diagnostic or 'only an earlier phase report exists'))
     report['unit_exit_code']=result.returncode
     if phase=='crash':
         actual=unit_result(unit_name(identifier,phase));report['unit_result']=actual

@@ -62,6 +62,20 @@ class StartupSafety(unittest.TestCase):
                 patch.object(startup,'read_record',return_value={'drill_phase':'denied','worker_started':True}):
             with self.assertRaisesRegex(ValueError,'worker ran despite'):startup.run_phase(ID,'denied',startup.unit_name(ID,'block'))
 
+    def test_launcher_error_is_preserved_when_no_worker_report_exists(self):
+        result=subprocess.CompletedProcess([],1,'','Failed to start transient service unit: missing prerequisite')
+        with patch.object(startup,'properties',return_value=[]),patch.object(startup.subprocess,'run',return_value=result),\
+                patch.object(startup,'read_record',side_effect=FileNotFoundError('result.json')):
+            with self.assertRaisesRegex(RuntimeError,'launcher exit 1.*missing prerequisite'):
+                startup.run_phase(ID,'prepare')
+
+    def test_launcher_error_is_preserved_when_only_an_earlier_report_exists(self):
+        result=subprocess.CompletedProcess([],1,'','Failed to start transient service unit: missing prerequisite')
+        with patch.object(startup,'properties',return_value=[]),patch.object(startup.subprocess,'run',return_value=result),\
+                patch.object(startup,'read_record',return_value={'drill_phase':'prepare','success':True}):
+            with self.assertRaisesRegex(RuntimeError,'launcher exit 1.*missing prerequisite'):
+                startup.run_phase(ID,'cold-start')
+
     def test_unexpected_signal_does_not_pass_the_controller_crash_check(self):
         result=subprocess.CompletedProcess([],143,'','')
         with patch.object(startup,'properties',return_value=[]),patch.object(startup.subprocess,'run',return_value=result),\
@@ -97,12 +111,13 @@ class SystemdBehavior(unittest.TestCase):
         self.temporary=tempfile.TemporaryDirectory();self.addCleanup(self.temporary.cleanup)
         self.addCleanup(self.stop_units)
 
-    def launch(self,suffix,command,extra=(),collect=True,service_type='exec'):
+    def launch(self,suffix,command,extra=(),collect=True,service_type='exec',wait=True):
         name=self.prefix+'-'+suffix+'.service';self.names.append(name)
-        args=['systemd-run','--user','--quiet','--wait','--service-type='+service_type,'--unit='+name,
+        args=['systemd-run','--user','--quiet','--service-type='+service_type,'--unit='+name,
               '--property=CPUQuota=10%','--property=MemoryMax=64M','--property=MemorySwapMax=0',
               '--property=TasksMax=16','--property=RuntimeMaxSec=20']
         if collect:args.append('--collect')
+        if wait:args.append('--wait')
         args.extend('--property='+p for p in extra);args.extend(command)
         return subprocess.run(args,capture_output=True,text=True,timeout=30)
 
@@ -140,6 +155,24 @@ class SystemdBehavior(unittest.TestCase):
                          {'ActiveState':'failed','Result':'exit-code'})
         permitted=self.launch('control',worker)
         self.assertEqual(permitted.returncode,0,permitted.stderr[-500:]);self.assertEqual(marker.read_text(),'started')
+
+    def test_escaped_mount_dependency_survives_systemd_run_parser(self):
+        # Use an isolated user service as the dependency, with the same literal
+        # \\x2d escape as the host HDD mount. Nothing touches the real HDD mount.
+        suffix=r'mount\x2dguard'
+        dependency=self.prefix+'-'+suffix+'.service'
+        ready=self.launch(suffix,['/usr/bin/true'],extra=('RemainAfterExit=yes',),
+                          collect=False,service_type='oneshot',wait=False)
+        self.assertEqual(ready.returncode,0,ready.stderr[-500:])
+        with patch.object(startup.base,'run',return_value=dependency):
+            dependencies=[p for p in startup.properties() if p.startswith(('BindsTo=','After='))]
+        started=self.launch('escaped',['/usr/bin/true'],extra=dependencies+['RemainAfterExit=yes'],
+                            collect=False,service_type='oneshot',wait=False)
+        self.assertEqual(started.returncode,0,started.stderr[-500:])
+        actual=subprocess.check_output(['systemctl','--user','show',self.prefix+'-escaped.service',
+                                        '--property=BindsTo','--property=After'],text=True)
+        fields=dict(line.split('=',1) for line in actual.splitlines())
+        for key in ('BindsTo','After'):self.assertIn(dependency,startup.dependency_names(fields[key]))
 
 
 if __name__=='__main__':unittest.main()

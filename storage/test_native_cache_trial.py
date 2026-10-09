@@ -54,7 +54,7 @@ class TrialSafety(unittest.TestCase):
     def test_integrity_detects_database_change(self):
         with tempfile.TemporaryDirectory() as d,patch.object(trial,'DATA_MIB',1):
             p=Path(d);expected=trial.populate(p);trial.verify(p,expected)
-            with trial.sqlite3.connect(p/'example.sqlite') as db:
+            with trial.closing(trial.sqlite3.connect(p/'example.sqlite')) as db:
                 db.execute('update evidence set value=?',('changed',));db.commit()
             with self.assertRaisesRegex(ValueError,'Committed row changed'):trial.verify(p,expected)
 
