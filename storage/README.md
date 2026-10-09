@@ -107,9 +107,11 @@ existing disk by formatting it. Writethrough keeps the HDD copy current, at the
 cost of HDD write latency; writeback introduces a different durability contract.
 
 The operator's KIOXIA NVMe is known failing and is excluded. Current devices are
-plain ext4, not an existing LVM cache stack. An administrator-level, planned HDD
-cutover is required; the current file tier does not perform it. Collect a bounded
-read-only report before sizing or proposing that conversion:
+plain ext4, not an existing LVM cache stack. An in-place cache conversion would
+require a planned HDD cutover. A separate image-backed volume can instead be
+created alongside the existing mount and populated one idle unit at a time.
+The current file tier does not activate either native-cache design. Collect a
+bounded read-only report before sizing or proposing that conversion:
 
 ```sh
 sudo ~/.local/bin/qq-cold-tier-preflight
@@ -117,5 +119,38 @@ sudo ~/.local/bin/qq-cold-tier-preflight
 
 Only `/dev/sda` and `/dev/sdb` are inspected. This command does not mount, format,
 repartition, unlock any device, change configuration or load kernel modules.
+
+### Isolated image-backed trial
+
+After installing the reviewed release, the operator runs:
+
+```sh
+sudo ~/.local/bin/qq-cold-tier-trial
+```
+
+This creates a new 512 MiB HDD image, a 64 MiB SSD cache and 16 MiB of cache
+metadata. It verifies the known healthy SSD/HDD mount identities and preserves
+10 GiB free on SSD. It attaches only those new files as direct-I/O loop devices,
+formats only the new HDD image and mounts it in a private temporary directory.
+Existing mounts, applications, data paths and the failing NVMe stay outside the
+trial. It loads the installed dm-cache/smq modules as needed. The bounded root
+systemd scope verifies 10% CPU, 512 MiB RAM, no swap, 32 tasks and 8 MiB/s device
+I/O caps before doing work. User-scope I/O support is not assumed.
+
+The synthetic workload checks SHA-256, hard links, symlinks, xattrs and a committed
+SQLite transaction. Matched O_DIRECT reads compare the HDD baseline with a warmed
+SMQ writethrough cache, report actual cache hits and latency, then verify cache
+reattachment and read the HDD copy with the cache removed. A read-only e2fsck
+checks the new filesystem. This is a clean detach/reattach test; it does not
+simulate power loss, prove boot ordering or measure a real application's benefit.
+Those remain gates before production activation. Functional success and measured
+performance benefit are separate report fields.
+
+The trial unmounts its own filesystem, removes its own mapper, confirms loop
+detachment and deletes only its newly created image files. If teardown fails,
+it retains the affected images and reports the remaining resources; it never
+forces an unmount or discards a dirty cache. Private results are saved to the
+physical SSD control-state directory as `native-trial.json`. No auto-start unit
+or production volume is installed by this trial.
 
 Validation: `qq-job -- python3 -m unittest discover -s storage -p 'test_*.py'`.
