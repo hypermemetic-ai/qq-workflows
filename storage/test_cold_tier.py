@@ -120,6 +120,63 @@ class ColdTierTests(unittest.TestCase):
             self.assertEqual((source/'late').read_text(), 'late')
             self.assertEqual((Path(parent['backing'])/'late').read_text(), 'late')
         finally: os.close(fd)
+    def test_native_default_route_preserves_old_open_handles_and_new_writes(self):
+        source = self.home/'cache'; source.mkdir(); (source/'old').mkdir()
+        (source/'old/data').write_text('keep')
+        parent = m.bridge_parent(self.store,self.cfg,source); m.adopt_defaults(self.store,self.cfg)
+        old = Path(parent['hdd']); (old/'hdd-existing').write_text('hdd data')
+        fd = os.open(old,os.O_DIRECTORY)
+        new = self.base/'native'; new.mkdir()
+        try:
+            with patch.object(m,'mount_ready',return_value=new):
+                m.route_defaults(self.store,self.cfg)
+                self.assertEqual((source/'old/data').read_text(),'keep')
+                self.assertEqual((source/'hdd-existing').read_text(),'hdd data')
+                (source/'fresh').write_text('native data')
+                late = os.open('late',os.O_CREAT|os.O_WRONLY,0o600,dir_fd=fd)
+                os.write(late,b'old FD data');os.close(late)
+                m.adopt_defaults(self.store,self.cfg)
+                self.assertEqual((source/'late').read_text(),'old FD data')
+                self.assertTrue((new/'defaults'/m.hashlib.sha256(str(source).encode()).hexdigest()[:16]/'fresh').is_file())
+                self.assertFalse((old/'fresh').exists())
+                self.assertEqual(self.store.root(str(source/'late'))['location'],'hdd')
+                m.route_defaults(self.store,self.cfg) # idempotent
+        finally:os.close(fd)
+    def test_native_route_recovers_interruption_after_exchange(self):
+        source=self.home/'cache';source.mkdir();(source/'data').write_text('keep')
+        m.bridge_parent(self.store,self.cfg,source)
+        new=self.base/'native';new.mkdir();real=m.recover_default_route;calls=[]
+        def interrupted(store):
+            calls.append(1)
+            if len(calls)==2:raise OSError('interrupted after publication')
+            return real(store)
+        with patch.object(m,'mount_ready',return_value=new),patch.object(m,'recover_default_route',side_effect=interrupted):
+            with self.assertRaises(OSError):m.route_defaults(self.store,self.cfg)
+        self.assertTrue((self.store.state/'default-route-operation.json').exists())
+        m.recover_default_route(self.store)
+        self.assertEqual(source.resolve(),Path(self.store.get('defaults')[0]['hdd']))
+        self.assertEqual((source/'data').read_text(),'keep')
+        self.assertFalse((self.store.state/'default-route-operation.json').exists())
+    def test_migration_staging_is_not_adopted_as_user_data(self):
+        source=self.home/'cache';source.mkdir();m.bridge_parent(self.store,self.cfg,source)
+        (source/'.data.qq-tier-original').write_text('temporary')
+        m.adopt_defaults(self.store,self.cfg);self.assertEqual(self.store.roots(),[])
+    def test_partition_preserves_busy_child_inodes_and_admits_idle_siblings(self):
+        source=self.home/'cache';source.mkdir();(source/'mixed').mkdir()
+        (source/'mixed/busy').mkdir();(source/'mixed/busy/data').write_text('open data')
+        (source/'mixed/idle').mkdir();(source/'mixed/idle/data').write_text('idle data')
+        m.bridge_parent(self.store,self.cfg,source);m.adopt_defaults(self.store,self.cfg)
+        root=self.store.root(str(source/'mixed'));fd=os.open(source/'mixed/busy/data',os.O_RDONLY)
+        try:
+            m.partition_root(self.store,self.cfg,root['id'])
+            self.assertEqual(os.read(fd,50),b'open data')
+            physical=Path(root['hot'])
+            idle=self.store.root(str(physical/'idle'))
+            self.assertEqual(idle['location'],'ssd')
+            with patch.object(m,'references',return_value=[]):m.migrate(self.store,self.cfg,physical/'idle',demoting=idle)
+            self.assertEqual((source/'mixed/idle/data').read_text(),'idle data')
+            self.assertEqual((source/'mixed/busy/data').read_text(),'open data')
+        finally:os.close(fd)
     def test_migration_verifies_and_preserves_links(self):
         source = self.home/'artifact'; source.mkdir(); (source/'data').write_bytes(b'x'*1024)
         (source/'link').symlink_to('data'); os.link(source/'data',source/'hard')
@@ -193,13 +250,31 @@ class ColdTierTests(unittest.TestCase):
         with patch.object(m,'references',return_value=[]):
             m.bridge_parent(self.store,self.cfg,source); m.adopt_defaults(self.store,self.cfg)
             root=self.store.root(str(source/'artifact'))
+            physical=Path(root['hot'])
             m.migrate(self.store,self.cfg,source/'artifact',demoting=root)
             cold=self.store.root(root['id']); self.assertEqual(cold['location'],'hdd')
+            self.assertTrue(physical.is_symlink());self.assertEqual((physical/'data').read_text(),'keep')
             hot=self.home/'hot';hot.mkdir()
             with patch.object(m,'hot_ready',return_value=hot): m.migrate(self.store,self.cfg,source/'artifact',restoring=cold)
         self.assertEqual((source/'artifact/data').read_text(),'keep')
         self.assertEqual(self.store.root(root['id'])['location'],'ssd')
         self.assertTrue(Path(self.store.root(root['id'])['target']).is_dir())
+        self.assertEqual(physical.resolve(),(source/'artifact').resolve())
+    def test_writer_opening_original_during_publication_preserves_retired_copy(self):
+        source=self.home/'artifact';source.mkdir();(source/'data').write_text('keep')
+        real=m.exchange;handle=[]
+        def publishing(a,b):
+            handle.append((source/'data').open('a'))
+            handle[-1].write('late write');handle[-1].flush();real(a,b)
+        try:
+            with patch.object(m,'references',return_value=[]),patch.object(m,'exchange',side_effect=publishing):
+                with self.assertRaisesRegex(ValueError,'retired original became active'):
+                    m.migrate(self.store,self.cfg,source)
+            record=m.bounded_json(self.store.state/'operation.json')
+            self.assertEqual((Path(record['staged'])/'data').read_text(),'keeplate write')
+            self.assertEqual((Path(record['destination'])/'data').read_text(),'keep')
+        finally:
+            for f in handle:f.close()
     def test_atomic_save_supersedes_old_ssd_proxy(self):
         source=self.home/'cache'; source.mkdir(); (source/'a').write_text('old')
         with patch.object(m,'references',return_value=[]): m.bridge_parent(self.store,self.cfg,source)

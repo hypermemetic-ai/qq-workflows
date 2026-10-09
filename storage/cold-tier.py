@@ -109,6 +109,8 @@ class Store:
             error TEXT NOT NULL DEFAULT '', updated REAL NOT NULL);
           CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         ''')
+        if 'aliases' not in {r[1] for r in self.db.execute('PRAGMA table_info(roots)')}:
+            self.db.execute("ALTER TABLE roots ADD COLUMN aliases TEXT NOT NULL DEFAULT '[]'")
         self.db.commit()
 
     def roots(self): return list(self.db.execute('SELECT * FROM roots ORDER BY created'))
@@ -393,6 +395,7 @@ def adopt_defaults(store, cfg):
         try:
             if public.is_symlink() and public.resolve(strict=True) == hdd:
                 hdd_devices.add(hdd.stat().st_dev)
+                hdd_devices.update(Path(p).stat().st_dev for p in parent.get('previous', []))
         except FileNotFoundError: pass
     for root in store.roots():
         public = Path(root['source'])
@@ -410,28 +413,110 @@ def adopt_defaults(store, cfg):
         source, backing, hdd = (Path(parent[k]) for k in ('source', 'backing', 'hdd'))
         if not source.is_symlink() or source.resolve() != hdd: raise ValueError('default parent no longer matches ledger')
         # Catch parent-FD writes still landing in the old SSD inode.
-        for child in backing.iterdir():
-            proxy = hdd / child.name
-            if not os.path.lexists(proxy): proxy.symlink_to(child)
-            elif not proxy.is_symlink() and not child.is_symlink():
-                # Atomic saves can legitimately supersede an old proxy. Both versions
-                # are preserved; directories with conflicting contents require review.
-                if child.is_dir() and proxy.is_dir():
-                    store.put('defaults_conflict', {'public': str(source/child.name), 'ssd_copy': str(child)})
+        backings = [backing, *[Path(p) for p in parent.get('previous', [])]]
+        for former in backings:
+            for child in former.iterdir():
+                if tier_temporary(child): continue
+                proxy = hdd / child.name
+                if not os.path.lexists(proxy): proxy.symlink_to(child)
+                elif not proxy.is_symlink() and not child.is_symlink():
+                    # Both versions survive an atomic replacement or conflicting
+                    # late parent-FD write; never overwrite the authoritative path.
+                    if child.is_dir() and proxy.is_dir():
+                        store.put('defaults_conflict', {'public': str(source/child.name), 'former_copy': str(child)})
         for child in hdd.iterdir():
+            if tier_temporary(child): continue
             public = source / child.name
             if str(public) in existing: continue
             resolved = child.resolve()
             if any(within(resolved, absolute(p).resolve()) for p in cfg['excluded']): continue
             if child.is_symlink():
                 # Original symlinks, sockets and indirect links retain their semantics.
-                real = backing / child.name
-                if not real.exists() or real.is_symlink() or not (real.is_dir() or real.is_file()): continue
-                cold = archive / 'data' / uuid.uuid4().hex / child.name
-                store.register(public, cold, 'ssd', hot=real)
+                real = next((p/child.name for p in backings if (p/child.name).exists()
+                             and not (p/child.name).is_symlink() and (p/child.name).resolve() == resolved), None)
+                if real is None or not (real.is_dir() or real.is_file()): continue
+                if real.parent != backing and real.stat().st_dev in hdd_devices: store.register(public, real, 'hdd')
+                else:
+                    cold = archive / 'data' / uuid.uuid4().hex / child.name
+                    store.register(public, cold, 'ssd', hot=real)
             elif child.is_dir() or child.is_file():
                 store.register(public, child, 'hdd')
             existing.add(str(public))
+
+
+def tier_temporary(path):
+    return path.name.endswith(('.qq-tier-original', '.qq-tier-link', '.qq-tier-default-link'))
+
+
+def recover_default_route(store):
+    journal = store.state / 'default-route-operation.json'
+    if not journal.exists(): return
+    record = bounded_json(journal)
+    old, new = record['old'], record['new']
+    source = Path(old['source']); staged = Path(record['staged'])
+    if not source.is_symlink(): raise ValueError('default route recovery needs operator review')
+    actual = source.resolve(strict=True)
+    if actual not in (Path(old['hdd']), Path(new['hdd'])):
+        raise ValueError('default route changed outside recorded transaction')
+    selected = new if actual == Path(new['hdd']) else old
+    parents = store.get('defaults', [])
+    matches = [i for i,p in enumerate(parents) if p['source'] == old['source']]
+    if len(matches) != 1: raise ValueError('default route ledger is ambiguous')
+    parents[matches[0]] = selected; store.put('defaults', parents); store.db.commit()
+    if os.path.lexists(staged):
+        if not staged.is_symlink() or staged.resolve() not in (Path(old['hdd']), Path(new['hdd'])):
+            raise ValueError('default route staging changed; retained for review')
+        staged.unlink(); flush_directory(staged.parent)
+    journal.unlink(); flush_directory(store.state)
+
+
+def route_defaults(store, cfg):
+    """Route new names to the configured HDD without relocating any open inode."""
+    archive = mount_ready(cfg); recover_default_route(store)
+    for old in list(store.get('defaults', [])):
+        source, previous = Path(old['source']), Path(old['hdd'])
+        if not source.is_symlink() or source.resolve(strict=True) != previous:
+            raise ValueError('default parent differs from ledger')
+        if within(previous, archive): continue
+        bridge = archive / 'defaults' / hashlib.sha256(str(source).encode()).hexdigest()[:16]
+        if bridge.exists(): raise ValueError('default route destination already exists')
+        bridge.mkdir(parents=True, mode=stat.S_IMODE(previous.stat().st_mode))
+        for child in previous.iterdir():
+            if not tier_temporary(child): (bridge/child.name).symlink_to(child)
+        new = dict(old, hdd=str(bridge), previous=[*old.get('previous', []), str(previous)])
+        staged = source.with_name('.' + source.name + '.qq-tier-default-link')
+        if os.path.lexists(staged): raise ValueError('default route staging already exists')
+        journal = store.state/'default-route-operation.json'
+        # Persist the bridge and transaction before exposing a link to it.
+        flush_copy(bridge)
+        atomic_json(journal, {'old': old, 'new': new, 'staged': str(staged)})
+        staged.symlink_to(bridge); exchange(source, staged); flush_directory(source.parent)
+        recover_default_route(store)
+        print('ROUTED', source, 'to', bridge, flush=True)
+    adopt_defaults(store, cfg)
+
+
+def partition_root(store, cfg, key):
+    """Keep existing inodes while admitting a mixed SSD root's children separately."""
+    root = store.root(key); original = live_path(root)
+    if root['location'] != 'ssd' or not original.is_dir() or original.is_symlink() or json.loads(root['aliases']):
+        raise ValueError('partition requires an original SSD directory')
+    if store.db.execute('SELECT 1 FROM scopes WHERE root=?', (root['id'],)).fetchone():
+        raise ValueError('partition would change a regeneration scope; deferred')
+    journal = store.state/'partition-operation.json'
+    if journal.exists(): raise ValueError('unfinished partition; original inodes preserved for review')
+    atomic_json(journal, {'root': root['id'], 'original': str(original), 'source': root['source']})
+    parent = bridge_parent(store, cfg, original)
+    # The old public proxy still resolves through the physical path, now to a
+    # native directory of proxies. No child inode has been copied or removed.
+    if Path(root['source']).resolve() != Path(parent['hdd']):
+        raise ValueError('partition public path changed; both namespaces retained')
+    store.db.execute('UPDATE roots SET location=?,target=?,hot=?,since=0,coverage=0,error=? WHERE id=?',
+                     ('hdd',parent['hdd'],'','partitioned: awaiting watcher',root['id']))
+    store.db.execute("UPDATE queue SET status='complete',error='partitioned into child migration units',updated=? WHERE source=?",
+                     (time.time(),root['source']))
+    store.db.commit(); adopt_defaults(store,cfg); journal.unlink(); flush_directory(store.state)
+    print('PARTITIONED',root['source'],flush=True)
 
 
 def mount_ready(cfg):
@@ -467,21 +552,32 @@ def flush_copy(destination):
     subprocess.run(['sync', '-f', '--', str(destination)], check=True, timeout=120)
 
 
+def flush_directory(path):
+    fd = os.open(path, os.O_DIRECTORY)
+    try: os.fsync(fd)
+    finally: os.close(fd)
+
+
 def migrate(store, cfg, source, *, restoring=None, demoting=None):
     """Copy, compare, publish symlink atomically, then retire the verified original."""
     archive = mount_ready(cfg)
     source = absolute(source) if restoring or demoting else valid_source(source, cfg)
     original = Path(restoring['target']) if restoring else live_path(demoting) if demoting else source
+    old = restoring or demoting
+    aliases = [Path(p) for p in json.loads(old['aliases'])] if old else []
+    for alias in aliases:
+        if not alias.is_symlink() or alias.resolve() != original.resolve():
+            raise ValueError('legacy path differs from ledger; original retained')
     if restoring:
         hot_storage = hot_ready(cfg, archive)
-        destination = Path(restoring['hot']) if restoring['hot'] else hot_storage / restoring['id'] / source.name
+        destination = hot_storage / restoring['id'] / uuid.uuid4().hex / source.name
     else: destination = archive / 'data' / uuid.uuid4().hex / source.name
     if demoting and source.resolve() != original.resolve(): raise ValueError('source path changed since admission')
     if restoring:
         if source.resolve() != original.resolve(): raise ValueError('source path no longer matches ledger')
     for p in (original, source):
         if p.lstat().st_uid != os.getuid(): raise ValueError('migration requires operator-owned paths')
-    if references([original, source]): raise ValueError('live process references; deferred')
+    if references([original, source, *aliases]): raise ValueError('live process references; deferred')
     before, size = inventory(original, cfg['max_scan_entries'])
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if os.path.lexists(destination): raise ValueError('staging destination exists')
@@ -534,7 +630,7 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
         flush_copy(destination)
         if any(mask & (MODIFY | ATTRIB | CREATE | DELETE | MOVED_FROM | MOVED_TO | OVERFLOW | DELETE_SELF | MOVE_SELF)
                for _, _, mask in guard.events()): raise ValueError('source mutation during migration')
-        if references([original, source]): raise ValueError('source became active; original retained')
+        if references([original, source, *aliases]): raise ValueError('source became active; original retained')
         if restoring or demoting:
             if source.resolve() != original.resolve(): raise ValueError('public path changed during migration')
         record['phase'] = 'verified'; atomic_json(journal, record)
@@ -555,7 +651,37 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
             exchange(source, link)
             link.rename(staged)
         published = True
+        retired = staged
+        if demoting and original != source:
+            # Public bridges and executable shebangs can retain the physical SSD
+            # name. Exchange that inode for an alias before retiring its contents.
+            original_link = original.with_name('.' + original.name + '.qq-tier-link')
+            retired = original.with_name('.' + original.name + '.qq-tier-original')
+            if os.path.lexists(original_link) or os.path.lexists(retired):
+                raise ValueError('legacy alias staging exists; both copies retained')
+            record['original_staged'] = str(retired)
+            record['original_swap_path'] = str(original_link)
+            atomic_json(journal, record)
+            original_link.symlink_to(destination)
+            exchange(original, original_link); original_link.rename(retired)
+            if original not in aliases: aliases.append(original)
+        for alias in aliases:
+            if alias == original and demoting: continue
+            link = alias.with_name('.' + alias.name + '.qq-tier-link')
+            if os.path.lexists(link): raise ValueError('alias staging exists; both copies retained')
+            if not alias.is_symlink() or alias.resolve() != original.resolve():
+                raise ValueError('legacy path changed during publication; both copies retained')
+            link.symlink_to(destination); os.replace(link, alias)
+        record['aliases'] = [str(p) for p in aliases]
+        for parent in {source.parent, original.parent, *[p.parent for p in aliases]}:
+            flush_directory(parent)
         record['phase'] = 'published'; atomic_json(journal, record)
+        # A writer that opened the original during publication is now visible
+        # at its retired inode path. Keep both versions if it wrote or remains
+        # open, rather than orphaning its work during cleanup.
+        if any(mask & (MODIFY | ATTRIB | CREATE | DELETE | MOVED_FROM | MOVED_TO | OVERFLOW)
+               for _, _, mask in guard.events()) or references([retired]):
+            raise ValueError('retired original became active; both copies and journal retained')
         if restoring:
             cold_target = original
             if staged.is_symlink(): staged.unlink()
@@ -563,24 +689,26 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
                 cold_target = archive / 'data' / uuid.uuid4().hex / source.name
                 cold_target.parent.mkdir(parents=True, mode=0o700)
                 staged.rename(cold_target)
-            store.db.execute('UPDATE roots SET location=?,hot=?,target=?,since=0,coverage=0,error=? WHERE id=?',
-                             ('ssd', str(destination), str(cold_target), 'awaiting watcher', restoring['id']))
+            store.db.execute('UPDATE roots SET location=?,hot=?,target=?,aliases=?,since=0,coverage=0,error=? WHERE id=?',
+                             ('ssd', str(destination), str(cold_target), json.dumps(record['aliases']), 'awaiting watcher', restoring['id']))
         else:
             if demoting:
-                store.db.execute('UPDATE roots SET target=?,location=?,since=0,coverage=0,error=? WHERE id=?',
-                                 (str(destination), 'hdd', 'awaiting watcher', demoting['id']))
+                store.db.execute('UPDATE roots SET target=?,location=?,hot=?,aliases=?,since=0,coverage=0,error=? WHERE id=?',
+                                 (str(destination), 'hdd', '', json.dumps(record['aliases']), 'awaiting watcher', demoting['id']))
             else: store.register(source, destination)
             if staged.is_symlink():
                 staged.unlink()
-                if original.is_dir(): shutil.rmtree(original)
-                else: original.unlink()
+                if retired.is_dir(): shutil.rmtree(retired)
+                else: retired.unlink()
             elif staged.is_dir(): shutil.rmtree(staged)
             else: staged.unlink()
         store.db.commit()
         record['phase'] = 'complete'; record['completed'] = time.time()
-        with (store.state / 'moves.jsonl').open('a') as f: f.write(json.dumps(record) + '\n')
-        journal.unlink()
-        print('MOVED', source, 'free_GiB', round(shutil.disk_usage(source.parent).free / 1024**3, 2), flush=True)
+        record['allocated_bytes'] = size
+        with (store.state / 'moves.jsonl').open('a') as f:
+            f.write(json.dumps(record) + '\n'); f.flush(); os.fsync(f.fileno())
+        journal.unlink(); flush_directory(store.state)
+        print('MOVED', source, 'SSD_free_GiB', round(shutil.disk_usage(Path.home()).free / 1024**3, 2), flush=True)
     except BaseException:
         # An interrupted publish retains both copies and its journal for recovery.
         if not published:
@@ -747,10 +875,15 @@ def watch(store, cfg):
         try:
             while True:
                 if time.time() >= next_adopt:
-                    try: adopt_defaults(store, cfg)
+                    try:
+                        with lock(store.state / 'move.lock'):
+                            recover_default_route(store); adopt_defaults(store, cfg)
+                    except BlockingIOError: pass
                     except (OSError, ValueError) as e: store.put('defaults_error', str(e)[:200]); store.db.commit()
                     next_adopt = time.time() + 60
-                roots = store.roots()
+                # HDD roots can be retained/pruned; prioritize their complete
+                # coverage over SSD roots which are ineligible for retention.
+                roots = sorted(store.roots(), key=lambda r: (r['location'] != 'hdd', r['created']))
                 current = {r['id']:(r['location'],r['target'],r['source'],r['hot']) for r in roots}
                 for key in set(signatures)-set(current): watcher.remove_root(key); signatures.pop(key)
                 def progress():
@@ -769,6 +902,9 @@ def watch(store, cfg):
                             store.db.execute('UPDATE roots SET coverage=1,since=CASE WHEN since=0 THEN ? ELSE since END,error=? WHERE id=?',
                                              (time.time(), '', root['id']))
                         except (OSError, ValueError) as e:
+                            # A partial large tree must not consume the budget
+                            # while providing no complete retention evidence.
+                            watcher.remove_root(key)
                             store.db.execute('UPDATE roots SET coverage=0,since=0,error=? WHERE id=?', (str(e)[:200], root['id']))
                         signatures[key]=current[key];store.db.commit()
                 select.select([watcher.fd], [], [], 2)
@@ -850,13 +986,14 @@ def main():
     parser.add_argument('--state-dir', default=str(Path.home() / '.local/state/qq-cold-tier'))
     parser.add_argument('--config', default=str(Path.home() / '.config/qq-cold-tier.json'))
     sub = parser.add_subparsers(dest='command', required=True)
-    sub.add_parser('init'); sub.add_parser('watch'); sub.add_parser('status'); sub.add_parser('drain')
+    sub.add_parser('init'); sub.add_parser('watch'); sub.add_parser('status'); sub.add_parser('drain'); sub.add_parser('route-defaults')
     p = sub.add_parser('discover'); p.add_argument('paths', nargs='+')
     p = sub.add_parser('defaults'); p.add_argument('paths', nargs='+')
     p = sub.add_parser('queue'); p.add_argument('paths', nargs='+')
     p = sub.add_parser('move'); p.add_argument('path')
     p = sub.add_parser('restore'); p.add_argument('root')
     p = sub.add_parser('split'); p.add_argument('root'); p.add_argument('relative')
+    p = sub.add_parser('partition'); p.add_argument('root')
     p = sub.add_parser('register'); p.add_argument('source'); p.add_argument('target')
     p = sub.add_parser('regenerable'); p.add_argument('root'); p.add_argument('relative'); p.add_argument('--recipe', required=True); p.add_argument('--proof', required=True); p.add_argument('--verified', action='store_true', required=True)
     p = sub.add_parser('latency'); p.add_argument('root'); p.add_argument('--task', required=True); p.add_argument('--hdd-ms', type=float, required=True); p.add_argument('--ssd-ms', type=float, required=True)
@@ -872,7 +1009,7 @@ def main():
     for key in ('max_watches', 'max_scan_entries', 'copy_kib_per_second', 'verify_bytes_per_second', 'max_gc_files', 'max_gc_bytes'):
         if not isinstance(cfg[key], int) or cfg[key] <= 0: raise ValueError('invalid budget ' + key)
     store = Store(args.state_dir)
-    if args.command in ('drain','move','restore','discover'): contain_job()
+    if args.command in ('drain','move','restore','discover','route-defaults'): contain_job()
     if args.command == 'init': mount_ready(cfg); print('Initialized', store.state)
     elif args.command == 'watch': watch(store, cfg)
     elif args.command == 'status':
@@ -889,6 +1026,10 @@ def main():
             registered = store.db.execute('SELECT * FROM roots WHERE source=?', (str(absolute(path)),)).fetchone()
             queue_add(store, registered['source'] if registered and registered['location']=='ssd' else valid_source(path, cfg))
     elif args.command == 'drain': drain(store, cfg)
+    elif args.command == 'route-defaults':
+        with lock(store.state / 'move.lock'): route_defaults(store, cfg)
+    elif args.command == 'partition':
+        with lock(store.state / 'move.lock'): partition_root(store, cfg, args.root)
     elif args.command == 'move':
         with lock(store.state / 'move.lock'): migrate(store, cfg, args.path)
     elif args.command == 'restore':

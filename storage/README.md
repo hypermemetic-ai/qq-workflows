@@ -8,6 +8,14 @@ open file handles. A queued, checksum-verified move retires each old child once
 it is idle. Writes through an already-open parent FD are reconciled every minute.
 Files of every size and folders containing many small files participate.
 
+After changing the archive to the native cached volume, run
+`qq-job -- qq-cold-tier route-defaults`. This atomically redirects new children
+while retaining earlier HDD directories and their open inodes. Late writes into
+any former parent remain discoverable. A route interrupted during publication is
+reconciled from its durable journal. `qq-cold-tier partition ROOT_ID` admits a
+mixed SSD directory's children separately without copying or retiring its busy
+children. An incomplete partition retains its journal for review.
+
 Install from the reviewed workflow checkout:
 
 ```sh
@@ -41,6 +49,9 @@ references are limited to visible same-UID processes: sandboxes and root process
 can hide references. This is quiescent-user-data migration, not an online database
 mover. An interrupted publish keeps `operation.json` and both copies; inspect and
 recover them before retrying. It never deletes an ambiguous original on startup.
+Physical SSD backing paths become aliases as well, preserving absolute executable
+paths and shebangs after migration. Publication flushes namespace changes, and a
+late writer on the retired inode preserves both copies for review.
 
 Access recording uses Linux inotify, independent of the HDD's `noatime` mount.
 It records per-file opens, reads and writes in a small SQLite ledger on SSD.
@@ -96,6 +107,8 @@ new/deleted subtrees incrementally. Directory activity does not trigger a scan
 of every managed root. Watch-budget failures are visible per root. Installed
 code and ledger use their physical SSD paths, so the control plane survives an
 absent HDD mount.
+HDD roots receive watch admission first. Failed partial trees relinquish their
+watches so they cannot starve smaller trees of complete coverage.
 
 ## Native block-cache alternative
 
