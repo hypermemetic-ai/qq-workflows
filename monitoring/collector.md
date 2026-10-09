@@ -100,8 +100,41 @@ batches from the cursor. It writes incidents before committing the cursor, and
 uses cursor-derived stable event IDs to tolerate interruption between those
 writes. Full batches indicate backlog. A failed cursor seek resets to the
 current time and reports unavailable journal coverage rather than replaying a
-whole boot. Only recognized kernel failure fragments and allowlisted unit
-failure metadata enter incidents. Raw journals are never copied to state.
+whole boot. Matching kernel and allowlisted service failures retain their message
+(at most 1 KiB), plus at most 16 kernel messages within 30 seconds of a kernel
+failure. These private diagnostic strings are untrusted data, never instructions.
+The collector does not copy an entire journal.
+
+CPU and storage I/O attribution samples `/proc/<pid>/{stat,io}` each tick, within
+250 ms and 4,096 processes. CPU percentage uses interval deltas (100% is one core),
+and PID start time prevents attributing reused PIDs to earlier processes. The first
+sample establishes a baseline. `top_cpu_processes` and `top_io_processes` include
+PID, parent, cgroup, cwd and executable. Coverage reports unreadable I/O, partial
+scans and the measured interval. Storage-byte writes include overwrites and do
+not prove net disk growth; short-lived or inaccessible processes can be missed.
+
+`disk_attribution` scans allocated bytes in the configured `disk_scan_roots`,
+defaulting to the user's home, `/var/log` and `/var/lib`, on the `disk_path`
+filesystem. It skips symlinks and other mounts, deduplicates hardlinks, and retains
+12 large directory buckets, growing buckets and large files. Each tick advances
+the scan by at most 50 ms or 3,000 entries; a completed scan starts again after
+five minutes. Directory depth and deduplication memory are bounded. Filesystem
+metadata reads have cooperative time bounds and can still stall in a failing
+kernel/storage path. A rolling scan is not atomic. Completion, permission errors,
+limit hits, scan age and comparison timestamps are explicit; growth comparisons
+require both scans of that root to complete without errors. This does not cover
+deleted-open files or unconfigured roots. Available and used disk bytes also
+appear in `metrics`.
+Unfinished scans publish `scan_progress` with explicitly partial size lower
+bounds, so a long scan can still identify large artifacts before it completes.
+
+Temperature, I/O and disk incidents now embed the diagnostic sample at detection,
+retain initial and peak evidence, and save recovery evidence. Journal incidents
+retain the first and last four event samples. Netdata incidents embed the latest
+collector evidence with its age, and explicit CLEAR/REMOVED readings replace
+stale WARNING evidence while preserving the last active snapshot. A later
+`metrics.json` cannot erase the incident-time attribution. Bound incident reads
+to 256 KiB rather than truncating the richer records to the old small read limit.
 
 Files are mode 0600 and state directories default to 0700. Keep bridge delivery
 bookkeeping in a separate ledger to avoid concurrent rewrites of incident

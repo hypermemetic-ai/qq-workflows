@@ -3,6 +3,7 @@
 
 import argparse
 import copy
+import heapq
 import json
 import math
 import os
@@ -28,6 +29,10 @@ DEFAULT_POLICY = {
     "gpu_timeout_seconds": 3, "service_interval_seconds": 60,
     "process_memory_interval_seconds": 10, "process_memory_budget_seconds": .25,
     "process_memory_max_processes": 4096, "top_memory_processes": 12,
+    "process_activity_budget_seconds": .25, "top_activity_processes": 12,
+    "disk_scan_interval_seconds": 300, "disk_scan_budget_seconds": .05,
+    "disk_scan_max_entries_per_sample": 3000, "disk_scan_max_inodes": 250000,
+    "disk_scan_roots": [str(Path.home()), "/var/log", "/var/lib"],
     "history_max_bytes": 8 * 1024 * 1024, "history_files": 3,
     "important_user_units": [], "important_system_units": [],
     "journal_max_events": 200, "journal_max_bytes": 1024 * 1024,
@@ -85,6 +90,10 @@ def load_policy(path=None):
         if any(not isinstance(unit, str) or not re.fullmatch(r"[A-Za-z0-9_.@:-]+", unit)
                or unit.startswith("-") for unit in policy[key]):
             raise ValueError("Invalid unit name in " + key)
+    roots = policy["disk_scan_roots"]
+    if not isinstance(roots, list) or len(roots) > 16 or any(
+            not isinstance(root, str) or not os.path.isabs(root) for root in roots):
+        raise ValueError("disk_scan_roots must contain at most 16 absolute paths")
     return policy
 
 
@@ -456,6 +465,198 @@ def collect_services(policy, runner=bounded_command):
     return rows, errors
 
 
+class ProcessActivity:
+    """Interval CPU and storage-byte deltas, keyed by PID AND start time."""
+    def __init__(self):
+        self.previous = {}
+        self.clock = None
+
+    def sample(self, proc_root, policy, clock, monotonic=time.monotonic):
+        started = monotonic()
+        current, rows = {}, []
+        coverage = {"process_activity_complete": True, "process_activity_denied": 0,
+                    "process_activity_scanned": 0, "process_activity_baseline": self.clock is None}
+        elapsed = clock - self.clock if self.clock is not None else 0
+        ticks = os.sysconf("SC_CLK_TCK")
+        try:
+            with os.scandir(proc_root) as entries:
+                for entry in entries:
+                    if not entry.name.isdecimal():
+                        continue
+                    if len(current) >= policy["process_memory_max_processes"] or monotonic() - started >= policy["process_activity_budget_seconds"]:
+                        coverage["process_activity_complete"] = False
+                        break
+                    coverage["process_activity_scanned"] += 1
+                    base = Path(proc_root) / entry.name
+                    stat = small_read(base / "stat")
+                    if not stat:
+                        if base.exists():
+                            coverage["process_activity_denied"] += 1
+                            coverage["process_activity_complete"] = False
+                        continue
+                    try:
+                        fields = stat[stat.rindex(")") + 2:].split()
+                        key = (int(entry.name), int(fields[19]))
+                        cpu = int(fields[11]) + int(fields[12])
+                        io = dict(re.findall(r"^(read_bytes|write_bytes):\s+(\d+)", small_read(base / "io") or "", re.M))
+                        values = (cpu, number(io.get("read_bytes")), number(io.get("write_bytes")))
+                        current[key] = values
+                        prior = self.previous.get(key)
+                        if prior is None or elapsed <= 0:
+                            continue
+                        rates = [(max(0, value - old) / elapsed if value is not None and old is not None else None)
+                                 for value, old in zip(values, prior)]
+                        rows.append({"pid": key[0], "start_ticks": key[1], "ppid": int(fields[1]),
+                                     "comm": stat[stat.index("(") + 1:stat.rindex(")")][:128],
+                                     "cpu_percent": round(rates[0] / ticks * 100, 2),
+                                     "read_bytes_per_second": rates[1], "write_bytes_per_second": rates[2]})
+                    except (ValueError, IndexError):
+                        coverage["process_activity_complete"] = False
+        except OSError:
+            coverage["process_activity_complete"] = False
+        cpu_rows = sorted(rows, key=lambda row: row["cpu_percent"], reverse=True)[:policy["top_activity_processes"]]
+        io_rows = sorted((row for row in rows if (row["read_bytes_per_second"] or 0) + (row["write_bytes_per_second"] or 0) > 0),
+                         key=lambda row: (row["read_bytes_per_second"] or 0) + (row["write_bytes_per_second"] or 0), reverse=True)[:policy["top_activity_processes"]]
+        for row in {row["pid"]: row for row in cpu_rows + io_rows}.values():
+            base = Path(proc_root) / str(row["pid"])
+            row["cgroup"] = (small_read(base / "cgroup", 512) or "").strip()
+            for key, filename in (("cwd", "cwd"), ("executable", "exe")):
+                try:
+                    row[key] = os.readlink(base / filename)[:512]
+                except OSError:
+                    row[key] = None
+        coverage.update(process_activity_interval_seconds=elapsed,
+                        process_activity_io_unavailable=sum(values[1] is None for values in current.values()),
+                        process_activity_duration_seconds=round(monotonic() - started, 4),
+                        process_activity_note="CPU percent per core; I/O is storage bytes, not net filesystem growth; unreadable or short-lived processes may be absent")
+        self.previous, self.clock = current, clock
+        return cpu_rows, io_rows, coverage
+
+
+class DiskScanner:
+    """Incremental same-filesystem allocation scan; no du storm on each alert."""
+    def __init__(self, policy, monotonic=time.monotonic):
+        self.policy, self.monotonic = policy, monotonic
+        self.stack, self.result = [], {}
+        self.last_finished = float("-inf")
+        self.previous_sizes = {}
+        self.previous_finished = None
+
+    def _enter(self, path, root):
+        try:
+            if len(self.stack) >= 64:
+                self.denied += 1
+                self.incomplete_roots.add(root)
+                return
+            self.stack.append((os.scandir(path), root))
+        except OSError:
+            self.denied += 1
+            self.incomplete_roots.add(root)
+
+    def sample(self, now, clock):
+        if not self.stack and clock - self.last_finished >= self.policy["disk_scan_interval_seconds"]:
+            self.started, self.sizes, self.files, self.seen, self.denied, self.count = now, {}, [], set(), 0, 0
+            self.incomplete_roots, self.bucket_roots = set(), {}
+            self.device = os.stat(self.policy["disk_path"]).st_dev
+            for root in self.policy["disk_scan_roots"]:
+                try:
+                    if os.stat(root).st_dev == self.device:
+                        self._enter(root, root)
+                except OSError:
+                    self.denied += 1
+                    self.incomplete_roots.add(root)
+        start = self.monotonic()
+        processed = 0
+        while self.stack and processed < self.policy["disk_scan_max_entries_per_sample"] and self.monotonic() - start < self.policy["disk_scan_budget_seconds"]:
+            iterator, root = self.stack[-1]
+            try:
+                entry = next(iterator)
+            except StopIteration:
+                iterator.close()
+                self.stack.pop()
+                continue
+            except OSError:
+                self.denied += 1
+                self.incomplete_roots.add(root)
+                iterator.close()
+                self.stack.pop()
+                continue
+            processed += 1
+            self.count += 1
+            try:
+                stat = entry.stat(follow_symlinks=False)
+                if stat.st_dev != self.device or entry.is_symlink():
+                    continue
+                key = (stat.st_dev, stat.st_ino)
+                if key in self.seen:
+                    continue
+                if entry.is_dir(follow_symlinks=False) or stat.st_nlink > 1:
+                    self.seen.add(key)
+                relative = Path(entry.path).relative_to(root)
+                parts = relative.parts if entry.is_dir(follow_symlinks=False) else relative.parts[:-1]
+                bucket = str(Path(root).joinpath(*parts[:2]))
+                self.bucket_roots[bucket] = root
+                allocated = stat.st_blocks * 512
+                self.sizes[bucket] = self.sizes.get(bucket, 0) + allocated
+                if entry.is_dir(follow_symlinks=False):
+                    self._enter(entry.path, root)
+                elif entry.is_file(follow_symlinks=False):
+                    heapq.heappush(self.files, (allocated, entry.path))
+                    if len(self.files) > 12:
+                        heapq.heappop(self.files)
+                if len(self.seen) >= self.policy["disk_scan_max_inodes"]:
+                    for opened, _ in self.stack:
+                        opened.close()
+                    self.stack = []
+                    self.denied += 1
+                    self.incomplete_roots.update(self.policy["disk_scan_roots"])
+            except OSError:
+                self.denied += 1
+                self.incomplete_roots.add(root)
+        if not self.stack and hasattr(self, "started") and clock != self.last_finished and clock - self.last_finished >= self.policy["disk_scan_interval_seconds"]:
+            rows = [{"path": path, "allocated_bytes": size,
+                     "growth_bytes": size - self.previous_sizes[path] if path in self.previous_sizes and self.bucket_roots[path] not in self.incomplete_roots else None}
+                    for path, size in self.sizes.items()]
+            self.result = {"started_at": self.started, "finished_at": now, "entries_scanned": self.count,
+                           "complete": self.denied == 0, "errors_or_limit_hits": self.denied,
+                           "comparison_finished_at": self.previous_finished,
+                           "largest_directories": sorted(rows, key=lambda row: row["allocated_bytes"], reverse=True)[:12],
+                           "growing_directories": sorted((row for row in rows if (row["growth_bytes"] or 0) > 0), key=lambda row: row["growth_bytes"], reverse=True)[:12],
+                           "largest_files": [{"path": path, "allocated_bytes": size} for size, path in sorted(self.files, reverse=True)],
+                           "note": "Allocated bytes in configured roots, same filesystem only; rolling scan, not an atomic snapshot; partial scans do not establish growth"}
+            self.previous_sizes = {path: size for path, size in self.sizes.items() if self.bucket_roots[path] not in self.incomplete_roots}
+            self.previous_finished = now
+            self.last_finished = clock
+        progress = {}
+        if self.stack:
+            progress = {"started_at": self.started, "entries_scanned": self.count, "complete": False,
+                        "note": "Lower bounds from the unfinished scan; do not treat as a growth comparison",
+                        "largest_directories": [{"path": path, "allocated_bytes": size} for path, size in
+                            sorted(self.sizes.items(), key=lambda item: item[1], reverse=True)[:12]],
+                        "largest_files": [{"path": path, "allocated_bytes": size} for size, path in sorted(self.files, reverse=True)]}
+        return {**self.result, "in_progress": bool(self.stack), "scan_progress": progress,
+                "age_seconds": max(0, now - self.result["finished_at"]) if self.result else None}
+
+
+def diagnostic_context(snapshot):
+    context = copy.deepcopy({key: snapshot.get(key) for key in ("timestamp", "metrics", "top_cpu_processes", "top_io_processes",
+            "top_memory_processes", "temperature_sensors", "disk_attribution", "services", "coverage")})
+    # Keep retained event history below the investigator's bounded read limit.
+    lists = [context.get(key) for key in ("top_memory_processes", "top_io_processes", "top_cpu_processes")]
+    disk = context.get("disk_attribution") or {}
+    lists += [disk.get(key) for key in ("largest_files", "largest_directories", "growing_directories")]
+    lists += [(disk.get("scan_progress") or {}).get(key) for key in ("largest_files", "largest_directories")]
+    while len(json.dumps(context).encode()) > 20 * 1024:
+        candidate = next((rows for rows in lists if isinstance(rows, list) and rows), None)
+        if candidate is None:
+            context = {"timestamp": snapshot.get("timestamp"), "metrics": snapshot.get("metrics"),
+                       "context_truncated": True}
+            break
+        candidate.pop()
+        context["context_truncated"] = True
+    return context
+
+
 class Sampler:
     def __init__(self, policy, proc_root="/proc", sys_root="/sys", runner=bounded_command, monotonic=time.monotonic):
         self.policy, self.proc_root, self.sys_root = policy, Path(proc_root), Path(sys_root)
@@ -464,6 +665,8 @@ class Sampler:
         self.last_watchers = self.last_gpu = self.last_services = float("-inf")
         self.process_memory = None
         self.last_process_memory = float("-inf")
+        self.activity = ProcessActivity()
+        self.disk_scanner = DiskScanner(policy, monotonic)
 
     def sample(self, now=None):
         now = time.time() if now is None else now
@@ -478,6 +681,8 @@ class Sampler:
             metrics[metric] = psi_value(self.proc_root / "pressure" / source, kind)
         coverage["memory_available"] = metrics["memory_available_ratio"] is not None
         metrics["memory_total_bytes"] = int(total * 1024) if total is not None else None
+        cpu_processes, io_processes, activity_coverage = self.activity.sample(self.proc_root, self.policy, clock, self.monotonic)
+        coverage.update(activity_coverage)
         if self.process_memory is None or clock - self.last_process_memory >= self.policy["process_memory_interval_seconds"]:
             self.process_memory = collect_process_memory(self.proc_root, self.policy, metrics["memory_total_bytes"], self.monotonic)
             self.last_process_memory = clock
@@ -491,6 +696,8 @@ class Sampler:
             disk = os.statvfs(self.policy["disk_path"])
             metrics["disk_used_ratio"] = (disk.f_blocks - disk.f_bfree) / (disk.f_blocks - disk.f_bfree + disk.f_bavail) if disk.f_blocks - disk.f_bfree + disk.f_bavail else None
             metrics["disk_inode_used_ratio"] = (disk.f_files - disk.f_ffree) / disk.f_files if disk.f_files else None
+            metrics["disk_available_bytes"] = disk.f_bavail * disk.f_frsize
+            metrics["disk_used_bytes"] = (disk.f_blocks - disk.f_bfree) * disk.f_frsize
             coverage["disk_available"] = True
         except OSError:
             metrics["disk_used_ratio"] = metrics["disk_inode_used_ratio"] = None
@@ -508,6 +715,7 @@ class Sampler:
         if not coverage["process_namespace_host_confirmed"]:
             coverage["watchers_complete"] = False
             coverage["process_memory_complete"] = False
+            coverage["process_activity_complete"] = False
         coverage["watcher_sample_age_seconds"] = max(0.0, clock - self.last_watchers)
         coverage["watcher_sample_timestamp"] = self.watchers_sample_wall
         for key, filename in (("inotify_watch_limit", "max_user_watches"), ("inotify_instance_limit", "max_user_instances")):
@@ -536,6 +744,8 @@ class Sampler:
         return {"schema": 1, "timestamp": now, "boot_id": (small_read(self.proc_root / "sys/kernel/random/boot_id", 128) or "unknown").strip(),
                 "host": socket.gethostname(), "metrics": metrics, "top_watchers": watchers,
                 "top_memory_processes": memory_processes, "top_gpu_processes": gpu_processes,
+                "top_cpu_processes": cpu_processes, "top_io_processes": io_processes,
+                "disk_attribution": self.disk_scanner.sample(now, clock) if coverage["disk_available"] else {},
                 "temperature_sensors": sensors, "services": services, "coverage": coverage}
 
 
@@ -560,8 +770,9 @@ def classify_journal(record, policy):
         for event_type, severity, pattern in KERNEL_RULES:
             match = re.search(pattern, message, re.I)
             if match:
-                # Keep recognized failure text only, never arbitrary journal messages.
+                # Bounded diagnostic text, untrusted and private; never execute it.
                 evidence["matched_error"] = match.group(0)[:180]
+                evidence["message"] = message[:1024]
                 evidence["source"] = "kernel"
                 return {"type": event_type, "severity": severity, "summary": event_type.replace("_", " ").capitalize(), "evidence": evidence}
     if record.get("SYSLOG_IDENTIFIER") == "systemd" and re.search(r"failed|failure|main process exited", message, re.I):
@@ -569,6 +780,7 @@ def classify_journal(record, policy):
             for unit in policy[key]:
                 if unit == record.get("USER_UNIT" if scope == "user" else "UNIT") or re.search(r"(?<![\w.@-])" + re.escape(unit) + r"(?![\w.@-])", message):
                     evidence.update(unit=unit, scope=scope, result=record.get("RESULT"), exit_status=record.get("EXIT_STATUS"))
+                    evidence["message"] = message[:1024]
                     return {"type": "service_failed:" + scope + ":" + unit, "severity": "critical",
                             "summary": "Important service failed: " + unit, "evidence": evidence}
     return None
@@ -579,6 +791,7 @@ class JournalReader:
         self.path = Path(state_dir) / "journal-cursor.json"
         self.policy, self.runner = policy, runner
         self.state = read_json(self.path, {})
+        self.kernel_context = []
 
     def poll(self, boot_id, now):
         """Return an uncommitted cursor; persist only AFTER incident writes."""
@@ -615,7 +828,24 @@ class JournalReader:
             state["cursor"] = records[-1]["__CURSOR"]
         if not state.get("cursor"):
             state["since"] = now
-        events = [] if baseline else [event for record in records if (event := classify_journal(record, self.policy))]
+        events = []
+        if baseline:
+            self.kernel_context = []
+        kernel_rows = [{"timestamp": record.get("__REALTIME_TIMESTAMP"), "message": record["MESSAGE"][:1024]}
+                       for record in records if record.get("_TRANSPORT") == "kernel" and isinstance(record.get("MESSAGE"), str)]
+        context = self.kernel_context + kernel_rows
+        if not baseline:
+            for record in records:
+                event = classify_journal(record, self.policy)
+                if event:
+                    if record.get("_TRANSPORT") == "kernel":
+                        target = number(record.get("__REALTIME_TIMESTAMP"))
+                        nearby = [row for row in context if target is not None and
+                            (stamp := number(row["timestamp"])) is not None and abs(stamp - target) <= 30_000_000]
+                        nearest = sorted(nearby, key=lambda row: abs(number(row["timestamp"]) - target))[:16]
+                        event["evidence"]["kernel_context"] = sorted(nearest, key=lambda row: number(row["timestamp"]))
+                    events.append(event)
+        self.kernel_context = context[-16:]
         return events, {"journal_available": not malformed, "journal_error": "invalid_json" if malformed else None,
                         "journal_baseline": baseline, "journal_events_read": len(records),
                         "journal_backlog": len(records) >= self.policy["journal_max_events"]}, state
@@ -659,6 +889,13 @@ class IncidentEngine:
         if severity == "critical" or incident["severity"] != "critical":
             incident["severity"] = severity
         previous_event_cursor = incident.get("evidence", {}).get("journal_cursor")
+        if "initial_evidence" not in incident:
+            incident["initial_evidence"] = copy.deepcopy(evidence)
+        value = evidence.get("value")
+        if isinstance(value, (int, float)) and value > incident.get("peak_value", float("-inf")):
+            incident.update(peak_value=value, peak_evidence=copy.deepcopy(evidence))
+        if event:
+            incident["event_evidence"] = (incident.get("event_evidence", []) + [copy.deepcopy(evidence)])[-4:]
         incident.update(status="open", last_seen=now, summary=summary, evidence=evidence)
         if event:
             if not incident.get("occurrences") or previous_event_cursor != evidence.get("journal_cursor") or not evidence.get("journal_cursor"):
@@ -667,11 +904,13 @@ class IncidentEngine:
         self._write(incident)
         return incident
 
-    def resolve(self, event_type, now, reason):
+    def resolve(self, event_type, now, reason, evidence=None):
         rule = self.state["rules"].get(event_type, {})
         incident = self._incident(rule)
         if incident:
             incident.update(status="resolved", resolved_at=now, resolution=reason)
+            if evidence is not None:
+                incident["resolution_evidence"] = evidence
             self._write(incident)
         for key in ("incident_id", "pending_since", "event", "last_event", "last_event_cursor"):
             rule.pop(key, None)
@@ -697,7 +936,7 @@ class IncidentEngine:
             if clear:
                 rule["clear_streak"] = rule.get("clear_streak", 0) + 1
                 if rule["clear_streak"] >= self.policy["recovery_samples"]:
-                    self.resolve(event_type, now, "Metric recovered below the configured clear threshold")
+                    self.resolve(event_type, now, "Metric recovered below the configured clear threshold", evidence)
             else:
                 rule["clear_streak"] = 0
 
@@ -728,6 +967,8 @@ class IncidentEngine:
             limits = self.policy["thresholds"][name]
             level = "critical" if value is not None and value >= limits["critical"] else "warning" if value is not None and value >= limits["warning"] else None
             evidence = {"value": value, "thresholds": limits}
+            if name in ("temperature", "io_pressure", "disk", "disk_inodes"):
+                evidence["context"] = diagnostic_context(snapshot)
             if name.startswith("inotify"):
                 evidence.update(top_watchers=snapshot["top_watchers"], coverage={key: val for key, val in snapshot["coverage"].items() if "watch" in key},
                                 note="Visible process FD sums can count shared watches repeatedly; inspect attribution before changing limits")
@@ -776,7 +1017,8 @@ class IncidentEngine:
                                active == "active", service, now, host, boot_id, "Important service is not active: " + service["unit"],
                                snapshot["coverage"].get("service_sample_timestamp"))
         for event in events:
-            self.open(event["type"], event["severity"], event["summary"], event["evidence"], now, host, boot_id, event=True)
+            self.open(event["type"], event["severity"], event["summary"],
+                      {**event["evidence"], "context": diagnostic_context(snapshot)}, now, host, boot_id, event=True)
         for event_type, rule in list(self.state["rules"].items()):
             if rule.get("event") and now - rule.get("last_event", now) >= self.policy["event_quiet_seconds"]:
                 self.resolve(event_type, now, "No further matching journal events during the configured quiet period")
