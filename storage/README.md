@@ -261,12 +261,18 @@ the operator. The underlying unmounted directory is empty, root-owned and mode
 000, so failed startup does not silently redirect user writes to the root SSD.
 Provisioning and startup use the same verified CPU/RAM/swap/task/I/O caps as the
 drill. Busy or ambiguous teardown retains resources instead of forcing unmounts
-or deleting persistent images. The helper preserves an existing differing unit
-or pinned release for inspection rather than replacing it.
+or deleting persistent images. Re-running the helper can update a failed or
+inactive service after validating its exact managed unit and the digest and
+ownership of its previous pinned release. It retains the volume and adopts its
+verified existing mount. Running services and unfamiliar or altered units and
+releases are preserved for inspection.
 
 This command moves no user paths. `native-volume.json` records readiness and a
 bounded root process-reference check for the proposed Zig-cache candidate;
-unreadable process state prevents an idle verdict. That check is a snapshot,
+unreadable process state prevents an idle verdict. Kernel threads skip address
+space files, which can return ESRCH, while their file references are still
+checked. Optional process-inspection errors defer migration without failing an
+otherwise verified mounted volume. That check is a snapshot,
 not authorization to delete cache files or skip mutation checks during a later
 copy/cutover. Application state, source data and the paid DecIQ work remain
 outside this initial pilot. The 30-day regenerable-file retention policy still

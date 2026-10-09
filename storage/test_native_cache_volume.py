@@ -1,10 +1,12 @@
 import importlib.util
 from collections import namedtuple
+import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import uuid
@@ -131,6 +133,102 @@ class VolumeSafety(unittest.TestCase):
             with patch.object(volume,'SOURCE',source),patch.object(volume,'PROC',proc),patch.object(Path,'open',guarded):
                 r=volume.idle_evidence()
             self.assertFalse(r['idle_verified']);self.assertEqual(r['unknown'],[999999999])
+
+    def test_kernel_thread_without_address_space_does_not_fail_idle_check(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);source=root/'zig';source.mkdir();proc=root/'proc';proc.mkdir()
+            process=proc/'2';process.mkdir();(process/'fd').mkdir()
+            (process/'status').write_text('Name:\tkthreadd\nKthread:\t1\n')
+            original=Path.open
+            def guarded(path,*args,**kwargs):
+                if path==process/'environ':raise ProcessLookupError(3,'No such process')
+                return original(path,*args,**kwargs)
+            with patch.object(volume,'SOURCE',source),patch.object(volume,'PROC',proc),patch.object(Path,'open',guarded):
+                r=volume.idle_evidence()
+            self.assertTrue(r['idle_verified']);self.assertEqual(r['kernel_threads'],1)
+
+    def test_kernel_thread_file_references_still_defer_migration(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);source=root/'zig';source.mkdir();proc=root/'proc';proc.mkdir()
+            process=proc/'2';process.mkdir();(process/'fd').mkdir()
+            (process/'status').write_text('Kthread:\t1\n')
+            (process/'fd/5').symlink_to(source/'artifact')
+            with patch.object(volume,'SOURCE',source),patch.object(volume,'PROC',proc):r=volume.idle_evidence()
+            self.assertFalse(r['idle_verified']);self.assertEqual(r['references'],[2])
+
+    def test_userspace_esrch_fails_closed_instead_of_failing_the_volume(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);source=root/'zig';source.mkdir();proc=root/'proc';proc.mkdir()
+            process=proc/'999999999';process.mkdir();(process/'fd').mkdir()
+            (process/'status').write_text('Kthread:\t0\n')
+            original=Path.open
+            def guarded(path,*args,**kwargs):
+                if path==process/'environ':raise ProcessLookupError(3,'No such process')
+                return original(path,*args,**kwargs)
+            with patch.object(volume,'SOURCE',source),patch.object(volume,'PROC',proc),patch.object(Path,'open',guarded):
+                r=volume.idle_evidence()
+            self.assertFalse(r['idle_verified']);self.assertEqual(r['unknown'],[999999999])
+
+    def test_unavailable_candidate_probe_keeps_validated_volume_ready(self):
+        t=volume.Volume();t.images=[Path('/image')]*3;t.mounted=True;t.mapper=True
+        t.loops={'origin':'/dev/loop21','cache':'/dev/loop22','metadata':'/dev/loop23'}
+        with patch.object(t,'recover_resources'),patch.object(t,'origin_uuid',return_value='expected'),\
+                patch.object(t,'health'),patch.object(t,'status'),\
+                patch.object(volume,'idle_evidence',side_effect=PermissionError('proc unavailable')):
+            t.start({'filesystem_uuid':'expected'})
+        self.assertTrue(t.report['ready']);self.assertTrue(t.report['success'])
+        self.assertFalse(t.report['candidate']['idle_verified'])
+
+
+class ManagedUnitUpgrade(unittest.TestCase):
+    def setUp(self):
+        temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup)
+        self.root=Path(temp.name);self.library=self.root/'library';self.library.mkdir(mode=0o700)
+        self.unit=self.root/'pilot.service'
+        payloads={name:('previous '+name).encode() for name in volume.PINNED_FILES}
+        digest=hashlib.sha256(b''.join(payloads.values())).hexdigest()
+        self.old_release=self.library/digest[:16];self.old_release.mkdir(mode=0o700)
+        for name,data in payloads.items():
+            path=self.old_release/name;path.write_bytes(data);path.chmod(0o600)
+        def command(name,*args,**kwargs):
+            if name=='systemd-escape':return r'srv-media\x2dbox.mount'
+            if args[:2]==('show',volume.SERVICE):return self.state
+            return ''
+        self.state='failed'
+        for attribute,value in (('LIBRARY',self.library),('UNIT',self.unit)):
+            p=patch.object(volume,attribute,value);p.start();self.addCleanup(p.stop)
+        p=patch.object(volume.base,'run',side_effect=command);self.command=p.start();self.addCleanup(p.stop)
+        self.original=volume.service_text(self.old_release/'native-cache-volume.py')
+        self.unit.write_text(self.original);self.unit.chmod(0o600)
+        original_lstat=Path.lstat
+        def root_stat(path):
+            s=original_lstat(path)
+            return SimpleNamespace(**{key:getattr(s,key) for key in dir(s) if key.startswith('st_') and key!='st_uid'},st_uid=0)
+        p=patch.object(Path,'lstat',root_stat);p.start();self.addCleanup(p.stop)
+
+    def test_failed_managed_service_can_update_without_formatting_or_unmounting(self):
+        with patch.object(volume.base,'new_image') as allocate:volume.install_service()
+        content=self.unit.read_text()
+        self.assertNotEqual(content,self.original);volume.verify_managed_unit(content)
+        self.assertTrue(self.old_release.is_dir());allocate.assert_not_called()
+        commands=[call.args[0] for call in self.command.call_args_list]
+        self.assertFalse(set(commands)&{'mkfs.ext4','e2fsck','umount','losetup','dmsetup'})
+        self.assertFalse(list(self.root.glob('.pilot.service.*')))
+
+    def test_unfamiliar_unit_is_preserved(self):
+        original=self.original+'ExecStartPost=/usr/bin/false\n';self.unit.write_text(original)
+        with self.assertRaisesRegex(ValueError,'unit differs'):volume.install_service()
+        self.assertEqual(self.unit.read_text(),original)
+
+    def test_altered_pinned_release_is_preserved_and_refused(self):
+        (self.old_release/'native-cache-volume.py').write_text('altered')
+        with self.assertRaisesRegex(ValueError,'digest changed'):volume.install_service()
+        self.assertEqual(self.unit.read_text(),self.original)
+
+    def test_running_managed_service_is_preserved(self):
+        self.state='active'
+        with self.assertRaisesRegex(ValueError,'running pilot'):volume.install_service()
+        self.assertEqual(self.unit.read_text(),self.original)
 
 
 class UnitFileRoundTrip(unittest.TestCase):
