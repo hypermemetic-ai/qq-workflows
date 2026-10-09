@@ -13,7 +13,7 @@ source = Path(__file__).resolve().parent
 home = Path.home()
 subprocess.run(['systemctl','--user','show-environment'],check=True,stdout=subprocess.DEVNULL)
 commit = subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()
-files=('cold-tier.py','native-cache-preflight.py')
+files=('cold-tier.py','native-cache-preflight.py','native-cache-trial.py')
 digest = hashlib.sha256(b''.join((source/name).read_bytes() for name in files)).hexdigest()
 storage = (home/'.local/share/qq-cold-tier').resolve()
 state = (home/'.local/state/qq-cold-tier').resolve()
@@ -34,6 +34,9 @@ binpath.write_text('#!/bin/sh\nexec /usr/bin/python3 '+shlex.quote(str(storage/'
 preflight=home/'.local/bin/qq-cold-tier-preflight'
 preflight.write_text('#!/bin/sh\nexec /usr/bin/python3 '+shlex.quote(str(storage/'current/native-cache-preflight.py'))+
                     ' --output '+shlex.quote(str(state/'native-preflight.json'))+' "$@"\n');preflight.chmod(0o700)
+trial=home/'.local/bin/qq-cold-tier-trial'
+trial.write_text('#!/bin/sh\nexec /usr/bin/python3 '+shlex.quote(str(storage/'current/native-cache-trial.py'))+
+                ' --output '+shlex.quote(str(state/'native-trial.json'))+' "$@"\n');trial.chmod(0o700)
 subprocess.run([str(binpath),'init'],check=True)
 subprocess.run(['systemctl','--user','daemon-reload'],check=True)
 subprocess.run(['systemctl','--user','enable','--now','qq-cold-tier.service','qq-cold-tier-migrate.timer'],check=True)
