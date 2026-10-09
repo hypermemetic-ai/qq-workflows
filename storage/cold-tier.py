@@ -165,20 +165,20 @@ def contain_job():
 
 
 class Inotify:
-    def __init__(self, limit):
+    def __init__(self, limit, mask=MASK):
         self.lib = ctypes.CDLL(None, use_errno=True)
         self.lib.inotify_init1.argtypes = [ctypes.c_int]
         self.lib.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
         self.lib.inotify_rm_watch.argtypes = [ctypes.c_int, ctypes.c_int]
         self.fd = self.lib.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
         if self.fd < 0: raise OSError(ctypes.get_errno(), 'inotify_init1')
-        self.limit = limit; self.paths = {}; self.by_path = {}; self.children = {}; self.by_root = {}
+        self.limit = limit; self.mask=mask; self.paths = {}; self.by_path = {}; self.children = {}; self.by_root = {}
         self.deferred = []; self.on_progress = None; self.rebuild_roots = set()
     def close(self): os.close(self.fd)
     def add(self, path, root):
         path = Path(path)
         if len(self.paths) >= self.limit and path not in self.by_path: raise ValueError('watch budget exceeded')
-        wd = self.lib.inotify_add_watch(self.fd, os.fsencode(path), MASK)
+        wd = self.lib.inotify_add_watch(self.fd, os.fsencode(path), self.mask)
         if wd < 0: raise OSError(ctypes.get_errno(), str(path))
         if wd in self.paths:
             previous, owner = self.paths[wd]
@@ -470,7 +470,8 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
     if os.path.lexists(destination): raise ValueError('staging destination exists')
     reserve = cfg['ssd_reserve_bytes'] if restoring else 1024**3
     if shutil.disk_usage(destination.parent).free < size + reserve: raise ValueError('destination lacks space reserve')
-    guard = Inotify(cfg['max_watches'])
+    # Read/copy verification must not overflow its own mutation guard.
+    guard = Inotify(cfg['max_watches'],mask=MODIFY|ATTRIB|CREATE|DELETE|MOVED_FROM|MOVED_TO|DELETE_SELF|MOVE_SELF)
     guard.tree(original, 'move')
     journal = store.state / 'operation.json'
     if journal.exists(): raise ValueError('unfinished operation; inspect operation.json before another move')

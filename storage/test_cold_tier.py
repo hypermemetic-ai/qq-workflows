@@ -221,6 +221,14 @@ class ColdTierTests(unittest.TestCase):
             self.assertNotIn(new,watcher.by_path)
             self.assertEqual(self.store.root(key)['coverage'],1)
         finally:watcher.close()
+    def test_mutation_guard_ignores_verification_reads(self):
+        path=self.home/'artifact';path.mkdir();(path/'a').write_text('a')
+        guard=m.Inotify(10,mask=m.MODIFY|m.ATTRIB|m.CREATE|m.DELETE)
+        try:
+            guard.tree(path,'move');(path/'a').read_text();self.assertEqual(guard.events(),[])
+            (path/'a').write_text('changed')
+            self.assertTrue(any(mask&m.MODIFY for _,_,mask in guard.events()))
+        finally:guard.close()
 
 
 if __name__=='__main__': unittest.main()
