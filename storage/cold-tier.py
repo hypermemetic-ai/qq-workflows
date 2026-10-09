@@ -192,6 +192,7 @@ class Inotify:
         self.children.setdefault(path.parent,set()).add(path)
     def remove_path(self, path):
         pending = [Path(path)]
+        removed = 0
         while pending:
             p = pending.pop(); pending.extend(self.children.pop(p,()))
             wd = self.by_path.pop(p,None)
@@ -200,10 +201,19 @@ class Inotify:
             _, key = self.paths.pop(wd)
             self.by_root.get(key,set()).discard(wd)
             self.lib.inotify_rm_watch(self.fd,wd)
+            removed += 1
+            # rm_watch itself emits IN_IGNORED. Releasing a large tree without
+            # draining can overflow the kernel queue and trigger endless full
+            # rebuilds, even when application activity is quiet.
+            if self.on_progress and removed % 64 == 0: self.on_progress()
     def remove_root(self, key):
+        removed = 0
         for wd in list(self.by_root.get(key,())):
-            if wd in self.paths: self.remove_path(self.paths[wd][0])
+            if wd in self.paths:
+                self.remove_path(self.paths[wd][0]); removed += 1
+                if self.on_progress and removed % 64 == 0: self.on_progress()
         self.by_root.pop(key,None)
+        if self.on_progress: self.on_progress()
     def tree(self, path, root):
         info = path.lstat()
         if stat.S_ISLNK(info.st_mode): raise ValueError('watch root is a symlink')
@@ -888,7 +898,7 @@ def watch(store, cfg):
                 for key in set(signatures)-set(current): watcher.remove_root(key); signatures.pop(key)
                 def progress():
                     consume_events(store,watcher,roots,defer_topology=True)
-                    store.put('heartbeat',time.time());store.db.commit()
+                    store.put('heartbeat',time.time());store.put('watches',len(watcher.paths));store.db.commit()
                 watcher.on_progress=progress
                 for root in roots:
                     key=root['id']
