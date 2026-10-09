@@ -31,6 +31,9 @@ to stable v2.12.0's amd64 image digest, limited to half a CPU and 768 MiB, and b
 to loopback port 19999. Its persistent Docker volumes hold bounded chart history.
 The Docker socket and GPU runtime are not mounted. Unsupported cgroup network
 helpers are disabled; host and user-service CPU/memory charts remain available.
+Bounded `qqjobs.slice/qq-job-*.scope` jobs are included in Netdata cgroup charts.
+The collector additionally retains interval CPU/I/O attribution and incremental
+disk-size evidence in incidents, so reviews do not depend on a later process list.
 
 Dashboard: <http://127.0.0.1:19999>. Raw evidence is in
 `~/.local/state/qq-host-monitor`: `metrics.json`, three bounded sample-history
