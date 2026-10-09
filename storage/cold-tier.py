@@ -41,6 +41,7 @@ DEFAULT = {
     'max_gc_files': 10000, 'max_gc_bytes': 1024**3, 'automatic_gc': True,
     'ssd_reserve_bytes': 10 * 1024**3,
     'automatic_promotion': True, 'automatic_demotion': True,
+    'block_cached_mounts': [],
 }
 
 
@@ -383,11 +384,21 @@ def bridge_parent(store, cfg, raw):
 def adopt_defaults(store, cfg):
     """Admit newly created children and discover legacy SSD children of every size."""
     archive = mount_ready(cfg)
+    parents = store.get('defaults', [])
+    # Existing default parents can still be on the previous HDD filesystem
+    # after the migration destination moves to a native cached volume.
+    hdd_devices = {archive.stat().st_dev}
+    for parent in parents:
+        public, hdd = Path(parent['source']), Path(parent['hdd'])
+        try:
+            if public.is_symlink() and public.resolve(strict=True) == hdd:
+                hdd_devices.add(hdd.stat().st_dev)
+        except FileNotFoundError: pass
     for root in store.roots():
         public = Path(root['source'])
         try:
             resolved = public.resolve(strict=True)
-            if resolved != live_path(root) and not public.is_symlink() and resolved.stat().st_dev == archive.stat().st_dev:
+            if resolved != live_path(root) and not public.is_symlink() and resolved.stat().st_dev in hdd_devices:
                 # Atomic-save writers replace the proxy with a new HDD file. Adopt
                 # that new authoritative object; never copy the old SSD version over it.
                 store.db.execute('UPDATE roots SET target=?,location=?,since=0,coverage=0,error=? WHERE id=?',
@@ -395,7 +406,7 @@ def adopt_defaults(store, cfg):
         except FileNotFoundError: pass
     store.db.commit()
     existing = {r['source'] for r in store.roots()}
-    for parent in store.get('defaults', []):
+    for parent in parents:
         source, backing, hdd = (Path(parent[k]) for k in ('source', 'backing', 'hdd'))
         if not source.is_symlink() or source.resolve() != hdd: raise ValueError('default parent no longer matches ledger')
         # Catch parent-FD writes still landing in the old SSD inode.
@@ -669,15 +680,17 @@ def decisions(store, cfg, now=None):
                       latency['hdd_ms'] - latency['ssd_ms'] >= cfg['promotion_min_saving_ms'] and
                       (latency['hdd_ms'] - latency['ssd_ms']) / latency['hdd_ms'] >= cfg['promotion_min_saving_ratio'])
         last = store.db.execute('SELECT MAX(accessed) FROM activity WHERE root=?', (root['id'],)).fetchone()[0] or root['since']
-        action = 'hdd'
-        if root['location'] == 'hdd' and reads >= cfg['promotion_reads_per_hour']:
+        cached = root['location'] == 'hdd' and any(within(absolute(root['target']), absolute(p))
+                                                  for p in cfg.get('block_cached_mounts', []))
+        action = 'block_cache' if cached else 'hdd'
+        if root['location'] == 'hdd' and not cached and reads >= cfg['promotion_reads_per_hour']:
             action = 'promote' if impact else 'measure_task_latency'
         elif root['location'] == 'ssd':
             action = 'demote' if root['coverage'] and root['since'] and now - max(root['since'], last) >= cfg['demotion_idle_days']*DAY else 'ssd'
         rows.append({'id': root['id'], 'source': root['source'], 'location': root['location'],
                      'coverage': bool(root['coverage']), 'coverage_error': root['error'],
                      'observed_since': root['since'], 'recent_reads': reads, 'recent_opens': opens,
-                     'measured_latency_impact': impact, 'decision': action})
+                     'measured_latency_impact': impact, 'block_cached': cached, 'decision': action})
     return rows
 
 
@@ -845,6 +858,9 @@ def main():
         config_path.parent.mkdir(parents=True, exist_ok=True); atomic_json(config_path, DEFAULT)
     cfg = dict(DEFAULT); cfg.update(bounded_json(config_path))
     if cfg['schema'] != 1 or cfg['retention_days'] < 30: raise ValueError('unsupported policy or retention shorter than 30 days')
+    if not isinstance(cfg['block_cached_mounts'], list) or any(not isinstance(p, str) or
+            not Path(p).is_absolute() or Path(p) == Path('/') for p in cfg['block_cached_mounts']):
+        raise ValueError('block-cached mounts must be absolute non-root paths')
     for key in ('max_watches', 'max_scan_entries', 'copy_kib_per_second', 'verify_bytes_per_second', 'max_gc_files', 'max_gc_bytes'):
         if not isinstance(cfg[key], int) or cfg[key] <= 0: raise ValueError('invalid budget ' + key)
     store = Store(args.state_dir)

@@ -80,6 +80,13 @@ class ColdTierTests(unittest.TestCase):
         self.assertEqual(m.decisions(self.store, self.cfg, now)[0]['decision'], 'measure_task_latency')
         self.store.db.execute('INSERT INTO latency VALUES (?,?,?,?,?)', (key, 'matched task', 400, 200, now))
         self.assertEqual(m.decisions(self.store, self.cfg, now)[0]['decision'], 'promote')
+    def test_block_cached_root_stays_in_place_when_demand_and_latency_would_promote(self):
+        key, _, _, now = self.root()
+        for _ in range(150): self.store.activity(key, 'build/hot.bin', m.ACCESS, now)
+        self.store.db.execute('INSERT INTO latency VALUES (?,?,?,?,?)', (key, 'matched task', 400, 200, now))
+        self.cfg['block_cached_mounts'] = [str(self.archive)]
+        decision = m.decisions(self.store, self.cfg, now)[0]
+        self.assertEqual(decision['decision'], 'block_cache'); self.assertTrue(decision['block_cached'])
     def test_overflow_invalidates_quiet_clock(self):
         key, _, _, _ = self.root()
         class Events:
@@ -181,6 +188,21 @@ class ColdTierTests(unittest.TestCase):
         row=self.store.root(str(source/'a'));self.assertEqual(row['location'],'hdd')
         self.assertEqual(Path(row['target']).read_text(),'new')
         self.assertEqual(Path(row['hot']).read_text(),'old')
+    def test_old_hdd_atomic_save_is_adopted_after_destination_changes_filesystem(self):
+        try: tmp = tempfile.TemporaryDirectory(dir='/dev/shm')
+        except OSError: self.skipTest('Separate temporary filesystem unavailable')
+        with tmp as d:
+            new_archive = Path(d)
+            if new_archive.stat().st_dev == self.archive.stat().st_dev:
+                self.skipTest('Temporary filesystem is not separate')
+            source=self.home/'cache'; source.mkdir(); (source/'a').write_text('old')
+            with patch.object(m,'references',return_value=[]): m.bridge_parent(self.store,self.cfg,source)
+            m.adopt_defaults(self.store,self.cfg)
+            (source/'temp').write_text('new'); (source/'temp').replace(source/'a')
+            with patch.object(m,'mount_ready',return_value=new_archive): m.adopt_defaults(self.store,self.cfg)
+            row=self.store.root(str(source/'a'))
+            self.assertEqual(row['location'],'hdd'); self.assertEqual(Path(row['target']).read_text(),'new')
+            self.assertEqual(Path(row['hot']).read_text(),'old')
     def test_active_root_file_defers_parent_cutover(self):
         source=self.home/'db';source.mkdir();(source/'live.sqlite').write_text('db')
         with patch.object(m,'references',return_value=[123]):
