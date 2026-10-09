@@ -418,6 +418,21 @@ m.watch(m.Store(sys.argv[3]),c)
             self.assertTrue(any(key=='other' and mask&m.ACCESS for key,_,mask in watcher.events()))
             watcher.tree(large,'large');self.assertEqual(len(watcher.paths),202)
         finally:watcher.close()
+    def test_flat_leaf_scan_does_not_overflow_its_own_kernel_event_queue(self):
+        queued=int(Path('/proc/sys/fs/inotify/max_queued_events').read_text())
+        count=queued//2+512
+        if count>10000:self.skipTest('Kernel event queue exceeds bounded fixture size')
+        root=self.home/'leaves';root.mkdir()
+        for n in range(count):(root/str(n)).mkdir()
+        watcher=m.Inotify(count+1);overflow=[]
+        def drain():
+            overflow.extend(e for e in watcher.events() if e[2]&m.OVERFLOW)
+        watcher.on_progress=drain
+        try:
+            watcher.tree(root,'leaves');drain()
+            self.assertEqual(overflow,[])
+            self.assertEqual(len(watcher.paths),count+1)
+        finally:watcher.close()
     def test_dynamic_subtree_admission_keeps_other_retention_clocks(self):
         key,_,target,now=self.root();watcher=m.Inotify(50)
         try:

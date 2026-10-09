@@ -220,8 +220,12 @@ class Inotify:
         self.add(path, root)
         if not stat.S_ISDIR(info.st_mode): return
         def failed(error): raise error
-        visited = 0
+        visited = 0; walked = 0
         for directory, dirs, _ in os.walk(path, followlinks=False, onerror=failed):
+            walked += 1
+            # Every scandir emits access/open notifications, including leaves
+            # with no new child watches. Drain those walks as well as additions.
+            if self.on_progress and walked % 64 == 0: self.on_progress()
             dirs[:] = [n for n in dirs if not (Path(directory) / n).is_symlink()]
             for name in dirs:
                 self.add(Path(directory) / name, root); visited += 1
