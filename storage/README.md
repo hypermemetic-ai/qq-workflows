@@ -160,4 +160,33 @@ mounts, ambiguous loops or dirty cache state stop recovery without removing them
 SQLite connections are explicitly closed before unmount, and a regression check
 inspects open file descriptors after both population and verification.
 
+### Read-only application pilot
+
+After the synthetic trial passes, run:
+
+```sh
+sudo ~/.local/bin/qq-cold-tier-pilot
+```
+
+The pilot uses the same disposable images, mount validation, resource caps and
+cleanup. It also creates an independent bare snapshot of the operator-owned
+`qq-workflows` Git repository inside the new HDD filesystem, bounded to 128 MiB
+and 20,000 files. It leaves working trees, uncommitted changes, live repositories
+and running applications untouched. Only the fixed system Git binary runs;
+hooks, fsmonitor, user Git configuration and inherited alternate object stores
+are excluded. A changing source HEAD aborts the pilot without modifying it.
+
+Matched Git history and source searches run on HDD, then on the warmed cache.
+File-specific advisory RAM eviction applies only to snapshot files before each
+measurement; it never drops the host's page cache. RAM metadata and drive caches
+may remain, and the 10% CPU quota also affects measured application latency. The
+report separates integrity, cache hits and measured benefit; successful execution
+does not require a speedup. Benefit means at least 20% and 50 ms saved on the
+combined Git workload. Both cache reattachment and cache-free HDD access must
+return identical Git results. The six-minute bounded worker removes its private
+images on completion and saves `native-pilot.json` separately from the successful
+synthetic trial. No live paths or boot configuration are changed. Actual boot
+ordering, abrupt power loss and the performance of other applications remain
+unproven; the pilot does not authorize production migration.
+
 Validation: `qq-job -- python3 -m unittest discover -s storage -p 'test_*.py'`.
