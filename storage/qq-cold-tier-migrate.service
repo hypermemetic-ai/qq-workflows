@@ -1,0 +1,18 @@
+[Unit]
+Description=Verified and rate-limited user-data HDD migration queue
+After=qq-cold-tier.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/qq-job -- /usr/bin/python3 %h/.local/share/qq-cold-tier/current/cold-tier.py drain
+Nice=15
+IOSchedulingClass=idle
+CPUQuota=20%
+MemoryHigh=512M
+MemoryMax=640M
+MemorySwapMax=0
+TasksMax=32
+UMask=0077
+NoNewPrivileges=yes
+TimeoutStartSec=infinity
+TimeoutStopSec=10

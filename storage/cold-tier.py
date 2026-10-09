@@ -1,0 +1,850 @@
+#!/usr/bin/env python3
+"""User-owned HDD tier: reversible relocation, access evidence, conservative GC."""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import ctypes
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import select
+import shutil
+import sqlite3
+import stat
+import struct
+import subprocess
+import sys
+import time
+import uuid
+
+DAY = 86400
+ACCESS, MODIFY, ATTRIB, OPEN = 1, 2, 4, 32
+MOVED_FROM, MOVED_TO, CREATE, DELETE = 64, 128, 256, 512
+DELETE_SELF, MOVE_SELF, OVERFLOW, IGNORED, ISDIR = 1024, 2048, 16384, 32768, 0x40000000
+MASK = ACCESS | MODIFY | ATTRIB | OPEN | MOVED_FROM | MOVED_TO | CREATE | DELETE | DELETE_SELF | MOVE_SELF
+DEFAULT = {
+    'schema': 1, 'hdd_mount': '/srv/media-box',
+    'archive': '/srv/media-box/qq-cold-tier',
+    'hot_storage': str(Path.home() / '.qq-cold-tier-hot'),
+    'source_roots': [str(Path.home())],
+    'excluded': [str(Path.home() / '.local/state/qq-cold-tier'),
+                 str(Path.home() / '.local/share/qq-cold-tier'),
+                 str(Path.home() / '.qq-cold-tier-hot'),
+                 str(Path.home() / 'projects/qq-workflows')],
+    'retention_days': 30, 'max_watches': 48000, 'max_scan_entries': 150000,
+    'copy_kib_per_second': 8192, 'verify_bytes_per_second': 8 * 1024**2,
+    'promotion_reads_per_hour': 120, 'promotion_min_saving_ms': 50,
+    'promotion_min_saving_ratio': .20, 'demotion_idle_days': 7,
+    'max_gc_files': 10000, 'max_gc_bytes': 1024**3, 'automatic_gc': True,
+    'ssd_reserve_bytes': 10 * 1024**3,
+    'automatic_promotion': True, 'automatic_demotion': True,
+}
+
+
+def atomic_json(path, value):
+    path = Path(path)
+    temp = path.with_name('.' + path.name + '-' + uuid.uuid4().hex)
+    with temp.open('x') as f:
+        os.chmod(temp, 0o600)
+        json.dump(value, f, indent=2)
+        f.write('\n'); f.flush(); os.fsync(f.fileno())
+    os.replace(temp, path)
+    fd = os.open(path.parent, os.O_DIRECTORY)
+    try: os.fsync(fd)
+    finally: os.close(fd)
+
+
+def bounded_json(path, limit=262144):
+    with Path(path).open('rb') as f: raw = f.read(limit + 1)
+    if len(raw) > limit: raise ValueError('JSON exceeds bound')
+    return json.loads(raw)
+
+
+def absolute(path):
+    return Path(os.path.abspath(os.path.expanduser(str(path))))
+
+
+def within(path, root):
+    return path == root or root in path.parents
+
+
+def private(path):
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise ValueError('private directory must be owned by the operator')
+    path.chmod(0o700)
+
+
+class Store:
+    def __init__(self, state):
+        self.state = absolute(state); private(self.state)
+        self.db = sqlite3.connect(self.state / 'ledger.sqlite', timeout=30)
+        self.db.row_factory = sqlite3.Row
+        self.db.execute('PRAGMA journal_mode=WAL')
+        self.db.execute('PRAGMA cache_size=-2048')
+        self.db.execute('PRAGMA max_page_count=32768')  # 128 MiB at the default 4 KiB page size.
+        self.db.executescript('''
+          CREATE TABLE IF NOT EXISTS roots (
+            id TEXT PRIMARY KEY, source TEXT UNIQUE NOT NULL, target TEXT NOT NULL,
+            location TEXT NOT NULL, verified INTEGER NOT NULL, created REAL NOT NULL,
+            since REAL NOT NULL DEFAULT 0, coverage INTEGER NOT NULL DEFAULT 0,
+            error TEXT NOT NULL DEFAULT 'awaiting watcher', hot TEXT NOT NULL DEFAULT '');
+          CREATE TABLE IF NOT EXISTS activity (
+            root TEXT NOT NULL, path TEXT NOT NULL, accessed REAL NOT NULL,
+            hour INTEGER NOT NULL, reads INTEGER NOT NULL, opens INTEGER NOT NULL,
+            writes INTEGER NOT NULL, PRIMARY KEY(root,path));
+          CREATE TABLE IF NOT EXISTS scopes (
+            root TEXT NOT NULL, path TEXT NOT NULL, recipe TEXT NOT NULL,
+            proof TEXT NOT NULL, digest TEXT NOT NULL, PRIMARY KEY(root,path));
+          CREATE TABLE IF NOT EXISTS latency (
+            root TEXT PRIMARY KEY, task TEXT NOT NULL, hdd_ms REAL NOT NULL,
+            ssd_ms REAL NOT NULL, measured REAL NOT NULL);
+          CREATE TABLE IF NOT EXISTS queue (
+            source TEXT PRIMARY KEY, action TEXT NOT NULL, status TEXT NOT NULL,
+            error TEXT NOT NULL DEFAULT '', updated REAL NOT NULL);
+          CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        ''')
+        self.db.commit()
+
+    def roots(self): return list(self.db.execute('SELECT * FROM roots ORDER BY created'))
+    def root(self, key):
+        row = self.db.execute('SELECT * FROM roots WHERE id=? OR source=?', (key, key)).fetchone()
+        if row is None: raise ValueError('unknown root: ' + key)
+        return row
+    def get(self, key, default=None):
+        row = self.db.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone()
+        return json.loads(row[0]) if row else default
+    def put(self, key, value):
+        self.db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', (key, json.dumps(value)))
+    def activity(self, root, path, mask, now):
+        hour = int(now // 3600)
+        self.db.execute('''INSERT INTO activity VALUES (?,?,?,?,?,?,?)
+          ON CONFLICT(root,path) DO UPDATE SET accessed=excluded.accessed,
+          reads=CASE WHEN hour=excluded.hour THEN reads ELSE 0 END+excluded.reads,
+          opens=CASE WHEN hour=excluded.hour THEN opens ELSE 0 END+excluded.opens,
+          writes=CASE WHEN hour=excluded.hour THEN writes ELSE 0 END+excluded.writes,
+          hour=excluded.hour''', (root, path, now, hour, int(bool(mask & ACCESS)),
+                                    int(bool(mask & OPEN)), int(bool(mask & (MODIFY | ATTRIB)))))
+    def register(self, source, target, location='hdd', hot=''):
+        key = uuid.uuid4().hex[:12]
+        self.db.execute('INSERT INTO roots (id,source,target,location,verified,created,hot) VALUES (?,?,?,?,1,?,?)',
+                        (key, str(source), str(target), location, time.time(), str(hot)))
+        self.db.commit(); return key
+
+
+@contextlib.contextmanager
+def lock(path):
+    with Path(path).open('a') as f:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+
+
+def contain_job():
+    """qq-job owns placement; lower this job's CPU/RAM/task budgets in that scope."""
+    raw = Path('/proc/self/cgroup').read_text().strip()
+    cg = Path('/sys/fs/cgroup') / raw.split('::', 1)[1].lstrip('/')
+    if not cg.name.startswith('qq-job-') or not cg.name.endswith('.scope'):
+        raise ValueError('run this command through ~/.local/bin/qq-job')
+    def limited(name, cap):
+        current = (cg/name).read_text().strip()
+        return min(int(current),cap) if current.isdecimal() else cap
+    memory = limited('memory.max',640*1024**2)
+    high = min(memory,limited('memory.high',512*1024**2))
+    tasks = limited('pids.max',32)
+    subprocess.run(['systemctl','--user','set-property','--runtime',cg.name,
+                    f'MemoryMax={memory}',f'MemoryHigh={high}','MemorySwapMax=0',
+                    f'TasksMax={tasks}','CPUQuota=20%'],check=True,stdout=subprocess.DEVNULL)
+    if int((cg/'memory.max').read_text()) > memory or int((cg/'pids.max').read_text()) > tasks:
+        raise ValueError('job resource limits could not be verified')
+    quota, period = (cg/'cpu.max').read_text().split()
+    if quota=='max' or int(quota)/int(period) > .20: raise ValueError('job CPU limit could not be verified')
+
+
+class Inotify:
+    def __init__(self, limit):
+        self.lib = ctypes.CDLL(None, use_errno=True)
+        self.lib.inotify_init1.argtypes = [ctypes.c_int]
+        self.lib.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+        self.fd = self.lib.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+        if self.fd < 0: raise OSError(ctypes.get_errno(), 'inotify_init1')
+        self.limit = limit; self.paths = {}
+    def close(self): os.close(self.fd)
+    def add(self, path, root):
+        if len(self.paths) >= self.limit: raise ValueError('watch budget exceeded')
+        wd = self.lib.inotify_add_watch(self.fd, os.fsencode(path), MASK)
+        if wd < 0: raise OSError(ctypes.get_errno(), str(path))
+        self.paths[wd] = (Path(path), root)
+    def tree(self, path, root):
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode): raise ValueError('watch root is a symlink')
+        self.add(path, root)
+        if not stat.S_ISDIR(info.st_mode): return
+        def failed(error): raise error
+        for directory, dirs, _ in os.walk(path, followlinks=False, onerror=failed):
+            dirs[:] = [n for n in dirs if not (Path(directory) / n).is_symlink()]
+            for name in dirs: self.add(Path(directory) / name, root)
+    def events(self):
+        result = []
+        # Bounded drain. Undrained events remain queued for the next iteration.
+        for _ in range(16):
+            try: raw = os.read(self.fd, 65536)
+            except BlockingIOError: break
+            offset = 0
+            while offset < len(raw):
+                wd, mask, _, length = struct.unpack_from('iIII', raw, offset)
+                name = os.fsdecode(raw[offset+16:offset+16+length].split(b'\0', 1)[0])
+                offset += 16 + length
+                parent, root = self.paths.get(wd, (None, None))
+                result.append((root, parent / name if parent and name else parent, mask))
+        return result
+
+
+class ReadBudget:
+    """Throttle all checksum reads, including both copies and warm page cache."""
+    def __init__(self, rate): self.rate = rate; self.deadline = time.monotonic()
+    def account(self, count):
+        self.deadline = max(self.deadline, time.monotonic()) + count / self.rate
+        wait = self.deadline - time.monotonic()
+        if wait > 0: time.sleep(wait)
+    def digest(self, path):
+        h = hashlib.sha256()
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            before = os.fstat(fd)
+            with os.fdopen(fd, 'rb', closefd=False) as f:
+                while block := f.read(262144):
+                    self.account(len(block)); h.update(block)
+            after = os.fstat(fd)
+            if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                raise ValueError('file changed while verifying')
+            return h.hexdigest()
+        finally: os.close(fd)
+
+
+def inventory(path, limit):
+    """No-follow manifest, retaining metadata needed to detect concurrent changes."""
+    result = {}; pending = [(path, '.')]; size = 0; hardlinks = {}
+    device = path.lstat().st_dev
+    while pending:
+        p, rel = pending.pop(); info = p.lstat()
+        if len(result) >= limit: raise ValueError('manifest entry budget exceeded')
+        if info.st_dev != device: raise ValueError('nested filesystem; split the migration unit')
+        if info.st_uid != os.getuid(): raise ValueError('foreign-owned entry; migration deferred')
+        kind = stat.S_IFMT(info.st_mode)
+        if kind not in (stat.S_IFDIR, stat.S_IFREG, stat.S_IFLNK): raise ValueError('socket/device/FIFO; migration deferred')
+        result[rel] = (info.st_mode, info.st_size if stat.S_ISREG(info.st_mode) else 0,
+                       info.st_mtime_ns, info.st_ctime_ns, os.readlink(p) if stat.S_ISLNK(info.st_mode) else None)
+        size += info.st_blocks * 512
+        if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
+            identity = (info.st_dev, info.st_ino)
+            count, total = hardlinks.get(identity, (0, info.st_nlink))
+            hardlinks[identity] = (count+1, total)
+        if stat.S_ISDIR(info.st_mode):
+            with os.scandir(p) as it:
+                for entry in it:
+                    if len(pending) + len(result) >= limit: raise ValueError('manifest entry budget exceeded')
+                    pending.append((Path(entry.path), entry.name if rel == '.' else rel + '/' + entry.name))
+    if any(count != total for count,total in hardlinks.values()):
+        raise ValueError('hard links extend outside migration unit; keep shared inodes together')
+    return result, size
+
+
+def references(paths, strict=False):
+    """Visible same-UID references; strict GC fails closed on unreadable processes."""
+    needles = [str(p) for p in paths]; ancestors = {os.getpid()}; pid = os.getppid()
+    while pid > 1 and pid not in ancestors:
+        ancestors.add(pid)
+        try:
+            raw = Path(f'/proc/{pid}/stat').read_text()
+            pid = int(raw[raw.rindex(')') + 2:].split()[1])
+        except (OSError, ValueError): break
+    found = []; unknown = []
+    for proc in Path('/proc').iterdir():
+        if not proc.name.isdecimal() or int(proc.name) in ancestors: continue
+        try:
+            if proc.stat().st_uid != os.getuid(): continue
+        except FileNotFoundError: continue
+        values = []; denied = False
+        for name in ('cwd', 'exe'):
+            try: values.append(os.readlink(proc / name))
+            except FileNotFoundError: pass
+            except PermissionError: denied = True
+        for name in ('cmdline', 'environ', 'maps'):
+            try:
+                with (proc / name).open('rb') as f: values.append(f.read(2097152).decode('utf8', 'replace'))
+            except FileNotFoundError: pass
+            except PermissionError: denied = True
+        try:
+            for fd in (proc / 'fd').iterdir():
+                try: values.append(os.readlink(fd))
+                except FileNotFoundError: pass
+                except PermissionError: denied = True
+        except FileNotFoundError: pass
+        except PermissionError: denied = True
+        if denied: unknown.append(int(proc.name))
+        if any(n in v for n in needles for v in values): found.append(int(proc.name))
+    if strict and unknown: raise ValueError('process-reference coverage incomplete: ' + str(unknown[:8]))
+    return found
+
+
+def valid_source(source, cfg):
+    source = absolute(source)
+    if source.is_symlink(): raise ValueError('source already linked')
+    resolved = source.resolve(strict=True)
+    roots = [absolute(p).resolve() for p in cfg['source_roots']]
+    if not any(within(resolved, r) and resolved != r for r in roots): raise ValueError('source outside configured user roots')
+    if any(within(resolved, absolute(p).resolve()) for p in cfg['excluded']): raise ValueError('excluded control/core path')
+    if resolved != source: raise ValueError('source has a symlink ancestor')
+    return source
+
+
+def live_path(root):
+    return Path(root['target']) if root['location'] == 'hdd' else Path(root['hot'] or root['source'])
+
+
+def exchange(a, b):
+    """One rename transaction: processes never see the public directory missing."""
+    lib = ctypes.CDLL(None, use_errno=True)
+    lib.renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    if lib.renameat2(-100, os.fsencode(a), -100, os.fsencode(b), 2) < 0:
+        raise OSError(ctypes.get_errno(), 'atomic directory/symlink exchange')
+
+
+def bridge_parent(store, cfg, raw):
+    """New children go to HDD. Existing children keep the same open inodes."""
+    source = valid_source(raw, cfg)
+    if not source.is_dir(): raise ValueError('default parent must be a directory')
+    archive = mount_ready(cfg)
+    backup = source.with_name('.' + source.name.lstrip('.') + '-qq-ssd')
+    if os.path.lexists(backup): raise ValueError('SSD backing path already exists')
+    bridge = archive / 'defaults' / hashlib.sha256(str(source).encode()).hexdigest()[:16]
+    if bridge.exists(): raise ValueError('default destination already exists')
+    bridge.mkdir(parents=True, mode=0o700)
+    info = source.stat(); os.chmod(bridge, stat.S_IMODE(info.st_mode))
+    children = list(source.iterdir())
+    root_files = [p for p in children if p.is_file() and not p.is_symlink()]
+    if root_files and references(root_files):
+        shutil.rmtree(bridge)
+        raise ValueError('active files at parent root; keep database/sidecars together and defer cutover')
+    for child in children: (bridge / child.name).symlink_to(backup / child.name)
+    backup.symlink_to(bridge)
+    journal = store.state / 'default-operation.json'
+    if journal.exists(): raise ValueError('unfinished default cutover; inspect default-operation.json')
+    atomic_json(journal, {'source': str(source), 'ssd_backing': str(backup), 'hdd_parent': str(bridge), 'phase': 'prepared'})
+    try: exchange(source, backup)
+    except BaseException:
+        backup.unlink(); shutil.rmtree(bridge); journal.unlink(); raise
+    # Open directory FDs may have created a child in the small preparation window.
+    for child in backup.iterdir():
+        proxy = bridge / child.name
+        if not os.path.lexists(proxy): proxy.symlink_to(child)
+    parents = store.get('defaults', [])
+    parents.append({'source': str(source), 'backing': str(backup), 'hdd': str(bridge)})
+    store.put('defaults', parents); store.db.commit(); journal.unlink()
+    print('DEFAULT HDD', source, 'existing inodes preserved at', backup)
+    return parents[-1]
+
+
+def adopt_defaults(store, cfg):
+    """Admit newly created children and discover legacy SSD children of every size."""
+    archive = mount_ready(cfg)
+    for root in store.roots():
+        public = Path(root['source'])
+        try:
+            resolved = public.resolve(strict=True)
+            if resolved != live_path(root) and not public.is_symlink() and resolved.stat().st_dev == archive.stat().st_dev:
+                # Atomic-save writers replace the proxy with a new HDD file. Adopt
+                # that new authoritative object; never copy the old SSD version over it.
+                store.db.execute('UPDATE roots SET target=?,location=?,since=0,coverage=0,error=? WHERE id=?',
+                                 (str(resolved), 'hdd', 'atomic replacement: awaiting watcher', root['id']))
+        except FileNotFoundError: pass
+    store.db.commit()
+    existing = {r['source'] for r in store.roots()}
+    for parent in store.get('defaults', []):
+        source, backing, hdd = (Path(parent[k]) for k in ('source', 'backing', 'hdd'))
+        if not source.is_symlink() or source.resolve() != hdd: raise ValueError('default parent no longer matches ledger')
+        # Catch parent-FD writes still landing in the old SSD inode.
+        for child in backing.iterdir():
+            proxy = hdd / child.name
+            if not os.path.lexists(proxy): proxy.symlink_to(child)
+            elif not proxy.is_symlink() and not child.is_symlink():
+                # Atomic saves can legitimately supersede an old proxy. Both versions
+                # are preserved; directories with conflicting contents require review.
+                if child.is_dir() and proxy.is_dir():
+                    store.put('defaults_conflict', {'public': str(source/child.name), 'ssd_copy': str(child)})
+        for child in hdd.iterdir():
+            public = source / child.name
+            if str(public) in existing: continue
+            resolved = child.resolve()
+            if any(within(resolved, absolute(p).resolve()) for p in cfg['excluded']): continue
+            if child.is_symlink():
+                # Original symlinks, sockets and indirect links retain their semantics.
+                real = backing / child.name
+                if not real.exists() or real.is_symlink() or not (real.is_dir() or real.is_file()): continue
+                cold = archive / 'data' / uuid.uuid4().hex / child.name
+                store.register(public, cold, 'ssd', hot=real)
+            elif child.is_dir() or child.is_file():
+                store.register(public, child, 'hdd')
+            existing.add(str(public))
+
+
+def mount_ready(cfg):
+    mount = absolute(cfg['hdd_mount']); archive = absolute(cfg['archive'])
+    if not mount.is_mount(): raise ValueError('HDD mount absent; refusing to write on root disk')
+    if not within(archive, mount) or archive == mount: raise ValueError('archive outside HDD mount')
+    if archive.resolve() != archive: raise ValueError('archive has symlink ancestors')
+    private(archive)
+    if archive.stat().st_dev != mount.stat().st_dev: raise ValueError('archive on unexpected filesystem')
+    return archive
+
+
+def hot_ready(cfg, archive):
+    hot_storage = absolute(cfg['hot_storage']); private(hot_storage)
+    if hot_storage.resolve() != hot_storage or hot_storage.stat().st_dev == archive.stat().st_dev:
+        raise ValueError('SSD hot storage must be on a separate filesystem without symlink ancestors')
+    return hot_storage
+
+
+def copied_link(source, rel, raw):
+    if os.path.isabs(raw): return raw
+    relative = Path(os.path.normpath(str(Path(rel).parent / raw)))
+    if relative == Path('..') or relative.parts[:1] == ('..',):
+        # Preserve references outside the relocation unit through the public
+        # namespace. Keeping their relative spelling would change their target.
+        return os.path.abspath(source / Path(rel).parent / raw)
+    return raw
+
+
+def migrate(store, cfg, source, *, restoring=None, demoting=None):
+    """Copy, compare, publish symlink atomically, then retire the verified original."""
+    archive = mount_ready(cfg)
+    source = absolute(source) if restoring or demoting else valid_source(source, cfg)
+    original = Path(restoring['target']) if restoring else live_path(demoting) if demoting else source
+    if restoring:
+        hot_storage = hot_ready(cfg, archive)
+        destination = Path(restoring['hot']) if restoring['hot'] else hot_storage / restoring['id'] / source.name
+    else: destination = archive / 'data' / uuid.uuid4().hex / source.name
+    if demoting and source.resolve() != original.resolve(): raise ValueError('source path changed since admission')
+    if restoring:
+        if source.resolve() != original.resolve(): raise ValueError('source path no longer matches ledger')
+    for p in (original, source):
+        if p.lstat().st_uid != os.getuid(): raise ValueError('migration requires operator-owned paths')
+    if references([original, source]): raise ValueError('live process references; deferred')
+    before, size = inventory(original, cfg['max_scan_entries'])
+    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.path.lexists(destination): raise ValueError('staging destination exists')
+    reserve = cfg['ssd_reserve_bytes'] if restoring else 1024**3
+    if shutil.disk_usage(destination.parent).free < size + reserve: raise ValueError('destination lacks space reserve')
+    guard = Inotify(cfg['max_watches'])
+    guard.tree(original, 'move')
+    journal = store.state / 'operation.json'
+    if journal.exists(): raise ValueError('unfinished operation; inspect operation.json before another move')
+    staged = source.with_name('.' + source.name + '.qq-tier-original')
+    if os.path.lexists(staged): raise ValueError('original staging path exists')
+    record = {'source': str(source), 'original': str(original), 'destination': str(destination),
+              'staged': str(staged), 'restore': bool(restoring), 'phase': 'copying', 'started': time.time()}
+    atomic_json(journal, record)
+    published = False
+    try:
+        print('COPY', source, flush=True)
+        # --bwlimit caps transfer; checksum verification below has its own read budget.
+        args = ['rsync', '-aHAXS', '--modify-window=-1', '--bwlimit=' + str(cfg['copy_kib_per_second']), '--']
+        if original.is_dir():
+            destination.mkdir(mode=0o700)
+            args += [str(original) + '/', str(destination) + '/']
+        else: args += [str(original), str(destination)]
+        subprocess.run(['ionice', '-c', '3', *args], check=True)
+        for rel, meta in before.items():
+            if stat.S_ISLNK(meta[0]):
+                expected = copied_link(source, rel, meta[4])
+                if expected != meta[4]:
+                    link = destination / rel
+                    link.unlink(); link.symlink_to(expected)
+        budget = ReadBudget(cfg['verify_bytes_per_second'])
+        print('VERIFY', source, flush=True)
+        for rel, meta in before.items():
+            a = original if rel == '.' else original / rel
+            b = destination if rel == '.' else destination / rel
+            if stat.S_ISREG(meta[0]) and budget.digest(a) != budget.digest(b): raise ValueError('checksum mismatch')
+        after, _ = inventory(original, cfg['max_scan_entries'])
+        copied, _ = inventory(destination, cfg['max_scan_entries'])
+        if before != after: raise ValueError('source changed during migration')
+        def matches(rel, meta):
+            actual = copied[rel]
+            if stat.S_ISLNK(meta[0]):
+                return meta[0] == actual[0] and copied_link(source, rel, meta[4]) == actual[4]
+            if stat.S_ISDIR(meta[0]): return meta[0] == actual[0]
+            return (meta[:3], meta[4]) == (actual[:3], actual[4])
+        if set(before) != set(copied) or any(not matches(k,v) for k,v in before.items()):
+            raise ValueError('copy metadata mismatch')
+        if any(mask & (MODIFY | ATTRIB | CREATE | DELETE | MOVED_FROM | MOVED_TO | OVERFLOW | DELETE_SELF | MOVE_SELF)
+               for _, _, mask in guard.events()): raise ValueError('source mutation during migration')
+        if references([original, source]): raise ValueError('source became active; original retained')
+        if restoring or demoting:
+            if source.resolve() != original.resolve(): raise ValueError('public path changed during migration')
+        record['phase'] = 'verified'; atomic_json(journal, record)
+        if restoring:
+            link = source.with_name('.' + source.name + '.qq-tier-link')
+            if os.path.lexists(link): raise ValueError('link staging path exists')
+            link.symlink_to(destination)
+            record['swap_path'] = str(link); atomic_json(journal, record)
+            published = True  # Any ambiguous exchange preserves both copies for recovery.
+            exchange(source, link)
+            link.rename(staged)
+        else:
+            link = source.with_name('.' + source.name + '.qq-tier-link')
+            if os.path.lexists(link): raise ValueError('link staging path exists')
+            link.symlink_to(destination)
+            record['swap_path'] = str(link); atomic_json(journal, record)
+            published = True
+            exchange(source, link)
+            link.rename(staged)
+        published = True
+        record['phase'] = 'published'; atomic_json(journal, record)
+        if restoring:
+            cold_target = original
+            if staged.is_symlink(): staged.unlink()
+            else:
+                cold_target = archive / 'data' / uuid.uuid4().hex / source.name
+                cold_target.parent.mkdir(parents=True, mode=0o700)
+                staged.rename(cold_target)
+            store.db.execute('UPDATE roots SET location=?,hot=?,target=?,since=0,coverage=0,error=? WHERE id=?',
+                             ('ssd', str(destination), str(cold_target), 'awaiting watcher', restoring['id']))
+        else:
+            if demoting:
+                store.db.execute('UPDATE roots SET target=?,location=?,since=0,coverage=0,error=? WHERE id=?',
+                                 (str(destination), 'hdd', 'awaiting watcher', demoting['id']))
+            else: store.register(source, destination)
+            if staged.is_symlink():
+                staged.unlink()
+                if original.is_dir(): shutil.rmtree(original)
+                else: original.unlink()
+            elif staged.is_dir(): shutil.rmtree(staged)
+            else: staged.unlink()
+        store.db.commit()
+        record['phase'] = 'complete'; record['completed'] = time.time()
+        with (store.state / 'moves.jsonl').open('a') as f: f.write(json.dumps(record) + '\n')
+        journal.unlink()
+        print('MOVED', source, 'free_GiB', round(shutil.disk_usage(source.parent).free / 1024**3, 2), flush=True)
+    except BaseException:
+        # An interrupted publish retains both copies and its journal for recovery.
+        if not published:
+            journal.unlink(missing_ok=True)
+            if destination.is_dir(): shutil.rmtree(destination)
+            elif os.path.lexists(destination): destination.unlink()
+        raise
+    finally: guard.close()
+
+
+def proof_digest(proof):
+    info = Path(proof).stat()
+    if not stat.S_ISREG(info.st_mode) or info.st_size > 1024**2:
+        raise ValueError('regeneration proof must be a regular file no larger than 1 MiB')
+    return hashlib.sha256(Path(proof).read_bytes()).hexdigest()
+
+
+def record_scope(store, key, relative, recipe, proof):
+    root = store.root(key); rel = Path(relative)
+    if rel.is_absolute() or '..' in rel.parts or str(rel) == '.': raise ValueError('scope must be a strict subtree')
+    target = live_path(root)
+    scope = target / rel
+    if scope.resolve() != scope or not scope.is_dir(): raise ValueError('scope must be a real directory without symlinks')
+    proof = absolute(proof)
+    if within(proof.resolve(), scope): raise ValueError('regeneration proof must survive pruning')
+    if not recipe.strip(): raise ValueError('a verified regeneration recipe is required')
+    digest = proof_digest(proof)
+    store.db.execute('INSERT OR REPLACE INTO scopes VALUES (?,?,?,?,?)', (root['id'], str(rel), recipe, str(proof), digest))
+    store.db.commit()
+
+
+def quiet(store, root, relative, info, now, days):
+    # Directory activity is recorded only for newly admitted/renamed subtrees.
+    # Ordinary file reads never update their parents' retention clocks.
+    parts = [relative, '.', *[str(p) for p in Path(relative).parents if str(p) != '.']]
+    placeholders = ','.join('?' for _ in parts)
+    row = store.db.execute(f'SELECT MAX(accessed) FROM activity WHERE root=? AND path IN ({placeholders})',
+                           (root['id'], *parts)).fetchone()
+    last = max(root['since'], row[0] or 0, info.st_mtime)
+    return bool(root['coverage'] and root['since'] and now - last >= days * DAY)
+
+
+def gc(store, cfg, apply=False, now=None, barrier=None):
+    now = now or time.time(); summary = {'eligible_files': 0, 'eligible_bytes': 0, 'deleted_files': 0, 'errors': []}
+    # Missing heartbeat, startup gaps or inotify overflow fail closed.
+    heartbeat = store.get('heartbeat', 0)
+    if not heartbeat or now - heartbeat > 60:
+        summary['errors'].append('watcher coverage is stale'); return summary
+    if apply and barrier is None:
+        raise ValueError('destructive GC must run inside the live watcher event barrier')
+    seen = 0
+    for root in store.roots():
+        if root['location'] != 'hdd' or not root['coverage']: continue
+        target = Path(root['target']); source = Path(root['source'])
+        if source.resolve() != target.resolve(): continue
+        for scope in store.db.execute('SELECT * FROM scopes WHERE root=?', (root['id'],)):
+            try:
+                proof = Path(scope['proof'])
+                if proof_digest(proof) != scope['digest']: continue
+                base = target / scope['path']
+                if not within(base, target) or base.resolve() != base: continue
+                for directory, dirs, files in os.walk(base, followlinks=False):
+                    dirs[:] = [d for d in dirs if not (Path(directory) / d).is_symlink()]
+                    for name in files:
+                        seen += 1
+                        if seen > cfg['max_gc_files']: return summary
+                        p = Path(directory) / name; info = p.lstat()
+                        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid(): continue
+                        rel = str(p.relative_to(target))
+                        if not quiet(store, root, rel, info, now, cfg['retention_days']): continue
+                        if summary['eligible_bytes'] + info.st_size > cfg['max_gc_bytes']: return summary
+                        summary['eligible_files'] += 1; summary['eligible_bytes'] += info.st_size
+                        if apply:
+                            if references([p, source / rel], strict=True): continue
+                            barrier()
+                            # Recheck identity, demand and complete coverage immediately before unlink.
+                            fresh = store.root(root['id']); current = p.lstat()
+                            if (info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (current.st_ino, current.st_size, current.st_mtime_ns, current.st_ctime_ns): continue
+                            if not quiet(store, fresh, rel, current, now, cfg['retention_days']): continue
+                            p.unlink(); summary['deleted_files'] += 1
+                            store.db.execute('DELETE FROM activity WHERE root=? AND path=?', (root['id'], rel))
+                    # Only prune empty children; keep the registered regeneration root.
+                if apply:
+                    for directory, dirs, _ in os.walk(base, topdown=False, followlinks=False):
+                        for name in dirs:
+                            p = Path(directory) / name
+                            if not p.is_symlink():
+                                try: p.rmdir()
+                                except OSError: pass
+            except (OSError, ValueError) as e: summary['errors'].append(str(e)[:200])
+    store.db.commit(); return summary
+
+
+def demand(store, root, now):
+    return store.db.execute('SELECT COALESCE(SUM(reads),0),COALESCE(SUM(opens),0),COALESCE(MAX(accessed),0) FROM activity WHERE root=? AND hour>=?',
+                            (root['id'], int(now // 3600)-1)).fetchone()
+
+
+def decisions(store, cfg, now=None):
+    now = now or time.time(); rows = []
+    for root in store.roots():
+        reads, opens, _ = demand(store, root, now)
+        latency = store.db.execute('SELECT * FROM latency WHERE root=?', (root['id'],)).fetchone()
+        impact = bool(latency and now - latency['measured'] < 30*DAY and
+                      latency['hdd_ms'] - latency['ssd_ms'] >= cfg['promotion_min_saving_ms'] and
+                      (latency['hdd_ms'] - latency['ssd_ms']) / latency['hdd_ms'] >= cfg['promotion_min_saving_ratio'])
+        last = store.db.execute('SELECT MAX(accessed) FROM activity WHERE root=?', (root['id'],)).fetchone()[0] or root['since']
+        action = 'hdd'
+        if root['location'] == 'hdd' and reads >= cfg['promotion_reads_per_hour']:
+            action = 'promote' if impact else 'measure_task_latency'
+        elif root['location'] == 'ssd':
+            action = 'demote' if root['coverage'] and root['since'] and now - max(root['since'], last) >= cfg['demotion_idle_days']*DAY else 'ssd'
+        rows.append({'id': root['id'], 'source': root['source'], 'location': root['location'],
+                     'coverage': bool(root['coverage']), 'coverage_error': root['error'],
+                     'observed_since': root['since'], 'recent_reads': reads, 'recent_opens': opens,
+                     'measured_latency_impact': impact, 'decision': action})
+    return rows
+
+
+def consume_events(store, watcher, roots):
+    """Drain access events before a destructive action; return rebuild requirement."""
+    byid = {r['id']: r for r in roots}; rebuild = False; now = time.time()
+    for key, path, mask in watcher.events():
+        if mask & OVERFLOW:
+            store.db.execute('UPDATE roots SET coverage=0,since=0,error=?', ('inotify overflow: quiet clock reset',))
+            rebuild = True; continue
+        if key not in byid: continue
+        root = byid[key]
+        base = live_path(root)
+        topology = mask & (DELETE_SELF | MOVE_SELF | IGNORED) or (mask & ISDIR and mask & (CREATE | MOVED_FROM | MOVED_TO | DELETE))
+        if topology:
+            store.db.execute('UPDATE roots SET coverage=0,error=? WHERE id=?', ('directory topology changed: rebuilding coverage', key))
+            rebuild = True
+            if path and within(path, base) and mask & ISDIR and mask & (CREATE | MOVED_TO):
+                store.activity(key, str(path.relative_to(base)), MODIFY, now)
+        if not mask & ISDIR and path and mask & (ACCESS | OPEN | MODIFY | ATTRIB | CREATE | MOVED_TO):
+            if within(path, base): store.activity(key, str(path.relative_to(base)), mask, now)
+    store.db.commit()
+    return rebuild
+
+
+def watch(store, cfg):
+    with lock(store.state / 'watch.lock'):
+        watcher = None; signature = None; rebuilt = False; next_report = 0; next_adopt = 0; next_gc = time.time() + 3600
+        store.db.execute('UPDATE roots SET coverage=0,since=0,error=?', ('watcher restarted: quiet clock reset',)); store.db.commit()
+        try:
+            while True:
+                if time.time() >= next_adopt:
+                    try: adopt_defaults(store, cfg)
+                    except (OSError, ValueError) as e: store.put('defaults_error', str(e)[:200]); store.db.commit()
+                    next_adopt = time.time() + 60
+                roots = store.roots()
+                current = tuple((r['id'], r['location'], r['target'], r['source'], r['hot']) for r in roots)
+                if signature != current or rebuilt:
+                    old_watcher = watcher
+                    watcher = Inotify(cfg['max_watches']); rebuilt = False
+                    for root in roots:
+                        try:
+                            path = live_path(root)
+                            if Path(root['source']).resolve() != path:
+                                raise ValueError('source symlink differs from ledger')
+                            watcher.tree(path, root['id'])
+                            store.db.execute('UPDATE roots SET coverage=1,since=CASE WHEN since=0 THEN ? ELSE since END,error=? WHERE id=?',
+                                             (time.time(), '', root['id']))
+                        except (OSError, ValueError) as e:
+                            store.db.execute('UPDATE roots SET coverage=0,since=0,error=? WHERE id=?', (str(e)[:200], root['id']))
+                    # Overlap registrations to preserve access coverage for existing files.
+                    if old_watcher:
+                        rebuilt = consume_events(store, old_watcher, roots)
+                        old_watcher.close()
+                    signature = current; store.db.commit()
+                select.select([watcher.fd], [], [], 2)
+                now = time.time()
+                rebuilt = consume_events(store, watcher, roots) or rebuilt
+                store.put('heartbeat', now); store.put('watches', len(watcher.paths)); store.db.commit()
+                if now >= next_report:
+                    atomic_json(store.state / 'status.json', {'timestamp': now, 'watches': len(watcher.paths), 'roots': decisions(store, cfg)})
+                    next_report = now + 30
+                if now >= next_gc or store.get('gc_requested', False):
+                    if cfg['automatic_gc'] or store.get('gc_requested', False):
+                        try:
+                            with lock(store.state / 'move.lock'):
+                                def barrier():
+                                    nonlocal rebuilt
+                                    rebuilt = consume_events(store, watcher, roots) or rebuilt
+                                store.put('last_gc', gc(store, cfg, apply=True, barrier=barrier))
+                                store.put('gc_requested', False)
+                        except BlockingIOError: pass
+                    store.db.commit(); next_gc = now + DAY
+        finally:
+            store.db.execute('UPDATE roots SET coverage=0,since=0,error=?', ('watcher stopped',)); store.db.commit()
+            if watcher: watcher.close()
+
+
+def queue_add(store, source, action='move'):
+    store.db.execute('INSERT OR REPLACE INTO queue VALUES (?,?,?,\'\',?)', (str(absolute(source)), action, 'pending', time.time()))
+    store.db.commit()
+
+
+def drain(store, cfg):
+    with lock(store.state / 'move.lock'):
+        if store.state.joinpath('operation.json').exists(): raise ValueError('unfinished operation; inspect recovery journal')
+        # A decision can promote only with both recorded demand and matched task timing.
+        if time.time() - store.get('heartbeat', 0) < 60:
+            for row in decisions(store, cfg):
+                if row['decision'] == 'promote' and cfg['automatic_promotion']: queue_add(store, row['source'], 'restore')
+                if row['decision'] == 'demote' and cfg['automatic_demotion']: queue_add(store, row['source'], 'demote')
+        for job in list(store.db.execute("SELECT * FROM queue WHERE status IN ('pending','deferred') ORDER BY updated")):
+            source = Path(job['source'])
+            store.db.execute('UPDATE queue SET status=?,updated=? WHERE source=?', ('running', time.time(), str(source))); store.db.commit()
+            try:
+                if job['action'] == 'restore': migrate(store, cfg, source, restoring=store.root(str(source)))
+                elif job['action'] == 'demote':
+                    old = store.root(str(source))
+                    migrate(store, cfg, source, demoting=old)
+                else:
+                    registered = store.db.execute('SELECT * FROM roots WHERE source=?', (str(source),)).fetchone()
+                    if registered and registered['location'] == 'ssd': migrate(store, cfg, source, demoting=registered)
+                    else: migrate(store, cfg, source)
+                status, error = 'complete', ''
+            except (OSError, ValueError, subprocess.CalledProcessError) as e:
+                status, error = 'deferred', str(e)[:300]
+                print('DEFER', source, error, flush=True)
+            store.db.execute('UPDATE queue SET status=?,error=?,updated=? WHERE source=?', (status, error, time.time(), str(source))); store.db.commit()
+            if (store.state/'operation.json').exists():
+                raise ValueError('migration halted with recovery journal; subsequent jobs are preserved')
+
+
+def discover(cfg, bases):
+    """Return immediate migration units of all sizes; aggregate directories count."""
+    rows = []
+    for raw in bases:
+        base = absolute(raw)
+        with os.scandir(base) as entries:
+            for entry in entries:
+                path = Path(entry.path)
+                try:
+                    if path.is_symlink(): continue
+                    valid_source(path, cfg)
+                    _, size = inventory(path, cfg['max_scan_entries'])
+                    rows.append({'path': str(path), 'allocated_bytes': size, 'kind': 'folder' if path.is_dir() else 'file'})
+                except (OSError, ValueError) as e: rows.append({'path': str(path), 'deferred': str(e)[:160]})
+    return sorted(rows, key=lambda r: r.get('allocated_bytes', 0), reverse=True)
+
+
+def main():
+    os.umask(0o077)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--state-dir', default=str(Path.home() / '.local/state/qq-cold-tier'))
+    parser.add_argument('--config', default=str(Path.home() / '.config/qq-cold-tier.json'))
+    sub = parser.add_subparsers(dest='command', required=True)
+    sub.add_parser('init'); sub.add_parser('watch'); sub.add_parser('status'); sub.add_parser('drain')
+    p = sub.add_parser('discover'); p.add_argument('paths', nargs='+')
+    p = sub.add_parser('defaults'); p.add_argument('paths', nargs='+')
+    p = sub.add_parser('queue'); p.add_argument('paths', nargs='+')
+    p = sub.add_parser('move'); p.add_argument('path')
+    p = sub.add_parser('restore'); p.add_argument('root')
+    p = sub.add_parser('split'); p.add_argument('root'); p.add_argument('relative')
+    p = sub.add_parser('register'); p.add_argument('source'); p.add_argument('target')
+    p = sub.add_parser('regenerable'); p.add_argument('root'); p.add_argument('relative'); p.add_argument('--recipe', required=True); p.add_argument('--proof', required=True); p.add_argument('--verified', action='store_true', required=True)
+    p = sub.add_parser('latency'); p.add_argument('root'); p.add_argument('--task', required=True); p.add_argument('--hdd-ms', type=float, required=True); p.add_argument('--ssd-ms', type=float, required=True)
+    p = sub.add_parser('gc'); p.add_argument('--apply', action='store_true')
+    args = parser.parse_args(); config_path = absolute(args.config)
+    if args.command == 'init' and not config_path.exists():
+        config_path.parent.mkdir(parents=True, exist_ok=True); atomic_json(config_path, DEFAULT)
+    cfg = dict(DEFAULT); cfg.update(bounded_json(config_path))
+    if cfg['schema'] != 1 or cfg['retention_days'] < 30: raise ValueError('unsupported policy or retention shorter than 30 days')
+    for key in ('max_watches', 'max_scan_entries', 'copy_kib_per_second', 'verify_bytes_per_second', 'max_gc_files', 'max_gc_bytes'):
+        if not isinstance(cfg[key], int) or cfg[key] <= 0: raise ValueError('invalid budget ' + key)
+    store = Store(args.state_dir)
+    if args.command in ('drain','move','restore','discover'): contain_job()
+    if args.command == 'init': mount_ready(cfg); print('Initialized', store.state)
+    elif args.command == 'watch': watch(store, cfg)
+    elif args.command == 'status':
+        print(json.dumps({'defaults': store.get('defaults', []), 'defaults_error': store.get('defaults_error'),
+                          'roots': decisions(store, cfg), 'queue': [dict(r) for r in store.db.execute('SELECT * FROM queue')],
+                          'heartbeat': store.get('heartbeat'), 'watches': store.get('watches'), 'last_gc': store.get('last_gc')}, indent=2))
+    elif args.command == 'register':
+        source, target = absolute(args.source), absolute(args.target)
+        if not source.is_symlink() or source.resolve() != target or not target.exists(): raise ValueError('existing source link must point exactly to the target')
+        if target.stat().st_dev != mount_ready(cfg).stat().st_dev: raise ValueError('target must be on configured HDD')
+        print(store.register(source, target))
+    elif args.command == 'queue':
+        for path in args.paths:
+            registered = store.db.execute('SELECT * FROM roots WHERE source=?', (str(absolute(path)),)).fetchone()
+            queue_add(store, registered['source'] if registered and registered['location']=='ssd' else valid_source(path, cfg))
+    elif args.command == 'drain': drain(store, cfg)
+    elif args.command == 'move':
+        with lock(store.state / 'move.lock'): migrate(store, cfg, args.path)
+    elif args.command == 'restore':
+        with lock(store.state / 'move.lock'): migrate(store, cfg, store.root(args.root)['source'], restoring=store.root(args.root))
+    elif args.command == 'split':
+        root = store.root(args.root); relative = Path(args.relative)
+        if root['location'] != 'hdd' or relative.is_absolute() or '..' in relative.parts or str(relative)=='.':
+            raise ValueError('split requires a real HDD child path')
+        target = Path(root['target']) / relative
+        if target.resolve() != target or not target.exists(): raise ValueError('split child has symlinks or is absent')
+        print(store.register(Path(root['source']) / relative, target))
+    elif args.command == 'regenerable': record_scope(store, args.root, args.relative, args.recipe, args.proof)
+    elif args.command == 'latency':
+        if not (args.hdd_ms > 0 and args.ssd_ms > 0): raise ValueError('positive matched task timings required')
+        store.db.execute('INSERT OR REPLACE INTO latency VALUES (?,?,?,?,?)', (store.root(args.root)['id'], args.task, args.hdd_ms, args.ssd_ms, time.time())); store.db.commit()
+    elif args.command == 'gc':
+        if args.apply:
+            store.put('gc_requested', True); store.db.commit()
+            print('GC requested; the live watcher checks queued access before any deletion')
+        else: print(json.dumps(gc(store, cfg), indent=2))
+    elif args.command == 'discover': print(json.dumps(discover(cfg, args.paths), indent=2))
+    elif args.command == 'defaults':
+        with lock(store.state / 'move.lock'):
+            for path in args.paths: bridge_parent(store, cfg, path)
+            adopt_defaults(store, cfg)
+
+
+if __name__ == '__main__':
+    try: main()
+    except (OSError, ValueError, sqlite3.Error, subprocess.CalledProcessError) as error:
+        print('cold-tier:', error, file=sys.stderr); sys.exit(1)
