@@ -91,4 +91,31 @@ The ledger is capped at 128 MiB. Its watcher has CPU/RAM/task limits; the move
 worker lowers its verified `qq-job` scope to 20% CPU, 640 MiB RAM and 32 tasks.
 Automatic promotion preserves at least 10 GiB free on SSD.
 
+The watcher drains its own directory-walk events during admission and watches
+new/deleted subtrees incrementally. Directory activity does not trigger a scan
+of every managed root. Watch-budget failures are visible per root. Installed
+code and ledger use their physical SSD paths, so the control plane survives an
+absent HDD mount.
+
+## Native block-cache alternative
+
+The long-term simpler design is HDD-backed data with a kernel-managed SSD block
+cache, which transparently promotes hot blocks without knowing applications or
+moving whole folders. It still needs a separate policy for deleting regenerable
+artifacts. Linux supports this through dm-cache or bcache. Do not convert an
+existing disk by formatting it. Writethrough keeps the HDD copy current, at the
+cost of HDD write latency; writeback introduces a different durability contract.
+
+The operator's KIOXIA NVMe is known failing and is excluded. Current devices are
+plain ext4, not an existing LVM cache stack. An administrator-level, planned HDD
+cutover is required; the current file tier does not perform it. Collect a bounded
+read-only report before sizing or proposing that conversion:
+
+```sh
+sudo ~/.local/bin/qq-cold-tier-preflight
+```
+
+Only `/dev/sda` and `/dev/sdb` are inspected. This command does not mount, format,
+repartition, unlock any device, change configuration or load kernel modules.
+
 Validation: `qq-job -- python3 -m unittest discover -s storage -p 'test_*.py'`.
