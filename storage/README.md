@@ -278,4 +278,16 @@ copy/cutover. Application state, source data and the paid DecIQ work remain
 outside this initial pilot. The 30-day regenerable-file retention policy still
 requires verified regeneration evidence and complete observation coverage.
 
+After verifying the persistent volume, the operator can set `hdd_mount` to
+`/srv/qqcachedpilot`, `archive` to `/srv/qqcachedpilot/data/qq-cold-tier`, and
+`block_cached_mounts` to `["/srv/qqcachedpilot"]`. New migrations then land on
+the native volume. Roots there report `block_cache`: kernel block caching handles
+their demand instead of whole-file SSD promotion. Existing default parents and
+their atomic-save writers continue to be admitted on their original filesystem.
+Apply a configuration change by restarting only `qq-cold-tier.service`; this
+resets its observation clocks, preserving the full 30-day GC requirement.
+Migration flushes the destination filesystem after verification and before
+publication or original retirement. Flush failure or timeout preserves the
+original and removes only the unpublished staging copy.
+
 Validation: `qq-job -- python3 -m unittest discover -s storage -p 'test_*.py'`.
