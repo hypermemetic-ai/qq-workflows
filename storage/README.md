@@ -49,6 +49,15 @@ references are limited to visible same-UID processes: sandboxes and root process
 can hide references. This is quiescent-user-data migration, not an online database
 mover. An interrupted publish keeps `operation.json` and both copies; inspect and
 recover them before retrying. It never deletes an ambiguous original on startup.
+For explicitly reviewed immutable SDK/build-cache directories, the optional
+`immutable_hardlink_scopes` policy permits copying shared files to independent HDD
+inodes. External aliases remain untouched; internal hard links remain shared.
+Receipts identify each detached inode, and direct inode watches detect changes
+through outside aliases during verification and publication. This exception is
+for immutable artifacts, never databases, object stores or unique source data.
+Inherited executable/library search paths alone do not mark a directory busy;
+actual executables, mappings, open descriptors, working directories, command
+arguments and data-directory environment references still defer relocation.
 Physical SSD backing paths become aliases as well, preserving absolute executable
 paths and shebangs after migration. Publication flushes namespace changes, and a
 late writer on the retired inode preserves both copies for review.

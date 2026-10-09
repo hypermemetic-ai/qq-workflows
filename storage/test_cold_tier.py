@@ -367,6 +367,43 @@ m.watch(m.Store(sys.argv[3]),c)
         os.link(source/'data',self.home/'other')
         with self.assertRaisesRegex(ValueError,'hard links extend'):m.inventory(source,100)
         self.assertEqual((source/'data').stat().st_ino,(self.home/'other').stat().st_ino)
+    def test_immutable_scope_copies_internal_links_and_preserves_external_alias(self):
+        source=self.home/'sdk';source.mkdir();(source/'library').write_text('immutable bytes')
+        os.link(source/'library',source/'inside');os.link(source/'library',self.home/'outside')
+        old=(self.home/'outside').stat().st_ino
+        self.cfg['immutable_hardlink_scopes']=[str(source)]
+        with patch.object(m,'references',return_value=[]):m.migrate(self.store,self.cfg,source)
+        self.assertEqual((source/'library').read_text(),'immutable bytes')
+        self.assertEqual((self.home/'outside').stat().st_ino,old)
+        self.assertNotEqual((source/'library').stat().st_ino,old)
+        self.assertEqual((source/'library').stat().st_ino,(source/'inside').stat().st_ino)
+        receipt=m.json.loads((self.store.state/'moves.jsonl').read_text())
+        self.assertEqual(receipt['detached_immutable_links'][0]['inside'],2)
+    def test_external_alias_mutation_before_publish_retains_original(self):
+        source=self.home/'sdk';source.mkdir();(source/'library').write_text('before')
+        os.link(source/'library',self.home/'outside')
+        self.cfg['immutable_hardlink_scopes']=[str(source)]
+        self.flush.side_effect=lambda dest:(self.home/'outside').write_text('changed outside')
+        with patch.object(m,'references',return_value=[]):
+            with self.assertRaisesRegex(ValueError,'source mutation'):m.migrate(self.store,self.cfg,source)
+        self.assertFalse(source.is_symlink());self.assertEqual((source/'library').read_text(),'changed outside')
+        self.assertFalse((self.store.state/'operation.json').exists())
+    def test_inventory_allocated_size_does_not_count_shared_inodes_twice(self):
+        source=self.home/'sdk';source.mkdir();(source/'library').write_bytes(b'x'*8192)
+        os.link(source/'library',source/'inside')
+        _,size=m.inventory(source,100)
+        self.assertEqual(size,(source.stat().st_blocks+(source/'library').stat().st_blocks)*512)
+    def test_lookup_environment_is_not_an_open_reference_but_data_environment_is(self):
+        source=self.home/'sdk';source.mkdir()
+        script='import sys; print("ready",flush=True); sys.stdin.read()'
+        for variable,expected in [('PATH',False),('APPLICATION_DATA',True)]:
+            env=dict(os.environ);env[variable]=str(source)
+            child=subprocess.Popen([sys.executable,'-c',script],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+            try:
+                self.assertEqual(child.stdout.readline().strip(),'ready')
+                self.assertEqual(child.pid in m.references([source]),expected)
+            finally:
+                child.terminate();child.wait(timeout=5);child.stdin.close();child.stdout.close()
     def test_protected_descendant_prevents_entire_registered_tree_migration(self):
         source=self.home/'mixed';source.mkdir();protected=source/'paid';protected.mkdir()
         (protected/'source').write_text('preserve')
