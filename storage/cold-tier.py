@@ -44,6 +44,7 @@ DEFAULT = {
     'block_cached_mounts': [],
     'immutable_hardlink_scopes': [],
     'automatic_migration': True,
+    'watch_original_ssd': True,
 }
 
 
@@ -376,6 +377,11 @@ def excluded_unit(path,cfg):
 
 def live_path(root):
     return Path(root['target']) if root['location'] == 'hdd' else Path(root['hot'] or root['source'])
+
+
+def watch_enabled(root,cfg):
+    if root['location']=='hdd' or cfg.get('watch_original_ssd',True): return True
+    return bool(root['hot'] and within(absolute(root['hot']),absolute(cfg['hot_storage'])))
 
 
 def exchange(a, b):
@@ -961,7 +967,7 @@ def watch(store, cfg):
                 # HDD roots can be retained/pruned; prioritize their complete
                 # coverage over SSD roots which are ineligible for retention.
                 roots = sorted(store.roots(), key=lambda r: (r['location'] != 'hdd', r['created']))
-                current = {r['id']:(r['location'],r['target'],r['source'],r['hot']) for r in roots}
+                current = {r['id']:(r['location'],r['target'],r['source'],r['hot'],watch_enabled(r,cfg)) for r in roots}
                 for key in set(signatures)-set(current): watcher.remove_root(key); signatures.pop(key)
                 def progress():
                     consume_events(store,watcher,roots,defer_topology=True)
@@ -971,6 +977,10 @@ def watch(store, cfg):
                     key=root['id']
                     if signatures.get(key)!=current[key] or key in watcher.rebuild_roots:
                         watcher.rebuild_roots.discard(key);watcher.remove_root(key)
+                        if not watch_enabled(root,cfg):
+                            store.db.execute('UPDATE roots SET coverage=0,since=0,error=? WHERE id=?',
+                                             ('original SSD watches disabled; migration guard remains active',key))
+                            signatures[key]=current[key];store.db.commit();continue
                         for attempt in range(2):
                             try:
                                 path = live_path(root)
