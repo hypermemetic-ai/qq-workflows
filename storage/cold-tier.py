@@ -48,6 +48,9 @@ DEFAULT = {
     'mirror_layout': False,
     'cached_retention_watches_only': False,
     'intake_parents': [],
+    'migration_cpu_quota_percent': 20,
+    'migration_memory_high_mib': 512,
+    'intake_min_age_seconds': 3600,
 }
 
 
@@ -157,8 +160,12 @@ def lock(path):
         yield
 
 
-def contain_job():
+def contain_job(cfg=None):
     """qq-job owns placement; lower this job's CPU/RAM/task budgets in that scope."""
+    cpu=(cfg or DEFAULT).get('migration_cpu_quota_percent',20)
+    if type(cpu) is not int or not 1<=cpu<=100:raise ValueError('migration CPU budget must be 1 to 100 percent of one core')
+    mem=(cfg or DEFAULT).get('migration_memory_high_mib',512)
+    if type(mem) is not int or not 256<=mem<=2048:raise ValueError('migration memory high budget must be 256 to 2048 MiB')
     raw = Path('/proc/self/cgroup').read_text().strip()
     cg = Path('/sys/fs/cgroup') / raw.split('::', 1)[1].lstrip('/')
     if not cg.name.startswith('qq-job-') or not cg.name.endswith('.scope'):
@@ -166,16 +173,16 @@ def contain_job():
     def limited(name, cap):
         current = (cg/name).read_text().strip()
         return min(int(current),cap) if current.isdecimal() else cap
-    memory = limited('memory.max',640*1024**2)
-    high = min(memory,limited('memory.high',512*1024**2))
+    memory = limited('memory.max',mem*5//4*1024**2)
+    high = min(memory,limited('memory.high',mem*1024**2))
     tasks = limited('pids.max',32)
     subprocess.run(['systemctl','--user','set-property','--runtime',cg.name,
                     f'MemoryMax={memory}',f'MemoryHigh={high}','MemorySwapMax=0',
-                    f'TasksMax={tasks}','CPUQuota=20%'],check=True,stdout=subprocess.DEVNULL)
+                    f'TasksMax={tasks}',f'CPUQuota={cpu}%'],check=True,stdout=subprocess.DEVNULL)
     if int((cg/'memory.max').read_text()) > memory or int((cg/'pids.max').read_text()) > tasks:
         raise ValueError('job resource limits could not be verified')
     quota, period = (cg/'cpu.max').read_text().split()
-    if quota=='max' or int(quota)/int(period) > .20: raise ValueError('job CPU limit could not be verified')
+    if quota=='max' or int(quota)/int(period) > cpu/100: raise ValueError('job CPU limit could not be verified')
 
 
 class Inotify:
@@ -561,6 +568,7 @@ def adopt_defaults(store, cfg):
                 if child.is_symlink() or tier_temporary(child) or str(child) in managed_backings:continue
                 try:
                     valid_source(child,cfg)
+                    if time.time()-child.stat().st_mtime<cfg.get('intake_min_age_seconds',3600):continue
                     if child.stat().st_dev==archive.stat().st_dev:continue
                     if store.db.execute('SELECT 1 FROM queue WHERE source=?',(str(child),)).fetchone():continue
                     if child.is_file() and database_file(child):continue
@@ -1455,7 +1463,7 @@ def main():
     for key in ('max_watches', 'max_scan_entries', 'copy_kib_per_second', 'verify_bytes_per_second', 'max_gc_files', 'max_gc_bytes'):
         if not isinstance(cfg[key], int) or cfg[key] <= 0: raise ValueError('invalid budget ' + key)
     store = Store(args.state_dir)
-    if args.command in ('drain','move','restore','discover','route-defaults','recover-published'): contain_job()
+    if args.command in ('drain','move','restore','discover','route-defaults','recover-published'): contain_job(cfg)
     if args.command == 'init': mount_ready(cfg); print('Initialized', store.state)
     elif args.command == 'watch': watch(store, cfg)
     elif args.command == 'status':

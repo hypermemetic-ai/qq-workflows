@@ -14,6 +14,14 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 
 class ColdTierTests(unittest.TestCase):
+    def test_migration_cpu_budget_refuses_unbounded_values_before_placement(self):
+        for quota in (0,101,-1,'80',True):
+            with self.subTest(quota=quota),self.assertRaisesRegex(ValueError,'1 to 100'):
+                m.contain_job(dict(m.DEFAULT,migration_cpu_quota_percent=quota))
+        for high in (0,255,2049,'1024',True):
+            with self.subTest(high=high),self.assertRaisesRegex(ValueError,'256 to 2048'):
+                m.contain_job(dict(m.DEFAULT,migration_memory_high_mib=high))
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.base = Path(self.tmp.name)
         self.home = self.base / 'home'; self.home.mkdir()
@@ -520,7 +528,7 @@ m.watch(m.Store(sys.argv[3]),c)
         self.cfg.update(cached_retention_watches_only=True,block_cached_mounts=[str(self.archive)])
         with self.running_watch():
             deadline=time.time()+5
-            while time.time()<deadline and not self.store.get('heartbeat'):time.sleep(.1)
+            while time.time()<deadline and 'unique data retained' not in self.store.root(key)['error']:time.sleep(.1)
             row=self.store.root(key);self.assertFalse(row['coverage']);self.assertEqual(self.store.get('watches'),0)
             self.assertIn('unique data retained',row['error'])
     def test_protected_descendant_prevents_entire_registered_tree_migration(self):
@@ -630,12 +638,19 @@ m.watch(m.Store(sys.argv[3]),c)
         (parent/'protected').mkdir();self.cfg['excluded'].append(str(parent/'protected'))
         (parent/'managed').mkdir()
         with patch.object(m,'references',return_value=[]):m.bridge_parent(self.store,self.cfg,parent/'managed')
-        self.cfg['intake_parents']=[str(parent)]
+        self.cfg['intake_parents']=[str(parent)];self.cfg['intake_min_age_seconds']=0
         with tempfile.TemporaryDirectory(dir='/dev/shm') as d:
             if Path(d).stat().st_dev==parent.stat().st_dev:self.skipTest('separate destination filesystem unavailable')
             with patch.object(m,'mount_ready',return_value=Path(d)):m.adopt_defaults(self.store,self.cfg)
         self.assertEqual([r['source'] for r in self.store.db.execute('SELECT * FROM queue')],[str(parent/'idle')])
         self.assertFalse(parent.is_symlink());self.assertEqual((parent/'application.sqlite').read_text(),'database')
+    def test_real_parent_intake_defers_new_transient_directories(self):
+        parent=self.home/'real';parent.mkdir();(parent/'fresh').mkdir()
+        self.cfg['intake_parents']=[str(parent)]
+        with tempfile.TemporaryDirectory(dir='/dev/shm') as d:
+            if Path(d).stat().st_dev==parent.stat().st_dev:self.skipTest('separate destination filesystem unavailable')
+            with patch.object(m,'mount_ready',return_value=Path(d)):m.adopt_defaults(self.store,self.cfg)
+        self.assertEqual(list(self.store.db.execute('SELECT * FROM queue')),[])
     def test_nested_mirror_route_recovers_interruption_immediately_after_directory_exchange(self):
         project=self.mirrored_project();self.cfg['mirror_layout']=True
         # Publish the outer default, then interrupt the nested route at the first
