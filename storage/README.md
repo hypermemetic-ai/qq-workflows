@@ -204,9 +204,12 @@ sudo ~/.local/bin/qq-cold-tier-startup-test
 
 The drill creates separate disposable 512 MiB HDD, 64 MiB SSD cache and 16 MiB
 metadata images. Actual temporary systemd services declare and verify HDD mount
-dependencies plus the same CPU, RAM, swap, task and physical I/O caps. Workers
-only attach the already-validated drill images; normal startup never formats or
-replaces a filesystem. A deliberately failed temporary dependency must prevent
+dependencies plus the same CPU, RAM, swap, task and physical I/O caps. The helper
+preserves escaped systemd mount names through the launcher's property parser
+and decodes quoted dependency lists when verifying the resulting unit. Launcher
+errors are retained when startup fails before a worker can publish its report.
+Workers only attach the already-validated drill images; normal startup never
+formats or replaces a filesystem. A deliberately failed temporary dependency must prevent
 the startup worker from running. The real HDD mount and application services
 are never stopped. No boot-time service or configuration is installed.
 
