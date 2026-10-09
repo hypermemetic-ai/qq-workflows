@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import time
+import uuid
 
 spec=importlib.util.spec_from_file_location('volume_startup',Path(__file__).with_name('native-cache-startup.py'))
 startup=importlib.util.module_from_spec(spec);spec.loader.exec_module(startup)
@@ -39,6 +40,7 @@ UNIT=Path('/etc/systemd/system')/SERVICE
 SOURCE=Path('/home/qqp/.cache-qq-ssd/zig')
 PROC=Path('/proc')
 OWNER=1000
+PINNED_FILES=('native-cache-volume.py','native-cache-startup.py','native-cache-trial.py')
 
 
 def mountpoint_ready():
@@ -67,7 +69,7 @@ def read_manifest():
 def idle_evidence():
     # Read process state as root; emit only identities, never command/environment
     # contents. Incomplete coverage defers migration rather than declaring idle.
-    report={'source':str(SOURCE),'checked_at':time.time(),'references':[],'unknown':[]}
+    report={'source':str(SOURCE),'checked_at':time.time(),'references':[],'unknown':[],'kernel_threads':0}
     if not SOURCE.is_dir() or SOURCE.is_symlink():
         report.update(idle_verified=False,error='Candidate absent or already linked');return report
     needles=(str(SOURCE),'/home/qqp/.cache/zig');budget=2000
@@ -76,26 +78,36 @@ def idle_evidence():
         budget-=1
         if budget<0:report['unknown'].append('process budget exceeded');break
         values=[];denied=False
+        kernel_thread=False
+        try:
+            with (proc/'status').open('rb') as f:raw=f.read(16385)
+            if len(raw)>16384:denied=True
+            else:kernel_thread=any(line.split()==[b'Kthread:',b'1'] for line in raw.splitlines())
+        except FileNotFoundError:pass
+        except OSError:denied=True
+        if kernel_thread:report['kernel_threads']+=1
         for name in ('cwd','exe'):
             try:values.append(os.readlink(proc/name))
             except FileNotFoundError:pass
-            except PermissionError:denied=True
-        for name in ('cmdline','environ','maps'):
+            except OSError:denied=True
+        # Kernel threads have no userspace address space; reading their environ
+        # can return ESRCH. Still inspect cwd/exe/fds for actual file references.
+        for name in (() if kernel_thread else ('cmdline','environ','maps')):
             try:
                 with (proc/name).open('rb') as f:
                     raw=f.read(2*base.MIB+1)
                     if len(raw)>2*base.MIB:denied=True
                     values.append(raw.decode('utf8','replace'))
             except FileNotFoundError:pass
-            except PermissionError:denied=True
+            except OSError:denied=True
         try:
             for n,fd in enumerate((proc/'fd').iterdir()):
                 if n>=8192:denied=True;break
                 try:values.append(os.readlink(fd))
                 except FileNotFoundError:pass
-                except PermissionError:denied=True
+                except OSError:denied=True
         except FileNotFoundError:pass
-        except PermissionError:denied=True
+        except OSError:denied=True
         if denied:report['unknown'].append(int(proc.name))
         if any(needle in value for needle in needles for value in values):report['references'].append(int(proc.name))
     report['idle_verified']=not(report['references'] or report['unknown'])
@@ -130,8 +142,12 @@ class Volume(base.Trial):
         if not self.mapper:self.mapped()
         if not self.mounted:self.mount('/dev/mapper/'+self.name)
         self.health();self.status()
+        try:candidate=idle_evidence()
+        except OSError as error:
+            candidate={'source':str(SOURCE),'checked_at':time.time(),'idle_verified':False,
+                       'unknown':['process inspection unavailable'],'error':str(error)[:500]}
         self.report.update(success=True,ready=True,persistent_mount=str(self.mountpoint),
-                           filesystem_uuid=identity['filesystem_uuid'],candidate=idle_evidence())
+                           filesystem_uuid=identity['filesystem_uuid'],candidate=candidate)
 
     def provision(self,output):
         # The only formatting path. Refuse every pre-existing backing image.
@@ -219,27 +235,61 @@ def service_text(script):
         '[Install]','WantedBy=multi-user.target',''])
 
 
+def pinned_file(path):
+    s=path.lstat()
+    if not stat.S_ISREG(s.st_mode) or s.st_uid!=0 or s.st_nlink!=1 or s.st_mode&0o077 or s.st_size>262144:
+        raise ValueError('Unexpected pinned root script ownership or size')
+    return path.read_bytes()
+
+
+def verify_managed_unit(content):
+    pattern=r'^ExecStart=/usr/bin/python3 ('+re.escape(str(LIBRARY))+r'/[0-9a-f]{16}/native-cache-volume\.py) --worker start$'
+    match=re.search(pattern,content,re.MULTILINE)
+    if not match or content!=service_text(Path(match.group(1))):
+        raise ValueError('Existing pilot unit differs; preserve its pinned release')
+    release=Path(match.group(1)).parent
+    if not release.is_dir():raise ValueError('Previous pinned root release is missing')
+    base.private_directory(release)
+    digest=hashlib.sha256(b''.join(pinned_file(release/name) for name in PINNED_FILES)).hexdigest()
+    if release.name!=digest[:16]:raise ValueError('Previous pinned root release digest changed')
+
+
+def upgrade_unit(content,previous):
+    verify_managed_unit(previous)
+    state=base.run('systemctl','show',SERVICE,'--property=ActiveState','--value')
+    if state not in ('failed','inactive'):
+        raise ValueError('Keep the running pilot service; upgrade requires failed or inactive state')
+    temporary=UNIT.with_name('.'+SERVICE+'.'+uuid.uuid4().hex)
+    fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    try:
+        with os.fdopen(fd,'w') as f:f.write(content);f.flush();os.fsync(f.fileno())
+        if UNIT.read_text()!=previous:raise ValueError('Pilot unit changed during upgrade; preserve it')
+        temporary.replace(UNIT)
+        fd=os.open(UNIT.parent,os.O_RDONLY|os.O_DIRECTORY)
+        try:os.fsync(fd)
+        finally:os.close(fd)
+    finally:temporary.unlink(missing_ok=True)
+
+
 def install_service():
     base.private_directory(LIBRARY)
-    files=('native-cache-volume.py','native-cache-startup.py','native-cache-trial.py')
     source=Path(__file__).resolve().parent
-    digest=hashlib.sha256(b''.join((source/name).read_bytes() for name in files)).hexdigest()
+    digest=hashlib.sha256(b''.join((source/name).read_bytes() for name in PINNED_FILES)).hexdigest()
     release=LIBRARY/digest[:16];base.private_directory(release)
-    for name in files:
+    for name in PINNED_FILES:
         target=release/name
         if target.exists():
-            s=target.lstat()
-            if not stat.S_ISREG(s.st_mode) or s.st_uid!=0 or s.st_nlink!=1 or s.st_mode&0o077:
-                raise ValueError('Unexpected pinned root script ownership')
-            if target.read_bytes()!=(source/name).read_bytes():raise ValueError('Pinned root release differs')
+            if pinned_file(target)!=(source/name).read_bytes():raise ValueError('Pinned root release differs')
         else:
             fd=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
             with os.fdopen(fd,'wb') as f:f.write((source/name).read_bytes());f.flush();os.fsync(f.fileno())
     content=service_text(release/'native-cache-volume.py')
     if os.path.lexists(UNIT):
         s=UNIT.lstat()
-        if not stat.S_ISREG(s.st_mode) or s.st_uid!=0 or s.st_nlink!=1 or UNIT.read_text()!=content:
+        if not stat.S_ISREG(s.st_mode) or s.st_uid!=0 or s.st_nlink!=1 or s.st_mode&0o022:
             raise ValueError('Existing pilot unit differs; preserve its pinned release')
+        previous=UNIT.read_text()
+        if previous!=content:upgrade_unit(content,previous)
     else:
         fd=os.open(UNIT,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o644)
         with os.fdopen(fd,'w') as f:f.write(content);f.flush();os.fsync(f.fileno())
