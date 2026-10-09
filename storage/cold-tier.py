@@ -47,6 +47,7 @@ DEFAULT = {
     'watch_original_ssd': True,
     'mirror_layout': False,
     'cached_retention_watches_only': False,
+    'intake_parents': [],
 }
 
 
@@ -551,6 +552,21 @@ def adopt_defaults(store, cfg):
             if not parent or live_path(root)!=Path(parent['backing'])/Path(root['source']).name: continue
             if not store.db.execute('SELECT 1 FROM queue WHERE source=?',(root['source'],)).fetchone():
                 queue_add(store,root['source'])
+        # Admit idle children of real SSD parents without changing the parent
+        # inode. A parent can remain real for application compatibility.
+        for raw in cfg.get('intake_parents',[]):
+            parent=absolute(raw)
+            if parent.is_symlink() or not parent.is_dir():continue
+            for child in parent.iterdir():
+                if child.is_symlink() or tier_temporary(child) or str(child) in managed_backings:continue
+                try:
+                    valid_source(child,cfg)
+                    if child.stat().st_dev==archive.stat().st_dev:continue
+                    if store.db.execute('SELECT 1 FROM queue WHERE source=?',(str(child),)).fetchone():continue
+                    if child.is_file() and database_file(child):continue
+                    if not (child.is_file() or child.is_dir()):continue
+                    queue_add(store,child)
+                except (OSError,ValueError):continue
 
 
 def tier_temporary(path):
@@ -560,7 +576,8 @@ def tier_temporary(path):
 def logical_source(store, raw):
     """Undo private SSD backing names without resolving the final data inode."""
     path=absolute(raw)
-    parents=sorted(store.get('defaults',[]),key=lambda p:len(Path(p['backing']).parts),reverse=True)
+    parents=[*store.get('defaults',[]),*[dict(source=p['public'],backing=p['backing']) for p in store.get('namespace_aliases',[])]]
+    parents=sorted(parents,key=lambda p:len(Path(p['backing']).parts),reverse=True)
     for _ in range(32):
         match=next((p for p in parents if within(path,Path(p['backing']))),None)
         if match is None:return path
@@ -572,6 +589,23 @@ def logical_source(store, raw):
 
 def mirror_path(store, archive, raw):
     return archive/'mirror'/str(logical_source(store,raw)).lstrip('/')
+
+
+def namespace_alias(store,cfg,raw,backing):
+    public,backing=absolute(raw),absolute(backing)
+    if public==backing or within(public,backing) or within(backing,public):raise ValueError('namespace alias overlaps')
+    for path in (public,backing):
+        if path.resolve()!=path or not path.is_dir() or path.stat().st_uid!=os.getuid():raise ValueError('namespace alias requires owned real directories')
+        if not any(within(path,absolute(p)) for p in cfg['source_roots']):raise ValueError('namespace alias outside source roots')
+    children=list(backing.iterdir())
+    if not children or len(children)>cfg['max_scan_entries']:raise ValueError('namespace alias entry budget')
+    for child in children:
+        peer=public/child.name
+        if not peer.exists() or peer.resolve()!=child.resolve():raise ValueError('namespace alias children differ')
+    aliases=store.get('namespace_aliases',[])
+    previous=next((p for p in aliases if p['backing']==str(backing)),None)
+    if previous and previous['public']!=str(public):raise ValueError('namespace alias already differs')
+    if not previous:aliases.append(dict(public=str(public),backing=str(backing)));store.put('namespace_aliases',aliases);store.db.commit()
 
 
 def ensure_mirror_parent(store,cfg,raw):
@@ -850,6 +884,8 @@ def recover_published(store, cfg):
         record.update(phase='complete',completed=time.time(),allocated_bytes=size,recovered=True)
         with (store.state/'moves.jsonl').open('a') as f:
             f.write(json.dumps(record)+'\n');f.flush();os.fsync(f.fileno())
+        store.db.execute("UPDATE queue SET status='complete',error='',updated=? WHERE source=? AND action IN ('move','demote','rehome')",(time.time(),str(source)))
+        store.db.commit()
         journal.unlink();flush_directory(store.state)
         print('RECOVERED', source, flush=True)
     finally: guard.close()
@@ -863,7 +899,7 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
     if excluded_unit(original,cfg): raise ValueError('migration contains protected data; deferred')
     old = restoring or demoting
     mirrored=bool(cfg.get('mirror_layout',False) and not restoring)
-    rehoming=bool(mirrored and demoting and demoting['location']=='hdd')
+    rehoming=bool(mirrored and demoting and demoting['location']=='hdd' and original.stat().st_dev==archive.stat().st_dev)
     aliases = [Path(p) for p in json.loads(old['aliases'])] if old else []
     for alias in aliases:
         if not alias.is_symlink() or alias.resolve() != original.resolve():
@@ -1398,6 +1434,7 @@ def main():
     sub.add_parser('init'); sub.add_parser('watch'); sub.add_parser('status'); sub.add_parser('drain'); sub.add_parser('route-defaults'); sub.add_parser('recover-published')
     p = sub.add_parser('discover'); p.add_argument('paths', nargs='+')
     p = sub.add_parser('defaults'); p.add_argument('paths', nargs='+')
+    p = sub.add_parser('namespace-alias');p.add_argument('public');p.add_argument('backing')
     p = sub.add_parser('queue'); p.add_argument('--action',choices=('move','default','partition','rehome'),default='move');p.add_argument('paths', nargs='+')
     p = sub.add_parser('move'); p.add_argument('path')
     p = sub.add_parser('restore'); p.add_argument('root')
@@ -1430,6 +1467,8 @@ def main():
         if not source.is_symlink() or source.resolve() != target or not target.exists(): raise ValueError('existing source link must point exactly to the target')
         if target.stat().st_dev != mount_ready(cfg).stat().st_dev: raise ValueError('target must be on configured HDD')
         print(store.register(source, target))
+    elif args.command=='namespace-alias':
+        with lock(store.state/'move.lock'):namespace_alias(store,cfg,args.public,args.backing)
     elif args.command == 'queue':
         for path in args.paths:
             if args.action in ('partition','rehome'):
