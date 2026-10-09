@@ -42,6 +42,7 @@ DEFAULT = {
     'ssd_reserve_bytes': 10 * 1024**3,
     'automatic_promotion': True, 'automatic_demotion': True,
     'block_cached_mounts': [],
+    'immutable_hardlink_scopes': [],
 }
 
 
@@ -273,9 +274,9 @@ class ReadBudget:
         finally: os.close(fd)
 
 
-def inventory(path, limit):
+def inventory(path, limit, *, detached=None):
     """No-follow manifest, retaining metadata needed to detect concurrent changes."""
-    result = {}; pending = [(path, '.')]; size = 0; hardlinks = {}
+    result = {}; pending = [(path, '.')]; size = 0; hardlinks = {}; seen = set()
     device = path.lstat().st_dev
     while pending:
         p, rel = pending.pop(); info = p.lstat()
@@ -286,19 +287,30 @@ def inventory(path, limit):
         if kind not in (stat.S_IFDIR, stat.S_IFREG, stat.S_IFLNK): raise ValueError('socket/device/FIFO; migration deferred')
         result[rel] = (info.st_mode, info.st_size if stat.S_ISREG(info.st_mode) else 0,
                        info.st_mtime_ns, info.st_ctime_ns, os.readlink(p) if stat.S_ISLNK(info.st_mode) else None)
-        size += info.st_blocks * 512
+        identity = (info.st_dev, info.st_ino)
+        if identity not in seen:
+            size += info.st_blocks * 512; seen.add(identity)
         if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
-            identity = (info.st_dev, info.st_ino)
-            count, total = hardlinks.get(identity, (0, info.st_nlink))
-            hardlinks[identity] = (count+1, total)
+            count, total, names = hardlinks.get(identity, (0, info.st_nlink, []))
+            hardlinks[identity] = (count+1, total, [*names, rel])
         if stat.S_ISDIR(info.st_mode):
             with os.scandir(p) as it:
                 for entry in it:
                     if len(pending) + len(result) >= limit: raise ValueError('manifest entry budget exceeded')
                     pending.append((Path(entry.path), entry.name if rel == '.' else rel + '/' + entry.name))
-    if any(count != total for count,total in hardlinks.values()):
+    external = {identity: (count,total,names) for identity,(count,total,names) in hardlinks.items() if count != total}
+    if external and detached is None:
         raise ValueError('hard links extend outside migration unit; keep shared inodes together')
+    if detached is not None:
+        detached.update(external)
     return result, size
+
+
+def immutable_scope(path, cfg):
+    scopes = cfg.get('immutable_hardlink_scopes', [])
+    if not isinstance(scopes,list) or any(not isinstance(p,str) or not Path(p).is_absolute() or Path(p)==Path('/') for p in scopes):
+        raise ValueError('immutable hardlink scopes must be explicit absolute artifact paths')
+    return any(within(path, absolute(p)) for p in scopes)
 
 
 def references(paths, strict=False):
@@ -323,7 +335,13 @@ def references(paths, strict=False):
             except PermissionError: denied = True
         for name in ('cmdline', 'environ', 'maps'):
             try:
-                with (proc / name).open('rb') as f: values.append(f.read(2097152).decode('utf8', 'replace'))
+                with (proc / name).open('rb') as f: raw = f.read(2097152).decode('utf8', 'replace')
+                if name == 'environ':
+                    # Lookup paths describe future opens through the preserved
+                    # namespace; they do not hold an inode or make a tree busy.
+                    lookup = {'PATH','MANPATH','INFOPATH','LD_LIBRARY_PATH','PKG_CONFIG_PATH','CMAKE_PREFIX_PATH'}
+                    raw = '\0'.join(v for v in raw.split('\0') if v.partition('=')[0] not in lookup)
+                values.append(raw)
             except FileNotFoundError: pass
             except PermissionError: denied = True
         try:
@@ -614,7 +632,8 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
     for p in (original, source):
         if p.lstat().st_uid != os.getuid(): raise ValueError('migration requires operator-owned paths')
     if references([original, source, *aliases]): raise ValueError('live process references; deferred')
-    before, size = inventory(original, cfg['max_scan_entries'])
+    detached = {} if immutable_scope(original,cfg) else None
+    before, size = inventory(original, cfg['max_scan_entries'], detached=detached)
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if os.path.lexists(destination): raise ValueError('staging destination exists')
     reserve = cfg['ssd_reserve_bytes'] if restoring else 1024**3
@@ -622,12 +641,18 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
     # Read/copy verification must not overflow its own mutation guard.
     guard = Inotify(cfg['max_watches'],mask=MODIFY|ATTRIB|CREATE|DELETE|MOVED_FROM|MOVED_TO|DELETE_SELF|MOVE_SELF)
     guard.tree(original, 'move')
+    # Directory watches cannot see modifications through an external alias.
+    # Watch shared immutable files themselves while making independent copies.
+    for _,_,names in (detached or {}).values():
+        guard.add(original if names[0]=='.' else original/names[0], 'move')
     journal = store.state / 'operation.json'
     if journal.exists(): raise ValueError('unfinished operation; inspect operation.json before another move')
     staged = source.with_name('.' + source.name + '.qq-tier-original')
     if os.path.lexists(staged): raise ValueError('original staging path exists')
     record = {'source': str(source), 'original': str(original), 'destination': str(destination),
               'staged': str(staged), 'restore': bool(restoring), 'phase': 'copying', 'started': time.time()}
+    record['detached_immutable_links'] = [dict(device=dev,inode=ino,inside=count,total=total,paths=names)
+                                         for (dev,ino),(count,total,names) in (detached or {}).items()]
     atomic_json(journal, record)
     published = False
     try:
@@ -651,9 +676,10 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
             a = original if rel == '.' else original / rel
             b = destination if rel == '.' else destination / rel
             if stat.S_ISREG(meta[0]) and budget.digest(a) != budget.digest(b): raise ValueError('checksum mismatch')
-        after, _ = inventory(original, cfg['max_scan_entries'])
+        after_links = {} if detached is not None else None
+        after, _ = inventory(original, cfg['max_scan_entries'], detached=after_links)
         copied, _ = inventory(destination, cfg['max_scan_entries'])
-        if before != after: raise ValueError('source changed during migration')
+        if before != after or detached != after_links: raise ValueError('source changed during migration')
         def matches(rel, meta):
             actual = copied[rel]
             if stat.S_ISLNK(meta[0]):
