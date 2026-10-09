@@ -456,6 +456,20 @@ m.watch(m.Store(sys.argv[3]),c)
                 self.assertEqual(child.pid in m.references([source]),expected)
             finally:
                 child.terminate();child.wait(timeout=5);child.stdin.close();child.stdout.close()
+    def test_original_ssd_watches_can_be_disabled_without_losing_hdd_or_promoted_coverage(self):
+        self.cfg['watch_original_ssd']=False;self.cfg['max_watches']=3
+        original=self.home/'legacy';original.mkdir();(original/'data').write_text('legacy')
+        old=self.store.register(original,self.archive/'unused','ssd',hot=original)
+        target=self.archive/'data';target.mkdir();public=self.home/'data';public.symlink_to(target)
+        cold=self.store.register(public,target)
+        hot=Path(self.cfg['hot_storage'])/'promoted';hot.mkdir(parents=True)
+        promoted=self.home/'promoted';promoted.symlink_to(hot)
+        warm=self.store.register(promoted,self.archive/'previous','ssd',hot=hot)
+        with self.running_watch():
+            self.await_coverage(cold);self.await_coverage(warm)
+            self.assertFalse(self.store.root(old)['coverage'])
+            self.assertEqual(self.store.root(old)['since'],0)
+            self.assertIn('migration guard remains active',self.store.root(old)['error'])
     def test_protected_descendant_prevents_entire_registered_tree_migration(self):
         source=self.home/'mixed';source.mkdir();protected=source/'paid';protected.mkdir()
         (protected/'source').write_text('preserve')

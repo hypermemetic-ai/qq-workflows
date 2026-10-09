@@ -133,6 +133,10 @@ code and ledger use their physical SSD paths, so the control plane survives an
 absent HDD mount.
 HDD roots receive watch admission first. Failed partial trees relinquish their
 watches so they cannot starve smaller trees of complete coverage.
+For a native-cache rollout, `watch_original_ssd: false` avoids recording the
+mover's reads from legacy SSD data. HDD data and explicit SSD promotions still
+receive access watches. Original SSD units keep their separate mutation guards
+during migration and cannot accumulate a retention clock while unobserved.
 New HDD roots can reclaim watch capacity from previously admitted SSD roots;
 those SSD quiet clocks reset and incomplete roots remain ineligible for pruning.
 Configured exclusions protect entire relocation units that contain an excluded
