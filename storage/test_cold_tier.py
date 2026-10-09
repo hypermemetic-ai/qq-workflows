@@ -325,6 +325,23 @@ class ColdTierTests(unittest.TestCase):
             watcher.tree(path,'root');self.assertGreaterEqual(len(calls),2)
             self.assertEqual(len(watcher.paths),151)
         finally:watcher.close()
+    def test_watch_rebuild_drains_removal_notifications_and_retains_other_root(self):
+        large=self.home/'large';large.mkdir()
+        for n in range(200):(large/str(n)).mkdir()
+        other=self.home/'other';other.mkdir();(other/'data').write_text('keep')
+        watcher=m.Inotify(250);watcher.tree(large,'large');watcher.tree(other,'other');watcher.events()
+        drains=[]
+        def progress():
+            events=watcher.events();drains.append(len(events))
+            self.assertFalse(any(mask&m.OVERFLOW for _,_,mask in events))
+        watcher.on_progress=progress
+        try:
+            watcher.remove_root('large')
+            self.assertGreaterEqual(len(drains),3);self.assertNotIn('large',watcher.by_root)
+            self.assertIn(other,watcher.by_path);(other/'data').read_text()
+            self.assertTrue(any(key=='other' and mask&m.ACCESS for key,_,mask in watcher.events()))
+            watcher.tree(large,'large');self.assertEqual(len(watcher.paths),202)
+        finally:watcher.close()
     def test_dynamic_subtree_admission_keeps_other_retention_clocks(self):
         key,_,target,now=self.root();watcher=m.Inotify(50)
         try:
