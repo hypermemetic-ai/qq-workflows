@@ -598,6 +598,44 @@ m.watch(m.Store(sys.argv[3]),c)
         with patch.object(m,'references',return_value=[42]):
             with self.assertRaisesRegex(ValueError,'live process'):m.migrate(self.store,self.cfg,source,demoting=row)
         self.assertEqual(source.resolve(),target);self.assertTrue(target.is_dir());self.assertFalse(target.is_symlink())
+    def test_verified_legacy_backing_uses_public_hierarchy_without_replacing_real_parent(self):
+        public=self.home/'share';public.mkdir();backing=self.home/'.share-ssd';backing.mkdir()
+        (backing/'app').mkdir();(backing/'app/data').write_text('keep');(public/'app').symlink_to(backing/'app')
+        # A busy application can keep its real parent and inode via a backlink.
+        (public/'pinned').mkdir();(backing/'pinned').symlink_to(public/'pinned')
+        m.namespace_alias(self.store,self.cfg,public,backing);self.cfg['mirror_layout']=True
+        self.assertEqual(m.logical_source(self.store,backing/'app'),public/'app')
+        with patch.object(m,'references',return_value=[]):m.migrate(self.store,self.cfg,backing/'app')
+        self.assertEqual((public/'app/data').read_text(),'keep');self.assertFalse(public.is_symlink())
+        self.assertEqual((public/'app').resolve(),m.mirror_path(self.store,self.archive,public/'app'))
+    def test_unrelated_legacy_backing_cannot_rewrite_public_namespace(self):
+        public=self.home/'share';public.mkdir();backing=self.home/'.other';backing.mkdir()
+        (backing/'data').write_text('unique');(public/'data').write_text('different')
+        with self.assertRaisesRegex(ValueError,'children differ'):m.namespace_alias(self.store,self.cfg,public,backing)
+        self.assertEqual(self.store.get('namespace_aliases',[]),[])
+    def test_hdd_relocation_to_another_filesystem_keeps_external_hardlink_guard(self):
+        target=self.archive/'shared';target.mkdir();(target/'data').write_text('shared')
+        os.link(target/'data',self.archive/'external')
+        source=self.home/'shared';source.symlink_to(target);key=self.store.register(source,target)
+        self.cfg['mirror_layout']=True
+        with tempfile.TemporaryDirectory(dir='/dev/shm') as d:
+            if Path(d).stat().st_dev==target.stat().st_dev:self.skipTest('separate destination filesystem unavailable')
+            with patch.object(m,'mount_ready',return_value=Path(d)),patch.object(m,'references',return_value=[]):
+                with self.assertRaisesRegex(ValueError,'hard links extend outside'):
+                    m.migrate(self.store,self.cfg,source,demoting=self.store.root(key))
+        self.assertEqual(source.resolve(),target);self.assertEqual((self.archive/'external').read_text(),'shared')
+    def test_real_parent_intake_queues_children_but_preserves_database_family_and_controls(self):
+        parent=self.home/'real';parent.mkdir();(parent/'idle').mkdir();(parent/'idle/data').write_text('keep')
+        (parent/'application.sqlite').write_text('database');(parent/'application.sqlite-wal').write_text('sidecar')
+        (parent/'protected').mkdir();self.cfg['excluded'].append(str(parent/'protected'))
+        (parent/'managed').mkdir()
+        with patch.object(m,'references',return_value=[]):m.bridge_parent(self.store,self.cfg,parent/'managed')
+        self.cfg['intake_parents']=[str(parent)]
+        with tempfile.TemporaryDirectory(dir='/dev/shm') as d:
+            if Path(d).stat().st_dev==parent.stat().st_dev:self.skipTest('separate destination filesystem unavailable')
+            with patch.object(m,'mount_ready',return_value=Path(d)):m.adopt_defaults(self.store,self.cfg)
+        self.assertEqual([r['source'] for r in self.store.db.execute('SELECT * FROM queue')],[str(parent/'idle')])
+        self.assertFalse(parent.is_symlink());self.assertEqual((parent/'application.sqlite').read_text(),'database')
     def test_nested_mirror_route_recovers_interruption_immediately_after_directory_exchange(self):
         project=self.mirrored_project();self.cfg['mirror_layout']=True
         # Publish the outer default, then interrupt the nested route at the first

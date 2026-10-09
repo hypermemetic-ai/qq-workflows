@@ -77,6 +77,15 @@ SMQ handles demand for ordinary data without a second recursive watch tree.
 Unique data without a scope has no retention coverage and remains protected.
 Scope or ancestor inode changes reset the observation clock before deletion;
 unrelated new directories do not expand the watch budget.
+
+`intake_parents` admits idle file or folder children of real SSD directories;
+the parent stays in place and database sidecar files remain grouped. Excluded
+control and paid-work paths remain excluded. `namespace-alias PUBLIC BACKING`
+records an earlier inverse bridge only when all backing children resolve to the
+same public objects, so its private path spelling does not enter the HDD layout.
+This changes namespace metadata, preserving both real directories and open
+inodes. Cross-filesystem HDD relocation keeps the ordinary shared-inode guard;
+only rehoming within the same HDD filesystem can retain arbitrary hard links.
 For explicitly reviewed immutable SDK/build-cache directories, the optional
 `immutable_hardlink_scopes` policy permits copying shared files to independent HDD
 inodes. External aliases remain untouched; internal hard links remain shared.
