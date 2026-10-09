@@ -194,6 +194,31 @@ m.watch(m.Store(sys.argv[3]),c)
         self.assertEqual(self.store.root(str(source/'idle'))['location'],'hdd')
         self.assertEqual(self.store.root(str(source/'busy'))['location'],'ssd')
         self.assertEqual((Path(parent['backing'])/'busy/database-wal').read_text(),'busy wal')
+    def test_nested_parent_cutovers_run_in_order_and_keep_public_aliases_usable(self):
+        parent=self.home/'app';parent.mkdir();nested=parent/'state';nested.mkdir();deep=nested/'history';deep.mkdir()
+        (deep/'data').write_text('preserve')
+        for p in (deep,nested,parent):m.queue_add(self.store,p,'default')
+        with patch.object(m,'references',return_value=[]):m.drain(self.store,self.cfg)
+        self.assertEqual((deep/'data').read_text(),'preserve')
+        (deep/'new').write_text('new')
+        row=self.store.root(str(deep))
+        self.assertEqual(row['location'],'hdd');self.assertEqual((Path(row['target'])/'new').read_text(),'new')
+    def test_busy_root_file_partition_defers_without_a_false_recovery_journal(self):
+        source=self.home/'app';source.mkdir();(source/'open.log').write_text('live')
+        key=self.store.register(source,self.archive/'unused','ssd',hot=source)
+        with patch.object(m,'references',return_value=[123]):
+            with self.assertRaisesRegex(ValueError,'active files'):m.partition_root(self.store,self.cfg,key)
+        self.assertFalse((self.store.state/'partition-operation.json').exists());self.assertFalse(source.is_symlink())
+    def test_database_at_root_remains_a_directory_unit_and_keeps_sidecars_together(self):
+        source=self.home/'app';source.mkdir();(source/'data.sqlite').write_bytes(b'SQLite format 3\0')
+        (source/'data.sqlite-wal').write_text('uncheckpointed transactions')
+        key=self.store.register(source,self.archive/'unused','ssd',hot=source)
+        with patch.object(m,'references',return_value=[]):
+            with self.assertRaisesRegex(ValueError,'database and sidecars'):m.partition_root(self.store,self.cfg,key)
+            with self.assertRaisesRegex(ValueError,'database and sidecars'):m.migrate(self.store,self.cfg,source/'data.sqlite')
+            m.migrate(self.store,self.cfg,source,demoting=self.store.root(key))
+        self.assertEqual((source/'data.sqlite-wal').read_text(),'uncheckpointed transactions')
+        self.assertFalse((self.store.state/'partition-operation.json').exists())
     def test_native_default_route_preserves_old_open_handles_and_new_writes(self):
         source = self.home/'cache'; source.mkdir(); (source/'old').mkdir()
         (source/'old/data').write_text('keep')

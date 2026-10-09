@@ -89,6 +89,11 @@ qq-cold-tier queue --action partition ROOT_ID
 
 The worker releases its transaction lock between units, refreshes a queued
 unit's state before executing it, and preserves any interrupted-copy journal.
+Nested parent requests execute from parent to child and follow recorded public
+aliases. Root database files and sidecars must relocate together as a directory;
+they cannot be split into separate migration units. A busy parent that defers
+before any namespace exchange leaves its original intact and no false recovery
+journal. Git administrative metadata remains a single unit.
 
 SSD promotion requires both repeated reads (default 120 per rolling pair of hourly
 buckets) and a recent matched task measurement showing at least 50 ms and 20%
