@@ -175,6 +175,11 @@ and 20,000 files. It leaves working trees, uncommitted changes, live repositorie
 and running applications untouched. Only the fixed system Git binary runs;
 hooks, fsmonitor, user Git configuration and inherited alternate object stores
 are excluded. A changing source HEAD aborts the pilot without modifying it.
+Ownership exceptions apply only to pilot subprocesses: a private configuration
+file in the disposable filesystem accepts the exact source and source `.git`
+paths, including clone's upload-pack child. Persistent root/operator Git settings
+are untouched, and no wildcard exception is added. A regression uses Git's own
+foreign-owner test mode to exercise both processes without sudo.
 
 Matched Git history and source searches run on HDD, then on the warmed cache.
 File-specific advisory RAM eviction applies only to snapshot files before each

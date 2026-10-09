@@ -49,6 +49,18 @@ class GitPilot(unittest.TestCase):
             self.work.prepare();result=self.work.sample()
         self.assertGreater(result['source_search']['output_bytes'],0)
 
+    def test_foreign_ownership_snapshot_clone_keeps_configuration_unchanged(self):
+        # Git's own test switch exercises the root-versus-operator ownership
+        # check in both the client and the actual upload-pack child without sudo.
+        original_run=pilot.subprocess.run
+        original_config=(self.source/'.git/config').read_bytes()
+        def foreign_owner(command,**kwargs):
+            kwargs['env']={**kwargs['env'],'GIT_TEST_ASSUME_DIFFERENT_OWNER':'1'}
+            return original_run(command,**kwargs)
+        with patch.object(pilot.subprocess,'run',side_effect=foreign_owner):
+            self.work.prepare();self.work.sample()
+        self.assertEqual((self.source/'.git/config').read_bytes(),original_config)
+
     def test_changed_source_head_aborts_without_modifying_live_data(self):
         original=self.command('rev-parse','HEAD');head=self.work.head
         def changed(directory):
