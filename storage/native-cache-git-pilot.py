@@ -26,6 +26,7 @@ class GitWorkload:
         self.mountpoint = Path(mountpoint)
         self.source = Path(source).resolve(strict=True)
         self.snapshot = self.mountpoint/'application.git'
+        self.config = self.mountpoint/'git-pilot.config'
         self.uid = operator_uid
         self.expected = {}
         self.report = {'workload': 'Git history and source search', 'source': str(self.source),
@@ -37,7 +38,7 @@ class GitWorkload:
         # A fixed system binary and configuration prevent hooks, fsmonitor,
         # pagers, inherited alternate object directories and user shell commands.
         env = {'PATH':'/usr/bin:/bin', 'HOME':str(self.mountpoint), 'LC_ALL':'C',
-                'GIT_CONFIG_NOSYSTEM':'1', 'GIT_CONFIG_GLOBAL':'/dev/null',
+                'GIT_CONFIG_NOSYSTEM':'1', 'GIT_CONFIG_GLOBAL':str(self.config),
                 'GIT_TERMINAL_PROMPT':'0', 'GIT_PAGER':'cat'}
         command = [GIT, '--no-pager', '--no-optional-locks', '-c', 'safe.directory='+str(directory),
                 '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',
@@ -73,6 +74,17 @@ class GitWorkload:
         if self.uid<=0 or self.source.stat().st_uid!=self.uid:
             raise ValueError('Git pilot source must belong to the operator')
         if os.path.lexists(self.snapshot):raise ValueError('Snapshot destination already exists')
+        # Clone drops command-line Git configuration before running upload-pack.
+        # Its repository identity is source/.git, not the client's source path.
+        # This private, per-process global-config override reaches both processes
+        # without changing any persistent root/operator Git configuration.
+        def quote(value):
+            return '"'+str(value).replace('\\','\\\\').replace('"','\\"').replace('\n','\\n').replace('\t','\\t')+'"'
+        content='[safe]\n'+''.join('\tdirectory = '+quote(p)+'\n' for p in (self.source,self.source/'.git'))
+        content+='[core]\n\tfsmonitor = false\n\thooksPath = /dev/null\n[pack]\n\tthreads = 1\n\twindowMemory = 16m\n\twindow = 0\n'
+        fd=os.open(self.config,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+        with os.fdopen(fd,'w') as f:
+            f.write(content);f.flush();os.fsync(f.fileno())
         before = self.head(self.source)
         counts = dict(line.split(': ',1) for line in self.git(self.source,'count-objects','-v').decode().splitlines())
         if (int(counts['size'])+int(counts['size-pack']))*1024>MAX_BYTES:
