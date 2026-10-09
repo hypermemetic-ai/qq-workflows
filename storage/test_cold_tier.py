@@ -2,6 +2,7 @@ import importlib.util
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -171,12 +172,47 @@ class ColdTierTests(unittest.TestCase):
             m.partition_root(self.store,self.cfg,root['id'])
             self.assertEqual(os.read(fd,50),b'open data')
             physical=Path(root['hot'])
+            managed={p['backing'] for p in self.store.get('defaults')}
+            self.assertFalse(any(r['hot'] in managed for r in self.store.roots()))
+            self.assertFalse((source/'.mixed-qq-ssd').exists())
             idle=self.store.root(str(physical/'idle'))
             self.assertEqual(idle['location'],'ssd')
             with patch.object(m,'references',return_value=[]):m.migrate(self.store,self.cfg,physical/'idle',demoting=idle)
             self.assertEqual((source/'mixed/idle/data').read_text(),'idle data')
             self.assertEqual((source/'mixed/busy/data').read_text(),'open data')
         finally:os.close(fd)
+    def test_previously_admitted_backing_is_retired_without_touching_its_files(self):
+        source=self.home/'cache';source.mkdir();(source/'data').mkdir()
+        m.bridge_parent(self.store,self.cfg,source);m.adopt_defaults(self.store,self.cfg)
+        root=self.store.root(str(source/'data'));m.partition_root(self.store,self.cfg,root['id'])
+        backing=Path(self.store.get('defaults')[-1]['backing']);(backing/'keep').write_text('keep')
+        proxy=source/backing.name;proxy.symlink_to(backing)
+        duplicate=self.store.register(proxy,self.archive/'unused','ssd',hot=backing)
+        m.adopt_defaults(self.store,self.cfg)
+        self.assertEqual((backing/'keep').read_text(),'keep')
+        self.assertIsNone(self.store.db.execute('SELECT 1 FROM roots WHERE id=?',(duplicate,)).fetchone())
+    def test_late_parent_writes_are_admitted_while_migration_lock_is_held(self):
+        source=self.home/'cache';source.mkdir();parent=m.bridge_parent(self.store,self.cfg,source)
+        (Path(parent['backing'])/'late').write_text('keep')
+        code="""import importlib.util,json,sys
+from pathlib import Path
+s=importlib.util.spec_from_file_location('tier',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+c=json.loads(sys.argv[2]);m.mount_ready=lambda cfg:Path(cfg['archive'])
+m.watch(m.Store(sys.argv[3]),c)
+"""
+        with m.lock(self.store.state/'move.lock'):
+            child=subprocess.Popen([sys.executable,'-c',code,str(Path(m.__file__).resolve()),m.json.dumps(self.cfg),str(self.store.state)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            try:
+                deadline=time.monotonic()+5
+                while time.monotonic()<deadline:
+                    if self.store.db.execute('SELECT 1 FROM roots WHERE source=?',(str(source/'late'),)).fetchone():break
+                    time.sleep(.05)
+                self.assertIsNotNone(self.store.db.execute('SELECT 1 FROM roots WHERE source=?',(str(source/'late'),)).fetchone())
+                self.assertEqual((source/'late').read_text(),'keep')
+            finally:
+                child.terminate()
+                try:child.wait(timeout=5)
+                except subprocess.TimeoutExpired:child.kill();child.wait()
     def test_migration_verifies_and_preserves_links(self):
         source = self.home/'artifact'; source.mkdir(); (source/'data').write_bytes(b'x'*1024)
         (source/'link').symlink_to('data'); os.link(source/'data',source/'hard')

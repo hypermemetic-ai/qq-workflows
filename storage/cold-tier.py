@@ -397,6 +397,20 @@ def adopt_defaults(store, cfg):
     """Admit newly created children and discover legacy SSD children of every size."""
     archive = mount_ready(cfg)
     parents = store.get('defaults', [])
+    managed_backings = {str(Path(p['backing'])) for p in parents}
+    # Partitioning creates another private backing beneath an existing default
+    # parent. It is machinery, not a second data root: duplicate inode watches
+    # otherwise steal ownership from the real child roots.
+    for root in store.roots():
+        if root['location'] == 'ssd' and root['hot'] in managed_backings and not json.loads(root['aliases']):
+            if store.db.execute('SELECT 1 FROM scopes WHERE root=?', (root['id'],)).fetchone():
+                raise ValueError('managed backing has a regeneration scope; review required')
+            if Path(root['source']).resolve() != Path(root['hot']):
+                raise ValueError('managed backing tracking changed; review required')
+            for table,column in (('activity','root'),('latency','root'),('roots','id')):
+                store.db.execute(f'DELETE FROM {table} WHERE {column}=?',(root['id'],))
+            store.db.execute('DELETE FROM queue WHERE source=?',(root['source'],))
+    store.db.commit()
     # Existing default parents can still be on the previous HDD filesystem
     # after the migration destination moves to a native cached volume.
     hdd_devices = {archive.stat().st_dev}
@@ -426,7 +440,7 @@ def adopt_defaults(store, cfg):
         backings = [backing, *[Path(p) for p in parent.get('previous', [])]]
         for former in backings:
             for child in former.iterdir():
-                if tier_temporary(child): continue
+                if tier_temporary(child) or str(child) in managed_backings: continue
                 proxy = hdd / child.name
                 if not os.path.lexists(proxy): proxy.symlink_to(child)
                 elif not proxy.is_symlink() and not child.is_symlink():
@@ -439,6 +453,7 @@ def adopt_defaults(store, cfg):
             public = source / child.name
             if str(public) in existing: continue
             resolved = child.resolve()
+            if str(resolved) in managed_backings: continue
             if any(within(resolved, absolute(p).resolve()) for p in cfg['excluded']): continue
             if child.is_symlink():
                 # Original symlinks, sockets and indirect links retain their semantics.
@@ -886,9 +901,13 @@ def watch(store, cfg):
             while True:
                 if time.time() >= next_adopt:
                     try:
-                        with lock(store.state / 'move.lock'):
-                            recover_default_route(store); adopt_defaults(store, cfg)
-                    except BlockingIOError: pass
+                        if (store.state/'default-route-operation.json').exists():
+                            try:
+                                with lock(store.state / 'move.lock'): recover_default_route(store)
+                            except BlockingIOError: pass
+                        # Copies may take hours; late parent-FD writes must stay
+                        # discoverable during them. Internal staging is excluded.
+                        adopt_defaults(store, cfg); store.put('defaults_error',None);store.db.commit()
                     except (OSError, ValueError) as e: store.put('defaults_error', str(e)[:200]); store.db.commit()
                     next_adopt = time.time() + 60
                 # HDD roots can be retained/pruned; prioritize their complete
