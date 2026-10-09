@@ -43,6 +43,7 @@ DEFAULT = {
     'automatic_promotion': True, 'automatic_demotion': True,
     'block_cached_mounts': [],
     'immutable_hardlink_scopes': [],
+    'automatic_migration': True,
 }
 
 
@@ -494,6 +495,14 @@ def adopt_defaults(store, cfg):
             elif child.is_dir() or child.is_file():
                 store.register(public, child, 'hdd')
             existing.add(str(public))
+    if cfg.get('automatic_migration', True):
+        for root in store.roots():
+            if root['location'] != 'ssd' or excluded_unit(live_path(root),cfg): continue
+            parent=next((p for p in parents if Path(root['source']).parent==Path(p['source'])),None)
+            # Explicit promotions have a separate hot path; preserve them.
+            if not parent or live_path(root)!=Path(parent['backing'])/Path(root['source']).name: continue
+            if not store.db.execute('SELECT 1 FROM queue WHERE source=?',(root['source'],)).fetchone():
+                queue_add(store,root['source'])
 
 
 def tier_temporary(path):
@@ -1021,18 +1030,35 @@ def drain(store, cfg):
             for row in decisions(store, cfg):
                 if row['decision'] == 'promote' and cfg['automatic_promotion']: queue_add(store, row['source'], 'restore')
                 if row['decision'] == 'demote' and cfg['automatic_demotion']: queue_add(store, row['source'], 'demote')
-        for job in list(store.db.execute("SELECT * FROM queue WHERE status IN ('pending','deferred') ORDER BY updated")):
+        jobs=list(store.db.execute("SELECT * FROM queue WHERE status IN ('pending','deferred') ORDER BY updated"))
+    for job in jobs:
+        # Release between units so newly requested parent cutovers and daily GC
+        # are not blocked for the duration of an entire large rollout.
+        with lock(store.state / 'move.lock'):
+            if store.state.joinpath('operation.json').exists(): raise ValueError('unfinished operation; inspect recovery journal')
+            current=store.db.execute('SELECT * FROM queue WHERE source=?',(job['source'],)).fetchone()
+            if not current or current['status'] not in ('pending','deferred') or current['action']!=job['action']: continue
             source = Path(job['source'])
             store.db.execute('UPDATE queue SET status=?,updated=? WHERE source=?', ('running', time.time(), str(source))); store.db.commit()
             try:
-                if job['action'] == 'restore': migrate(store, cfg, source, restoring=store.root(str(source)))
+                if job['action'] == 'default':
+                    parent=next((p for p in store.get('defaults',[]) if p['source']==str(source)),None)
+                    if parent:
+                        if not source.is_symlink() or source.resolve()!=Path(parent['hdd']): raise ValueError('default path changed; review required')
+                    else: bridge_parent(store,cfg,source)
+                    adopt_defaults(store,cfg)
+                elif job['action'] == 'partition':
+                    root=store.root(str(source))
+                    if root['location']=='ssd': partition_root(store,cfg,root['id'])
+                elif job['action'] == 'restore': migrate(store, cfg, source, restoring=store.root(str(source)))
                 elif job['action'] == 'demote':
                     old = store.root(str(source))
                     migrate(store, cfg, source, demoting=old)
-                else:
+                elif job['action'] == 'move':
                     registered = store.db.execute('SELECT * FROM roots WHERE source=?', (str(source),)).fetchone()
                     if registered and registered['location'] == 'ssd': migrate(store, cfg, source, demoting=registered)
                     else: migrate(store, cfg, source)
+                else: raise ValueError('unknown queue action')
                 status, error = 'complete', ''
             except (OSError, ValueError, subprocess.SubprocessError) as e:
                 status, error = 'deferred', str(e)[:300]
@@ -1068,7 +1094,7 @@ def main():
     sub.add_parser('init'); sub.add_parser('watch'); sub.add_parser('status'); sub.add_parser('drain'); sub.add_parser('route-defaults')
     p = sub.add_parser('discover'); p.add_argument('paths', nargs='+')
     p = sub.add_parser('defaults'); p.add_argument('paths', nargs='+')
-    p = sub.add_parser('queue'); p.add_argument('paths', nargs='+')
+    p = sub.add_parser('queue'); p.add_argument('--action',choices=('move','default','partition'),default='move');p.add_argument('paths', nargs='+')
     p = sub.add_parser('move'); p.add_argument('path')
     p = sub.add_parser('restore'); p.add_argument('root')
     p = sub.add_parser('split'); p.add_argument('root'); p.add_argument('relative')
@@ -1102,8 +1128,10 @@ def main():
         print(store.register(source, target))
     elif args.command == 'queue':
         for path in args.paths:
+            if args.action=='partition':
+                queue_add(store,store.root(path)['source'],'partition');continue
             registered = store.db.execute('SELECT * FROM roots WHERE source=?', (str(absolute(path)),)).fetchone()
-            queue_add(store, registered['source'] if registered and registered['location']=='ssd' else valid_source(path, cfg))
+            queue_add(store, registered['source'] if registered and registered['location']=='ssd' else valid_source(path, cfg),args.action)
     elif args.command == 'drain': drain(store, cfg)
     elif args.command == 'route-defaults':
         with lock(store.state / 'move.lock'): route_defaults(store, cfg)

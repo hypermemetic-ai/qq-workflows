@@ -142,6 +142,58 @@ m.watch(m.Store(sys.argv[3]),c)
             self.assertEqual((source/'late').read_text(), 'late')
             self.assertEqual((Path(parent['backing'])/'late').read_text(), 'late')
         finally: os.close(fd)
+    def test_late_ssd_child_is_automatically_queued_and_completed_on_hdd(self):
+        source=self.home/'cache';source.mkdir();fd=os.open(source,os.O_DIRECTORY)
+        try:
+            m.bridge_parent(self.store,self.cfg,source)
+            child=os.open('late',os.O_WRONLY|os.O_CREAT,0o600,dir_fd=fd)
+            os.write(child,b'late data');os.close(child)
+            m.adopt_defaults(self.store,self.cfg)
+            queued=self.store.db.execute('SELECT * FROM queue WHERE source=?',(str(source/'late'),)).fetchone()
+            self.assertEqual(queued['status'],'pending')
+            with patch.object(m,'references',return_value=[]):m.drain(self.store,self.cfg)
+            row=self.store.root(str(source/'late'))
+            self.assertEqual(row['location'],'hdd');self.assertEqual((source/'late').read_bytes(),b'late data')
+        finally:os.close(fd)
+    def test_disabled_automatic_migration_keeps_legacy_child_unqueued(self):
+        self.cfg['automatic_migration']=False
+        source=self.home/'cache';source.mkdir();(source/'old').write_text('keep')
+        with patch.object(m,'references',return_value=[]):m.bridge_parent(self.store,self.cfg,source)
+        m.adopt_defaults(self.store,self.cfg)
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM queue').fetchone()[0],0)
+    def test_queued_parent_cutover_routes_new_children_and_migrates_old_child(self):
+        source=self.home/'cache';source.mkdir();(source/'old').write_text('old data')
+        m.queue_add(self.store,source,'default')
+        with patch.object(m,'references',return_value=[]):m.drain(self.store,self.cfg)
+        (source/'new').write_text('new data')
+        parent=self.store.get('defaults')[0]
+        self.assertEqual((Path(parent['hdd'])/'new').read_text(),'new data')
+        with patch.object(m,'references',return_value=[]):m.drain(self.store,self.cfg)
+        self.assertEqual(self.store.root(str(source/'old'))['location'],'hdd')
+        self.assertEqual((source/'old').read_text(),'old data')
+    def test_explicitly_promoted_child_is_not_automatically_returned_to_hdd(self):
+        source=self.home/'cache';source.mkdir();(source/'old').write_text('old data')
+        with patch.object(m,'references',return_value=[]):m.bridge_parent(self.store,self.cfg,source)
+        m.adopt_defaults(self.store,self.cfg);key=self.store.root(str(source/'old'))['id']
+        hot=self.home/'promoted';hot.write_text('hot data')
+        proxy=Path(self.store.get('defaults')[0]['hdd'])/'old';proxy.unlink();proxy.symlink_to(hot)
+        self.store.db.execute('UPDATE roots SET hot=? WHERE id=?',(str(hot),key))
+        self.store.db.execute('DELETE FROM queue');self.store.db.commit()
+        m.adopt_defaults(self.store,self.cfg)
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM queue').fetchone()[0],0)
+    def test_queued_partition_moves_idle_child_and_preserves_busy_database_group(self):
+        source=self.home/'mixed';source.mkdir()
+        for name in ('idle','busy'):
+            p=source/name;p.mkdir();(p/'database').write_text(name);(p/'database-wal').write_text(name+' wal')
+        key=self.store.register(source,self.archive/'unused','ssd',hot=source)
+        m.queue_add(self.store,source,'partition')
+        def refs(paths,**kwargs):return [123] if any('/busy' in str(p) for p in paths) else []
+        with patch.object(m,'references',side_effect=refs):
+            m.drain(self.store,self.cfg);m.drain(self.store,self.cfg)
+        parent=self.store.get('defaults')[0]
+        self.assertEqual(self.store.root(str(source/'idle'))['location'],'hdd')
+        self.assertEqual(self.store.root(str(source/'busy'))['location'],'ssd')
+        self.assertEqual((Path(parent['backing'])/'busy/database-wal').read_text(),'busy wal')
     def test_native_default_route_preserves_old_open_handles_and_new_writes(self):
         source = self.home/'cache'; source.mkdir(); (source/'old').mkdir()
         (source/'old/data').write_text('keep')
