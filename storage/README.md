@@ -153,4 +153,11 @@ forces an unmount or discards a dirty cache. Private results are saved to the
 physical SSD control-state directory as `native-trial.json`. No auto-start unit
 or production volume is installed by this trial.
 
+The same command recovers retained trial resources before starting a new attempt.
+Recovery validates root-owned image files and their current kernel loop/mount
+associations; diagnostic JSON fields are not used as device commands. Unexpected
+mounts, ambiguous loops or dirty cache state stop recovery without removing them.
+SQLite connections are explicitly closed before unmount, and a regression check
+inspects open file descriptors after both population and verification.
+
 Validation: `qq-job -- python3 -m unittest discover -s storage -p 'test_*.py'`.
