@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -56,6 +57,39 @@ class TrialSafety(unittest.TestCase):
             with trial.sqlite3.connect(p/'example.sqlite') as db:
                 db.execute('update evidence set value=?',('changed',));db.commit()
             with self.assertRaisesRegex(ValueError,'Committed row changed'):trial.verify(p,expected)
+
+    def test_database_handles_close_before_unmount(self):
+        with tempfile.TemporaryDirectory() as d,patch.object(trial,'DATA_MIB',1):
+            p=Path(d)
+            def handles():
+                result=[]
+                for fd in Path('/proc/self/fd').iterdir():
+                    try:
+                        target=os.readlink(fd)
+                        if target.startswith(str(p)+'/'):result.append(target)
+                    except FileNotFoundError:pass
+                return result
+            expected=trial.populate(p)
+            self.assertEqual(handles(),[],'population must release every file handle')
+            trial.verify(p,expected)
+            self.assertEqual(handles(),[],'verification must release every file handle')
+
+    def test_recovery_refuses_unexpected_host_mount(self):
+        with tempfile.TemporaryDirectory() as d:
+            t=trial.Trial('123456abcdef');t.ssd=Path(d);t.hdd=Path(d)/'absent';t.mountpoint=Path(d)/'mount'
+            found=json.dumps({'filesystems':[{'source':'/dev/sda3','target':str(t.mountpoint),'fstype':'ext4','maj:min':'8:3'}]})
+            with patch.object(trial,'private_directory'),patch.object(Path,'is_mount',return_value=True),patch.object(trial,'run',return_value=found) as command:
+                with self.assertRaisesRegex(ValueError,'does not belong'):t.recover_resources()
+            self.assertFalse(t.mounted);self.assertFalse(t.mapper)
+            self.assertEqual(command.call_args.args[0],'findmnt')
+
+    def test_recovery_refuses_other_users_image(self):
+        with tempfile.TemporaryDirectory() as d:
+            t=trial.Trial('123456abcdef');t.ssd=Path(d);t.hdd=Path(d)/'absent'
+            (Path(d)/'cache.img').write_bytes(b'not a root-created trial image')
+            with patch.object(trial,'private_directory'),patch.object(trial,'run') as command:
+                with self.assertRaisesRegex(ValueError,'Unexpected retained'):t.recover_resources()
+            command.assert_not_called()
 
     def test_dirty_cache_retains_all_images(self):
         with tempfile.TemporaryDirectory() as d:

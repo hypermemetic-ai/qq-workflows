@@ -6,6 +6,8 @@ user directory or retention policy is changed. A successful trial is not a
 production activation or a power-loss test.
 """
 import argparse
+from contextlib import closing
+import fcntl
 import hashlib
 import json
 import mmap
@@ -64,6 +66,16 @@ def private_directory(path):
     return path
 
 
+def verified_host_mounts():
+    mounts={}
+    for target,(device,expected_uuid) in EXPECTED_MOUNTS.items():
+        found=json.loads(run('findmnt','--json','--output','SOURCE,TARGET,FSTYPE,UUID','--target',target))['filesystems'][0]
+        if (found['source'],found['target'],found['fstype'],found['uuid']) != (device,target,'ext4',expected_uuid):
+            raise ValueError('Healthy host mount identity changed: '+target)
+        mounts[target]=found
+    return mounts
+
+
 def new_image(path, size):
     """Allocation never opens an existing file or accepts an arbitrary device."""
     fd = os.open(path, os.O_RDWR|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
@@ -112,7 +124,7 @@ def populate(mountpoint):
     (mountpoint/'payload.link').symlink_to('payload.bin')
     os.link(mountpoint/'payload.bin', mountpoint/'payload.hardlink')
     os.setxattr(mountpoint/'payload.bin', 'user.qq_trial', b'preserved')
-    with sqlite3.connect(mountpoint/'example.sqlite') as db:
+    with closing(sqlite3.connect(mountpoint/'example.sqlite')) as db:
         db.execute('create table evidence (id integer primary key, value text)')
         db.execute('insert into evidence values (1, ?)', ('committed trial data',)); db.commit()
     directory = os.open(mountpoint, os.O_RDONLY|os.O_DIRECTORY)
@@ -130,7 +142,7 @@ def verify(mountpoint, expected):
     if (mountpoint/'payload.bin').stat().st_ino != (mountpoint/'payload.hardlink').stat().st_ino:
         raise ValueError('Hard link changed')
     if os.getxattr(mountpoint/'payload.bin','user.qq_trial') != b'preserved': raise ValueError('xattr changed')
-    with sqlite3.connect('file:'+str(mountpoint/'example.sqlite')+'?mode=ro', uri=True) as db:
+    with closing(sqlite3.connect('file:'+str(mountpoint/'example.sqlite')+'?mode=ro', uri=True)) as db:
         if db.execute('pragma integrity_check').fetchone() != ('ok',): raise ValueError('SQLite integrity failure')
         if db.execute('select value from evidence').fetchone() != ('committed trial data',):
             raise ValueError('Committed row changed')
@@ -205,7 +217,50 @@ class Trial:
     def unmount(self):
         if self.mounted:
             # Never force/lazy-unmount, and never unmount an existing host mount.
-            run('umount',self.mountpoint);self.mounted=False;self.save('unmounted trial filesystem')
+            for attempt in range(5):
+                try:run('umount',self.mountpoint);break
+                except RuntimeError as error:
+                    if 'target is busy' not in str(error) or attempt==4:raise
+                    time.sleep(.25)
+            self.mounted=False;self.save('unmounted trial filesystem')
+
+    def recover_resources(self):
+        """Reconstruct from kernel associations, never execute saved diagnostic fields."""
+        private_directory(self.ssd)
+        if self.hdd.exists():private_directory(self.hdd)
+        for key,base in [('origin',self.hdd),('cache',self.ssd),('metadata',self.ssd)]:
+            path=base/(key+'.img')
+            if not os.path.lexists(path):continue
+            s=path.lstat()
+            if not stat.S_ISREG(s.st_mode) or s.st_uid!=0 or s.st_nlink!=1 or s.st_size!=SIZES[key+'.img']:
+                raise ValueError('Unexpected retained trial image; recovery refused: '+str(path))
+            self.images.append(path)
+            devices=json.loads(run('losetup','--json','--list','--output','NAME,BACK-FILE,DIO,OFFSET,SIZELIMIT',
+                                   '--associated',path) or '{"loopdevices":[]}')['loopdevices']
+            if not devices:continue
+            if len(devices)!=1 or devices[0].get('offset')!=0 or devices[0].get('sizelimit')!=0:
+                raise ValueError('Ambiguous or partial retained loop; recovery refused')
+            device=devices[0]['name']
+            if not re.fullmatch(r'/dev/loop[0-9]+',device):raise ValueError('Unexpected retained loop name')
+            self.loops[key]=device;self.check_loop(key,path)
+        mapper=Path('/dev/mapper')/self.name
+        if mapper.exists():
+            if len(self.loops)!=3:raise ValueError('Retained mapper without all trial loops; recovery refused')
+            expected={os.stat(p).st_rdev for p in self.loops.values()}
+            raw=run('dmsetup','deps','--noheadings',self.name)
+            actual={os.makedev(int(a),int(b)) for a,b in re.findall(r'\((\d+),\s*(\d+)\)',raw)}
+            if actual!=expected:raise ValueError('Retained mapper references unexpected devices')
+            self.status();self.mapper=True
+        if self.mountpoint.is_mount():
+            found=json.loads(run('findmnt','--json','--mountpoint',self.mountpoint,
+                                 '--output','SOURCE,TARGET,FSTYPE,MAJ:MIN'))['filesystems'][0]
+            permitted={os.stat(self.loops['origin']).st_rdev} if 'origin' in self.loops else set()
+            if self.mapper:permitted.add(mapper.stat().st_rdev)
+            major,minor=map(int,found['maj:min'].split(':'))
+            if os.makedev(major,minor) not in permitted or found['target']!=str(self.mountpoint) or found['fstype']!='ext4':
+                raise ValueError('Retained mount does not belong to trial; recovery refused')
+            self.mounted=True
+        self.report['recovery_only']=True;self.save('retained resources verified')
 
     def remove_cache(self):
         self.unmount()
@@ -214,13 +269,7 @@ class Trial:
             run('dmsetup','remove',self.name);self.mapper=False;self.save('cache detached')
 
     def execute(self):
-        mounts = {}
-        for target,(device,expected_uuid) in EXPECTED_MOUNTS.items():
-            found=json.loads(run('findmnt','--json','--output','SOURCE,TARGET,FSTYPE,UUID','--target',target))['filesystems'][0]
-            if (found['source'],found['target'],found['fstype'],found['uuid']) != (device,target,'ext4',expected_uuid):
-                raise ValueError('Healthy host mount identity changed: '+target)
-            mounts[target]=found
-        self.report['host_mounts']=mounts
+        self.report['host_mounts']=verified_host_mounts()
         if shutil.disk_usage('/').free < 10*1024**3 + sum(SIZES[n] for n in ['cache.img','metadata.img']):
             raise ValueError('Preserve at least 10 GiB free on SSD')
         if shutil.disk_usage('/srv/media-box').free < 1024**3 + SIZES['origin.img']:
@@ -290,9 +339,12 @@ class Trial:
         self.report['cleanup_complete']=not(errors or self.loops or self.images or self.mapper or self.mounted)
         self.report['cleanup_errors']=errors
         if self.report['cleanup_complete']:
-            if self.mountpoint.exists():self.mountpoint.rmdir()
-            if self.hdd.exists():self.hdd.rmdir()
-        else:self.report['success']=False
+            try:
+                if self.mountpoint.exists():self.mountpoint.rmdir()
+                if self.hdd.exists():self.hdd.rmdir()
+            except OSError as e:
+                errors.append(str(e));self.report['cleanup_complete']=False
+        if not self.report['cleanup_complete']:self.report['success']=False
         self.report['finished']=time.time();self.save('finished')
 
 
@@ -310,13 +362,14 @@ def output_path(raw, uid):
     return output
 
 
-def worker(identifier):
-    expected='qq-cache-trial-'+identifier+'.scope'
+def worker(identifier,recovery=False):
+    expected='qq-cache-trial-'+identifier+('-recovery' if recovery else '')+'.scope'
     raw=Path('/proc/self/cgroup').read_text().strip()
     if raw.split('/')[-1] != expected:
         raise ValueError('Trial worker must run inside its bounded systemd scope')
     private_directory(SSD_BASE);private_directory(SSD_BASE/identifier)
     trial=Trial(identifier)
+    can_cleanup=not recovery
     def interrupted(signum, frame):raise InterruptedError('Trial interrupted by signal '+str(signum))
     signal.signal(signal.SIGTERM,interrupted);signal.signal(signal.SIGINT,interrupted)
     signal.signal(signal.SIGALRM,interrupted);signal.alarm(180)
@@ -333,36 +386,71 @@ def worker(identifier):
             if any(setting.get(key,'max')=='max' or int(setting[key])>8*MIB for key in ['rbps','wbps']):
                 raise ValueError('Trial I/O limits were not applied for '+path)
         trial.report['verified_resource_limits']=limits
-        trial.execute()
+        if recovery:
+            trial.report['host_mounts']=verified_host_mounts()
+            trial.recover_resources();can_cleanup=True
+        else:trial.execute()
     except Exception as e:trial.report['error']=str(e)[:2000];trial.report['success']=False
     finally:
-        signal.alarm(0);trial.cleanup()
+        signal.alarm(0)
+        if can_cleanup:trial.cleanup()
+        else:
+            trial.report['cleanup_complete']=False;trial.save('recovery refused')
+    if recovery and not trial.report.get('error') and trial.report.get('cleanup_complete'):
+        trial.report['success']=True;trial.save('recovery complete')
     return 0 if trial.report['success'] else 1
 
 
 def main():
     os.umask(0o077)
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output');parser.add_argument('--worker')
+    parser.add_argument('--output');parser.add_argument('--worker');parser.add_argument('--recover',action='store_true')
     args=parser.parse_args()
     if os.geteuid()!=0:raise SystemExit('Kernel trial requires sudo; it has not run')
-    if args.worker:return worker(args.worker)
+    if args.worker:return worker(args.worker,args.recover)
     if not args.output:raise ValueError('An operator-readable report path is required')
     uid=int(os.environ.get('SUDO_UID','0'));gid=int(os.environ.get('SUDO_GID','0'))
     if uid<=0:raise ValueError('Invoke through the operator sudo command')
     output=output_path(args.output,uid)
     for name,path in TOOLS.items():
         if not path:raise ValueError('Required host tool missing: '+name)
+    verified_host_mounts()
     private_directory(SSD_BASE)
+    lock_fd=os.open(SSD_BASE/'trial.lock',os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW,0o600)
+    fcntl.flock(lock_fd,fcntl.LOCK_EX|fcntl.LOCK_NB)  # Held until the administrator command exits.
+    recovered=[]
+    candidates=list(SSD_BASE.iterdir())
+    if len(candidates)>64:raise ValueError('Trial directory budget exceeded; inspect old records')
+    for old in candidates:
+        if not re.fullmatch(r'[0-9a-f]{12}',old.name):continue
+        private_directory(old)
+        if any(os.path.lexists(p) for p in [old/'cache.img',old/'metadata.img',HDD_BASE/old.name/'origin.img']) or (old/'mount').is_mount():
+            report=run_scope(old.name,recovery=True)
+            if not report.get('success'):
+                atomic_json(output,report,uid,gid);print('Retained trial recovery failed; report:',output);return 1
+            recovered.append(old.name)
     identifier=uuid.uuid4().hex[:12];root=SSD_BASE/identifier;root.mkdir(mode=0o700)
+    report=run_scope(identifier)
+    report['recovered_previous_trials']=recovered
+    atomic_json(output,report,uid,gid)
+    print('Saved native cache trial:',output)
+    print('Integrity:', 'PASS' if report.get('success') else 'FAIL',
+          'cache hits:',report.get('cache_hits_observed'), 'cleanup:',report.get('cleanup_complete'))
+    if 'latency_ratio' in report:print('Cached / HDD mean read latency:',round(report['latency_ratio'],3))
+    return 0 if report.get('success') else 1
+
+
+def run_scope(identifier,recovery=False):
     scope=TOOLS['systemd-run']
-    command=[scope,'--quiet','--scope','--unit=qq-cache-trial-'+identifier,
+    command=[scope,'--quiet','--collect','--scope','--unit=qq-cache-trial-'+identifier+('-recovery' if recovery else ''),
              '--property=CPUQuota=10%','--property=MemoryMax=512M','--property=MemorySwapMax=0',
              '--property=TasksMax=32','--property=IOWeight=10','--property=IOAccounting=yes',
              '--property=IOReadBandwidthMax=/dev/sda 8M','--property=IOReadBandwidthMax=/dev/sdb 8M',
              '--property=IOWriteBandwidthMax=/dev/sda 8M','--property=IOWriteBandwidthMax=/dev/sdb 8M',
              '/usr/bin/python3',str(Path(__file__).resolve()),'--worker',identifier]
+    if recovery:command.append('--recover')
     result=subprocess.run(command)
+    root=SSD_BASE/identifier
     record=root/'result.json'
     report=json.loads(record.read_text()) if record.exists() else {'schema':1,'trial_id':identifier,'success':False,
             'error':'Bounded worker did not produce a result','cleanup_complete':False,'root':str(root)}
@@ -370,12 +458,7 @@ def main():
     if result.returncode or not report.get('cleanup_complete'):
         report['success']=False
         if 'error' not in report:report['error']='Worker did not finish with verified teardown; inspect retained trial resources'
-    atomic_json(output,report,uid,gid)
-    print('Saved native cache trial:',output)
-    print('Integrity:', 'PASS' if report.get('success') else 'FAIL',
-          'cache hits:',report.get('cache_hits_observed'), 'cleanup:',report.get('cleanup_complete'))
-    if 'latency_ratio' in report:print('Cached / HDD mean read latency:',round(report['latency_ratio'],3))
-    return 0 if report.get('success') else 1
+    return report
 
 
 if __name__=='__main__':
