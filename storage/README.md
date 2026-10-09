@@ -124,6 +124,20 @@ Configured exclusions protect entire relocation units that contain an excluded
 descendant, including already registered roots. Partitioning and retention scopes
 honor the same boundary.
 
+After production paths are redirected, the operator can run:
+
+```sh
+sudo ~/.local/bin/qq-cold-tier-system-prepare
+```
+
+This verifies the existing pinned volume service, adds ordering before user login
+and the operator's user manager, and reloads the unit definitions. It preserves
+the running volume and applications. The same bounded root scope records a
+read-only SSD census, including directories inaccessible to the user account,
+at the physical SSD control path `system-prepare.json`. It does not delete data,
+change partitions or operate the excluded NVMe. A failed or missing data mount
+continues to fail closed; no login failure is deliberately added.
+
 ## Native block-cache alternative
 
 The long-term simpler design is HDD-backed data with a kernel-managed SSD block

@@ -13,7 +13,7 @@ source = Path(__file__).resolve().parent
 home = Path.home()
 subprocess.run(['systemctl','--user','show-environment'],check=True,stdout=subprocess.DEVNULL)
 commit = subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()
-files=('cold-tier.py','native-cache-preflight.py','native-cache-trial.py','native-cache-git-pilot.py','native-cache-startup.py','native-cache-volume.py')
+files=('cold-tier.py','native-cache-preflight.py','native-cache-trial.py','native-cache-git-pilot.py','native-cache-startup.py','native-cache-volume.py','system-prepare.py')
 digest = hashlib.sha256(b''.join((source/name).read_bytes() for name in files)).hexdigest()
 storage = (home/'.local/share/qq-cold-tier').resolve()
 state = (home/'.local/state/qq-cold-tier').resolve()
@@ -46,6 +46,9 @@ startup.write_text('#!/bin/sh\nexec /usr/bin/python3 '+shlex.quote(str(storage/'
 volume=home/'.local/bin/qq-cold-tier-native-volume'
 volume.write_text('#!/bin/sh\nexec /usr/bin/python3 '+shlex.quote(str(storage/'current/native-cache-volume.py'))+
                  ' --output '+shlex.quote(str(state/'native-volume.json'))+' "$@"\n');volume.chmod(0o700)
+system=home/'.local/bin/qq-cold-tier-system-prepare'
+system.write_text('#!/bin/sh\nexec /usr/bin/python3 '+shlex.quote(str(storage/'current/system-prepare.py'))+
+                  ' --output '+shlex.quote(str(state/'system-prepare.json'))+' "$@"\n');system.chmod(0o700)
 subprocess.run([str(binpath),'init'],check=True)
 subprocess.run(['systemctl','--user','daemon-reload'],check=True)
 subprocess.run(['systemctl','--user','enable','--now','qq-cold-tier.service','qq-cold-tier-migrate.timer'],check=True)
