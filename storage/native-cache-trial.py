@@ -9,6 +9,7 @@ import argparse
 from contextlib import closing
 import fcntl
 import hashlib
+import importlib.util
 import json
 import mmap
 import os
@@ -169,7 +170,7 @@ def direct_reads(path, seed=17, count=256):
 
 
 class Trial:
-    def __init__(self, identifier):
+    def __init__(self, identifier, application_pilot=False):
         if not re.fullmatch(r'[0-9a-f]{12}', identifier): raise ValueError('Invalid trial ID')
         self.identifier = identifier; self.name = 'qq-cache-trial-'+identifier
         self.ssd = SSD_BASE/identifier; self.hdd = HDD_BASE/identifier
@@ -180,6 +181,15 @@ class Trial:
                        'synthetic_only':True,'power_loss_tested':False,'boot_ordering_tested':False,
                        'image_bytes':SIZES, 'checks':{}, 'phase':'preflight',
                        'benchmark_note':'Synthetic direct reads under symmetric I/O/CPU caps with existing host work; not application latency'}
+        self.application = None
+        if application_pilot:
+            spec = importlib.util.spec_from_file_location('cache_git_pilot',
+                    Path(__file__).with_name('native-cache-git-pilot.py'))
+            module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+            self.application = module.GitWorkload(self.mountpoint,
+                    Path('/home/qqp/projects/qq-workflows'), int(os.environ.get('SUDO_UID', '0')))
+            self.report.update(application_pilot=True, synthetic_only=False,
+                    benchmark_note='Read-only Git workload on a private repository snapshot under matched CPU/I/O caps; per-file RAM eviction is advisory; live application benefit and boot/power-loss behavior remain unproven')
 
     def save(self, phase):
         self.report['phase'] = phase
@@ -268,6 +278,19 @@ class Trial:
             self.status()  # Dirty cache or invalid mode fails closed.
             run('dmsetup','remove',self.name);self.mapper=False;self.save('cache detached')
 
+    def application_measure(self, phase):
+        if self.application is None:return
+        before = self.status() if self.mapper else None
+        self.application.measure(phase)
+        if before is not None:
+            self.application.report[phase]['cache_read_hit_delta'] = self.status()['read_hits']-before['read_hits']
+            if phase=='cached':
+                self.application.report['cache_benefit_supported'] = (
+                        self.application.report['benefit_observed'] and
+                        self.application.report[phase]['cache_read_hit_delta']>0)
+        self.report['application'] = self.application.report
+        self.save('application '+phase)
+
     def execute(self):
         self.report['host_mounts']=verified_host_mounts()
         if shutil.disk_usage('/').free < 10*1024**3 + sum(SIZES[n] for n in ['cache.img','metadata.img']):
@@ -284,9 +307,15 @@ class Trial:
         self.check_loop('origin',self.hdd/'origin.img')
         run('mkfs.ext4','-q','-F','-m','0','-L','qq-cache-trial','-E',
             'lazy_itable_init=0,lazy_journal_init=0,nodiscard',self.loops['origin'])
-        self.mount(self.loops['origin']);expected=populate(self.mountpoint);self.unmount()
+        self.mount(self.loops['origin']);expected=populate(self.mountpoint)
+        if self.application is not None:
+            self.application.prepare()
+            self.report['application'] = self.application.report
+            self.save('application snapshot prepared')
+        self.unmount()
         self.report['payload_sha256']=expected
         self.mount(self.loops['origin'],readonly=True)
+        self.application_measure('hdd_baseline')
         verify(self.mountpoint,expected)
         self.report['hdd_baseline']=direct_reads(self.mountpoint/'payload.bin');self.unmount()
         self.mapped();self.mount('/dev/mapper/'+self.name)
@@ -298,16 +327,19 @@ class Trial:
             time.sleep(.3)
         self.report['warmup_passes']=passes
         self.report['cached_reads']=direct_reads(self.mountpoint/'payload.bin')
+        self.application_measure('cached')
         after=self.status();self.report['cache_status']=after
         self.report['read_hit_delta']=after['read_hits']-before['read_hits']
         self.report['checks']['cached_integrity']=True
         self.remove_cache()
         self.mapped();self.mount('/dev/mapper/'+self.name);verify(self.mountpoint,expected)
+        self.application_measure('reattached')
         self.report['checks']['reattach_integrity']=True
         self.report['reattached_reads']=direct_reads(self.mountpoint/'payload.bin')
         self.remove_cache()
         # No cache device participates here: tests a clean, cache-free HDD recovery.
         self.mount(self.loops['origin'],readonly=True);verify(self.mountpoint,expected)
+        self.application_measure('hdd_without_cache')
         self.report['checks']['hdd_without_cache_integrity']=True;self.unmount()
         run('e2fsck','-f','-n',self.loops['origin'])
         self.report['checks']['filesystem_integrity']=True
@@ -362,17 +394,17 @@ def output_path(raw, uid):
     return output
 
 
-def worker(identifier,recovery=False):
+def worker(identifier,recovery=False,application_pilot=False):
     expected='qq-cache-trial-'+identifier+('-recovery' if recovery else '')+'.scope'
     raw=Path('/proc/self/cgroup').read_text().strip()
     if raw.split('/')[-1] != expected:
         raise ValueError('Trial worker must run inside its bounded systemd scope')
     private_directory(SSD_BASE);private_directory(SSD_BASE/identifier)
-    trial=Trial(identifier)
+    trial=Trial(identifier,application_pilot=application_pilot and not recovery)
     can_cleanup=not recovery
     def interrupted(signum, frame):raise InterruptedError('Trial interrupted by signal '+str(signum))
     signal.signal(signal.SIGTERM,interrupted);signal.signal(signal.SIGINT,interrupted)
-    signal.signal(signal.SIGALRM,interrupted);signal.alarm(180)
+    signal.signal(signal.SIGALRM,interrupted);signal.alarm(360 if application_pilot else 180)
     try:
         cg=Path('/sys/fs/cgroup')/raw.split('::',1)[1].lstrip('/')
         limits={name:(cg/name).read_text().strip() for name in
@@ -405,9 +437,10 @@ def main():
     os.umask(0o077)
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output');parser.add_argument('--worker');parser.add_argument('--recover',action='store_true')
+    parser.add_argument('--application-pilot',action='store_true')
     args=parser.parse_args()
     if os.geteuid()!=0:raise SystemExit('Kernel trial requires sudo; it has not run')
-    if args.worker:return worker(args.worker,args.recover)
+    if args.worker:return worker(args.worker,args.recover,args.application_pilot)
     if not args.output:raise ValueError('An operator-readable report path is required')
     uid=int(os.environ.get('SUDO_UID','0'));gid=int(os.environ.get('SUDO_GID','0'))
     if uid<=0:raise ValueError('Invoke through the operator sudo command')
@@ -430,17 +463,21 @@ def main():
                 atomic_json(output,report,uid,gid);print('Retained trial recovery failed; report:',output);return 1
             recovered.append(old.name)
     identifier=uuid.uuid4().hex[:12];root=SSD_BASE/identifier;root.mkdir(mode=0o700)
-    report=run_scope(identifier)
+    report=run_scope(identifier,application_pilot=args.application_pilot)
     report['recovered_previous_trials']=recovered
     atomic_json(output,report,uid,gid)
     print('Saved native cache trial:',output)
     print('Integrity:', 'PASS' if report.get('success') else 'FAIL',
           'cache hits:',report.get('cache_hits_observed'), 'cleanup:',report.get('cleanup_complete'))
     if 'latency_ratio' in report:print('Cached / HDD mean read latency:',round(report['latency_ratio'],3))
+    application=report.get('application',{})
+    if 'cached_to_hdd_ratio' in application:
+        print('Git workload cached / HDD latency:',round(application['cached_to_hdd_ratio'],3),
+              'cache benefit supported:',application.get('cache_benefit_supported',False))
     return 0 if report.get('success') else 1
 
 
-def run_scope(identifier,recovery=False):
+def run_scope(identifier,recovery=False,application_pilot=False):
     scope=TOOLS['systemd-run']
     command=[scope,'--quiet','--collect','--scope','--unit=qq-cache-trial-'+identifier+('-recovery' if recovery else ''),
              '--property=CPUQuota=10%','--property=MemoryMax=512M','--property=MemorySwapMax=0',
@@ -449,6 +486,7 @@ def run_scope(identifier,recovery=False):
              '--property=IOWriteBandwidthMax=/dev/sda 8M','--property=IOWriteBandwidthMax=/dev/sdb 8M',
              '/usr/bin/python3',str(Path(__file__).resolve()),'--worker',identifier]
     if recovery:command.append('--recover')
+    if application_pilot:command.append('--application-pilot')
     result=subprocess.run(command)
     root=SSD_BASE/identifier
     record=root/'result.json'
