@@ -1,4 +1,5 @@
 import importlib.util
+import contextlib
 import os
 from pathlib import Path
 import subprocess
@@ -41,6 +42,26 @@ class ColdTierTests(unittest.TestCase):
         self.store.put('heartbeat', now); self.store.db.commit()
         m.record_scope(self.store, key, 'build', 'fixture: reproduce build from lock.json', target / 'lock.json')
         return key, source, target, now
+    @contextlib.contextmanager
+    def running_watch(self):
+        code="""import importlib.util,json,sys
+from pathlib import Path
+s=importlib.util.spec_from_file_location('tier',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+c=json.loads(sys.argv[2]);m.mount_ready=lambda cfg:Path(cfg['archive'])
+m.watch(m.Store(sys.argv[3]),c)
+"""
+        child=subprocess.Popen([sys.executable,'-c',code,str(Path(m.__file__).resolve()),m.json.dumps(self.cfg),str(self.store.state)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        try:yield child
+        finally:
+            child.terminate()
+            try:child.wait(timeout=5)
+            except subprocess.TimeoutExpired:child.kill();child.wait()
+    def await_coverage(self,key):
+        deadline=time.monotonic()+10
+        while time.monotonic()<deadline:
+            if self.store.root(key)['coverage']:return
+            time.sleep(.05)
+        self.fail('watch coverage was not established')
     def test_hot_file_does_not_retain_cold_sibling_or_delete_source(self):
         key, source, target, now = self.root()
         self.store.activity(key, 'build/hot.bin', m.ACCESS, now); self.store.db.commit()
@@ -194,25 +215,27 @@ class ColdTierTests(unittest.TestCase):
     def test_late_parent_writes_are_admitted_while_migration_lock_is_held(self):
         source=self.home/'cache';source.mkdir();parent=m.bridge_parent(self.store,self.cfg,source)
         (Path(parent['backing'])/'late').write_text('keep')
-        code="""import importlib.util,json,sys
-from pathlib import Path
-s=importlib.util.spec_from_file_location('tier',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
-c=json.loads(sys.argv[2]);m.mount_ready=lambda cfg:Path(cfg['archive'])
-m.watch(m.Store(sys.argv[3]),c)
-"""
-        with m.lock(self.store.state/'move.lock'):
-            child=subprocess.Popen([sys.executable,'-c',code,str(Path(m.__file__).resolve()),m.json.dumps(self.cfg),str(self.store.state)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-            try:
-                deadline=time.monotonic()+5
-                while time.monotonic()<deadline:
-                    if self.store.db.execute('SELECT 1 FROM roots WHERE source=?',(str(source/'late'),)).fetchone():break
-                    time.sleep(.05)
-                self.assertIsNotNone(self.store.db.execute('SELECT 1 FROM roots WHERE source=?',(str(source/'late'),)).fetchone())
-                self.assertEqual((source/'late').read_text(),'keep')
-            finally:
-                child.terminate()
-                try:child.wait(timeout=5)
-                except subprocess.TimeoutExpired:child.kill();child.wait()
+        with m.lock(self.store.state/'move.lock'),self.running_watch():
+            deadline=time.monotonic()+5
+            while time.monotonic()<deadline:
+                if self.store.db.execute('SELECT 1 FROM roots WHERE source=?',(str(source/'late'),)).fetchone():break
+                time.sleep(.05)
+            self.assertIsNotNone(self.store.db.execute('SELECT 1 FROM roots WHERE source=?',(str(source/'late'),)).fetchone())
+            self.assertEqual((source/'late').read_text(),'keep')
+    def test_new_hdd_root_reclaims_watch_budget_from_already_admitted_ssd(self):
+        self.cfg['max_watches']=10
+        hot=self.home/'hot-data';hot.mkdir()
+        for n in range(9):(hot/str(n)).mkdir()
+        ssd=self.store.register(hot,self.archive/'unused','ssd',hot=hot)
+        with self.running_watch():
+            self.await_coverage(ssd)
+            cold=self.archive/'cold';cold.mkdir();(cold/'child').mkdir()
+            public=self.home/'cold';public.symlink_to(cold)
+            hdd=self.store.register(public,cold)
+            self.await_coverage(hdd)
+            self.assertEqual(self.store.root(ssd)['coverage'],0)
+            self.assertEqual(self.store.root(ssd)['since'],0)
+            self.assertTrue(hot.is_dir());self.assertTrue(cold.is_dir())
     def test_migration_verifies_and_preserves_links(self):
         source = self.home/'artifact'; source.mkdir(); (source/'data').write_bytes(b'x'*1024)
         (source/'link').symlink_to('data'); os.link(source/'data',source/'hard')
@@ -344,6 +367,23 @@ m.watch(m.Store(sys.argv[3]),c)
         os.link(source/'data',self.home/'other')
         with self.assertRaisesRegex(ValueError,'hard links extend'):m.inventory(source,100)
         self.assertEqual((source/'data').stat().st_ino,(self.home/'other').stat().st_ino)
+    def test_protected_descendant_prevents_entire_registered_tree_migration(self):
+        source=self.home/'mixed';source.mkdir();protected=source/'paid';protected.mkdir()
+        (protected/'source').write_text('preserve')
+        key=self.store.register(source,self.archive/'unused','ssd',hot=source)
+        self.cfg['excluded'].append(str(protected))
+        with patch.object(m.subprocess,'run') as run:
+            with self.assertRaisesRegex(ValueError,'protected data'):
+                m.migrate(self.store,self.cfg,source,demoting=self.store.root(key))
+            with self.assertRaisesRegex(ValueError,'protected data'):
+                m.partition_root(self.store,self.cfg,key)
+        run.assert_not_called();self.assertEqual((protected/'source').read_text(),'preserve')
+        self.assertEqual(m.decisions(self.store,self.cfg)[0]['decision'],'protected')
+    def test_regeneration_scope_containing_protected_file_cannot_be_pruned(self):
+        _,_,target,now=self.root();self.cfg['excluded'].append(str(target/'build/hot.bin'))
+        with patch.object(m,'references',return_value=[]):
+            result=m.gc(self.store,self.cfg,apply=True,now=now,barrier=lambda:None)
+        self.assertEqual(result['deleted_files'],0);self.assertTrue((target/'build/cold.bin').exists())
     def test_exchange_failure_preserves_both_copies_and_journal(self):
         source=self.home/'artifact';source.mkdir();(source/'data').write_text('keep')
         with patch.object(m,'references',return_value=[]),patch.object(m,'exchange',side_effect=OSError('failed')):

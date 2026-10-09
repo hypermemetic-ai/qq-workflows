@@ -341,9 +341,14 @@ def valid_source(source, cfg):
     resolved = source.resolve(strict=True)
     roots = [absolute(p).resolve() for p in cfg['source_roots']]
     if not any(within(resolved, r) and resolved != r for r in roots): raise ValueError('source outside configured user roots')
-    if any(within(resolved, absolute(p).resolve()) for p in cfg['excluded']): raise ValueError('excluded control/core path')
+    if excluded_unit(resolved,cfg): raise ValueError('excluded control/core path or descendant')
     if resolved != source: raise ValueError('source has a symlink ancestor')
     return source
+
+
+def excluded_unit(path,cfg):
+    resolved=Path(path).resolve()
+    return any(within(resolved,absolute(p).resolve()) or within(absolute(p).resolve(),resolved) for p in cfg['excluded'])
 
 
 def live_path(root):
@@ -524,6 +529,7 @@ def route_defaults(store, cfg):
 def partition_root(store, cfg, key):
     """Keep existing inodes while admitting a mixed SSD root's children separately."""
     root = store.root(key); original = live_path(root)
+    if excluded_unit(original,cfg): raise ValueError('partition contains protected data; deferred')
     if root['location'] != 'ssd' or not original.is_dir() or original.is_symlink() or json.loads(root['aliases']):
         raise ValueError('partition requires an original SSD directory')
     if store.db.execute('SELECT 1 FROM scopes WHERE root=?', (root['id'],)).fetchone():
@@ -588,6 +594,7 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
     archive = mount_ready(cfg)
     source = absolute(source) if restoring or demoting else valid_source(source, cfg)
     original = Path(restoring['target']) if restoring else live_path(demoting) if demoting else source
+    if excluded_unit(original,cfg): raise ValueError('migration contains protected data; deferred')
     old = restoring or demoting
     aliases = [Path(p) for p in json.loads(old['aliases'])] if old else []
     for alias in aliases:
@@ -794,6 +801,7 @@ def gc(store, cfg, apply=False, now=None, barrier=None):
                 proof = Path(scope['proof'])
                 if proof_digest(proof) != scope['digest']: continue
                 base = target / scope['path']
+                if excluded_unit(base,cfg): continue
                 if not within(base, target) or base.resolve() != base: continue
                 for directory, dirs, files in os.walk(base, followlinks=False):
                     dirs[:] = [d for d in dirs if not (Path(directory) / d).is_symlink()]
@@ -847,7 +855,8 @@ def decisions(store, cfg, now=None):
         if root['location'] == 'hdd' and not cached and reads >= cfg['promotion_reads_per_hour']:
             action = 'promote' if impact else 'measure_task_latency'
         elif root['location'] == 'ssd':
-            action = 'demote' if root['coverage'] and root['since'] and now - max(root['since'], last) >= cfg['demotion_idle_days']*DAY else 'ssd'
+            if excluded_unit(live_path(root),cfg): action='protected'
+            else: action = 'demote' if root['coverage'] and root['since'] and now - max(root['since'], last) >= cfg['demotion_idle_days']*DAY else 'ssd'
         rows.append({'id': root['id'], 'source': root['source'], 'location': root['location'],
                      'coverage': bool(root['coverage']), 'coverage_error': root['error'],
                      'observed_since': root['since'], 'recent_reads': reads, 'recent_opens': opens,
@@ -923,18 +932,29 @@ def watch(store, cfg):
                     key=root['id']
                     if signatures.get(key)!=current[key] or key in watcher.rebuild_roots:
                         watcher.rebuild_roots.discard(key);watcher.remove_root(key)
-                        try:
-                            path = live_path(root)
-                            if Path(root['source']).resolve() != path:
-                                raise ValueError('source symlink differs from ledger')
-                            watcher.tree(path, root['id'])
-                            store.db.execute('UPDATE roots SET coverage=1,since=CASE WHEN since=0 THEN ? ELSE since END,error=? WHERE id=?',
-                                             (time.time(), '', root['id']))
-                        except (OSError, ValueError) as e:
-                            # A partial large tree must not consume the budget
-                            # while providing no complete retention evidence.
-                            watcher.remove_root(key)
-                            store.db.execute('UPDATE roots SET coverage=0,since=0,error=? WHERE id=?', (str(e)[:200], root['id']))
+                        for attempt in range(2):
+                            try:
+                                path = live_path(root)
+                                if Path(root['source']).resolve() != path:
+                                    raise ValueError('source symlink differs from ledger')
+                                watcher.tree(path, root['id'])
+                                store.db.execute('UPDATE roots SET coverage=1,since=CASE WHEN since=0 THEN ? ELSE since END,error=? WHERE id=?',
+                                                 (time.time(), '', root['id']))
+                                break
+                            except (OSError, ValueError) as e:
+                                # Partial admission provides no retention evidence.
+                                watcher.remove_root(key)
+                                if attempt == 0 and root['location']=='hdd' and str(e)=='watch budget exceeded':
+                                    victims=[r for r in roots if r['location']=='ssd' and watcher.by_root.get(r['id'])]
+                                    for victim in victims:
+                                        store.db.execute('UPDATE roots SET coverage=0,since=0,error=? WHERE id=?',
+                                                         ('HDD coverage takes priority',victim['id']))
+                                        watcher.remove_root(victim['id']);signatures.pop(victim['id'],None)
+                                    if victims:
+                                        watcher.rebuild_roots.update(r['id'] for r in roots if r['location']=='hdd' and not r['coverage'] and r['id']!=key)
+                                        continue
+                                store.db.execute('UPDATE roots SET coverage=0,since=0,error=? WHERE id=?', (str(e)[:200], root['id']))
+                                break
                         signatures[key]=current[key];store.db.commit()
                 select.select([watcher.fd], [], [], 2)
                 now = time.time()
