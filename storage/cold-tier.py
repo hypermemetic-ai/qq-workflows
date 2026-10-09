@@ -45,6 +45,7 @@ DEFAULT = {
     'immutable_hardlink_scopes': [],
     'automatic_migration': True,
     'watch_original_ssd': True,
+    'mirror_layout': False,
 }
 
 
@@ -468,7 +469,7 @@ def adopt_defaults(store, cfg):
     for parent in parents:
         public, hdd = Path(parent['source']), Path(parent['hdd'])
         try:
-            if public.is_symlink() and public.resolve(strict=True) == hdd:
+            if public.resolve(strict=True) == hdd:
                 hdd_devices.add(hdd.stat().st_dev)
                 hdd_devices.update(Path(p).stat().st_dev for p in parent.get('previous', []))
         except FileNotFoundError: pass
@@ -486,7 +487,7 @@ def adopt_defaults(store, cfg):
     existing = {r['source'] for r in store.roots()}
     for parent in parents:
         source, backing, hdd = (Path(parent[k]) for k in ('source', 'backing', 'hdd'))
-        if not source.is_symlink() or source.resolve() != hdd: raise ValueError('default parent no longer matches ledger')
+        if source.resolve() != hdd: raise ValueError('default parent no longer matches ledger')
         # Catch parent-FD writes still landing in the old SSD inode.
         backings = [backing, *[Path(p) for p in parent.get('previous', [])]]
         for former in backings:
@@ -532,13 +533,52 @@ def tier_temporary(path):
     return path.name.endswith(('.qq-tier-original', '.qq-tier-link', '.qq-tier-default-link'))
 
 
+def logical_source(store, raw):
+    """Undo private SSD backing names without resolving the final data inode."""
+    path=absolute(raw)
+    parents=sorted(store.get('defaults',[]),key=lambda p:len(Path(p['backing']).parts),reverse=True)
+    for _ in range(32):
+        match=next((p for p in parents if within(path,Path(p['backing']))),None)
+        if match is None:return path
+        rewritten=Path(match['source'])/path.relative_to(Path(match['backing']))
+        if rewritten==path:raise ValueError('default backing rewrite cycle')
+        path=rewritten
+    raise ValueError('default backing rewrite depth exceeded')
+
+
+def mirror_path(store, archive, raw):
+    return archive/'mirror'/str(logical_source(store,raw)).lstrip('/')
+
+
+def ensure_mirror_parent(store,cfg,raw):
+    """Mirror ancestor directories; untouched siblings retain their public paths."""
+    archive=mount_ready(cfg); logical=logical_source(store,raw)
+    mirror=archive/'mirror';private(mirror)
+    original=Path('/'); directory=mirror
+    for part in logical.parent.parts[1:]:
+        original=original/part;directory=directory/part
+        if directory.is_symlink() or not directory.exists():
+            if not original.is_dir():raise ValueError('logical mirror ancestor is not a directory')
+            stage=directory.with_name('.'+directory.name+'.qq-tier-default-link')
+            if os.path.lexists(stage):raise ValueError('mirror ancestor staging already exists')
+            stage.mkdir(mode=0o700)
+            entries=list(original.iterdir())
+            if len(entries)>cfg['max_scan_entries']:raise ValueError('mirror ancestor entry budget exceeded')
+            for child in entries:(stage/child.name).symlink_to(child)
+            if os.path.lexists(directory):exchange(stage,directory);stage.unlink()
+            else:stage.rename(directory)
+            flush_directory(directory.parent)
+        if directory.lstat().st_uid!=os.getuid() or not directory.is_dir():
+            raise ValueError('mirror ancestor is not an owned directory')
+    return mirror/str(logical).lstrip('/')
+
+
 def recover_default_route(store):
     journal = store.state / 'default-route-operation.json'
     if not journal.exists(): return
     record = bounded_json(journal)
     old, new = record['old'], record['new']
     source = Path(old['source']); staged = Path(record['staged'])
-    if not source.is_symlink(): raise ValueError('default route recovery needs operator review')
     actual = source.resolve(strict=True)
     if actual not in (Path(old['hdd']), Path(new['hdd'])):
         raise ValueError('default route changed outside recorded transaction')
@@ -551,30 +591,66 @@ def recover_default_route(store):
         if not staged.is_symlink() or staged.resolve() not in (Path(old['hdd']), Path(new['hdd'])):
             raise ValueError('default route staging changed; retained for review')
         staged.unlink(); flush_directory(staged.parent)
+    mirror_stage=record.get('mirror_stage')
+    if mirror_stage and os.path.lexists(mirror_stage):
+        candidate=Path(mirror_stage)
+        if candidate.parent!=Path(new['hdd']).parent or not tier_temporary(candidate):
+            raise ValueError('mirror route staging differs; retained')
+        if candidate.is_symlink():candidate.unlink()
+        elif candidate.is_dir() and candidate.stat().st_uid==os.getuid() and all(p.is_symlink() for p in candidate.iterdir()):
+            for child in candidate.iterdir():child.unlink()
+            candidate.rmdir()
+        else:raise ValueError('mirror route staging contains data; retained')
+        flush_directory(candidate.parent)
     journal.unlink(); flush_directory(store.state)
 
 
 def route_defaults(store, cfg):
     """Route new names to the configured HDD without relocating any open inode."""
     archive = mount_ready(cfg); recover_default_route(store)
-    for old in list(store.get('defaults', [])):
+    for old in sorted(store.get('defaults', []),key=lambda p:len(logical_source(store,p['source']).parts)):
         source, previous = Path(old['source']), Path(old['hdd'])
-        if not source.is_symlink() or source.resolve(strict=True) != previous:
+        if source.resolve(strict=True) != previous:
             raise ValueError('default parent differs from ledger')
-        if within(previous, archive): continue
-        bridge = archive / 'defaults' / hashlib.sha256(str(source).encode()).hexdigest()[:16]
-        if bridge.exists(): raise ValueError('default route destination already exists')
-        bridge.mkdir(parents=True, mode=stat.S_IMODE(previous.stat().st_mode))
+        mirrored=cfg.get('mirror_layout',False)
+        bridge = mirror_path(store,archive,source) if mirrored else archive/'defaults'/hashlib.sha256(str(source).encode()).hexdigest()[:16]
+        if previous==bridge or (not mirrored and within(previous,archive)):continue
+        new = dict(old,hdd=str(bridge),previous=[*old.get('previous',[]),str(previous)])
+        staged = source.with_name('.'+source.name+'.qq-tier-default-link')
+        if os.path.lexists(staged):raise ValueError('default route staging already exists')
+        journal=store.state/'default-route-operation.json'
+        record={'old':old,'new':new,'staged':str(staged)}
+        if mirrored:
+            ensure_mirror_parent(store,cfg,source)
+            if bridge.is_symlink():
+                stage=bridge.with_name('.'+bridge.name+'-'+uuid.uuid4().hex+'.qq-tier-default-link')
+                if os.path.lexists(stage):raise ValueError('mirror bridge staging exists')
+                record['mirror_stage']=str(stage);atomic_json(journal,record)
+                stage.mkdir(mode=0o700)
+                for child in previous.iterdir():
+                    if not tier_temporary(child):(stage/child.name).symlink_to(child)
+                flush_copy(stage);exchange(stage,bridge);stage.unlink()
+            elif not bridge.exists():atomic_json(journal,record);bridge.mkdir(mode=0o700)
+            elif not bridge.is_dir() or bridge.stat().st_uid!=os.getuid():raise ValueError('mirror bridge differs')
+            else:atomic_json(journal,record)
+        else:
+            if bridge.exists():raise ValueError('default route destination already exists')
+            bridge.mkdir(parents=True,mode=stat.S_IMODE(previous.stat().st_mode))
         for child in previous.iterdir():
-            if not tier_temporary(child): (bridge/child.name).symlink_to(child)
-        new = dict(old, hdd=str(bridge), previous=[*old.get('previous', []), str(previous)])
-        staged = source.with_name('.' + source.name + '.qq-tier-default-link')
-        if os.path.lexists(staged): raise ValueError('default route staging already exists')
-        journal = store.state/'default-route-operation.json'
+            if tier_temporary(child):continue
+            proxy=bridge/child.name
+            if not os.path.lexists(proxy):proxy.symlink_to(child)
+            elif mirrored and proxy.is_symlink() and os.readlink(proxy)==str(logical_source(store,source)/child.name):
+                temp=proxy.with_name('.'+proxy.name+'.qq-tier-default-link')
+                if os.path.lexists(temp):raise ValueError('mirror proxy staging exists')
+                temp.symlink_to(child);os.replace(temp,proxy)
         # Persist the bridge and transaction before exposing a link to it.
         flush_copy(bridge)
-        atomic_json(journal, {'old': old, 'new': new, 'staged': str(staged)})
-        staged.symlink_to(bridge); exchange(source, staged); flush_directory(source.parent)
+        atomic_json(journal,record)
+        # A nested public path can already be this actual mirror directory after
+        # its parent route. Replacing it with a link to itself would create a cycle.
+        if source.resolve()!=bridge:
+            staged.symlink_to(bridge);exchange(source,staged);flush_directory(source.parent)
         recover_default_route(store)
         print('ROUTED', source, 'to', bridge, flush=True)
     adopt_defaults(store, cfg)
@@ -687,8 +763,10 @@ def recover_published(store, cfg):
         raise ValueError('only published HDD moves can be recovered automatically')
     source, original, destination = [absolute(record[k]) for k in ('source','original','destination')]
     expected = archive / 'data' / destination.parent.name / source.name
-    if (destination != expected or len(destination.parent.name) != 32 or
-            any(c not in '0123456789abcdef' for c in destination.parent.name) or
+    mirror_expected=mirror_path(store,archive,source) if cfg.get('mirror_layout',False) else None
+    normal=(destination==expected and len(destination.parent.name)==32 and
+            all(c in '0123456789abcdef' for c in destination.parent.name))
+    if ((not normal and destination!=mirror_expected) or
             destination.resolve() != destination or destination.stat().st_dev != archive.stat().st_dev):
         raise ValueError('unexpected recovery destination')
     if not any(within(source, absolute(p)) for p in cfg['source_roots']):
@@ -701,7 +779,7 @@ def recover_published(store, cfg):
     aliases = {absolute(p) for p in record.get('aliases',[])}
     if aliases != allowed: raise ValueError('recovery aliases differ from ledger')
     for link in {source, *aliases}:
-        if link.lstat().st_uid != os.getuid() or not link.is_symlink() or link.resolve()!=destination:
+        if link.lstat().st_uid != os.getuid() or link.resolve()!=destination:
             raise ValueError('published recovery path changed; both copies retained')
     staged = source.with_name('.'+source.name+'.qq-tier-original')
     retired = original.with_name('.'+original.name+'.qq-tier-original')
@@ -737,6 +815,14 @@ def recover_published(store, cfg):
         store.db.commit()
         remove_retired(retired,cfg['max_scan_entries'])
         if staged != retired and os.path.lexists(staged): staged.unlink()
+        mirror_stage=record.get('mirror_staged')
+        if mirror_stage and os.path.lexists(mirror_stage):
+            candidate=absolute(mirror_stage)
+            if (candidate.parent.parent!=archive/'data' or len(candidate.parent.name)!=32 or
+                    any(c not in '0123456789abcdef' for c in candidate.parent.name) or
+                    candidate.name!=source.name or not candidate.is_symlink() or candidate.resolve()!=destination):
+                raise ValueError('mirror recovery staging differs; retained')
+            candidate.unlink();flush_directory(candidate.parent)
         record.update(phase='complete',completed=time.time(),allocated_bytes=size,recovered=True)
         with (store.state/'moves.jsonl').open('a') as f:
             f.write(json.dumps(record)+'\n');f.flush();os.fsync(f.fileno())
@@ -752,6 +838,8 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
     original = Path(restoring['target']) if restoring else live_path(demoting) if demoting else source
     if excluded_unit(original,cfg): raise ValueError('migration contains protected data; deferred')
     old = restoring or demoting
+    mirrored=bool(cfg.get('mirror_layout',False) and not restoring)
+    rehoming=bool(mirrored and demoting and demoting['location']=='hdd')
     aliases = [Path(p) for p in json.loads(old['aliases'])] if old else []
     for alias in aliases:
         if not alias.is_symlink() or alias.resolve() != original.resolve():
@@ -768,7 +856,7 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
     if references([original, source, *aliases]): raise ValueError('live process references; deferred')
     if original.is_file() and database_file(original):
         raise ValueError('database and sidecars must move together as one directory')
-    detached = {} if immutable_scope(original,cfg) else None
+    detached = {} if rehoming or immutable_scope(original,cfg) else None
     before, size = inventory(original, cfg['max_scan_entries'], detached=detached)
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if os.path.lexists(destination): raise ValueError('staging destination exists')
@@ -791,15 +879,18 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
                                          for (dev,ino),(count,total,names) in (detached or {}).items()]
     atomic_json(journal, record)
     published = False
+    mirror_stage=None
     try:
         print('COPY', source, flush=True)
         # --bwlimit caps transfer; checksum verification below has its own read budget.
         args = ['rsync', '-aHAXS', '--modify-window=-1', '--bwlimit=' + str(cfg['copy_kib_per_second']), '--']
+        if rehoming and original.is_dir():args.insert(-1,'--link-dest='+str(original))
         if original.is_dir():
             destination.mkdir(mode=0o700)
             args += [str(original) + '/', str(destination) + '/']
         else: args += [str(original), str(destination)]
-        subprocess.run(['ionice', '-c', '3', *args], check=True)
+        if rehoming and original.is_file():os.link(original,destination,follow_symlinks=False)
+        else:subprocess.run(['ionice', '-c', '3', *args], check=True)
         for rel, meta in before.items():
             if stat.S_ISLNK(meta[0]):
                 expected = copied_link(source, rel, meta[4])
@@ -811,11 +902,14 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
         for rel, meta in before.items():
             a = original if rel == '.' else original / rel
             b = destination if rel == '.' else destination / rel
-            if stat.S_ISREG(meta[0]) and budget.digest(a) != budget.digest(b): raise ValueError('checksum mismatch')
+            if stat.S_ISREG(meta[0]) and not (rehoming and os.path.samefile(a,b)) and budget.digest(a) != budget.digest(b): raise ValueError('checksum mismatch')
         after_links = {} if detached is not None else None
         after, _ = inventory(original, cfg['max_scan_entries'], detached=after_links)
-        copied, _ = inventory(destination, cfg['max_scan_entries'])
-        if before != after or detached != after_links: raise ValueError('source changed during migration')
+        copied, _ = inventory(destination, cfg['max_scan_entries'],detached={} if rehoming else None)
+        if rehoming:
+            if set(before)!=set(after) or any((v[:3],v[4])!=(after[k][:3],after[k][4]) for k,v in before.items()):
+                raise ValueError('source changed during migration')
+        elif before != after or detached != after_links: raise ValueError('source changed during migration')
         def matches(rel, meta):
             actual = copied[rel]
             if stat.S_ISLNK(meta[0]):
@@ -826,13 +920,31 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
             raise ValueError('copy metadata mismatch')
         print('SYNC', source, flush=True)
         flush_copy(destination)
-        if any(mask & (MODIFY | ATTRIB | CREATE | DELETE | MOVED_FROM | MOVED_TO | OVERFLOW | DELETE_SELF | MOVE_SELF)
+        change_mask=MODIFY|CREATE|DELETE|MOVED_FROM|MOVED_TO|OVERFLOW|DELETE_SELF|MOVE_SELF|(0 if rehoming else ATTRIB)
+        if any(mask & change_mask
                for _, _, mask in guard.events()): raise ValueError('source mutation during migration')
         if references([original, source, *aliases]): raise ValueError('source became active; original retained')
         if restoring or demoting:
             if source.resolve() != original.resolve(): raise ValueError('public path changed during migration')
         record['phase'] = 'verified'; atomic_json(journal, record)
-        if restoring:
+        mirror_is_source=False
+        if mirrored:
+            final=ensure_mirror_parent(store,cfg,source)
+            if final.exists() and not final.is_symlink():raise ValueError('mirror destination already contains data')
+            if os.path.lexists(final):
+                if not final.is_symlink() or final.resolve()!=original.resolve():raise ValueError('mirror proxy differs from original')
+            else:final.symlink_to(original)
+            mirror_is_source=source.parent.resolve()/source.name==final
+            mirror_stage=destination
+            record.update(phase='mirror-publishing',destination=str(final),mirror_staged=str(mirror_stage))
+            atomic_json(journal,record);published=True
+            exchange(destination,final);flush_directory(final.parent)
+            destination=final
+            if mirror_is_source:
+                mirror_stage.rename(staged);mirror_stage=None
+        if mirror_is_source:
+            pass
+        elif restoring:
             link = source.with_name('.' + source.name + '.qq-tier-link')
             if os.path.lexists(link): raise ValueError('link staging path exists')
             link.symlink_to(destination)
@@ -871,13 +983,20 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
                 raise ValueError('legacy path changed during publication; both copies retained')
             link.symlink_to(destination); os.replace(link, alias)
         record['aliases'] = [str(p) for p in aliases]
+        if rehoming and original.parent.parent==archive/'data':
+            # Already loaded modules can retain the former opaque filename.
+            # Keep sibling lookups from that filename routed to the mirror too.
+            for sibling in destination.parent.iterdir():
+                legacy=original.parent/sibling.name
+                if not tier_temporary(sibling) and not os.path.lexists(legacy):legacy.symlink_to(sibling)
+            flush_directory(original.parent)
         for parent in {source.parent, original.parent, *[p.parent for p in aliases]}:
             flush_directory(parent)
         record['phase'] = 'published'; atomic_json(journal, record)
         # A writer that opened the original during publication is now visible
         # at its retired inode path. Keep both versions if it wrote or remains
         # open, rather than orphaning its work during cleanup.
-        if any(mask & (MODIFY | ATTRIB | CREATE | DELETE | MOVED_FROM | MOVED_TO | OVERFLOW)
+        if any(mask & (MODIFY|CREATE|DELETE|MOVED_FROM|MOVED_TO|OVERFLOW|(0 if rehoming else ATTRIB))
                for _, _, mask in guard.events()) or references([retired]):
             raise ValueError('retired original became active; both copies and journal retained')
         if restoring:
@@ -899,6 +1018,9 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
                 remove_retired(retired,cfg['max_scan_entries'])
             else: remove_retired(staged,cfg['max_scan_entries'])
         store.db.commit()
+        if mirror_stage is not None and os.path.lexists(mirror_stage):
+            if not mirror_stage.is_symlink():raise ValueError('mirror staging changed; retained')
+            mirror_stage.unlink();flush_directory(mirror_stage.parent)
         record['phase'] = 'complete'; record['completed'] = time.time()
         record['allocated_bytes'] = size
         with (store.state / 'moves.jsonl').open('a') as f:
@@ -1154,6 +1276,7 @@ def queue_add(store, source, action='move'):
 def drain(store, cfg):
     with lock(store.state / 'move.lock'):
         if store.state.joinpath('operation.json').exists(): raise ValueError('unfinished operation; inspect recovery journal')
+        if cfg.get('mirror_layout',False):route_defaults(store,cfg)
         # A decision can promote only with both recorded demand and matched task timing.
         if time.time() - store.get('heartbeat', 0) < 60:
             for row in decisions(store, cfg):
@@ -1175,7 +1298,7 @@ def drain(store, cfg):
                 if job['action'] == 'default':
                     parent=next((p for p in store.get('defaults',[]) if p['source']==str(source)),None)
                     if parent:
-                        if not source.is_symlink() or source.resolve()!=Path(parent['hdd']): raise ValueError('default path changed; review required')
+                        if source.resolve()!=Path(parent['hdd']): raise ValueError('default path changed; review required')
                     else:
                         try:registered=store.root(str(source))
                         except ValueError as e:
@@ -1185,10 +1308,16 @@ def drain(store, cfg):
                             if Path(registered['source']).resolve()!=live_path(registered).resolve():raise ValueError('tracked public path changed; review required')
                             if registered['location']=='ssd':partition_root(store,cfg,registered['id'])
                         else:bridge_parent(store,cfg,source)
-                    adopt_defaults(store,cfg)
+                    if cfg.get('mirror_layout',False):route_defaults(store,cfg)
+                    else:adopt_defaults(store,cfg)
                 elif job['action'] == 'partition':
                     root=store.root(str(source))
                     if root['location']=='ssd': partition_root(store,cfg,root['id'])
+                    if cfg.get('mirror_layout',False):route_defaults(store,cfg)
+                elif job['action']=='rehome':
+                    root=store.root(str(source))
+                    if root['location']!='hdd' or not cfg.get('mirror_layout',False):raise ValueError('rehome requires a mirrored HDD root')
+                    if live_path(root)!=mirror_path(store,mount_ready(cfg),source):migrate(store,cfg,source,demoting=root)
                 elif job['action'] == 'restore': migrate(store, cfg, source, restoring=store.root(str(source)))
                 elif job['action'] == 'demote':
                     old = store.root(str(source))
@@ -1233,7 +1362,7 @@ def main():
     sub.add_parser('init'); sub.add_parser('watch'); sub.add_parser('status'); sub.add_parser('drain'); sub.add_parser('route-defaults'); sub.add_parser('recover-published')
     p = sub.add_parser('discover'); p.add_argument('paths', nargs='+')
     p = sub.add_parser('defaults'); p.add_argument('paths', nargs='+')
-    p = sub.add_parser('queue'); p.add_argument('--action',choices=('move','default','partition'),default='move');p.add_argument('paths', nargs='+')
+    p = sub.add_parser('queue'); p.add_argument('--action',choices=('move','default','partition','rehome'),default='move');p.add_argument('paths', nargs='+')
     p = sub.add_parser('move'); p.add_argument('path')
     p = sub.add_parser('restore'); p.add_argument('root')
     p = sub.add_parser('split'); p.add_argument('root'); p.add_argument('relative')
@@ -1267,8 +1396,8 @@ def main():
         print(store.register(source, target))
     elif args.command == 'queue':
         for path in args.paths:
-            if args.action=='partition':
-                queue_add(store,store.root(path)['source'],'partition');continue
+            if args.action in ('partition','rehome'):
+                queue_add(store,store.root(path)['source'],args.action);continue
             if args.action=='default':
                 try:registered=store.root(str(absolute(path)))
                 except ValueError as e:
@@ -1283,7 +1412,9 @@ def main():
     elif args.command == 'route-defaults':
         with lock(store.state / 'move.lock'): route_defaults(store, cfg)
     elif args.command == 'partition':
-        with lock(store.state / 'move.lock'): partition_root(store, cfg, args.root)
+        with lock(store.state / 'move.lock'):
+            partition_root(store, cfg, args.root)
+            if cfg.get('mirror_layout',False):route_defaults(store,cfg)
     elif args.command == 'move':
         with lock(store.state / 'move.lock'): migrate(store, cfg, args.path)
     elif args.command == 'restore':
@@ -1308,7 +1439,8 @@ def main():
     elif args.command == 'defaults':
         with lock(store.state / 'move.lock'):
             for path in args.paths: bridge_parent(store, cfg, path)
-            adopt_defaults(store, cfg)
+            if cfg.get('mirror_layout',False):route_defaults(store,cfg)
+            else:adopt_defaults(store,cfg)
 
 
 if __name__ == '__main__':

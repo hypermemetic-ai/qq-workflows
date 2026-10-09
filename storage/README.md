@@ -58,6 +58,18 @@ interrupted retirement. It checks public and legacy aliases and compares every
 surviving original file with its published copy; changed or active originals
 remain intact. Read-only archive directories are made writable only in the
 retired copy, preserving the published file modes and any external hard links.
+
+With `mirror_layout: true`, HDD destinations retain the logical absolute folder
+hierarchy under `archive/mirror`. Default parents route to these directories;
+unmoved siblings continue through proxies to their existing objects. A verified
+copy is exchanged into its final mirror slot before publishing the legacy alias.
+This preserves runtime lookups across sibling folders, including Node module
+resolution, instead of putting each migration unit under an unrelated UUID.
+`queue --action rehome ROOT` repairs older HDD units using same-filesystem hard
+links where possible, then retires the old directory namespace after checking
+for writers. Old opaque filenames retain sibling aliases for already loaded
+modules. Unique data remains preserved; rehoming creates no second payload copy
+when file identities and metadata match. Active units defer without publication.
 For explicitly reviewed immutable SDK/build-cache directories, the optional
 `immutable_hardlink_scopes` policy permits copying shared files to independent HDD
 inodes. External aliases remain untouched; internal hard links remain shared.
