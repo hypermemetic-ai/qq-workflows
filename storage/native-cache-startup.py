@@ -55,7 +55,7 @@ def dependency_names(raw):
     return shlex.split(raw)
 
 
-def verified_limits(expected):
+def verified_limits(expected,verify_dependencies=True):
     raw=Path('/proc/self/cgroup').read_text().strip()
     if raw.split('/')[-1]!=expected:raise ValueError('Startup worker is outside its declared unit')
     cg=Path('/sys/fs/cgroup')/raw.split('::',1)[1].lstrip('/')
@@ -69,6 +69,7 @@ def verified_limits(expected):
         device=os.stat(path).st_rdev;settings=devices.get(f'{os.major(device)}:{os.minor(device)}',{})
         if any(settings.get(key,'max')=='max' or int(settings[key])>8*base.MIB for key in ('rbps','wbps')):
             raise ValueError('Startup I/O limits were not applied')
+    if not verify_dependencies:return limits,{}
     actual=dict(line.split('=',1) for line in base.run('systemctl','show',expected,
             '--property=RequiresMountsFor','--property=Requires','--property=After','--property=BindsTo').splitlines())
     mount=base.run('systemd-escape','--path','--suffix=mount','/srv/media-box')

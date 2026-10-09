@@ -229,4 +229,39 @@ this drill establishes runtime startup ordering and recovery from a controller
 process crash; it does not test an actual reboot, power loss or drive unplugging.
 Those distinctions remain explicit in the report. The drill migrates no live data.
 
+### Persistent volume pilot
+
+After the startup/recovery drill passes, provision the first small persistent
+volume:
+
+```sh
+sudo ~/.local/bin/qq-cold-tier-native-volume
+```
+
+This creates new, exclusive 8 GiB HDD, 256 MiB SSD cache and 16 MiB metadata
+images on the verified sda/sdb filesystems, preserving at least 10 GiB free on
+the root SSD. It formats only the newly allocated origin image, verifies file,
+SQLite and filesystem integrity, then installs a root-owned, pinned helper and
+`qq-native-cache-pilot.service`. Startup attaches existing images and verifies
+their UUID, associations, clean writethrough mode and HDD mount dependencies.
+The service is enabled for boot without changing existing application services.
+No startup or recovery path formats existing data. Physical reboot, power loss
+and unplugging remain untested.
+
+The volume mounts at `/srv/qqcachedpilot`; `/srv/qqcachedpilot/data` is owned by
+the operator. The underlying unmounted directory is empty, root-owned and mode
+000, so failed startup does not silently redirect user writes to the root SSD.
+Provisioning and startup use the same verified CPU/RAM/swap/task/I/O caps as the
+drill. Busy or ambiguous teardown retains resources instead of forcing unmounts
+or deleting persistent images. The helper preserves an existing differing unit
+or pinned release for inspection rather than replacing it.
+
+This command moves no user paths. `native-volume.json` records readiness and a
+bounded root process-reference check for the proposed Zig-cache candidate;
+unreadable process state prevents an idle verdict. That check is a snapshot,
+not authorization to delete cache files or skip mutation checks during a later
+copy/cutover. Application state, source data and the paid DecIQ work remain
+outside this initial pilot. The 30-day regenerable-file retention policy still
+requires verified regeneration evidence and complete observation coverage.
+
 Validation: `qq-job -- python3 -m unittest discover -s storage -p 'test_*.py'`.
