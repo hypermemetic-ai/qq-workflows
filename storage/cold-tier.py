@@ -461,6 +461,12 @@ def copied_link(source, rel, raw):
     return raw
 
 
+def flush_copy(destination):
+    # Persist data and directory entries on the destination filesystem before
+    # publishing its link and retiring the original. Never sync all host disks.
+    subprocess.run(['sync', '-f', '--', str(destination)], check=True, timeout=120)
+
+
 def migrate(store, cfg, source, *, restoring=None, demoting=None):
     """Copy, compare, publish symlink atomically, then retire the verified original."""
     archive = mount_ready(cfg)
@@ -524,6 +530,8 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
             return (meta[:3], meta[4]) == (actual[:3], actual[4])
         if set(before) != set(copied) or any(not matches(k,v) for k,v in before.items()):
             raise ValueError('copy metadata mismatch')
+        print('SYNC', source, flush=True)
+        flush_copy(destination)
         if any(mask & (MODIFY | ATTRIB | CREATE | DELETE | MOVED_FROM | MOVED_TO | OVERFLOW | DELETE_SELF | MOVE_SELF)
                for _, _, mask in guard.events()): raise ValueError('source mutation during migration')
         if references([original, source]): raise ValueError('source became active; original retained')
@@ -811,7 +819,7 @@ def drain(store, cfg):
                     if registered and registered['location'] == 'ssd': migrate(store, cfg, source, demoting=registered)
                     else: migrate(store, cfg, source)
                 status, error = 'complete', ''
-            except (OSError, ValueError, subprocess.CalledProcessError) as e:
+            except (OSError, ValueError, subprocess.SubprocessError) as e:
                 status, error = 'deferred', str(e)[:300]
                 print('DEFER', source, error, flush=True)
             store.db.execute('UPDATE queue SET status=?,error=?,updated=? WHERE source=?', (status, error, time.time(), str(source))); store.db.commit()
@@ -910,5 +918,5 @@ def main():
 
 if __name__ == '__main__':
     try: main()
-    except (OSError, ValueError, sqlite3.Error, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, sqlite3.Error, subprocess.SubprocessError) as error:
         print('cold-tier:', error, file=sys.stderr); sys.exit(1)

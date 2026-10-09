@@ -286,5 +286,8 @@ their demand instead of whole-file SSD promotion. Existing default parents and
 their atomic-save writers continue to be admitted on their original filesystem.
 Apply a configuration change by restarting only `qq-cold-tier.service`; this
 resets its observation clocks, preserving the full 30-day GC requirement.
+Migration flushes the destination filesystem after verification and before
+publication or original retirement. Flush failure or timeout preserves the
+original and removes only the unpublished staging copy.
 
 Validation: `qq-job -- python3 -m unittest discover -s storage -p 'test_*.py'`.

@@ -21,8 +21,11 @@ class ColdTierTests(unittest.TestCase):
                         archive=str(self.archive), hdd_mount=str(self.archive), hot_storage=str(self.home / 'hot'),
                         copy_kib_per_second=1024*1024, verify_bytes_per_second=1024**3)
         self.mount = patch.object(m, 'mount_ready', return_value=self.archive); self.mount.start()
+        # Fixture copies live on the host root filesystem; do not flush unrelated
+        # host writers during tests. Failure/order tests exercise this boundary.
+        self.flush_patch = patch.object(m, 'flush_copy'); self.flush = self.flush_patch.start()
     def tearDown(self):
-        self.mount.stop(); self.store.db.close(); self.tmp.cleanup()
+        self.flush_patch.stop(); self.mount.stop(); self.store.db.close(); self.tmp.cleanup()
     def root(self):
         target = self.archive / 'mixed'; target.mkdir()
         (target / 'build').mkdir(); (target / 'build/cold.bin').write_bytes(b'cold')
@@ -130,6 +133,23 @@ class ColdTierTests(unittest.TestCase):
         with patch.object(m,'references',return_value=[]), patch.object(m.subprocess,'run',side_effect=subprocess.CalledProcessError(1,'rsync')):
             with self.assertRaises(subprocess.CalledProcessError): m.migrate(self.store,self.cfg,source)
         self.assertFalse(source.is_symlink()); self.assertEqual((source/'data').read_text(),'keep')
+    def test_failed_durability_check_retains_original_and_does_not_publish(self):
+        source = self.home/'artifact'; source.mkdir(); (source/'data').write_text('keep')
+        self.flush.side_effect = subprocess.CalledProcessError(1, 'sync')
+        with patch.object(m,'references',return_value=[]),patch.object(m,'exchange') as exchange:
+            with self.assertRaises(subprocess.CalledProcessError):m.migrate(self.store,self.cfg,source)
+        exchange.assert_not_called(); self.assertFalse(source.is_symlink())
+        self.assertEqual((source/'data').read_text(),'keep'); self.assertEqual(self.store.roots(),[])
+        self.assertFalse((self.store.state/'operation.json').exists())
+    def test_durable_copy_precedes_publication_and_original_retirement(self):
+        source = self.home/'artifact'; source.mkdir(); (source/'data').write_text('keep')
+        synced = []
+        def flush(destination):
+            self.assertFalse(source.is_symlink()); self.assertEqual((source/'data').read_text(),'keep')
+            self.assertEqual((destination/'data').read_text(),'keep'); synced.append(destination)
+        self.flush.side_effect = flush
+        with patch.object(m,'references',return_value=[]):m.migrate(self.store,self.cfg,source)
+        self.assertEqual(source.resolve(),synced[0]); self.assertTrue(source.is_symlink())
     def test_mutating_copy_retains_original(self):
         source = self.home/'artifact'; source.mkdir(); (source/'data').write_text('keep')
         def mutation(args, **kwargs):
