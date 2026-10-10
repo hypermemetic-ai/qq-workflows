@@ -32,6 +32,15 @@ class ColdTierTests(unittest.TestCase):
         rows=list(self.store.db.execute('SELECT * FROM queue'));self.assertEqual(len(rows),1);self.assertEqual(rows[0]['status'],'deferred')
         self.assertFalse(source.is_symlink());self.assertEqual((source/'0').stat().st_ino,(outside/'0').stat().st_ino)
 
+    def test_shared_folder_defers_before_process_scans_and_staging(self):
+        source=self.home/'package';source.mkdir();file=source/'shared';file.write_bytes(b'keep')
+        outside=self.home/'outside';os.link(file,outside)
+        with patch.object(m,'references',side_effect=AssertionError('unnecessary process scan')),\
+             patch.object(m,'protect_container_mounts',side_effect=AssertionError('unnecessary container scan')):
+            with self.assertRaisesRegex(ValueError,'hard links extend'):m.migrate(self.store,self.cfg,source)
+        self.assertEqual(file.stat().st_ino,outside.stat().st_ino)
+        self.assertFalse(source.is_symlink());self.assertFalse(list(self.store.state.glob('*operation.json')))
+
     def test_mixed_shared_and_unique_folder_still_moves_independent_payload(self):
         source=self.home/'mixed';source.mkdir();shared=source/'shared';shared.write_bytes(b'shared')
         outside=self.home/'outside';os.link(shared,outside);(source/'unique').write_bytes(b'unique')
