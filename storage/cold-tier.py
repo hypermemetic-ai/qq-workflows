@@ -7,17 +7,21 @@ import contextlib
 import ctypes
 import fcntl
 import hashlib
+import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import select
 import shutil
+import socket
 import sqlite3
 import stat
 import struct
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 import uuid
 
 DAY = 86400
@@ -51,6 +55,8 @@ DEFAULT = {
     'migration_cpu_quota_percent': 20,
     'migration_memory_high_mib': 512,
     'intake_min_age_seconds': 3600,
+    'automatic_artifact_verification': True,
+    'reference_socket': '',
 }
 
 
@@ -1106,10 +1112,63 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
 
 
 def proof_digest(proof):
-    info = Path(proof).stat()
-    if not stat.S_ISREG(info.st_mode) or info.st_size > 1024**2:
-        raise ValueError('regeneration proof must be a regular file no larger than 1 MiB')
-    return hashlib.sha256(Path(proof).read_bytes()).hexdigest()
+    fd=os.open(proof,os.O_RDONLY|os.O_NOFOLLOW)
+    try:
+        info=os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_size>1024**2:
+            raise ValueError('regeneration proof must be an owned regular file no larger than 1 MiB')
+        with os.fdopen(fd,'rb',closefd=False) as f:raw=f.read(1024**2+1)
+        after=os.fstat(fd)
+        if len(raw)>1024**2 or (info.st_ino,info.st_mtime_ns,info.st_ctime_ns)!=(after.st_ino,after.st_mtime_ns,after.st_ctime_ns):
+            raise ValueError('regeneration proof changed during read')
+        return hashlib.sha256(raw).hexdigest()
+    finally:os.close(fd)
+
+
+def artifact_module():
+    spec=importlib.util.spec_from_file_location('artifact_proof',Path(__file__).with_name('artifact-proof.py'))
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module
+
+
+def verify_artifacts(store,cfg,max_files=100,seconds=60):
+    api=SimpleNamespace(ReadBudget=ReadBudget,excluded_unit=excluded_unit,bounded_json=bounded_json,
+                        proof_digest=proof_digest,atomic_json=atomic_json,record_scope=record_scope)
+    return artifact_module().verify(store,cfg,api,max_files,seconds)
+
+
+def verified_files(scope):
+    if not scope['recipe'].startswith('verified-files-v1:'):return None
+    manifest=bounded_json(scope['proof'],1024**2)
+    if not isinstance(manifest,dict) or manifest.get('schema')!='verified-files-v1' or manifest.get('scope')!=scope['path'] or not isinstance(manifest.get('files'),dict):
+        raise ValueError('invalid verified artifact manifest')
+    return manifest['files']
+
+
+def broker_references(paths,cfg):
+    """A root-owned read-only collector resolves inaccessible process references."""
+    address=cfg.get('reference_socket','')
+    if not address or not os.path.lexists(address):return None
+    info=Path(address).lstat()
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid!=0:raise ValueError('untrusted process reference socket')
+    nonce=uuid.uuid4().hex
+    request=json.dumps({'nonce':nonce,'paths':[str(p) for p in paths]}).encode()+b'\n'
+    if len(request)>262144:raise ValueError('process reference request budget exceeded')
+    with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as client:
+        client.settimeout(35);client.connect(address)
+        if struct.unpack('3i',client.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))[1]!=0:
+            raise ValueError('process reference collector is not root-owned')
+        client.sendall(request)
+        with client.makefile('rb') as stream:raw=stream.readline(262145)
+    if len(raw)>262144:raise ValueError('process reference response budget exceeded')
+    report=json.loads(raw)
+    if report.get('nonce')!=nonce or not report.get('complete') or report.get('identities')!=[
+            [p.stat().st_dev,p.stat().st_ino] for p in paths]:
+        raise ValueError('process-reference coverage incomplete or file identity changed')
+    blocked=report.get('blocked')
+    if not isinstance(blocked,list) or any(type(n)!=int or not 0<=n<len(paths) for n in blocked):
+        raise ValueError('invalid process reference report')
+    return set(blocked)
 
 
 def record_scope(store, key, relative, recipe, proof):
@@ -1145,7 +1204,7 @@ def gc(store, cfg, apply=False, now=None, barrier=None):
         summary['errors'].append('watcher coverage is stale'); return summary
     if apply and barrier is None:
         raise ValueError('destructive GC must run inside the live watcher event barrier')
-    seen = 0
+    seen = 0; candidates=[]; visited_bases=[]; limit=False
     for root in store.roots():
         if root['location'] != 'hdd' or not root['coverage']: continue
         target = Path(root['target']); source = Path(root['source'])
@@ -1154,38 +1213,62 @@ def gc(store, cfg, apply=False, now=None, barrier=None):
             try:
                 proof = Path(scope['proof'])
                 if proof_digest(proof) != scope['digest']: continue
+                manifest=verified_files(scope)
                 base = target / scope['path']
                 if excluded_unit(base,cfg): continue
                 if not within(base, target) or base.resolve() != base: continue
+                visited_bases.append(base)
                 for directory, dirs, files in os.walk(base, followlinks=False):
                     dirs[:] = [d for d in dirs if not (Path(directory) / d).is_symlink()]
                     for name in files:
                         seen += 1
-                        if seen > cfg['max_gc_files']: return summary
+                        if seen > cfg['max_gc_files']: limit=True;break
                         p = Path(directory) / name; info = p.lstat()
                         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid(): continue
                         rel = str(p.relative_to(target))
+                        if manifest is not None:
+                            record=manifest.get(str(p.relative_to(base)),{})
+                            if not isinstance(record,dict):continue
+                            identity=[info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns]
+                            verified_at=record.get('verified_at',now)
+                            if (record.get('identity')!=identity or type(verified_at) not in (int,float) or not math.isfinite(verified_at) or
+                                    now-verified_at<cfg['retention_days']*DAY):continue
                         if not quiet(store, root, rel, info, now, cfg['retention_days']): continue
-                        if summary['eligible_bytes'] + info.st_size > cfg['max_gc_bytes']: return summary
+                        if summary['eligible_bytes'] + info.st_size > cfg['max_gc_bytes']:limit=True;break
                         summary['eligible_files'] += 1; summary['eligible_bytes'] += info.st_size
-                        if apply:
-                            if references([p, source / rel], strict=True): continue
-                            barrier()
-                            # Recheck identity, demand and complete coverage immediately before unlink.
-                            fresh = store.root(root['id']); current = p.lstat()
-                            if (info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (current.st_ino, current.st_size, current.st_mtime_ns, current.st_ctime_ns): continue
-                            if not quiet(store, fresh, rel, current, now, cfg['retention_days']): continue
-                            p.unlink(); summary['deleted_files'] += 1
-                            store.db.execute('DELETE FROM activity WHERE root=? AND path=?', (root['id'], rel))
-                    # Only prune empty children; keep the registered regeneration root.
-                if apply:
-                    for directory, dirs, _ in os.walk(base, topdown=False, followlinks=False):
-                        for name in dirs:
-                            p = Path(directory) / name
-                            if not p.is_symlink():
-                                try: p.rmdir()
-                                except OSError: pass
+                        candidates.append((root,p,info,rel,scope))
+                    if limit:break
             except (OSError, ValueError) as e: summary['errors'].append(str(e)[:200])
+            if limit:break
+        if limit:break
+    if apply and candidates:
+        # One bounded all-process scan per batch; event barriers catch later opens.
+        candidates=candidates[:1000]
+        try:blocked=broker_references([p for _,p,_,_,_ in candidates],cfg)
+        except (OSError,ValueError) as e:
+            summary['errors'].append(str(e)[:200]);return summary
+        for index,(root,p,info,rel,scope) in enumerate(candidates):
+            try:
+                if blocked is not None:
+                    if index in blocked:continue
+                elif references([p,Path(root['source'])/rel],strict=True):continue
+                barrier()
+                fresh=store.root(root['id']);current=p.lstat()
+                if proof_digest(scope['proof'])!=scope['digest']:continue
+                if (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns)!=(
+                        current.st_dev,current.st_ino,current.st_size,current.st_mtime_ns,current.st_ctime_ns):continue
+                if not quiet(store,fresh,rel,current,now,cfg['retention_days']):continue
+                p.unlink();summary['deleted_files']+=1
+                store.db.execute('DELETE FROM activity WHERE root=? AND path=?',(root['id'],rel))
+            except (OSError,ValueError) as e:
+                summary['errors'].append(str(e)[:200]);break
+        for base in visited_bases:
+            for directory,dirs,_ in os.walk(base,topdown=False,followlinks=False):
+                for name in dirs:
+                    p=Path(directory)/name
+                    if not p.is_symlink():
+                        try:p.rmdir()
+                        except OSError:pass
     store.db.commit(); return summary
 
 
@@ -1365,6 +1448,8 @@ def drain(store, cfg):
         jobs=list(store.db.execute("""SELECT * FROM queue WHERE status IN ('pending','deferred')
           ORDER BY CASE action WHEN 'default' THEN 0 WHEN 'partition' THEN 1 ELSE 2 END,
           CASE WHEN action='default' THEN length(source) ELSE 0 END, updated"""))
+        if cfg.get('automatic_artifact_verification',True):
+            verify_artifacts(store,cfg)
     for job in jobs:
         # Release between units so newly requested parent cutovers and daily GC
         # are not blocked for the duration of an entire large rollout.
@@ -1452,6 +1537,7 @@ def main():
     p = sub.add_parser('regenerable'); p.add_argument('root'); p.add_argument('relative'); p.add_argument('--recipe', required=True); p.add_argument('--proof', required=True); p.add_argument('--verified', action='store_true', required=True)
     p = sub.add_parser('latency'); p.add_argument('root'); p.add_argument('--task', required=True); p.add_argument('--hdd-ms', type=float, required=True); p.add_argument('--ssd-ms', type=float, required=True)
     p = sub.add_parser('gc'); p.add_argument('--apply', action='store_true')
+    p = sub.add_parser('verify-cargo-cache');p.add_argument('--max-files',type=int,default=100);p.add_argument('--seconds',type=int,default=60)
     args = parser.parse_args(); config_path = absolute(args.config)
     if args.command == 'init' and not config_path.exists():
         config_path.parent.mkdir(parents=True, exist_ok=True); atomic_json(config_path, DEFAULT)
@@ -1463,7 +1549,7 @@ def main():
     for key in ('max_watches', 'max_scan_entries', 'copy_kib_per_second', 'verify_bytes_per_second', 'max_gc_files', 'max_gc_bytes'):
         if not isinstance(cfg[key], int) or cfg[key] <= 0: raise ValueError('invalid budget ' + key)
     store = Store(args.state_dir)
-    if args.command in ('drain','move','restore','discover','route-defaults','recover-published'): contain_job(cfg)
+    if args.command in ('drain','move','restore','discover','route-defaults','recover-published','verify-cargo-cache'): contain_job(cfg)
     if args.command == 'init': mount_ready(cfg); print('Initialized', store.state)
     elif args.command == 'watch': watch(store, cfg)
     elif args.command == 'status':
@@ -1510,6 +1596,9 @@ def main():
         if target.resolve() != target or not target.exists(): raise ValueError('split child has symlinks or is absent')
         print(store.register(Path(root['source']) / relative, target))
     elif args.command == 'regenerable': record_scope(store, args.root, args.relative, args.recipe, args.proof)
+    elif args.command=='verify-cargo-cache':
+        with lock(store.state/'move.lock'):
+            print(json.dumps(verify_artifacts(store,cfg,args.max_files,args.seconds),indent=2))
     elif args.command == 'latency':
         if not (args.hdd_ms > 0 and args.ssd_ms > 0): raise ValueError('positive matched task timings required')
         store.db.execute('INSERT OR REPLACE INTO latency VALUES (?,?,?,?,?)', (store.root(args.root)['id'], args.task, args.hdd_ms, args.ssd_ms, time.time())); store.db.commit()

@@ -14,6 +14,59 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 
 class ColdTierTests(unittest.TestCase):
+    def test_verified_artifact_manifest_retains_new_and_changed_files(self):
+        key,_,target,now=self.root();module=m.artifact_module()
+        cold=target/'build/cold.bin';hot=target/'build/hot.bin'
+        proof=self.store.state/'proof.json'
+        records={p.name:{'identity':module.identity(p.stat()),'verified_at':now-31*m.DAY} for p in (cold,hot)}
+        m.atomic_json(proof,{'schema':'verified-files-v1','scope':'build','files':records})
+        m.record_scope(self.store,key,'build','verified-files-v1: test recipe',proof)
+        hot.write_bytes(b'user changes');new=target/'build/unique.bin';new.write_bytes(b'unique')
+        os.utime(hot,(now-31*m.DAY,now-31*m.DAY));os.utime(new,(now-31*m.DAY,now-31*m.DAY))
+        with patch.object(m,'references',return_value=[]):result=m.gc(self.store,self.cfg,apply=True,now=now,barrier=lambda:None)
+        self.assertEqual(result['deleted_files'],1);self.assertFalse(cold.exists())
+        self.assertEqual(hot.read_bytes(),b'user changes');self.assertEqual(new.read_bytes(),b'unique')
+
+    def test_new_artifact_proof_requires_thirty_days_after_verification(self):
+        key,_,target,now=self.root();module=m.artifact_module();p=target/'build/cold.bin'
+        proof=self.store.state/'proof.json'
+        m.atomic_json(proof,{'schema':'verified-files-v1','scope':'build','files':{
+            p.name:{'identity':module.identity(p.stat()),'verified_at':now}}})
+        m.record_scope(self.store,key,'build','verified-files-v1: test recipe',proof)
+        self.assertEqual(m.gc(self.store,self.cfg,now=now)['eligible_files'],0)
+
+    def test_published_cargo_archives_verified_individually_private_data_retained(self):
+        module=m.artifact_module();target=self.archive/'registry';cache=target/'cache/index.crates.io-1949cf8c6b5b557f'
+        cache.mkdir(parents=True);p=cache/'example-1.2.3.crate';p.write_bytes(b'published')
+        changed=cache/'example-1.2.4.crate';changed.write_bytes(b'user modified')
+        private=cache/'private.txt';private.write_bytes(b'unique')
+        source=self.home/'registry';source.symlink_to(target);key=self.store.register(source,target)
+        with patch.object(module,'checksums',return_value={'1.2.3':m.hashlib.sha256(b'published').hexdigest(),
+                                                         '1.2.4':m.hashlib.sha256(b'original').hexdigest()}):
+            result=module.verify(self.store,self.cfg,m)
+        self.assertEqual((result['verified'],result['retained']),(1,1))
+        row=self.store.db.execute('SELECT * FROM scopes WHERE root=?',(key,)).fetchone()
+        manifest=m.verified_files(row);self.assertEqual(set(manifest),{p.name})
+        old=manifest[p.name]['verified_at']
+        with patch.object(module,'checksums',side_effect=OSError('offline')):module.verify(self.store,self.cfg,m)
+        self.assertEqual(m.verified_files(self.store.db.execute('SELECT * FROM scopes WHERE root=?',(key,)).fetchone())[p.name]['verified_at'],old)
+        self.assertEqual(private.read_bytes(),b'unique')
+
+    def test_missing_reference_coverage_fails_closed_for_entire_batch(self):
+        _,_,target,now=self.root()
+        with patch.object(m,'broker_references',side_effect=ValueError('coverage incomplete')):
+            result=m.gc(self.store,self.cfg,apply=True,now=now,barrier=lambda:None)
+        self.assertEqual(result['deleted_files'],0);self.assertIn('coverage incomplete',result['errors'])
+        self.assertTrue((target/'build/cold.bin').exists())
+
+    def test_broker_blocked_and_queued_reads_preserve_files(self):
+        key,_,target,now=self.root()
+        def barrier():self.store.activity(key,'build/cold.bin',m.ACCESS,now)
+        with patch.object(m,'broker_references',return_value={1}),patch.object(m,'references',side_effect=AssertionError('unprivileged lookup')):
+            result=m.gc(self.store,self.cfg,apply=True,now=now,barrier=barrier)
+        self.assertEqual(result['deleted_files'],0)
+        self.assertTrue((target/'build/cold.bin').exists());self.assertTrue((target/'build/hot.bin').exists())
+
     def test_migration_cpu_budget_refuses_unbounded_values_before_placement(self):
         for quota in (0,101,-1,'80',True):
             with self.subTest(quota=quota),self.assertRaisesRegex(ValueError,'1 to 100'):

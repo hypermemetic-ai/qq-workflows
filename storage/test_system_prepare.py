@@ -50,3 +50,20 @@ class SystemPreparation(unittest.TestCase):
         result=SimpleNamespace(returncode=0,stdout='x'*262145,stderr='')
         with patch.object(m.subprocess,'run',return_value=result):
             with self.assertRaisesRegex(ValueError,'output bound'):m.census()
+
+    def test_collector_install_is_pinned_read_only_and_repeated_safely(self):
+        library=self.root/'refs';socket=self.root/'refs.socket';service=self.root/'refs.service'
+        with patch.object(m,'BROKER_LIBRARY',library),patch.object(m,'BROKER_SOCKET',socket),patch.object(m,'BROKER_SERVICE',service),\
+             patch.object(m.base,'run',return_value='active') as run:
+            m.reference_collector();m.reference_collector()
+        content=service.read_text();self.assertIn('ProtectSystem=strict',content)
+        self.assertIn('CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE',content)
+        self.assertNotIn('ExecStop',content)
+        self.assertEqual([call.args[:2] for call in run.call_args_list],
+                         [('systemctl','daemon-reload'),('systemctl','enable'),('systemctl','is-active')]*2)
+
+    def test_unknown_collector_unit_is_preserved(self):
+        socket=self.root/'refs.socket';socket.write_text('operator owned')
+        with patch.object(m,'BROKER_LIBRARY',self.root/'refs'),patch.object(m,'BROKER_SOCKET',socket),patch.object(m.base,'run') as run:
+            with self.assertRaisesRegex(ValueError,'Unrecognized'):m.reference_collector()
+        self.assertEqual(socket.read_text(),'operator owned');run.assert_not_called()
