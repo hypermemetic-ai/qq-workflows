@@ -581,6 +581,7 @@ def adopt_defaults(store, cfg):
             for table,column in (('activity','root'),('latency','root'),('roots','id')):
                 store.db.execute(f'DELETE FROM {table} WHERE {column}=?',(root['id'],))
             store.db.execute('DELETE FROM queue WHERE source=?',(root['source'],))
+            store.db.commit()
     store.db.commit()
     # Existing default parents can still be on the previous HDD filesystem
     # after the migration destination moves to a native cached volume.
@@ -601,6 +602,7 @@ def adopt_defaults(store, cfg):
                 # that new authoritative object; never copy the old SSD version over it.
                 store.db.execute('UPDATE roots SET target=?,location=?,since=0,coverage=0,error=? WHERE id=?',
                                  (str(resolved), 'hdd', 'atomic replacement: awaiting watcher', root['id']))
+                store.db.commit()
         except FileNotFoundError: pass
     store.db.commit()
     existing = {r['source'] for r in store.roots()}
@@ -619,6 +621,7 @@ def adopt_defaults(store, cfg):
                     # late parent-FD write; never overwrite the authoritative path.
                     if child.is_dir() and proxy.is_dir():
                         store.put('defaults_conflict', {'public': str(source/child.name), 'former_copy': str(child)})
+                        store.db.commit()
         for child in hdd.iterdir():
             if tier_temporary(child): continue
             public = source / child.name
