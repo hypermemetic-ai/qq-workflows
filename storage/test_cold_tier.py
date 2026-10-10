@@ -83,6 +83,80 @@ class CopyDurabilityTests(unittest.TestCase):
 
 
 class ColdTierTests(unittest.TestCase):
+    def bulk_backing_fixture(self):
+        source=self.home/'project';source.mkdir()
+        for name in ('pending','already'):
+            (source/name).mkdir();(source/name/'data').write_text(name)
+        self.cfg['mirror_layout']=True
+        with patch.object(m,'references',return_value=[]):
+            parent=m.bridge_parent(self.store,self.cfg,source)
+            m.route_defaults(self.store,self.cfg)
+            row=self.store.root(str(source/'already'))
+            m.migrate(self.store,self.cfg,row['source'],demoting=row)
+        return source,parent,Path(parent['backing'])
+
+    def test_whole_backing_moves_pending_children_without_replacing_existing_hdd_payload(self):
+        source,parent,backing=self.bulk_backing_fixture()
+        already=self.store.root(str(source/'already'));inode=Path(already['target']).stat().st_ino
+        pending=self.store.root(str(source/'pending'));m.queue_add(self.store,pending['source'])
+        with patch.object(m,'references',return_value=[]),patch.object(m,'broker_references',return_value=set()) as broker:
+            m.move_backing(self.store,self.cfg,backing)
+        self.assertEqual((source/'pending/data').read_text(),'pending')
+        self.assertEqual((source/'already/data').read_text(),'already')
+        self.assertEqual(Path(already['target']).stat().st_ino,inode)
+        self.assertTrue(backing.is_symlink())
+        self.assertEqual(self.store.root(pending['id'])['location'],'hdd')
+        self.assertEqual(self.store.db.execute('SELECT status FROM queue WHERE source=?',(pending['source'],)).fetchone()[0],'complete')
+        self.assertEqual(broker.call_count,3)
+        m.adopt_defaults(self.store,self.cfg);m.adopt_defaults(self.store,self.cfg)
+        self.assertEqual((source/'pending/data').read_text(),'pending')
+
+    def test_bulk_backing_reconciles_children_after_interruption_before_metadata(self):
+        source,parent,backing=self.bulk_backing_fixture();pending=self.store.root(str(source/'pending'))
+        with patch.object(m,'references',return_value=[]),patch.object(m,'broker_references',return_value=set()),\
+             patch.object(m,'reconcile_moved_backings',side_effect=RuntimeError('metadata interruption')):
+            with self.assertRaisesRegex(RuntimeError,'metadata interruption'):m.move_backing(self.store,self.cfg,backing)
+        self.assertEqual(self.store.root(pending['id'])['location'],'ssd')
+        m.adopt_defaults(self.store,self.cfg)
+        self.assertEqual(self.store.root(pending['id'])['location'],'hdd')
+        self.assertEqual((source/'pending/data').read_text(),'pending')
+
+    def test_bulk_backing_host_coverage_failure_preserves_all_original_inodes(self):
+        source,parent,backing=self.bulk_backing_fixture();inode=(backing/'pending/data').stat().st_ino
+        with patch.object(m,'references',return_value=[]),patch.object(m,'broker_references',side_effect=ValueError('coverage incomplete')):
+            with self.assertRaisesRegex(ValueError,'coverage incomplete'):m.move_backing(self.store,self.cfg,backing)
+        self.assertFalse(backing.is_symlink());self.assertEqual((source/'pending/data').stat().st_ino,inode)
+        self.assertFalse(list(self.store.state.glob('*operation.json')))
+
+    def test_bulk_backing_package_detachment_preserves_outside_alias_and_rejects_other_shared_files(self):
+        source,parent,backing=self.bulk_backing_fixture();packages=backing/'node_modules';packages.mkdir()
+        package=packages/'library';package.write_text('package');outside=self.home/'outside';os.link(package,outside)
+        with patch.object(m,'references',return_value=[]),patch.object(m,'broker_references',return_value=set()):
+            m.move_backing(self.store,self.cfg,backing,detach_packages=True)
+        self.assertEqual(outside.read_text(),'package');self.assertEqual((backing/'node_modules/library').read_text(),'package')
+        self.assertNotEqual(outside.stat().st_ino,(backing/'node_modules/library').stat().st_ino)
+        other=self.home/'other';other.mkdir();(other/'source').write_text('shared source')
+        os.link(other/'source',self.home/'source-alias')
+        with patch.object(m,'references',return_value=[]):parent=m.bridge_parent(self.store,self.cfg,other)
+        with self.assertRaisesRegex(ValueError,'outside installed packages'):
+            m.move_backing(self.store,self.cfg,parent['backing'],detach_packages=True)
+        self.assertFalse(Path(parent['backing']).is_symlink())
+
+    def test_bulk_backing_recovery_keeps_host_reference_guard_before_retirement(self):
+        source,parent,backing=self.bulk_backing_fixture()
+        with patch.object(m,'references',return_value=[]),patch.object(m,'broker_references',return_value=set()),\
+             patch.object(m,'remove_retired',side_effect=PermissionError('interrupted retirement')):
+            with self.assertRaises(PermissionError):m.move_backing(self.store,self.cfg,backing)
+        record=m.bounded_json(self.store.state/'operation.json');self.assertTrue(record['host_reference_guard'])
+        retired=Path(record['staged']);self.assertTrue(retired.exists())
+        with patch.object(m,'references',return_value=[]),patch.object(m,'broker_references',return_value={42}):
+            with self.assertRaisesRegex(ValueError,'remains active'):m.recover_published(self.store,self.cfg)
+        self.assertTrue(retired.exists())
+        with patch.object(m,'references',return_value=[]),patch.object(m,'broker_references',return_value=set()):
+            m.recover_published(self.store,self.cfg)
+        m.adopt_defaults(self.store,self.cfg)
+        self.assertFalse(retired.exists());self.assertEqual((source/'pending/data').read_text(),'pending')
+
     def test_shared_standalone_file_defers_before_process_scans_without_changes(self):
         source=self.home/'shared';source.write_bytes(b'keep');alias=self.home/'alias';os.link(source,alias)
         with patch.object(m,'references',side_effect=AssertionError('unnecessary process scan')),\
