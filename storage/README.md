@@ -321,6 +321,13 @@ that query, with at most eight entries and 1 MiB of mount text. Repeated mapping
 identities are checked once per task, with at most 4096 memo entries. Changed
 namespace text and later distinct references still receive full checks. A scan
 that exhausts its time allowance cannot report complete coverage.
+Sandboxed renderers can retain deleted shared-memory mappings with no usable
+mount table. Directory checks ignore a regular inode only after descriptor or
+kernel `map_files` metadata proves its exact device/inode identity and zero
+links. A deleted pathname alone is insufficient. `CAP_CHECKPOINT_RESTORE`
+permits the latter metadata check when every descriptor has closed; no mapped
+contents are opened. The preparation helper recognizes the intact previous
+collector unit when installing this capability.
 Exited zombie/dead tasks with a kernel-reported thread count of one no longer
 hold file, filesystem or mapping references. Exited leaders with surviving or
 unknown sibling threads remain guarded. An access failure during an
