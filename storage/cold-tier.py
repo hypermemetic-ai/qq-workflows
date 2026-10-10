@@ -662,7 +662,14 @@ def adopt_defaults(store, cfg):
             for child in former.iterdir():
                 if tier_temporary(child) or str(child) in managed_backings: continue
                 proxy = hdd / child.name
-                if not os.path.lexists(proxy): proxy.symlink_to(child)
+                if not os.path.lexists(proxy):
+                    # A migrated backing alias can point at this now-missing
+                    # HDD name. Recreating a proxy to that alias would make a
+                    # cycle and block unrelated adoption on the next pass.
+                    # Preserve the alias and missing payload for recovery;
+                    # never fabricate a replacement file or loop to it.
+                    if child.is_symlink() and within(child.resolve(),proxy):continue
+                    proxy.symlink_to(child)
                 elif not proxy.is_symlink() and not child.is_symlink():
                     # Both versions survive an atomic replacement or conflicting
                     # late parent-FD write; never overwrite the authoritative path.
@@ -981,18 +988,44 @@ def copied_link(source, rel, raw):
     return raw
 
 
+def copy_flush_plan(destination, max_entries=128, max_bytes=64*1024**2):
+    """Bounded file/directory plan; complex or large trees keep syncfs."""
+    destination=Path(destination);info=destination.lstat()
+    if stat.S_ISREG(info.st_mode):return [destination],[]
+    if not stat.S_ISDIR(info.st_mode):return None
+    pending=[destination];files=[];directories=[];seen=set();entries=0;size=0
+    while pending:
+        path=pending.pop();current=path.lstat();entries+=1
+        if entries>max_entries or current.st_dev!=info.st_dev:return None
+        if stat.S_ISREG(current.st_mode):
+            identity=(current.st_dev,current.st_ino)
+            if identity not in seen:
+                seen.add(identity);files.append(path);size+=current.st_size
+                if size>max_bytes:return None
+        elif stat.S_ISDIR(current.st_mode):
+            directories.append(path)
+            with os.scandir(path) as children:
+                for child in children:
+                    pending.append(path/child.name)
+                    if entries+len(pending)>max_entries:return None
+        else:return None
+    return files,sorted(directories,key=lambda p:len(p.parts),reverse=True)
+
+
 def flush_copy(destination):
     # Persist data and directory entries on the destination filesystem before
     # publishing its link and retiring the original. Never sync all host disks.
     destination = Path(destination)
     info = destination.lstat()
-    if not stat.S_ISREG(info.st_mode):
+    plan=copy_flush_plan(destination)
+    if plan is None:
         subprocess.run(['sync', '-f', '--', str(destination)], check=True, timeout=120)
         return
-    # A standalone file needs its own data/metadata and the directory entries
-    # reaching it, including a newly created opaque staging parent. sync -f
-    # would also wait for unrelated writers on this filesystem for every file.
-    subprocess.run(['sync', '--', str(destination)], check=True, timeout=120)
+    # Persist each payload inode, directory bottom-up, and staging ancestry.
+    # Never invoke sync with no file operands: that flushes all host disks.
+    files,directories=plan
+    if files:subprocess.run(['sync', '--', *map(str,files)], check=True, timeout=120)
+    for directory in directories:flush_directory(directory)
     parent = destination.parent
     while parent.stat().st_dev == info.st_dev:
         flush_directory(parent)

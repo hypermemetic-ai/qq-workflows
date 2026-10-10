@@ -42,7 +42,40 @@ class CopyDurabilityTests(unittest.TestCase):
 
     def test_directory_copy_keeps_full_tree_durability_barrier(self):
         with tempfile.TemporaryDirectory() as tmp:
-            destination = Path(tmp); (destination/'payload').write_bytes(b'keep')
+            destination = Path(tmp)
+            for index in range(129):(destination/str(index)).write_bytes(b'keep')
+            with patch.object(m.subprocess,'run') as run,patch.object(m,'flush_directory') as directory:
+                real_flush_copy(destination)
+            run.assert_called_once_with(['sync','-f','--',str(destination)],check=True,timeout=120)
+            directory.assert_not_called()
+
+    def test_small_tree_syncs_payloads_before_child_and_parent_directory_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            destination=Path(tmp)/'staging'/'tree';nested=destination/'nested';nested.mkdir(parents=True)
+            first=destination/'one';second=nested/'two'
+            first.write_bytes(b'one');second.write_bytes(b'two');events=[]
+            with patch.object(m.subprocess,'run',side_effect=lambda args,**kw:events.append(('files',args))), \
+                 patch.object(m,'flush_directory',side_effect=lambda path:events.append(('directory',path))):
+                real_flush_copy(destination)
+            self.assertEqual(events[0][1][:2],['sync','--'])
+            self.assertEqual(set(events[0][1][2:]),{str(first),str(second)})
+            paths=[path for kind,path in events[1:]]
+            self.assertLess(paths.index(nested),paths.index(destination))
+            self.assertLess(paths.index(destination),paths.index(destination.parent))
+            self.assertIn(destination.parent.parent,paths)
+
+    def test_empty_tree_persists_directories_without_syncing_all_host_disks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            destination=Path(tmp)/'staging'/'empty';destination.mkdir(parents=True)
+            with patch.object(m.subprocess,'run') as run,patch.object(m,'flush_directory') as directory:
+                real_flush_copy(destination)
+            run.assert_not_called()
+            self.assertEqual(directory.call_args_list[0].args[0],destination)
+            self.assertIn(destination.parent,[call.args[0] for call in directory.call_args_list])
+
+    def test_symlink_tree_keeps_filesystem_barrier_without_following_external_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            destination=Path(tmp);(destination/'external').symlink_to('/unavailable-external-target')
             with patch.object(m.subprocess,'run') as run,patch.object(m,'flush_directory') as directory:
                 real_flush_copy(destination)
             run.assert_called_once_with(['sync','-f','--',str(destination)],check=True,timeout=120)
@@ -179,6 +212,33 @@ class ColdTierTests(unittest.TestCase):
             self.assertEqual((folder/'second').read_bytes(),b'second')
             self.assertEqual(reopened.root(str(folder/'second'))['location'],'hdd')
         finally:reopened.db.close()
+
+    def test_missing_migrated_payload_does_not_recreate_a_reciprocal_proxy(self):
+        source=self.home/'logs';source.mkdir();file=source/'old.log';file.write_bytes(b'keep')
+        self.cfg['mirror_layout']=True
+        with patch.object(m,'references',return_value=[]):
+            parent=m.bridge_parent(self.store,self.cfg,source);m.route_defaults(self.store,self.cfg)
+            root=self.store.root(str(file));m.migrate(self.store,self.cfg,file,demoting=root)
+        backing=Path(parent['backing'])/'old.log';proxy=file.resolve()
+        alias=backing.lstat().st_ino;target=os.readlink(backing)
+        # Simulate an independently removed target, which must remain missing
+        # rather than being replaced by a link back to its own backing alias.
+        proxy.unlink();(Path(parent['backing'])/'new.log').write_bytes(b'new')
+        m.adopt_defaults(self.store,self.cfg);m.adopt_defaults(self.store,self.cfg)
+        self.assertFalse(os.path.lexists(proxy));self.assertEqual(backing.lstat().st_ino,alias)
+        self.assertEqual(os.readlink(backing),target)
+        self.assertEqual((source/'new.log').read_bytes(),b'new')
+        self.assertEqual(self.store.root(str(source/'new.log'))['location'],'ssd')
+
+    def test_original_dangling_link_remains_visible_without_creating_a_cycle(self):
+        source=self.home/'links';source.mkdir();(source/'data').write_bytes(b'keep')
+        (source/'external').symlink_to(self.home/'unavailable-target')
+        self.cfg['mirror_layout']=True
+        m.bridge_parent(self.store,self.cfg,source);m.route_defaults(self.store,self.cfg)
+        m.adopt_defaults(self.store,self.cfg)
+        self.assertTrue((source/'external').is_symlink())
+        self.assertEqual((source/'external').resolve(),self.home/'unavailable-target')
+        self.assertEqual((source/'data').read_bytes(),b'keep')
 
     def test_expanded_mirror_refuses_a_changed_original_identity(self):
         source=self.home/'projects';source.mkdir();folder=source/'snapshot';folder.mkdir();(folder/'data').write_bytes(b'keep')

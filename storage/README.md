@@ -93,9 +93,14 @@ the tool checks process references, a source mutation watch, manifest metadata a
 file hashes.
 
 Standalone files persist their data and metadata, then sync every ancestor
-directory on the destination device before publication. They do not flush
-unrelated payloads on that filesystem. Directory copies retain a filesystem
-durability barrier for their full tree.
+directory on the destination device before publication. Small directory copies
+with at most 128 entries and 64 MiB of regular payload sync each payload inode,
+then their directory entries from children to parents. These moves do not flush
+unrelated payloads on that filesystem. Larger trees and trees containing symlinks
+retain the filesystem durability barrier.
+If a migrated HDD name goes missing, adoption retains its former alias without
+creating a link back through that alias. Missing payloads require recovery;
+they are never replaced with empty files.
 
 Paths with visible live references, sockets, foreign ownership, nested mounts,
 external hard links, source changes or inadequate watch coverage defer. Process
