@@ -9,8 +9,11 @@ place.
 This is an operational migration, not another app patch or host upgrade. Preserve
 Paseo's records until the transition is verified; do not archive conversations or
 workspaces as cleanup. Paseo workspace archival can remove a backing worktree.
-Do not restart shared services, delete provider data, or alter the independent
-ISO/Music streams. DecIQ and DecIQ Logic remain outside cleanup. The broader
+Do not restart shared services or delete provider data. Preserve independent
+ISO/Music tasks, configuration and runtime owners; never interrupt them. Selected
+sessions can transfer clients at their idle boundary. DecIQ and DecIQ Logic file
+and runtime cleanup remain out of scope; project registration and client views
+do not change their applications. The broader
 ownership context is in [native-entry.md](../../docs/native-entry.md).
 
 ## Baseline and delivery state
