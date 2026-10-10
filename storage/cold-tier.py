@@ -513,10 +513,20 @@ def reconcile_moved_backings(store, cfg, archive):
                          (str(target), 'hdd', '', 'bulk backing: awaiting watcher', root['id']))
         store.db.execute("UPDATE queue SET status='complete',error='verified whole backing move',updated=? "
                          "WHERE source=? AND action='move'", (time.time(), root['source']))
+    # Intake can queue a child before the watcher registers it. Its verified
+    # ancestor copy also completes that unit, but only with an intact HDD path.
+    for job in store.db.execute("SELECT source FROM queue WHERE action='move' AND status!='complete'").fetchall():
+        source = Path(job['source'])
+        if not any(within(source, p) for p in backings): continue
+        try: target = source.resolve(strict=True)
+        except OSError: continue
+        if target.stat().st_uid == os.getuid() and within(target, archive) and target.stat().st_dev == archive.stat().st_dev:
+            store.db.execute("UPDATE queue SET status='complete',error='verified whole backing move',updated=? WHERE source=?",
+                             (time.time(), str(source)))
     store.db.commit()
 
 
-def move_backing(store, cfg, source, *, detach_packages=False):
+def move_backing(store, cfg, source, *, detach_packages=False, max_entries=None, max_watches=None):
     """Explicit bulk move of a quiescent backing; keep every existing public bridge."""
     source = absolute(source)
     if not any(p['backing'] == str(source) for p in store.get('defaults', [])):
@@ -526,6 +536,11 @@ def move_backing(store, cfg, source, *, detach_packages=False):
         raise ValueError('backing already has independent tracking; review required')
     valid_source(source, cfg)
     local = dict(cfg, mirror_layout=False, automatic_partition=False)
+    for key, value in (('max_scan_entries', max_entries), ('max_watches', max_watches)):
+        if value is not None:
+            if type(value) is not int or not 1 <= value <= 1000000:
+                raise ValueError('bulk scan/watch budget must be 1 to 1000000')
+            local[key] = value
     if detach_packages:
         local['immutable_hardlink_scopes'] = [str(source)]
         local['_package_only_detachment'] = True
@@ -1170,6 +1185,13 @@ def recover_published(store, cfg):
     archive = mount_ready(cfg)
     journal = store.state / 'operation.json'
     record = bounded_json(journal)
+    if record.get('host_reference_guard'):
+        cfg = dict(cfg)
+        for key in ('max_scan_entries', 'max_watches'):
+            value = record.get('bulk_budgets', {}).get(key, cfg[key])
+            if type(value) is not int or not 1 <= value <= 1000000:
+                raise ValueError('invalid bulk recovery budget; both copies retained')
+            cfg[key] = value
     if record.get('phase') != 'published' or record.get('restore') is not False:
         raise ValueError('only published HDD moves can be recovered automatically')
     source, original, destination = [absolute(record[k]) for k in ('source','original','destination')]
@@ -1302,7 +1324,9 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None, host_reference
     if os.path.lexists(staged): raise ValueError('original staging path exists')
     record = {'source': str(source), 'original': str(original), 'destination': str(destination),
               'staged': str(staged), 'restore': bool(restoring), 'phase': 'copying', 'started': time.time()}
-    if host_references: record['host_reference_guard'] = True
+    if host_references:
+        record['host_reference_guard'] = True
+        record['bulk_budgets'] = {key: cfg[key] for key in ('max_scan_entries', 'max_watches')}
     links=[dict(device=dev,inode=ino,inside=count,total=total,paths=names)
            for (dev,ino),(count,total,names) in (detached or {}).items()]
     record['detached_immutable_link_count']=len(links)
@@ -2157,6 +2181,7 @@ def main():
     p = sub.add_parser('queue'); p.add_argument('--priority',type=int,metavar='0..1000',default=None); p.add_argument('--action',choices=('move','default','partition','rehome'),default='move');p.add_argument('paths', nargs='+')
     p = sub.add_parser('move'); p.add_argument('path')
     p = sub.add_parser('move-backing'); p.add_argument('path'); p.add_argument('--detach-package-links',action='store_true')
+    p.add_argument('--max-entries',type=int); p.add_argument('--max-watches',type=int)
     p = sub.add_parser('restore'); p.add_argument('root')
     p = sub.add_parser('split'); p.add_argument('root'); p.add_argument('relative')
     p = sub.add_parser('partition'); p.add_argument('root')
@@ -2219,7 +2244,9 @@ def main():
     elif args.command == 'move':
         with lock(store.state / 'move.lock'): migrate(store, cfg, args.path)
     elif args.command == 'move-backing':
-        with lock(store.state / 'move.lock'): move_backing(store,cfg,args.path,detach_packages=args.detach_package_links)
+        with lock(store.state / 'move.lock'):
+            move_backing(store,cfg,args.path,detach_packages=args.detach_package_links,
+                         max_entries=args.max_entries,max_watches=args.max_watches)
     elif args.command == 'restore':
         with lock(store.state / 'move.lock'): migrate(store, cfg, store.root(args.root)['source'], restoring=store.root(args.root))
     elif args.command == 'split':
