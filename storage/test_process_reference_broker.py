@@ -83,7 +83,7 @@ class ProcessReferences(unittest.TestCase):
 
     def test_exited_process_has_no_live_mount_or_file_coverage_to_inspect(self):
         folder,_,keys=self.directory_fixture()
-        (self.task/'status').write_text('State:\tZ (zombie)\nKthread:\t0\n')
+        (self.task/'status').write_text('State:\tZ (zombie)\nThreads:\t1\nKthread:\t0\n')
         (self.task/'mountinfo').unlink();(self.task/'maps').unlink()
         self.assertTrue(m.collect_directories([str(folder)],keys,self.proc)['complete'])
         self.assertTrue(m.collect([self.key],self.proc)['complete'])
@@ -92,7 +92,7 @@ class ProcessReferences(unittest.TestCase):
         folder,_,keys=self.directory_fixture();original=Path.open
         def exiting(path,*args,**kwargs):
             if path==self.task/'mountinfo':
-                (self.task/'status').write_text('State:\tZ (zombie)\n')
+                (self.task/'status').write_text('State:\tZ (zombie)\nThreads:\t1\n')
                 raise OSError(errno.EINVAL,'Invalid argument')
             return original(path,*args,**kwargs)
         with patch.object(Path,'open',exiting):
@@ -114,9 +114,19 @@ class ProcessReferences(unittest.TestCase):
         self.assertEqual(result['processes'],2);self.assertIn('process 42:',result['error'])
 
     def test_inaccessible_state_cannot_be_assumed_exited(self):
-        original=Path.open
         with patch.object(Path,'open',side_effect=PermissionError('denied')):
             self.assertFalse(m.exited_task(self.task))
+
+    def test_exited_leader_with_surviving_or_unknown_threads_is_not_skipped(self):
+        folder,_,keys=self.directory_fixture();original=Path.open
+        for threads in ('Threads:\t2\n',''):
+            (self.task/'status').write_text('State:\tZ (zombie)\n'+threads)
+            def denied(path,*args,**kwargs):
+                if path==self.task/'mountinfo':raise OSError(errno.EINVAL,'Invalid argument')
+                return original(path,*args,**kwargs)
+            with patch.object(Path,'open',denied):
+                result=m.collect_directories([str(folder)],keys,self.proc)
+            self.assertFalse(result['complete'])
 
     def test_diagnostics_are_bounded_while_remaining_processes_are_checked(self):
         folder,_,keys=self.directory_fixture()

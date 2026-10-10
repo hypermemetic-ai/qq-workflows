@@ -62,9 +62,11 @@ def within_path(path,parent):
 
 def exited_status(raw):
     # TASK_ZOMBIE/TASK_DEAD is reached after exit releases files, fs and mm.
-    # A surviving /proc entry is not a surviving holder of those resources.
-    return any(line.split()[1:2] in ([b'Z'],[b'X'])
-               for line in raw.splitlines() if line.startswith(b'State:'))
+    # An exited leader can still have live sibling threads. Without proof that
+    # the group has only this task, its unavailable references remain a failure.
+    fields={line.partition(b':')[0]:line.partition(b':')[2].split()
+            for line in raw.splitlines() if line.startswith((b'State:',b'Threads:'))}
+    return fields.get(b'State',[])[:1] in ([b'Z'],[b'X']) and fields.get(b'Threads')==[b'1']
 
 
 def exited_task(task):
