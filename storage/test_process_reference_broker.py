@@ -188,6 +188,66 @@ class ProcessReferences(unittest.TestCase):
         result=m.collect_directories([str(folder)],keys,self.proc)
         self.assertFalse(result['complete']);self.assertIn('process 42: relevant mount coverage unavailable',result['error'])
 
+    def test_chroot_deleted_mapping_uses_actual_unlinked_descriptor_identity(self):
+        folder,child,keys=self.directory_fixture();device=keys[0][0]
+        descriptor=os.open(self.file,os.O_RDONLY);self.addCleanup(os.close,descriptor)
+        identity=os.fstat(descriptor);self.file.unlink()
+        (self.task/'fd/9').symlink_to(f'/proc/self/fd/{descriptor}')
+        (self.task/'mountinfo').write_text('')
+        (self.task/'maps').write_text('0000-1000 rw-s 0000 '+f'{os.major(device):02x}:{os.minor(device):02x} {identity.st_ino} {self.file} (deleted)\n')
+        result=m.collect_directories([str(folder)],keys,self.proc)
+        self.assertTrue(result['complete']);self.assertEqual(result['blocked'],[])
+        self.assertEqual(result['fds'],1)
+        (self.task/'fd/10').symlink_to(child)
+        result=m.collect_directories([str(folder)],keys,self.proc)
+        self.assertTrue(result['complete']);self.assertEqual(result['blocked'],[0])
+
+    def test_deleted_marker_without_open_inode_proof_stays_incomplete(self):
+        folder,_,keys=self.directory_fixture();device=keys[0][0];identity=self.file.stat()
+        self.file.unlink();(self.task/'mountinfo').write_text('')
+        (self.task/'maps').write_text('0000-1000 rw-s 0000 '+f'{os.major(device):02x}:{os.minor(device):02x} {identity.st_ino} {self.file} (deleted)\n')
+        self.assertFalse(m.collect_directories([str(folder)],keys,self.proc)['complete'])
+
+    def test_linked_descriptor_cannot_prove_a_deleted_mapping_irrelevant(self):
+        folder,_,keys=self.directory_fixture();device=keys[0][0]
+        (self.task/'fd/9').symlink_to(self.file);(self.task/'mountinfo').write_text('')
+        missing=self.root/'missing'
+        (self.task/'maps').write_text('0000-1000 rw-s 0000 '+f'{os.major(device):02x}:{os.minor(device):02x} {self.file.stat().st_ino} {missing} (deleted)\n')
+        self.assertFalse(m.collect_directories([str(folder)],keys,self.proc)['complete'])
+
+    def test_unlinked_descriptor_proof_does_not_cover_a_different_inode(self):
+        folder,_,keys=self.directory_fixture();device=keys[0][0]
+        descriptor=os.open(self.file,os.O_RDONLY);self.addCleanup(os.close,descriptor)
+        identity=os.fstat(descriptor);self.file.unlink()
+        (self.task/'fd/9').symlink_to(f'/proc/self/fd/{descriptor}');(self.task/'mountinfo').write_text('')
+        (self.task/'maps').write_text('0000-1000 rw-s 0000 '+f'{os.major(device):02x}:{os.minor(device):02x} {identity.st_ino+1} {self.file} (deleted)\n')
+        self.assertFalse(m.collect_directories([str(folder)],keys,self.proc)['complete'])
+
+    def test_chroot_deleted_mapping_without_descriptor_uses_kernel_map_identity(self):
+        folder,_,keys=self.directory_fixture();device=keys[0][0]
+        descriptor=os.open(self.file,os.O_RDONLY);self.addCleanup(os.close,descriptor)
+        identity=os.fstat(descriptor);self.file.unlink();unlinked=os.fstat(descriptor)
+        (self.task/'mountinfo').write_text('')
+        (self.task/'maps').write_text('0000-1000 rw-s 0000 '+f'{os.major(device):02x}:{os.minor(device):02x} {identity.st_ino} {self.file} (deleted)\n')
+        original=Path.stat;mapping=self.task/'map_files/0000-1000'
+        def proof(path,*args,**kwargs):
+            if path==mapping:return unlinked
+            return original(path,*args,**kwargs)
+        with patch.object(Path,'stat',proof):result=m.collect_directories([str(folder)],keys,self.proc)
+        self.assertTrue(result['complete']);self.assertEqual(result['blocked'],[])
+        self.assertEqual(result['fds'],0)
+
+    def test_map_identity_proof_rejects_linked_and_mismatched_inodes(self):
+        folder,_,keys=self.directory_fixture();device=keys[0][0];identity=self.file.stat()
+        (self.task/'mountinfo').write_text('');missing=self.root/'missing'
+        (self.task/'maps').write_text('0000-1000 rw-s 0000 '+f'{os.major(device):02x}:{os.minor(device):02x} {identity.st_ino} {missing} (deleted)\n')
+        original=Path.stat;mapping=self.task/'map_files/0000-1000'
+        for proof in (identity,SimpleNamespace(st_dev=device,st_ino=identity.st_ino+1,st_mode=identity.st_mode,st_nlink=0)):
+            def info(path,*args,**kwargs):
+                if path==mapping:return proof
+                return original(path,*args,**kwargs)
+            with patch.object(Path,'stat',info):self.assertFalse(m.collect_directories([str(folder)],keys,self.proc)['complete'])
+
     def test_directory_coverage_fails_closed_on_unmapped_references_and_limits(self):
         folder,child,keys=self.directory_fixture()
         (self.task/'fd/9').symlink_to(child)

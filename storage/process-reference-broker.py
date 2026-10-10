@@ -124,9 +124,20 @@ def collect_directories(paths,identities,proc=PROC,seconds=25):
                 # A bind of a strict subtree pins that tree even with no open FD.
                 for index,(candidate,wanted_device) in enumerate(candidates):
                     if device==wanted_device and within_path(root,candidate):blocked.add(index)
-            inspected=set()
-            def inspect(raw_path,device,inode):
+            inspected=set();unlinked_regular=set()
+            def inspect(raw_path,device,inode,*,mapping=None):
                 if device not in devices:return
+                if (device,inode) in unlinked_regular:return
+                if mapping is not None and raw_path.endswith(' (deleted)'):
+                    # Mapped files can outlive every descriptor. The kernel's
+                    # map_files link still permits an identity/link-count check
+                    # with CAP_CHECKPOINT_RESTORE, without opening contents.
+                    if not re.fullmatch(r'[0-9a-f]+-[0-9a-f]+',mapping):
+                        raise ValueError('invalid mapping address')
+                    try:info=(task/'map_files'/mapping).stat()
+                    except OSError:pass  # Normal namespace proof still applies.
+                    else:
+                        if (info.st_dev,info.st_ino)==(device,inode) and stat.S_ISREG(info.st_mode) and info.st_nlink==0:return
                 key=(raw_path,device,inode)
                 if key in inspected:return
                 if len(inspected)>=4096:inspected.clear()
@@ -159,6 +170,24 @@ def collect_directories(paths,identities,proc=PROC,seconds=25):
                 point,root,_=mount;physical=root/path.relative_to(point)
                 for index,(candidate,wanted_device) in enumerate(candidates):
                     if device==wanted_device and within_path(physical,candidate):blocked.add(index)
+            # A sandboxed Chromium renderer can retain a deleted shared-memory
+            # mapping after chroot leaves mountinfo empty. Its pathname no
+            # longer resolves in either namespace. Prove those inodes have no
+            # filesystem links using actual open-descriptor metadata before
+            # inspecting mappings; a deleted marker alone proves nothing.
+            for fd in (task/'fd').iterdir():
+                fds+=1
+                if fds>250000 or time.monotonic()>deadline:
+                    failed('descriptor count or time budget exceeded');break
+                try:
+                    info=fd.stat()
+                    if stat.S_ISREG(info.st_mode) and info.st_nlink==0:
+                        if len(unlinked_regular)<4096:unlinked_regular.add((info.st_dev,info.st_ino))
+                        continue
+                    inspect(os.readlink(fd),info.st_dev,info.st_ino)
+                except OSError as error:
+                    if not vanished(error) and not exited_task(task):
+                        failed(f'process {task.name}: descriptor access unavailable')
             for name in ('cwd','exe'):
                 try:
                     link=task/name;info=link.stat();inspect(os.readlink(link),info.st_dev,info.st_ino)
@@ -172,16 +201,8 @@ def collect_directories(paths,identities,proc=PROC,seconds=25):
                 fields=line.split(None,5)
                 if len(fields)<5:raise ValueError('invalid map record')
                 major,minor=fields[3].split(b':');device=os.makedev(int(major,16),int(minor,16));inode=int(fields[4])
-                if inode:inspect(fields[5].decode('utf-8','surrogateescape') if len(fields)==6 else '',device,inode)
-            for fd in (task/'fd').iterdir():
-                fds+=1
-                if fds>250000 or time.monotonic()>deadline:
-                    failed('descriptor count or time budget exceeded');break
-                try:
-                    info=fd.stat();inspect(os.readlink(fd),info.st_dev,info.st_ino)
-                except OSError as error:
-                    if not vanished(error) and not exited_task(task):
-                        failed(f'process {task.name}: descriptor access unavailable')
+                if inode:inspect(fields[5].decode('utf-8','surrogateescape') if len(fields)==6 else '',device,inode,
+                                 mapping=fields[0].decode('ascii'))
             if time.monotonic()>deadline:
                 failed('process-reference time budget exceeded');break
             if fds>250000:break

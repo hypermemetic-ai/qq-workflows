@@ -47,7 +47,7 @@ ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=yes
 RestrictAddressFamilies=AF_UNIX
-CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_CHECKPOINT_RESTORE
 CPUQuota=10%
 MemoryMax=128M
 MemorySwapMax=0
@@ -82,8 +82,10 @@ def collector_unit(script):
               if line.startswith('ExecStart=/usr/bin/python3 ')]
     if len(commands)!=1:raise ValueError('Unrecognized reference collector unit; preserved')
     old=Path(commands[0])
+    expected=broker_service_text(old).encode()
+    recognized=(expected,expected.replace(b' CAP_CHECKPOINT_RESTORE',b''))
     if (old.parent.parent!=BROKER_LIBRARY or old.name!='process-reference-broker.py' or old.resolve()!=old or
-        previous!=broker_service_text(old).encode()):
+        previous not in recognized):
         raise ValueError('Unrecognized reference collector unit; preserved')
     info=old.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_nlink!=1 or info.st_mode&0o022:
