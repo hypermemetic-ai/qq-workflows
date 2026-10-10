@@ -181,16 +181,27 @@ def boot_order():
 
 def census():
     # Depth bounds output; root privileges remove the inaccessible-directory gaps.
-    result=subprocess.run(['ionice','-c','3','du','-x','-B1','--max-depth=2','/home','/var','/tmp','/opt'],
-                          capture_output=True,text=True,timeout=600)
-    if len(result.stdout.encode())>262144 or len(result.stderr.encode())>262144:
+    timeout_error=''
+    try:
+        result=subprocess.run(['ionice','-c','2','-n','7','du','-x','-B1','--max-depth=2','/home','/var','/tmp','/opt'],
+                              capture_output=True,text=True,timeout=120)
+        stdout,stderr,complete=result.stdout,result.stderr,result.returncode==0
+    except subprocess.TimeoutExpired as error:
+        stdout,stderr,complete=error.stdout or b'',error.stderr or b'',False
+        timeout_error='SSD census reached its 120 second budget; completed rows retained.'
+    if any(len(raw.encode() if isinstance(raw,str) else raw)>262144 for raw in (stdout,stderr)):
         raise ValueError('System census exceeded its output bound')
+    stdout=stdout.decode(errors='replace') if isinstance(stdout,bytes) else stdout
+    stderr=stderr.decode(errors='replace') if isinstance(stderr,bytes) else stderr
     rows=[]
-    for line in result.stdout.splitlines():
+    for line in stdout.splitlines(keepends=True):
+        # A timeout can leave a truncated path in the final pipe fragment.
+        if timeout_error and not line.endswith('\n'):continue
+        line=line.rstrip('\n')
         size,separator,path=line.partition('\t')
         if separator and size.isdecimal():rows.append({'bytes':int(size),'path':path})
-    return {'complete':result.returncode==0,'rows':sorted(rows,key=lambda r:r['bytes'],reverse=True),
-            'errors':result.stderr[-4096:]}
+    return {'complete':complete,'rows':sorted(rows,key=lambda r:r['bytes'],reverse=True),
+            'errors':(stderr+'\n'+timeout_error).strip()[-4096:]}
 
 
 def main():
@@ -208,10 +219,16 @@ def main():
     os.umask(0o077);base.verified_host_mounts();volume.read_manifest()
     report={'timestamp':time.time(),'boot_order':boot_order(),'reference_collector':reference_collector()}
     report['reference_collector']['host_scan']=reference_smoke(output.parent.resolve())
+    # Activation is already verified. Persist it before the optional census so
+    # a diagnostic timeout cannot erase the usable result or invite a rerun.
+    report['ssd_census']={'complete':False,'rows':[],'errors':'SSD census running'}
+    base.atomic_json(output,report,volume.OWNER,volume.OWNER)
     report['ssd_census']=census()
     base.atomic_json(output,report,volume.OWNER,volume.OWNER)
     print('Volume ordered before login. No running applications or volume were restarted.')
     print('Saved SSD census:',output)
+    if not report['ssd_census']['complete']:
+        print('SSD census incomplete; volume ordering and reference checker are verified. No activation rerun needed.')
     return 0
 
 
