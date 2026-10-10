@@ -733,7 +733,10 @@ def ensure_mirror_parent(store,cfg,raw):
             stage=directory.with_name('.'+directory.name+'.qq-tier-default-link')
             if os.path.lexists(stage):raise ValueError('mirror ancestor staging already exists')
             stage.mkdir(mode=0o700)
-            entries=list(original.iterdir())
+            # Publishing this ancestor changes where its logical spelling
+            # resolves. Point untouched children at the stable backing inode,
+            # otherwise their new proxies point back into their own namespace.
+            entries=list(original.resolve(strict=True).iterdir())
             if len(entries)>cfg['max_scan_entries']:raise ValueError('mirror ancestor entry budget exceeded')
             for child in entries:(stage/child.name).symlink_to(child)
             if os.path.lexists(directory):exchange(stage,directory);stage.unlink()
