@@ -35,6 +35,7 @@ notification. `check_runner` / `check_execution` are point-in-time reads.
 | Worker role contracts | `agents/{runner,implementer,reviewer}/agent.md` |
 | Migration/activation guide | `docs/pi-worker-migration.md`, templates in `config/` |
 | Paseo fork maintenance and performance changes | [Project instructions](projects/paseo-maintenance/AGENTS.md) |
+| Paseo to stock Orca project/session migration | [Migration record](projects/paseo-maintenance/orca-migration.md) |
 
 ## Install
 
