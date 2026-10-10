@@ -45,7 +45,8 @@ User=root
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
-PrivateTmp=yes
+PrivateTmp=no
+ReadOnlyPaths=/tmp
 RestrictAddressFamilies=AF_UNIX
 CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_CHECKPOINT_RESTORE
 CPUQuota=10%
@@ -83,7 +84,8 @@ def collector_unit(script):
     if len(commands)!=1:raise ValueError('Unrecognized reference collector unit; preserved')
     old=Path(commands[0])
     expected=broker_service_text(old).encode()
-    recognized=(expected,expected.replace(b' CAP_CHECKPOINT_RESTORE',b''))
+    legacy=expected.replace(b'PrivateTmp=no\nReadOnlyPaths=/tmp\n',b'PrivateTmp=yes\n')
+    recognized=(expected,legacy,legacy.replace(b' CAP_CHECKPOINT_RESTORE',b''))
     if (old.parent.parent!=BROKER_LIBRARY or old.name!='process-reference-broker.py' or old.resolve()!=old or
         previous not in recognized):
         raise ValueError('Unrecognized reference collector unit; preserved')
