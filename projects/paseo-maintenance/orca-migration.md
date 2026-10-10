@@ -51,7 +51,7 @@ and saved provider context are separate concerns. See
 | --- | --- |
 | Project/workspace mapping | 18 roots/17 locations registered; 12 physical cards/13 original working directories |
 | Original thread/settings continuity | All 18 source/native IDs consistent; real 3.07 MiB pilot verified on original main/provider |
-| Ongoing migration | 2026-10-10 19:27:05 UTC receipts: 15 verified, 3 still pending; coordinator queued last |
+| Ongoing migration | Active worker at 2026-10-10 19:28:42 UTC: 15 verified, 0 blocked, 3 waiting; coordinator queued last |
 | Native Android controls | Same-ID 19.2 MiB synthetic Chat/send/switch/background/reconnect accepted on original Codex 0.159.3 |
 | OpenSpec | ON16/OFF2 instruction-driven carryover prepared; explicit-path native child read verified |
 | Phone | Main host authenticated and real pilot phone-accepted; installed APK version not ADB-verified |
@@ -151,12 +151,15 @@ Only the verified pilot had transferred. Recovery uses a 768 MiB budget for the
 worker and helper Node processes, preserving the original deadline, concurrency
 of one and 64-task limit.
 
-Receipts at 2026-10-10 19:27:05 UTC verify 15 original conversations, each with
+Receipts verify 15 original conversations, each with
 exactly one notice and acknowledgment, completed Chat/Stop and final expected-writer
 fences. The parent-file recovery below passed on its existing pane and original
-thread. Three conversations remain unverified, including the coordinator queued
-last; the worker queue is being reconciled without replaying notices. The original
-deadline is unchanged and automatic notice retries are zero.
+thread. The operative worker snapshot at 2026-10-10 19:28:42 UTC is active with
+15 verified, zero blocked and three waiting: two non-coordinator sessions are
+running, one awaiting operator permission, and the coordinator is queued last.
+The 768 MiB budget, concurrency of one, 64-task limit and original deadline are
+unchanged; automatic notice retries are zero. These remaining conversations are
+not yet transferred.
 
 The 2026-10-10 19:03:01 UTC rearm was an earlier checkpoint: the corrected unit
 was active with seven verified, zero blocked and eleven waiting. Those counts
