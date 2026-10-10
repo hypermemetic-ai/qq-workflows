@@ -24,7 +24,10 @@ After changing the archive to the native cached volume, run
 `qq-job -- qq-cold-tier route-defaults`. This atomically redirects new children
 while retaining earlier HDD directories and their open inodes. Late writes into
 any former parent remain discoverable. A route interrupted during publication is
-reconciled from its durable journal. Queue priorities from 0 to 1000 put selected bulk units ahead of older small
+reconciled from its durable journal.
+Partitioned parent tracking follows a proved bridge change while former parent
+inodes stay available for late writes.
+Queue priorities from 0 to 1000 put selected bulk units ahead of older small
 units after required parent cutovers; every unit keeps the same safety guards.
 `qq-cold-tier partition ROOT_ID` admits a
 mixed SSD directory's children separately without copying or retiring its busy

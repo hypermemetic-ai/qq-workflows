@@ -569,6 +569,11 @@ def adopt_defaults(store, cfg):
     archive = mount_ready(cfg)
     parents = store.get('defaults', [])
     managed_backings = {str(Path(p['backing'])) for p in parents}
+    routed_bridges = {}
+    for parent in parents:
+        for previous in parent.get('previous', []):
+            routed_bridges.setdefault(previous,set()).add(parent['hdd'])
+    excluded = [absolute(p).resolve() for p in cfg['excluded']]
     # Partitioning creates another private backing beneath an existing default
     # parent. It is machinery, not a second data root: duplicate inode watches
     # otherwise steal ownership from the real child roots.
@@ -597,6 +602,16 @@ def adopt_defaults(store, cfg):
         public = Path(root['source'])
         try:
             resolved = public.resolve(strict=True)
+            if (root['location'] == 'hdd' and str(resolved) in routed_bridges.get(root['target'], ())
+                    and not json.loads(root['aliases'])):
+                # Partitioned parent roots retain their identity when a later
+                # route changes their bridge. Former parent inodes remain in
+                # `previous` for late writes; only their tracking path changes.
+                if store.db.execute('SELECT 1 FROM scopes WHERE root=?',(root['id'],)).fetchone():
+                    raise ValueError('routed parent has a regeneration scope; review required')
+                store.db.execute('UPDATE roots SET target=?,since=0,coverage=0,error=? WHERE id=?',
+                                 (str(resolved),'default route: awaiting watcher',root['id']))
+                store.db.commit()
             if resolved != live_path(root) and not public.is_symlink() and resolved.stat().st_dev in hdd_devices:
                 # Atomic-save writers replace the proxy with a new HDD file. Adopt
                 # that new authoritative object; never copy the old SSD version over it.
@@ -628,7 +643,7 @@ def adopt_defaults(store, cfg):
             if str(public) in existing: continue
             resolved = child.resolve()
             if str(resolved) in managed_backings: continue
-            if any(within(resolved, absolute(p).resolve()) for p in cfg['excluded']): continue
+            if any(within(resolved, p) for p in excluded): continue
             if child.is_symlink():
                 # Original symlinks, sockets and indirect links retain their semantics.
                 real = next((p/child.name for p in backings if (p/child.name).exists()
