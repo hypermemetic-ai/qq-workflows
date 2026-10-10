@@ -288,6 +288,13 @@ that query, with at most eight entries and 1 MiB of mount text. Repeated mapping
 identities are checked once per task, with at most 4096 memo entries. Changed
 namespace text and later distinct references still receive full checks. A scan
 that exhausts its time allowance cannot report complete coverage.
+Exited zombie/dead tasks with a kernel-reported thread count of one no longer
+hold file, filesystem or mapping references. Exited leaders with surviving or
+unknown sibling threads remain guarded. An access failure during an
+exit race is ignored only after re-reading that state (or observing that the task
+vanished). Live access failures still leave coverage incomplete. Directory scans
+continue past individual failures within the same budget and return at most 16
+bounded reasons, so preparation can diagnose remaining issues together.
 
 The watcher drains its own directory-walk events during admission and watches
 new/deleted subtrees incrementally. Directory activity does not trigger a scan

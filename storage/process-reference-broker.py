@@ -60,26 +60,48 @@ def within_path(path,parent):
     return path==parent or path.startswith(parent.rstrip('/')+'/')
 
 
+def exited_status(raw):
+    # TASK_ZOMBIE/TASK_DEAD is reached after exit releases files, fs and mm.
+    # An exited leader can still have live sibling threads. Without proof that
+    # the group has only this task, its unavailable references remain a failure.
+    fields={line.partition(b':')[0]:line.partition(b':')[2].split()
+            for line in raw.splitlines() if line.startswith((b'State:',b'Threads:'))}
+    return fields.get(b'State',[])[:1] in ([b'Z'],[b'X']) and fields.get(b'Threads')==[b'1']
+
+
+def exited_task(task):
+    """Recognize an exit race without treating a live access failure as exit."""
+    try:
+        with (task/'status').open('rb') as stream:raw=stream.read(32769)
+        return len(raw)<=32768 and exited_status(raw)
+    except OSError as error:
+        return isinstance(error,FileNotFoundError) or error.errno==errno.ESRCH
+
+
 def collect_directories(paths,identities,proc=PROC,seconds=25):
     """Inspect namespace-relative references without reading candidate contents."""
     candidates=[(Path(p),key[0]) for p,key in zip(paths,identities)]
     devices={key[0] for key in identities}
-    blocked=set();complete=True;failure='';deadline=time.monotonic()+seconds
+    blocked=set();complete=True;errors=[];deadline=time.monotonic()+seconds
     processes=fds=maps_bytes=mount_bytes=0
     mount_cache={};mount_cache_bytes=0
     def vanished(error):return isinstance(error,FileNotFoundError) or getattr(error,'errno',None)==errno.ESRCH
+    def failed(reason):
+        nonlocal complete
+        complete=False
+        if len(errors)<16:errors.append(reason[:160])
     for task in proc.iterdir():
         if not task.name.isdecimal() or int(task.name)==os.getpid():continue
         processes+=1
         if processes>8192 or time.monotonic()>deadline:
-            complete=False;failure='process count or time budget exceeded';break
+            failed('process count or time budget exceeded');break
         try:
             with (task/'status').open('rb') as stream:status=stream.read(32769)
-            if len(status)>32768:complete=False;break
-            if b'Kthread:\t1' in status:continue
+            if len(status)>32768:failed('process status budget exceeded');break
+            if b'Kthread:\t1' in status or exited_status(status):continue
             with (task/'mountinfo').open('rb') as stream:raw=stream.read(262145)
             mount_bytes+=len(raw)
-            if len(raw)>262144 or mount_bytes>64*1024**2:complete=False;break
+            if len(raw)>262144 or mount_bytes>64*1024**2:failed('mount table budget exceeded');break
             mounts=mount_cache.get(raw)
             if mounts is None:
                 mounts=[]
@@ -141,11 +163,11 @@ def collect_directories(paths,identities,proc=PROC,seconds=25):
                 try:
                     link=task/name;info=link.stat();inspect(os.readlink(link),info.st_dev,info.st_ino)
                 except OSError as error:
-                    if not vanished(error):
-                        complete=False;failure=f'process {task.name}: {name} access unavailable'
+                    if not vanished(error) and not exited_task(task):
+                        failed(f'process {task.name}: {name} access unavailable')
             with (task/'maps').open('rb') as stream:raw=stream.read(2*1024**2+1)
             maps_bytes+=len(raw)
-            if len(raw)>2*1024**2 or maps_bytes>32*1024**2:complete=False;break
+            if len(raw)>2*1024**2 or maps_bytes>32*1024**2:failed('mapping budget exceeded');break
             for line in raw.splitlines():
                 fields=line.split(None,5)
                 if len(fields)<5:raise ValueError('invalid map record')
@@ -154,23 +176,24 @@ def collect_directories(paths,identities,proc=PROC,seconds=25):
             for fd in (task/'fd').iterdir():
                 fds+=1
                 if fds>250000 or time.monotonic()>deadline:
-                    complete=False;failure='descriptor count or time budget exceeded';break
+                    failed('descriptor count or time budget exceeded');break
                 try:
                     info=fd.stat();inspect(os.readlink(fd),info.st_dev,info.st_ino)
                 except OSError as error:
-                    if not vanished(error):
-                        complete=False;failure=f'process {task.name}: descriptor access unavailable'
+                    if not vanished(error) and not exited_task(task):
+                        failed(f'process {task.name}: descriptor access unavailable')
             if time.monotonic()>deadline:
-                complete=False;failure='process-reference time budget exceeded'
-            if not complete:break
+                failed('process-reference time budget exceeded');break
+            if fds>250000:break
         except OSError as error:
-            if not vanished(error):
-                complete=False;failure=f'process {task.name}: {error.strerror or type(error).__name__}'[:160];break
+            if not vanished(error) and not exited_task(task):
+                failed(f'process {task.name}: {error.strerror or type(error).__name__}')
         except (ValueError,OverflowError) as error:
-            complete=False;failure=f'process {task.name}: {error}'[:160];break
+            failed(f'process {task.name}: {error}')
     report={'complete':complete,'blocked':sorted(blocked),'identities':identities,
             'processes':processes,'fds':fds}
-    if not complete:report['error']=failure or 'process-reference access or resource budget unavailable'
+    if not complete:
+        report['error']=errors[0];report['errors']=errors
     return report
 
 
@@ -185,7 +208,7 @@ def collect(identities,proc=PROC,seconds=25):
         try:
             with (task/'status').open('rb') as f:status=f.read(32769)
             if len(status)>32768:complete=False;break
-            if b'Kthread:\t1' in status:continue
+            if b'Kthread:\t1' in status or exited_status(status):continue
             for name in ('cwd','exe'):
                 try:
                     info=(task/name).stat();key=(info.st_dev,info.st_ino)
