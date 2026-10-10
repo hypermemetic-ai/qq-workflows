@@ -66,7 +66,7 @@ The accepted 45-second native trace had 15.92 seconds of JS running time. Its
 time, with a longest section of 17.48 ms. That workload did not establish a
 seconds-long inbound handler; deferred queue/render work remains outside those
 sections. Nested transport/provider/flush spans must not be summed as disjoint
-CPU work. New bounded provider/large-item traces remain pending.
+CPU work. Completed bounded provider/large-item traces are recorded below.
 
 The inspected upstream main commit
 `6ec663342554bb9c9b50a5e91954aa54e7eb7877` retained the settled React child input
@@ -212,6 +212,12 @@ correctness testing of the bounded build path, without establishing runtime
 equivalence, a CPU reduction or battery savings. Corrected input and final
 disabled-marker controls remain delivery gates.
 
+The selected-chat diagnostic median was about four percentage points above
+the accepted return block. The accepted samples themselves varied widely,
+so a small runtime penalty remains possible and is not isolated by this test.
+The final marker-disabled release requires its own matched visible-stream
+check; this comparison does not establish identical compiler performance.
+
 Small embedded-config reads confirmed that both accepted shells have
 `extra.profileBuild=true`. The existing marker guard reads that runtime flag
 through Expo Constants; the manifest's profileable attribute is separate.
@@ -268,7 +274,7 @@ origin/reference guards and no tap retries:
 | Workload | Immediate Close | Alternating different workspace | Input-to-observed destination upper bounds |
 | --- | --- | --- | --- |
 | Idle | 10/10 | 10/10 | Close 213–383 ms; selection 465–862 ms |
-| Four streams | 10/10 | 10/10 | Close 255–588 ms; selection 925–1,313 ms |
+| Four daemon streams | 10/10 | 10/10 | Close 255–588 ms; selection 925–1,313 ms |
 
 No trial reached Explorer incorrectly, lost its action or timed out. These
 upper bounds include ADB, raw capture and native route rendering; they are not
@@ -292,8 +298,8 @@ exactly. Opening the drawer dismissed the keyboard, and the actual draft
 survived drawer navigation and idle home/resume. Native question Submit/Dismiss
 and plan Implement/Dismiss removed their prompts and were independently
 confirmed idle through the normal SDK. These complete core native acceptance.
-Active timer/provider/file/terminal restoration remains part of the optional
-candidate's separate acceptance.
+Active timer/provider/file/terminal restoration was evaluated separately on the
+optional candidate, as recorded below.
 
 The repeated fixture window verified retained server/workspace/session identity
 and pairing. Mock provider history did not survive restart: the helper now
@@ -325,7 +331,167 @@ An independent consumer audit found that a whole-center retained-activity gate
 would additionally close file watches and release diff observation. The optional
 design now places activity around shared stream presentation, using a stable
 covered-center signal; those unrelated observers and session demand stay
-outside. No optional runtime delta has been implemented or accepted yet.
+outside. The independently identifiable evaluation source is
+`7427afe834ab711da42bc798d8f4b8c165f8a634`, three files with 49 additions and
+three deletions on the accepted core fix. It preserves the single existing
+stream memo comparator, forwards the imperative ref through a permanent React
+activity boundary, and adds no native view. Focused app typecheck, lint/format
+and 30 existing presentation/history-window tests pass; immutable dependency
+metadata stayed unchanged. The native comparison and restoration acceptance
+below support retaining this independently identifiable patch.
+
+The correctness-only and optional candidates completed three matched 15-second
+native windows per valid surface on the same VM/kernel, with identical `-Og`
+compiler and enabled diagnostic markers. Four streams ran on the isolated
+daemon; this route's native traffic was mainly the selected primary stream,
+about 150 agent-stream frames per window. All streams continued advancing.
+
+| Surface | Correctness-only process CPU | Optional process CPU |
+| --- | --- | --- |
+| Idle | 1.40–1.73% | 2.06–2.20% |
+| Selected streaming chat | 47.24–48.69% | 45.85–48.25% |
+| Covered workspace list | 48.05–51.23% | 27.78–28.62% |
+| Covered Explorer | 47.67–49.60% | 26.22–26.78% |
+
+Percentages represent one guest CPU core. The original core drawer setup swipe
+left chat visible, so its mislabeled samples are excluded, including that failed
+preparation action. A bounded left-only comparison restored the same workload
+and used the native header button with fresh full drawer-header guards before
+every sample. Actual stream ages were matched within roughly 0.1 seconds at
+15/50/85 seconds. Native frame counts were 154/158/155 versus 153/158/155,
+with matched history/sequence progress. Explorer used verified matching Changes
+surfaces at 235/270/305 seconds.
+
+Covered-list JS running time fell from about 5.3–5.7 seconds to 2.6–2.7 seconds
+per window; Explorer similarly fell from 5.5–5.8 to 2.6–2.7 seconds. No owned
+memory-limit or OOM events occurred. Shared pressure differed, including higher
+I/O pressure in the optional left samples, so these are observed ranges rather
+than a precise isolated causal percentage or phone/battery result. Visible
+streaming overlaps; idle shows a small absolute increase of about half a
+percentage point with the same pong counts, which is not called unchanged.
+An independent source audit found no new autonomous idle timer, animation,
+transport or producer loop in the three-file patch. The small idle increase
+remains disclosed rather than attributed to a particular render source. The
+parent explicitly retained `7427afe834ab711da42bc798d8f4b8c165f8a634` after the
+repeated covered benefit and restoration checks. Final marker-disabled idle,
+visible-stream and control checks remain separate release gates.
+
+Restoration checks verified current content and the actual draft after covering
+and revealing active chat. A settled background/resume check advanced Working
+from seven to fourteen seconds; an immediate cached frame before hydration is
+excluded. Completed older history retained its exact viewport through eight
+seconds of coverage while four daemon streams advanced. A pre-hydration image
+still showing Updating messages is also excluded. Idle elapsed status refreshed
+normally. Provider children retained 15 unique ordered tool rows each; the
+selected child's viewport matched exactly after coverage.
+
+A normal file-watch sentinel written while the list covered center appeared
+after reveal. A terminal created through the normal workspace actions received
+an SDK sentinel while covered and showed it on reveal, then was killed normally.
+The file was restored and only the owned test tabs were closed. Every covered
+file, terminal and child check used a fresh full native drawer-header guard.
+The compact portrait layout did not expose a center diff tab, so this does not
+claim a native center-diff check. Explorer's existing retained diff surface
+restored normally under its own activity gate; file/diff/catalog consumers stay
+outside the new shared-stream boundary by source audit.
+
+Targeted native provider/queued-work traces completed on the optional source
+with diagnostic markers enabled. The 120-update main request was coalesced
+before client delivery: three main-stream frames produced one five-event queued
+flush taking 2.15 ms inclusive wall time. It is not a 120-frame client stress
+result. Direct provider traffic produced 124 captured ingestion calls totaling
+32.63 ms inclusive wall time, with a 9.74 ms maximum. Four descriptor upserts
+were captured after four already existed; all 120 child timeline calls then
+observed eight descriptors and the expected 15-entry progression per child.
+Normal SDK queries independently verified eight known children with 15 unique,
+ordered rows each.
+
+The separate large-item trace delivered 14 main-stream frames and one
+14-event queued flush taking 1.47 ms. Four 65,587-byte UTF-8 diff results were
+stored through normal paths. Parent frame spans include ingestion and whole
+flush spans include per-agent flushes; these wall-time totals cannot be added
+or called CPU. Parsing size counters use UTF-16 units, which equal bytes for
+this ASCII fixture only. Shared I/O pressure remains recorded. Post-burst Close
+returned to usable chat; its local outcome, the core input upper bounds and
+the independently confirmed question/plan RPC waits remain separate evidence.
+These bounded bursts do not reproduce a production 14 MB queue or establish
+the cause of every reported freeze.
+
+The final daemon reconciliation used existing telemetry without restarting or
+changing production. In 298 thirty-second windows over 148.5 minutes, twelve
+event-loop maxima exceeded one second and the worst was 3.7245 seconds. The
+maximum sampled individual physical socket queue was 13,839,954 bytes
+(13.20 MiB). Existing logs do not identify its owning client or outgoing byte
+types; relay channels can share that physical queue. The worst event-loop and
+queue samples occurred in different windows. Message counts alone do not
+attribute those queued bytes to provider updates or to the phone.
+
+Millisecond-scale local dispatched handlers exclude mobile/relay transit and
+client processing. A 27.639-second cold Git/PR request awaited asynchronous
+work; it does not establish continuous JS occupation or global serialization.
+There are no paired phone input/network timestamps or GC-duration measurements
+for the historical freezes. The 64 MiB transport limit remains an intentional
+memory backstop. Current evidence supports these bounded client corrections,
+not another daemon behavior change. Remaining total phone freezes require a
+narrow paired input/receive/dispatch observation and server event-loop/physical
+transport ownership and type/size evidence before expanding scope.
+
+## Final release construction
+
+The final frozen source is `7427afe834ab711da42bc798d8f4b8c165f8a634`.
+Every tracked file matches its Git archive, all twelve native/config/plugin
+inputs match the accepted shells, and a full owned-module byte audit found no
+dependency mutation. QA and production exports are byte-identical to the tested
+optional executable JavaScript, SHA-256
+`c50bd5b743d86d051111726b6921ead3a22913d6dab2feced1704f90cff12412`.
+All source-map occurrences/content also match except one generated Router
+context containing 25 absolute snapshot-root prefixes. Normalizing only those
+known prefixes yields identical metadata; original and normalized hashes are
+retained privately. QA and production source maps themselves are identical.
+This exact-input proof permits reuse of the tested HBC rather than another
+compiler run; it does not permit reuse after a future executable source edit.
+
+Both final configurations are generated normally with runtime profiling off.
+Each differs from its accepted shell only in `extra.profileBuild=false` and
+omission of the corresponding prebuild-plugin entry. The already-built native
+profileable manifest stays true. These are audited shell constructions, not
+fresh non-profile native builds. They preserve all 1,440 other non-signature
+payloads, ordinary META-INF entries, disabled OTA, non-debuggable native code,
+the production signing key and verified 16 KiB alignment. Only the HBC and
+generated app.config payloads change before ordinary signing.
+
+| Final artifact | SHA-256 |
+| --- | --- |
+| x86_64 QA APK, `sh.paseo.debug` | `adb71f75ecf05177b904af117ab51396d20fc16b847feb1187a5f7c0b291705a` |
+| ARM64 production APK, `sh.paseo` | `7e9cc01154618ccda2c2bfec4888fe97d44a345afe49c413f0eb0850a58afec2` |
+| Shared HBC v96, supported `-Og` | `4a0552db105e452d0f36f68f7c1a444f0fb88c6938b999af51d1b8050f31cd72` |
+
+Both packages retain version code 11000/name 0.11.0 and certificate SHA-256
+`486587a12a3881dbc25a8fc63fdb8f740cfd8695a0f567a39fd0f51267fab734`.
+The final successful preparation stage took 98.56 seconds, reusing its completed
+QA export. The first complete owned-template byte audit took 148.68 seconds;
+two-package alignment/signing/audit took 45.67 seconds. All ran within the
+normal 4 GiB envelope with zero swap or memory-limit/OOM events and ended with
+empty cgroups. Setup failures are preserved separately. Final native compiler
+acceptance and actual phone activation remain distinct from this artifact proof.
+
+The actual installed final QA APK matches the signed hash. After a fresh
+60-turn/120-row restore, three 15-second idle windows measured 2.06, 2.00 and
+2.06 percent of one guest core. Three visible streaming windows measured
+47.12, 47.23 and 43.92 percent at actual stream ages 15.001, 50.037 and
+85.009 seconds. This does not show a material visible regression against the
+matched optional diagnostic ranges, while its roughly 0.3–0.7 percentage-point
+idle cost versus the correctness-only source remains. The source audit found
+no new autonomous idle loop; disabling markers did not remove that observed
+cost. It is not hidden inside the covered saving or claimed to be battery gain.
+
+All six traces contain zero Paseo markers and no nonzero error/loss/overrun
+statistics or owned memory-limit/OOM events. Builds and heavy observers had
+exited. Shared host I/O pressure persisted and is retained with OS JS/UI/Render
+scheduling and clock snapshots. With markers off, exact native inbound counts
+are unavailable. Native visible content and actual SDK stored history/sequence
+progression verify the continuing workload; they are not described as four
+native subscriptions. Immediate input, form and resume acceptance is separate.
 
 ## Delivery status
 
@@ -334,11 +500,11 @@ outside. No optional runtime delta has been implemented or accepted yet.
 | OpenSpec plan | Validated; implementation authorized |
 | Ordered interaction source | Committed/pushed in draft PR #3; focused source checks and core native acceptance pass |
 | Profile-only diagnostic source | `dc7ef17b746e4089670a6fcd35ad420e559f82dd`; source checks passed; labels fit the native trace limit |
-| Diagnostic QA artifact | Signed/audited/installed; wrong-recipient chronology reproduced; compiler-runtime comparison in progress |
+| Diagnostic QA artifact | Signed/audited/installed; wrong-recipient chronology reproduced; optimized/diagnostic/optimized comparison complete, final compiler acceptance pending |
 | Corrected native controls | 40/40 immediate Close/selection outcomes plus supersession, viewport, keyboard, forms and idle resume pass |
-| Covered-chat presentation retention decision | Pending independent comparison |
-| Provider/client/daemon attribution | In progress; broader freezes remain open |
-| Final signed release | Pending |
+| Covered-chat presentation retention decision | Retain `7427afe834ab711da42bc798d8f4b8c165f8a634`; matched native comparisons and settled restoration pass; final release gates remain |
+| Provider/client/daemon attribution | Bounded investigation complete; no daemon change justified; broader phone/transport freezes remain open |
+| Final signed release | Both ABI packages signed/audited; final marker-disabled native acceptance pending |
 | Production Android activation | Pending device connection and accepted release |
 
 The phone was absent from ADB at this task's start, so this record does not
@@ -356,12 +522,12 @@ existing gesture arbitration, retained scroll offsets and native host identity.
 Retire this delta when upstream supplies equivalent visible input ownership and
 ordered superseding commands under the same native regression workload.
 
-Evaluate covered-center presentation through the existing retained activity
-signal in a separate candidate. Retain it only for useful repeated native gain
-with correct content, elapsed-status, draft and ordering restoration. Retire any
-retained delta when upstream provides equivalent covered-center presentation
-activity without changing ingestion or session lifetime. Record rejection and
-remove the candidate when the acceptance condition fails.
+Covered-center presentation is retained independently for repeated native gain
+with correct content, elapsed-status, draft and ordering restoration. Retire
+this delta when upstream provides equivalent covered-center presentation
+activity without changing ingestion or session lifetime. Reevaluate its idle
+cost and native restoration on each update; remove it if the acceptance
+condition ceases to hold.
 
 Use the [emulator workflow](android-emulator.md) for repeated native verification.
 Keep candidate hashes, stage timings, action outcomes and pressure/observer

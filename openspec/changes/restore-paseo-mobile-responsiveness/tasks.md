@@ -16,14 +16,14 @@
 
 ## 3. Covered-chat presentation evaluation
 
-- [ ] 3.1 Create an independently identifiable candidate using existing retained-activity composition around shared stream presentation and a stable covered-center signal; verify focused checks preserve file/diff/catalog observers, ingestion, host/session lifetime, stream ref/memo behavior and separate overlay activity without new native roots or native freezing.
-- [ ] 3.2 Compare correctness-only and presentation candidates in at least three matched native windows per relevant surface; verify CPU/JS-running and input measurements include workload/pressure/observer provenance plus latest-content, elapsed-status, draft and ordering restoration.
-- [ ] 3.3 Explicitly retain or reject the optional presentation delta based on those comparisons, remove it when rejected and document its independent evidence/retirement condition; verify the final source/diff/checks match the recorded decision.
+- [x] 3.1 Create an independently identifiable candidate using existing retained-activity composition around shared stream presentation and a stable covered-center signal; verify focused checks preserve file/diff/catalog observers, ingestion, host/session lifetime, stream ref/memo behavior and separate overlay activity without new native roots or native freezing.
+- [x] 3.2 Compare correctness-only and presentation candidates in at least three matched native windows per relevant surface; verify CPU/JS-running and input measurements include workload/pressure/observer provenance plus latest-content, elapsed-status, draft and ordering restoration.
+- [x] 3.3 Explicitly retain or reject the optional presentation delta based on those comparisons, remove it when rejected and document its independent evidence/retirement condition; verify the final source/diff/checks match the recorded decision.
 
 ## 4. Remaining-freeze attribution
 
-- [ ] 4.1 Exercise bounded provider-child/large-item bursts with targeted profile evidence for ingestion and queued main-stream work; verify local input and server-dependent controls are measured separately and raw private history is unnecessary.
-- [ ] 4.2 Reconcile client/native findings with existing deployed-daemon aggregate telemetry, handler/queue semantics and upstream equivalents; verify the delivery findings distinguish demonstrated mechanisms, confounds and unresolved phone/transport gaps without a production restart.
+- [x] 4.1 Exercise bounded provider-child/large-item bursts with targeted profile evidence for ingestion and queued main-stream work; verify local input and server-dependent controls are measured separately and raw private history is unnecessary.
+- [x] 4.2 Reconcile client/native findings with existing deployed-daemon aggregate telemetry, handler/queue semantics and upstream equivalents; verify the delivery findings distinguish demonstrated mechanisms, confounds and unresolved phone/transport gaps without a production restart.
 
 ## 5. Integration and Android delivery
 

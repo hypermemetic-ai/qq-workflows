@@ -53,16 +53,23 @@ and [tasks](../../openspec/changes/restore-paseo-mobile-responsiveness/tasks.md)
 own the measured workspace-list interaction correction, independent covered-chat
 presentation evaluation and remaining-freeze attribution. Its
 [delivery record](mobile-responsiveness.md) separates source, native acceptance
-and Android activation. This is the operator's explicit expansion beyond the
+and Android activation. Durable
+[input](../../openspec/specs/mobile-panel-interaction/spec.md) and
+[verification](../../openspec/specs/mobile-responsiveness-verification/spec.md)
+contracts preserve the regression requirements for future updates.
+This is the operator's explicit expansion beyond the
 original two-patch limit for a reproduced defect; retain each added runtime delta
 only with its own acceptance and upstream retirement condition. First-tap Close
 and different-workspace selection must work during streaming. Blocking covered
 controls alone does not satisfy the interaction outcome.
 
-The optional center presentation gate must preserve live ingestion and correct
-content, elapsed-status, draft and ordering restoration. Reject it without useful
-repeated native benefit. Use the reusable native workload for subsequent relevant
-changes; CPU savings do not establish faster interaction or measured battery gain.
+The shared-stream presentation gate is retained after repeated covered native
+CPU reductions and settled content, elapsed-status, draft and ordering restoration.
+It preserves live ingestion and leaves file/diff/catalog observers outside its
+boundary. Reevaluate it independently on updates, including its small observed
+idle cost; reject it without useful repeated native benefit. Use the reusable
+native workload for subsequent relevant changes; CPU savings do not establish
+faster interaction or measured battery gain.
 
 ## Android delivery
 

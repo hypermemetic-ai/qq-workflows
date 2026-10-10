@@ -132,9 +132,11 @@ For the release stage:
    changes; a small unrelated presentation change does not automatically require
    repeating every prior benchmark and control check. Complete any checks its
    active OpenSpec plan explicitly requires.
-5. Stop the fixture and VM immediately after acceptance, sign/package the final
-   candidate, and install once with the existing signer. Record build, QA and
-   activation timings separately so a slow stage can be identified.
+5. Generate the final runtime config normally with profiling markers disabled,
+   sign/package the compatible final candidate, and complete its relevant native
+   controls. Stop the fixture and VM after acceptance, then install once with
+   the existing signer. Record build, QA and activation timings separately so a
+   slow stage can be identified.
 
 Initial logs show one warm ARM64 comparison release build, including bundling,
 completed in 4m21s. Fully cached x86_64 packaging took 59s–1m02s, but skipped the
@@ -142,6 +144,32 @@ already-audited Hermes bundle. A production pass that rebuilt native outputs too
 12m37s even with bundle reuse. These are individual stage timings, not a measured
 end-to-end estimate for the next fresh tweak. Cold native/toolchain updates can
 still take much longer; routine compatible UI edits should avoid those stages.
+
+The responsiveness evaluation subsequently established a warm compatible
+JavaScript-only path: immutable source preparation and export took 50.07 seconds,
+the pinned supported Hermes `-Og` pass took 11.46 seconds, and audited QA shell
+construction/alignment/signing took 15.19 seconds, about 77 seconds altogether.
+These timings exclude source checks, emulator startup, native acceptance and
+phone connection. This candidate used diagnostic runtime markers; final release
+construction requires its own normal marker-disabled config and export proof.
+Retain the private receipts and regular dependency template rather than copying
+through moving logical aliases. Recheck module/source-map equivalence and
+native/assets/config compatibility for every new source selection; the measured
+warm path does not authorize reusing old bytecode after a source edit.
+Resolve the source/staging child directory itself before forming Metro's cwd,
+project-root and entry-file paths. A moving parent alias can resolve to a cold
+mirror while its regular-layout child still resolves to SSD; mixing those paths
+causes a graph-entry rejection. Preserve failed setup receipts and correct the
+path selection without changing Metro configuration or migration-owned links.
+When a generated Router source-map context embeds the snapshot's absolute root,
+record any difference explicitly. The final responsiveness release normalized
+only 25 established source-root prefixes in that one virtual module, required
+every other source occurrence/content to match, and separately required exact
+raw executable JS and asset equality. Both normally generated marker-disabled
+QA and production inputs matched the tested bytecode; this metadata exception
+does not authorize ignoring other source-map changes or reusing bytecode after
+an executable source edit. The first full owned-template byte audit took
+148.68 seconds; final two-ABI shell construction/signing/audit took 45.67 seconds.
 
 ## Native QA build
 
@@ -304,6 +332,28 @@ value to be true and the completed trial count to equal the requested count.
 The driver stops at the first failed destination; its process exit status alone
 does not establish that a block passed. Keep preparation/route-guard failures
 separate from timed input outcomes, and never retry a failed tap as a success.
+
+After preparing distinct, verified workspace references, the accepted immediate
+idle blocks used these commands from the workflow checkout:
+
+```bash
+/home/qqp/.local/bin/qq-job -- /usr/bin/python3 \
+  projects/paseo-maintenance/fixtures/native-responsiveness.py \
+  --serial 127.0.0.1:5581 --output "$PASEO_QA_RUN" \
+  --fixture "$PASEO_QA_STATE" --workload core-idle \
+  trials close --repetitions 10
+/home/qqp/.local/bin/qq-job -- /usr/bin/python3 \
+  projects/paseo-maintenance/fixtures/native-responsiveness.py \
+  --serial 127.0.0.1:5581 --output "$PASEO_QA_RUN" \
+  --fixture "$PASEO_QA_STATE" --workload core-idle \
+  trials selection --repetitions 10
+```
+
+The default extra delay is zero. Require ten successful records of each
+operation and genuinely alternating different-workspace origins. Repeat with
+four ordinary fixture `send` operations at indices 0–3, fresh streaming
+references and a separate output directory/workload label. Preserve failed
+preflight evidence when refreshing a stale reference; it is not a timed trial.
 
 Stop only the recorded fixture/VM units. The repeated fixture stop was verified
 to leave no old descendants. Preserve the home during matched APK windows, then
