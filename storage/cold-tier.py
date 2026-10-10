@@ -1692,6 +1692,8 @@ def partition_blocked_move(store,cfg,source,error):
              'source mutation during migration','source became active; original retained'}
     if not cfg.get('automatic_partition',False) or str(error) not in reasons:
         return False
+    if any(source==Path(p['backing']) for p in store.get('defaults',[])):
+        return False
     if any(store.state.glob('*operation.json')):return False
     row=store.db.execute('SELECT * FROM roots WHERE source=?',(str(source),)).fetchone()
     original=live_path(row) if row else source
@@ -1763,6 +1765,10 @@ def drain_units(store, cfg):
                     old = store.root(str(source))
                     migrate(store, cfg, source, demoting=old)
                 elif job['action'] == 'move':
+                    if any(source==Path(p['backing']) for p in store.get('defaults',[])):
+                        store.db.execute('UPDATE queue SET status=?,error=?,updated=? WHERE source=?',
+                                         ('protected','managed backing directory; migrate its admitted children',time.time(),str(source)))
+                        store.db.commit();continue
                     registered = store.db.execute('SELECT * FROM roots WHERE source=?', (str(source),)).fetchone()
                     if registered and registered['location'] == 'ssd': migrate(store, cfg, source, demoting=registered)
                     elif registered and registered['location'] == 'hdd':

@@ -14,6 +14,21 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 
 class ColdTierTests(unittest.TestCase):
+    def test_stale_backing_queue_cannot_partition_machinery_or_break_public_children(self):
+        source=self.home/'projects';source.mkdir();(source/'child').mkdir();(source/'child'/'data').write_bytes(b'keep')
+        self.cfg.update(mirror_layout=True,automatic_partition=True)
+        with patch.object(m,'references',return_value=[]):
+            parent=m.bridge_parent(self.store,self.cfg,source);m.adopt_defaults(self.store,self.cfg);m.route_defaults(self.store,self.cfg)
+        backing=Path(parent['backing']);identity=backing.stat().st_ino;m.queue_add(self.store,backing)
+        def refs(paths,**kwargs):return [42] if any(Path(p)==backing for p in paths) else []
+        with patch.object(m,'references',side_effect=refs):m.drain(self.store,self.cfg)
+        self.assertEqual(len(self.store.get('defaults')),1)
+        self.assertFalse(backing.is_symlink());self.assertEqual(backing.stat().st_ino,identity)
+        self.assertEqual((source/'child'/'data').read_bytes(),b'keep')
+        self.assertEqual(self.store.root(str(source/'child'))['location'],'hdd')
+        row=self.store.db.execute('SELECT status FROM queue WHERE source=?',(str(backing),)).fetchone()
+        self.assertEqual(row['status'],'protected')
+
     def test_nested_mirror_admission_preserves_untouched_sibling_paths(self):
         projects=self.home/'projects';projects.mkdir();group=projects/'worktrees';group.mkdir()
         for name in ('moving','sibling'):
