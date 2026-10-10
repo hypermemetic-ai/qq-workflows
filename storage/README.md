@@ -90,8 +90,15 @@ block unrelated child relocation. No environments or container commands are read
 
 Moves retain hard links, sparse files, symlinks, ACLs and xattrs. Before publishing,
 the tool checks process references, a source mutation watch, manifest metadata and
-file hashes. Paths with visible live references, sockets, foreign ownership,
-nested mounts, external hard links, source changes or inadequate watch coverage defer. Process
+file hashes.
+
+Standalone files persist their data and metadata, then sync every ancestor
+directory on the destination device before publication. They do not flush
+unrelated payloads on that filesystem. Directory copies retain a filesystem
+durability barrier for their full tree.
+
+Paths with visible live references, sockets, foreign ownership, nested mounts,
+external hard links, source changes or inadequate watch coverage defer. Process
 references are limited to visible same-UID processes: sandboxes and root processes
 can hide references. This is quiescent-user-data migration, not an online database
 mover. An interrupted publish keeps `operation.json` and both copies; inspect and

@@ -11,6 +11,42 @@ from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('cold_tier', Path(__file__).with_name('cold-tier.py'))
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+real_flush_copy = m.flush_copy
+
+
+class CopyDurabilityTests(unittest.TestCase):
+    def test_standalone_file_flushes_data_before_all_same_device_path_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp)/'new-parent'/'payload'
+            destination.parent.mkdir(); destination.write_bytes(b'keep')
+            events = []
+            with patch.object(m.subprocess,'run',side_effect=lambda args,**kw:events.append(('file',args))), \
+                 patch.object(m,'flush_directory',side_effect=lambda path:events.append(('directory',path))):
+                real_flush_copy(destination)
+            self.assertEqual(events[0],('file',['sync','--',str(destination)]))
+            directories = [path for kind,path in events[1:]]
+            self.assertEqual(directories[0],destination.parent)
+            self.assertEqual(directories[-1].stat().st_dev,destination.stat().st_dev)
+            self.assertTrue(directories[-1]==directories[-1].parent or
+                            directories[-1].parent.stat().st_dev!=destination.stat().st_dev)
+            self.assertTrue(all(b==a.parent for a,b in zip(directories,directories[1:])))
+
+    def test_failed_file_sync_does_not_flush_path_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp)/'payload'; destination.write_bytes(b'keep')
+            with patch.object(m.subprocess,'run',side_effect=subprocess.CalledProcessError(1,'sync')), \
+                 patch.object(m,'flush_directory') as directory:
+                with self.assertRaises(subprocess.CalledProcessError):real_flush_copy(destination)
+                directory.assert_not_called()
+            self.assertEqual(destination.read_bytes(),b'keep')
+
+    def test_directory_copy_keeps_full_tree_durability_barrier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp); (destination/'payload').write_bytes(b'keep')
+            with patch.object(m.subprocess,'run') as run,patch.object(m,'flush_directory') as directory:
+                real_flush_copy(destination)
+            run.assert_called_once_with(['sync','-f','--',str(destination)],check=True,timeout=120)
+            directory.assert_not_called()
 
 
 class ColdTierTests(unittest.TestCase):
@@ -1004,6 +1040,21 @@ m.watch(m.Store(sys.argv[3]),c)
             with self.assertRaises(subprocess.CalledProcessError):m.migrate(self.store,self.cfg,source)
         exchange.assert_not_called(); self.assertFalse(source.is_symlink())
         self.assertEqual((source/'data').read_text(),'keep'); self.assertEqual(self.store.roots(),[])
+        self.assertFalse((self.store.state/'operation.json').exists())
+    def test_failed_standalone_file_parent_flush_retains_original(self):
+        source = self.home/'artifact'; source.write_bytes(b'keep')
+        self.flush.side_effect = real_flush_copy
+        real_directory = m.flush_directory
+        def fail_destination_parent(path):
+            if self.archive in Path(path).parents:raise OSError('destination directory sync failed')
+            return real_directory(path)
+        with patch.object(m,'references',return_value=[]), \
+             patch.object(m,'flush_directory',side_effect=fail_destination_parent), \
+             patch.object(m,'exchange') as exchange:
+            with self.assertRaisesRegex(OSError,'destination directory sync failed'):
+                m.migrate(self.store,self.cfg,source)
+        exchange.assert_not_called(); self.assertFalse(source.is_symlink())
+        self.assertEqual(source.read_bytes(),b'keep'); self.assertEqual(self.store.roots(),[])
         self.assertFalse((self.store.state/'operation.json').exists())
     def test_durable_copy_precedes_publication_and_original_retirement(self):
         source = self.home/'artifact'; source.mkdir(); (source/'data').write_text('keep')
