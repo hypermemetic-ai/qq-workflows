@@ -47,6 +47,22 @@ class ProcessReferences(unittest.TestCase):
         result=m.collect_directories([str(folder)],keys,self.proc)
         self.assertTrue(result['complete']);self.assertEqual(result['blocked'],[0])
 
+    def test_unrelated_namespace_mount_roots_allow_complete_coverage(self):
+        folder,child,keys=self.directory_fixture()
+        other=os.makedev(0,4) if keys[0][0]!=os.makedev(0,4) else os.makedev(0,5)
+        with (self.task/'mountinfo').open('a') as stream:
+            stream.write(f'1505 31 {os.major(other)}:{os.minor(other)} net:[4026531833] /run/docker/netns/default rw shared:975 - nsfs nsfs rw\n')
+        result=m.collect_directories([str(folder)],keys,self.proc)
+        self.assertTrue(result['complete']);self.assertEqual(result['blocked'],[])
+        (self.task/'fd/9').symlink_to(child)
+        result=m.collect_directories([str(folder)],keys,self.proc)
+        self.assertTrue(result['complete']);self.assertEqual(result['blocked'],[0])
+
+    def test_non_path_mount_root_on_candidate_device_fails_closed(self):
+        folder,_,keys=self.directory_fixture();device=keys[0][0]
+        (self.task/'mountinfo').write_text(f'1 0 {os.major(device)}:{os.minor(device)} net:[4026531833] /namespace rw - nsfs nsfs rw\n')
+        self.assertFalse(m.collect_directories([str(folder)],keys,self.proc)['complete'])
+
     def test_reader_root_rendering_is_retained_with_a_different_task_root(self):
         folder,child,keys=self.directory_fixture();device=keys[0][0]
         (self.task/'mountinfo').write_text(f'1 0 {os.major(device)}:{os.minor(device)} /container-root / rw - ext4 /dev/test rw\n')
