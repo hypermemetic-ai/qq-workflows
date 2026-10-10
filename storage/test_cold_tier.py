@@ -14,6 +14,47 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 
 class ColdTierTests(unittest.TestCase):
+    def test_expanded_mirror_tracks_untouched_originals_after_reopen(self):
+        source=self.home/'projects';source.mkdir();folder=source/'snapshot';folder.mkdir()
+        for name in ('first','second'):(folder/name).write_bytes(name.encode())
+        self.cfg['mirror_layout']=True
+        with patch.object(m,'references',return_value=[]):
+            parent=m.bridge_parent(self.store,self.cfg,source);m.adopt_defaults(self.store,self.cfg);m.route_defaults(self.store,self.cfg)
+            original=Path(parent['backing'])/'snapshot';old_id=self.store.root(str(folder))['id']
+            inode=(original/'second').stat().st_ino
+            m.migrate(self.store,self.cfg,original/'first')
+        self.assertTrue(self.store.get('mirror_scaffold_intents'))
+        reopened=m.Store(self.store.state)
+        try:
+            m.adopt_defaults(reopened,self.cfg)
+            self.assertEqual(reopened.get('mirror_scaffold_intents'),[])
+            self.assertEqual(reopened.root(str(folder))['id'],old_id)
+            second=reopened.root(str(folder/'second'))
+            self.assertEqual(second['location'],'ssd');self.assertEqual(m.live_path(second),original/'second')
+            self.assertEqual(m.live_path(second).stat().st_ino,inode)
+            with patch.object(m,'references',return_value=[]):m.drain(reopened,self.cfg)
+            self.assertEqual((folder/'second').read_bytes(),b'second')
+            self.assertEqual(reopened.root(str(folder/'second'))['location'],'hdd')
+        finally:reopened.db.close()
+
+    def test_expanded_mirror_refuses_a_changed_original_identity(self):
+        source=self.home/'projects';source.mkdir();folder=source/'snapshot';folder.mkdir();(folder/'data').write_bytes(b'keep')
+        self.cfg['mirror_layout']=True
+        parent=m.bridge_parent(self.store,self.cfg,source);m.route_defaults(self.store,self.cfg)
+        original=Path(parent['backing'])/'snapshot'
+        m.ensure_mirror_parent(self.store,self.cfg,folder/'data')
+        saved=original.with_name('preserved');original.rename(saved);original.mkdir();(original/'new').write_bytes(b'new')
+        with self.assertRaisesRegex(ValueError,'original changed'):m.adopt_defaults(self.store,self.cfg)
+        self.assertEqual((saved/'data').read_bytes(),b'keep');self.assertEqual((original/'new').read_bytes(),b'new')
+        self.assertTrue(self.store.get('mirror_scaffold_intents'))
+
+    def test_mirror_preparation_outside_live_namespace_never_admits_a_default(self):
+        source=self.home/'unrouted';source.mkdir();(source/'data').write_bytes(b'keep')
+        self.cfg['mirror_layout']=True;m.ensure_mirror_parent(self.store,self.cfg,source/'data')
+        m.adopt_defaults(self.store,self.cfg)
+        self.assertEqual(self.store.get('defaults',[]),[])
+        self.assertEqual((source/'data').read_bytes(),b'keep');self.assertFalse(source.is_symlink())
+
     def test_decision_policy_refreshes_protected_aliases_on_each_pass(self):
         first=self.home/'first';second=self.home/'second';first.mkdir();second.mkdir()
         for p in (first,second):self.store.register(p,self.archive/p.name,'ssd',hot=p)
