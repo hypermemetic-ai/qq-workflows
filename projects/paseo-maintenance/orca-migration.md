@@ -51,7 +51,7 @@ and saved provider context are separate concerns. See
 | --- | --- |
 | Project/workspace mapping | 18 roots/17 locations registered; 12 physical cards/13 original working directories |
 | Original thread/settings continuity | All 18 source/native IDs consistent; real 3.07 MiB pilot verified on original main/provider |
-| Ongoing migration | Active worker at 2026-10-10 19:28:42 UTC: 15 verified, 0 blocked, 3 waiting; coordinator queued last |
+| Ongoing migration | Active worker at 2026-10-10 20:41:15 UTC: 15 verified, 0 blocked, 3 waiting; coordinator queued last |
 | Native Android controls | Same-ID 19.2 MiB synthetic Chat/send/switch/background/reconnect accepted on original Codex 0.159.3 |
 | OpenSpec | ON16/OFF2 instruction-driven carryover prepared; explicit-path native child read verified |
 | Phone | Main host authenticated and real pilot phone-accepted; installed APK version not ADB-verified |
@@ -154,9 +154,8 @@ of one and 64-task limit.
 Receipts verify 15 original conversations, each with
 exactly one notice and acknowledgment, completed Chat/Stop and final expected-writer
 fences. The parent-file recovery below passed on its existing pane and original
-thread. The operative worker snapshot at 2026-10-10 19:28:42 UTC is active with
-15 verified, zero blocked and three waiting: two non-coordinator sessions are
-running, one awaiting operator permission, and the coordinator is queued last.
+thread. The operative worker snapshot at 2026-10-10 20:41:15 UTC is active with
+15 verified, zero blocked and three waiting, including the coordinator queued last.
 The 768 MiB budget, concurrency of one, 64-task limit and original deadline are
 unchanged; automatic notice retries are zero. These remaining conversations are
 not yet transferred.
@@ -165,20 +164,41 @@ The 2026-10-10 19:03:01 UTC rearm was an earlier checkpoint: the corrected unit
 was active with seven verified, zero blocked and eleven waiting. Those counts
 are historical, not the current receipt total.
 
-Ten selected final transcript symlinks target a different filesystem outside the
-original canonical sessions tree, failing stock's regular-file provenance guard.
+The original inventory had ten selected final transcript symlinks targeting a
+different filesystem outside the original canonical sessions tree, failing
+stock's regular-file provenance guard.
 No hardlinks or transcript-byte edits were made. A metadata-only trial sent no
 notice because stock PTY startup overwrote both home variables. For the ten
-proven symlink cases only, the accepted stock route prefixes the
+originally proven symlink cases, the accepted stock route prefixes the
 original command with properly quoted explicit original-home assignments to
 both `CODEX_HOME` and `ORCA_CODEX_HOME`, and omits optional
-`resumeProviderSession` metadata. The pinned plan changes only that prefix in
-actual and durable commands for ten mappings; command remainders, stored environment,
+`resumeProviderSession` metadata. That pinned plan changed only the prefix in
+actual and durable commands for those ten mappings; command remainders, stored environment,
 settings, working directories, native threads, version, normal tier and account
 remain unchanged. Genuine Chat and final writer fences verified this route.
 No application, credential or filesystem change is involved. A stopped symlink
 session may need this explicit-home CLI route again; that is an inference from
 the same guard. Cold tab restoration remains unverified and adds no new gate.
+
+At 2026-10-10 20:10:31.083 UTC, a later queued transfer reached
+`launch_exact_thread` after its source-ownership action, but stock's provenance
+guard rejected the launch. No notice was attempted or sent and no notice intent
+was created. The rejection occurred before PTY creation, leaving no pane or
+provider, with the source closed and zero writers at that failure. This mapping
+passed the earlier regular-file check; its current
+rollout is now a final symlink with an existing approximately 342 MiB target.
+The cause of that storage-layout change is not established.
+
+Fresh inspection found all three remaining rollouts are final-file symlinks,
+with matching original/latest native IDs and stable file identities. Two newly
+needed the accepted explicit-original-home route above; the third already used
+it. The performed correction changes only optional `resumeProviderSession`
+omission and the quoted home prefix in actual/durable commands for those two
+mappings. Command remainders, native IDs, settings and account remain unchanged;
+all 15 verified mappings are untouched. It makes no filesystem copy or new notice.
+The known pre-PTY failure is reconciled for the next safe idle window, rather than
+left permanently blocked. Currently resumed busy Paseo owners are preserved;
+rearming does not mean the remaining three have transferred.
 
 A paginated-fork resume failed to discover its original 122.93 MiB parent, a
 regular file beneath a nested directory symlink. Stock Codex 0.159.3
