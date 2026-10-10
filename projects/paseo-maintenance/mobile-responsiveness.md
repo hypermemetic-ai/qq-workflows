@@ -188,6 +188,61 @@ This is audited QA shell reuse, not a fresh Gradle native build. Diagnostic
 installation, runtime comparison and panel chronology remain separate gates;
 neither this artifact nor its compiler setting is accepted for production yet.
 
+The native pipeline comparison completed accepted optimized → diagnostic `-Og`
+→ accepted optimized drift windows. Each block used three 20-second samples
+per surface, restored history/pairing, the same warm route and four streams,
+with setup/capture/build observers outside the quiet intervals.
+
+| Surface | Accepted first | Diagnostic `-Og` | Accepted drift |
+| --- | --- | --- | --- |
+| Idle process CPU | 1.55–1.75% | 1.45–1.65% | 1.45–1.60% |
+| Selected streaming chat CPU | 65–74% | 71–77% | 70–75% |
+| Covered drawer CPU | 78–80% | 57.5–60.7% | 52.9–56.7% |
+
+Selected-chat windows delivered 808–818 frames each, with closely matched
+history and throughput. Both diagnostic and drift builds received the same
+124 provider-update frames and stored eight descriptors with 15 unique,
+strictly ordered tool rows each, without sequence gaps or stale cursors. Both
+stored four 65,587-byte UTF-8 diff results through normal daemon paths and
+showed the eight working children natively. Settled Close worked in both.
+Quiet windows had no memory-cap or OOM deltas. The initial covered difference
+disappeared on returning to the accepted build: retained route/native state
+and shared scheduler pressure confound a compiler effect. This supports further
+correctness testing of the bounded build path, without establishing runtime
+equivalence, a CPU reduction or battery savings. Corrected input and final
+disabled-marker controls remain delivery gates.
+
+Small embedded-config reads confirmed that both accepted shells have
+`extra.profileBuild=true`. The existing marker guard reads that runtime flag
+through Expo Constants; the manifest's profileable attribute is separate.
+Source/plugin audit found no other runtime behavior selected by that flag:
+the runtime uses are diagnostics, while the prebuild plugin only adds the
+manifest profileability entry. Final production will disable markers through
+the pinned normal public-config generator, requiring exact object equivalence
+apart from that flag and its omitted serialized profileable plugin entry, plus
+native controls with markers disabled. The reused native
+shell will remain manifest-profileable. The pinned normal generator completed
+in 1.27 seconds at about 59.6 MiB and reproduced the accepted objects exactly
+with profiling enabled. Disabling profiling produced exactly those two expected
+metadata differences for each variant. Final artifact and native acceptance
+remain pending; this does not claim a clean non-profile native build.
+
+The installed diagnostic reproduced wrong input routing: a Close tap after a
+matched visible drawer reached Explorer, with Explorer press-in/press markers
+and a newer file-explorer command, but no Close handler marker. The trace records
+accepted drawer revision 9 and subsequent Explorer revision 10, alongside
+React policy publication. Another immediate Workspace 02 selection left the
+drawer unchanged for 8.153 seconds without a row handler marker. This completes
+the bounded diagnostic handoff gate and permits correctness-candidate packaging.
+Pinned React Native source maps the native event timestamp to Android monotonic
+uptime. Nine Perfetto clock snapshots establish a negligible monotonic/boottime
+offset over this trace without a suspend discontinuity. The wrong Explorer
+event preceded the React layout-effect policy observation by about six
+milliseconds, subject to the event's integer-millisecond precision. This
+mapping does not prove Fabric hit-test application.
+Corrected native controls are recorded separately below; compiler and final
+release acceptance remain pending.
+
 The corrected interaction source is committed as
 `bfe5e9a749dc0d7d7ebe66ba65201d87b548f426` in
 [draft source PR #3](https://github.com/qqp-dev/paseo/pull/3). It passed app
@@ -197,6 +252,48 @@ copied source tree with the audited physical dependency layout. The tests cover
 an opening superseded by Close/navigation and a repeated dismissal overtaking
 an older active-state publication. Dependency metadata stayed unchanged after
 the checks. These source checks do not establish native acceptance.
+
+The correctness-only QA APK is signed and audited: SHA-256
+`a6d18812f0d406ae352b1a9ae2afbb2715ad19fc528310afe306b6df6d93195b`,
+with HBC SHA-256
+`4af82cee68eb0aee806bf8c35dbf5ac7e86fff4ecfe28ac3641845340b3f4708`.
+Its fresh source graph differs only by the committed interaction correction;
+assets and all 1,441 other payload entries remain equivalent to the accepted
+QA shell. Fresh bytecode compilation took 11.00 seconds and packaging/signing
+took 6.20 seconds. Repeated native control acceptance remains separate.
+
+That installed APK passed all 40 required immediate-input trials, with fresh
+origin/reference guards and no tap retries:
+
+| Workload | Immediate Close | Alternating different workspace | Input-to-observed destination upper bounds |
+| --- | --- | --- | --- |
+| Idle | 10/10 | 10/10 | Close 213–383 ms; selection 465–862 ms |
+| Four streams | 10/10 | 10/10 | Close 255–588 ms; selection 925–1,313 ms |
+
+No trial reached Explorer incorrectly, lost its action or timed out. These
+upper bounds include ADB, raw capture and native route rendering; they are not
+phone latency or an isolated action benchmark. Streaming transitions remain
+slower than idle. A cold deep-link preparation exceeded its 15-second guard;
+a standard warm relaunch reached the verified origin in 2.33 seconds. That
+setup timeout and a stale selection reference rejected before any trial are
+excluded from the 40 outcomes. Rapid supersession, retained-scroll, keyboard,
+submission and resume acceptance are recorded separately below.
+
+Six rapid gesture/Close probes recorded accepted opening gestures and remained
+at center. Five have explicit Close handler markers; one has an unproven control
+recipient and is not counted as a marked Close. Three traces independently
+show the newer center command overtaking the older queued sidebar publication,
+which is rejected against the current revision. For example, opening revision
+93 was rejected after Close selected center revision 94, and center publication
+94 was accepted. This proves revision supersession without claiming a Fabric
+commit timestamp. Vertical drawer scrolling remained usable and its retained
+viewport matched exactly on reopening; the long-chat viewport also matched
+exactly. Opening the drawer dismissed the keyboard, and the actual draft
+survived drawer navigation and idle home/resume. Native question Submit/Dismiss
+and plan Implement/Dismiss removed their prompts and were independently
+confirmed idle through the normal SDK. These complete core native acceptance.
+Active timer/provider/file/terminal restoration remains part of the optional
+candidate's separate acceptance.
 
 The repeated fixture window verified retained server/workspace/session identity
 and pairing. Mock provider history did not survive restart: the helper now
@@ -235,10 +332,10 @@ outside. No optional runtime delta has been implemented or accepted yet.
 | Outcome | State |
 | --- | --- |
 | OpenSpec plan | Validated; implementation authorized |
-| Ordered interaction source | Committed/pushed in draft PR #3; focused source checks pass; native acceptance pending |
+| Ordered interaction source | Committed/pushed in draft PR #3; focused source checks and core native acceptance pass |
 | Profile-only diagnostic source | `dc7ef17b746e4089670a6fcd35ad420e559f82dd`; source checks passed; labels fit the native trace limit |
-| Diagnostic QA artifact | Signed/audited; installed-runtime comparison and handoff chronology in progress |
-| Corrected native controls | Pending diagnostic chronology |
+| Diagnostic QA artifact | Signed/audited/installed; wrong-recipient chronology reproduced; compiler-runtime comparison in progress |
+| Corrected native controls | 40/40 immediate Close/selection outcomes plus supersession, viewport, keyboard, forms and idle resume pass |
 | Covered-chat presentation retention decision | Pending independent comparison |
 | Provider/client/daemon attribution | In progress; broader freezes remain open |
 | Final signed release | Pending |

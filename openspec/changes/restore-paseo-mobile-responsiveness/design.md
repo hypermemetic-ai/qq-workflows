@@ -64,6 +64,8 @@ The handoff delta retires when upstream preserves visible input ownership and su
 
 Complete source checks through repo npm scripts and focused existing tests. Commit/push/PR/merge source into the established beta fork branch and integrate QA/spec/provenance through the workflow repository's PR path. Record source, release acceptance and Android installation separately. Preserve signer/package, pairings, drafts, phone preferences and zero animation settings. A disconnected phone leaves installation pending; a source merge or signed APK is not activation proof.
 
+The accepted QA and production shells both embed `extra.profileBuild=true`; manifest profileability alone does not describe the runtime marker guard. Keep tracing enabled for diagnostic QA, and use the existing normally generated public configuration with `extra.profileBuild=false` for final production. Audit exactly the two normal metadata differences within each accepted variant: the runtime flag and omission of the serialized `withAndroidProfileable` plugin entry. Verify all other values and final native controls with markers disabled. The retained native shell remains manifest-profileable; this is a runtime diagnostic setting, not a newly generated non-profile native build. Do not hand-edit the flag, change signing/OTA metadata, or treat QA resource equivalence as production proof.
+
 ## Risks / Trade-offs
 
 - Moving input ahead of settled publication can expose delayed-command races → verify superseding revisions and first-tap outcomes; retain settled resource/accessibility gates.

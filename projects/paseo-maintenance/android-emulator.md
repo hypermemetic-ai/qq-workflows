@@ -299,6 +299,12 @@ without retrying the tap. Its timings include ADB and screenshot observation
 overhead. Outcome-bearing trial commands and release acceptance belong in the
 [mobile delivery record](mobile-responsiveness.md).
 
+Inspect the saved outcome JSON for every trial block: require every `success`
+value to be true and the completed trial count to equal the requested count.
+The driver stops at the first failed destination; its process exit status alone
+does not establish that a block passed. Keep preparation/route-guard failures
+separate from timed input outcomes, and never retry a failed tap as a success.
+
 Stop only the recorded fixture/VM units. The repeated fixture stop was verified
 to leave no old descendants. Preserve the home during matched APK windows, then
 remove only owned synthetic state and the staged helper at task end. Keep the

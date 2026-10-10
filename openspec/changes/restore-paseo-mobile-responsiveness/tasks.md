@@ -9,10 +9,10 @@
 
 ## 2. Ordered panel interaction correction
 
-- [ ] 2.1 Add bounded profile markers for semantic commits, active publication, rendered input policy and Close/row/Explorer handling; verify an instrumented baseline trace locates the failed handoff without private content or unconditional timers.
+- [x] 2.1 Add bounded profile markers for semantic commits, active publication, rendered input policy and Close/row/Explorer handling; verify an instrumented baseline trace locates the failed handoff without private content or unconditional timers.
 - [x] 2.2 Implement visible native input ownership and revision-safe explicit interaction commands in the existing panel model/hosts; verify existing-suite regressions cover delayed open overtaken by Close/navigation, cancellation and rapid newer commands.
 - [x] 2.3 Integrate the corrected ownership contract into the existing mobile-panels documentation and complete source npm format, lint, typecheck and focused tests; verify the concrete diff preserves mounted native hosts, selected motion policy and established correctness patches.
-- [ ] 2.4 Package an audited correctness QA candidate from that source and verify at least ten immediate Close and ten alternating workspace selections under streaming, idle controls, scroll/offset, keyboard, submit/dismiss and background/resume behavior using the reusable native workload.
+- [x] 2.4 Package an audited correctness QA candidate from that source and verify at least ten immediate Close and ten alternating workspace selections under streaming, idle controls, scroll/offset, keyboard, submit/dismiss and background/resume behavior using the reusable native workload.
 
 ## 3. Covered-chat presentation evaluation
 
@@ -28,6 +28,6 @@
 ## 5. Integration and Android delivery
 
 - [ ] 5.1 Complete scoped app commit/push/review/PR/merge into the established beta fork branch; verify required CI/focused checks and that the integrated commit contains only accepted deltas with source/native evidence.
-- [ ] 5.2 Package and sign the final QA/production release using retained compatible caches and the established signer; verify embedded bundle/assets/package identity, stage timings and final native controls for the retained source.
+- [ ] 5.2 Package and sign the final QA/production release using retained compatible caches and the established signer; verify embedded bundle/assets/package identity, normally generated production runtime-marker disablement with retained native profileability, stage timings and final native controls for the retained source.
 - [ ] 5.3 Complete an in-place Android update and record installed package/signer/bundle/OTA identity and visible preferences plus daemon/session continuity; verify actual device activation independently of source and APK readiness.
 - [ ] 5.4 Integrate specs, reusable QA and sanitized delivery/retirement records through the workflow repository commit/push/PR path, stop task-owned processes and run final Git helpers; verify tracked work is integrated and no unattended task services remain.
