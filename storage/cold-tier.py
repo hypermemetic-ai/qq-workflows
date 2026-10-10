@@ -1389,11 +1389,15 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None, host_reference
                 next_progress=time.monotonic()+5
         after_links = {} if detached is not None else None
         after, _ = inventory(original, cfg['max_scan_entries'], detached=after_links)
-        copied, _ = inventory(destination, cfg['max_scan_entries'],detached={} if rehoming else None)
         if rehoming:
             if set(before)!=set(after) or any((v[:3],v[4])!=(after[k][:3],after[k][4]) for k,v in before.items()):
                 raise ValueError('source changed during migration')
         elif before != after or detached != after_links: raise ValueError('source changed during migration')
+        # A bulk cohort can contain nearly a million names. The recheck is
+        # already complete; release it before allocating the destination's
+        # manifest, while the mutation guard keeps observing the source.
+        del after, after_links
+        copied, _ = inventory(destination, cfg['max_scan_entries'],detached={} if rehoming else None)
         def matches(rel, meta):
             actual = copied[rel]
             if stat.S_ISLNK(meta[0]):
@@ -1402,8 +1406,9 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None, host_reference
             return (meta[:3], meta[4]) == (actual[:3], actual[4])
         if set(before) != set(copied) or any(not matches(k,v) for k,v in before.items()):
             raise ValueError('copy metadata mismatch')
+        del before, copied, detached, links, verified_pairs
         print('SYNC', source, flush=True)
-        record.update(phase='syncing',verified_entries=len(before),verification_read_bytes=budget.bytes)
+        record.update(phase='syncing',verified_entries=record['verification_entries'],verification_read_bytes=budget.bytes)
         atomic_json(journal,record)
         flush_copy(destination)
         change_mask=MODIFY|CREATE|DELETE|MOVED_FROM|MOVED_TO|OVERFLOW|DELETE_SELF|MOVE_SELF|(0 if rehoming else ATTRIB)

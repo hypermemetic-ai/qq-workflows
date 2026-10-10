@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+import weakref
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('cold_tier', Path(__file__).with_name('cold-tier.py'))
@@ -83,6 +84,24 @@ class CopyDurabilityTests(unittest.TestCase):
 
 
 class ColdTierTests(unittest.TestCase):
+    def test_migration_releases_recheck_before_destination_and_manifests_before_retirement(self):
+        source=self.home/'memory-bounded';source.mkdir()
+        (source/'data').write_bytes(b'preserved')
+        real_inventory=m.inventory;real_retire=m.remove_retired;manifests=[]
+        class Manifest(dict):pass
+        def inventory(path,*args,**kwargs):
+            if len(manifests)==2:self.assertIsNone(manifests[1]())
+            entries,size=real_inventory(path,*args,**kwargs)
+            result=Manifest(entries);manifests.append(weakref.ref(result));return result,size
+        def retire(path,limit):
+            self.assertEqual(len(manifests),3)
+            self.assertTrue(all(ref() is None for ref in manifests))
+            return real_retire(path,limit)
+        with patch.object(m,'references',return_value=[]),patch.object(m,'inventory',inventory),patch.object(m,'remove_retired',retire):
+            m.migrate(self.store,self.cfg,source)
+        self.assertEqual((source/'data').read_bytes(),b'preserved')
+        self.assertFalse((self.store.state/'operation.json').exists())
+
     def bulk_backing_fixture(self):
         source=self.home/'project';source.mkdir()
         for name in ('pending','already'):
