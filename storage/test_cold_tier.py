@@ -14,6 +14,31 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 
 class ColdTierTests(unittest.TestCase):
+    def test_competing_default_admission_reuses_live_root_identity(self):
+        source=self.home/'cache';source.mkdir();(source/'old').write_bytes(b'old')
+        m.bridge_parent(self.store,self.cfg,source)
+        (source/'new').write_bytes(b'new')
+        competing=m.Store(self.store.state);register=self.store.register;ids=[]
+        def raced(public,target,location='hdd',hot=''):
+            ids.append(competing.register(public,target,location,hot))
+            return register(public,target,location,hot)
+        try:
+            with patch.object(self.store,'register',side_effect=raced):m.adopt_defaults(self.store,self.cfg)
+            self.assertEqual({r['id'] for r in self.store.roots()},set(ids))
+            self.assertEqual(len(ids),2)
+            self.assertEqual((source/'old').read_bytes(),b'old')
+            self.assertEqual((source/'new').read_bytes(),b'new')
+        finally: competing.db.close()
+
+    def test_competing_registration_preserves_conflicting_live_mapping(self):
+        source=self.home/'data';target=self.archive/'one';other=self.archive/'two'
+        target.write_bytes(b'one');other.write_bytes(b'two')
+        key=self.store.register(source,target)
+        with self.assertRaisesRegex(ValueError,'existing mapping preserved'):
+            self.store.register(source,other)
+        self.assertEqual(self.store.root(key)['target'],str(target))
+        self.assertEqual(target.read_bytes(),b'one');self.assertEqual(other.read_bytes(),b'two')
+
     def test_summary_is_bounded_for_large_queues_and_does_not_scan_payloads(self):
         self.store.db.executemany('INSERT INTO queue VALUES (?,?,?,?,?)',
             [(str(self.home/('unit-'+str(n))),'move','pending','',1) for n in range(2000)])
