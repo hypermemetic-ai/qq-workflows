@@ -51,7 +51,7 @@ and saved provider context are separate concerns. See
 | --- | --- |
 | Project/workspace mapping | 18 roots/17 locations registered; 12 physical cards/13 original working directories |
 | Original thread/settings continuity | All 18 source/native IDs consistent; real 3.07 MiB pilot verified on original main/provider |
-| Ongoing worker | Independently active at 2026-10-10 19:03:01 UTC: 7 verified, 0 blocked, 11 waiting; coordinator queued last |
+| Ongoing migration | Active worker at 2026-10-10 19:28:42 UTC: 15 verified, 0 blocked, 3 waiting; coordinator queued last |
 | Native Android controls | Same-ID 19.2 MiB synthetic Chat/send/switch/background/reconnect accepted on original Codex 0.159.3 |
 | OpenSpec | ON16/OFF2 instruction-driven carryover prepared; explicit-path native child read verified |
 | Phone | Main host authenticated and real pilot phone-accepted; installed APK version not ADB-verified |
@@ -151,15 +151,19 @@ Only the verified pilot had transferred. Recovery uses a 768 MiB budget for the
 worker and helper Node processes, preserving the original deadline, concurrency
 of one and 64-task limit.
 
-Before rearming, six sessions were verified, including one genuine
-symlink-route transfer without optional resume metadata. All six preserved
-native identity and received exactly one notice and acknowledgment, completed
-Stop, and passed final writer fences. Two existing unnotified panes were
-recovered on their existing owners without relaunch. Independent verification at
-2026-10-10 19:03:01 UTC confirmed the corrected unit active: seven verified, zero
-blocked and eleven waiting, with the coordinator last. The original deadline is
-unchanged; automatic notice retries are zero. The queue continues and the
-remaining sessions are not yet migrated. No uncertain send is replayed.
+Receipts verify 15 original conversations, each with
+exactly one notice and acknowledgment, completed Chat/Stop and final expected-writer
+fences. The parent-file recovery below passed on its existing pane and original
+thread. The operative worker snapshot at 2026-10-10 19:28:42 UTC is active with
+15 verified, zero blocked and three waiting: two non-coordinator sessions are
+running, one awaiting operator permission, and the coordinator is queued last.
+The 768 MiB budget, concurrency of one, 64-task limit and original deadline are
+unchanged; automatic notice retries are zero. These remaining conversations are
+not yet transferred.
+
+The 2026-10-10 19:03:01 UTC rearm was an earlier checkpoint: the corrected unit
+was active with seven verified, zero blocked and eleven waiting. Those counts
+are historical, not the current receipt total.
 
 Ten selected final transcript symlinks target a different filesystem outside the
 original canonical sessions tree, failing stock's regular-file provenance guard.
@@ -175,6 +179,29 @@ remain unchanged. Genuine Chat and final writer fences verified this route.
 No application, credential or filesystem change is involved. A stopped symlink
 session may need this explicit-home CLI route again; that is an inference from
 the same guard. Cold tab restoration remains unverified and adds no new gate.
+
+A paginated-fork resume failed to discover its original 122.93 MiB parent, a
+regular file beneath a nested directory symlink. Stock Codex 0.159.3
+[lineage lookup](https://github.com/openai/codex/blob/01fc69f4/codex-rs/thread-store/src/local/rollout_lineage.rs#L73)
+scans managed filenames rather than SQLite's parent path, and
+[file scanning](https://github.com/openai/codex/blob/01fc69f4/codex-rs/rollout/src/list.rs#L1615)
+skips nested directory/file symlinks; the original parent and database record
+exist. The same discovery behavior remains in 0.162.1.
+
+The separately authorized storage correction is performed and verified: one
+128,903,879-byte, byte-identical parent is now a regular, non-symlink file under
+its existing managed filename in a real original-home sessions directory. The
+original remains untouched. Source, native, queued-goal and writable-file ownership
+checks all found zero owners. The private identity/hash rollback receipt confirms
+unchanged native IDs, history bytes, account/home/settings and no SQLite edits.
+The recovered session then received its single notice and acknowledgment on the
+same existing pane and original thread, completed Chat and passed its writer
+fence. This separate parent placement does not change the application; the
+explicit-home CLI route above itself remains filesystem-change-free.
+
+The stock send schema accepts optional `agentPrompt` only when true. Omitting an
+unsupported false value repaired the retained-pane send before any notice was
+sent, preserving the original one-shot intent.
 
 The 2026-10-10 18:33 UTC snapshot used the original 256 MiB cap: one verified
 pilot and 17 queued, including four running, with zero permission waits or
