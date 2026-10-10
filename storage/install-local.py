@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Install only the cold-tier services. No existing application restarts."""
 import hashlib
+import argparse
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,9 @@ import shlex
 import subprocess
 
 os.umask(0o077)
+parser=argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--defer-migration',action='store_true',help='Install the timer without starting it during an active verified rollout')
+args=parser.parse_args()
 source = Path(__file__).resolve().parent
 home = Path.home()
 subprocess.run(['systemctl','--user','show-environment'],check=True,stdout=subprocess.DEVNULL)
@@ -51,5 +55,8 @@ system.write_text('#!/bin/sh\nexec /usr/bin/python3 '+shlex.quote(str(storage/'c
                   ' --output '+shlex.quote(str(state/'system-prepare.json'))+' "$@"\n');system.chmod(0o700)
 subprocess.run([str(binpath),'init'],check=True)
 subprocess.run(['systemctl','--user','daemon-reload'],check=True)
-subprocess.run(['systemctl','--user','enable','--now','qq-cold-tier.service','qq-cold-tier-migrate.timer'],check=True)
+subprocess.run(['systemctl','--user','enable','--now','qq-cold-tier.service'],check=True)
+timer=['systemctl','--user','enable']
+if not args.defer_migration:timer.append('--now')
+subprocess.run([*timer,'qq-cold-tier-migrate.timer'],check=True)
 print('Installed cold-tier release', release.name)
