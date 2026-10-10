@@ -174,6 +174,23 @@ The ledger is capped at 128 MiB. Its watcher has CPU/RAM/task limits; the move
 worker lowers its verified `qq-job` scope to 20% CPU, 640 MiB RAM and 32 tasks.
 Automatic promotion preserves at least 10 GiB free on SSD.
 
+`qq-job -- qq-cold-tier verify-cargo-cache` checks a bounded batch of official
+crates.io `.crate` archives against the registry's published SHA256 checksums.
+The hourly drain also revisits up to 100 archives within a 60-second budget.
+Private registries, unpacked source trees, unknown files and modified archives
+remain retained. Individual verified file identities and checksums are sealed
+in a proof outside the prunable cache. A new proof starts that file's full
+30-day wait; adding or changing another file does not make it disposable.
+
+When `reference_socket` is `/run/qq-cold-tier-refs/socket`, the preparation helper
+installs a socket-activated, root-pinned read-only collector. It accepts only the
+operator's owned regular files on the mounted cached volume and compares device
+and inode identities with descriptors and mappings across all process namespaces.
+It emits no process commands, environments or file contents. GC makes one bounded
+check per batch and drains access events before each unlink. Missing coverage,
+changed identities and collector budget failures preserve the files. The collector
+has no write permission to the data and cannot perform deletion or restart apps.
+
 The watcher drains its own directory-walk events during admission and watches
 new/deleted subtrees incrementally. Directory activity does not trigger a scan
 of every managed root. Watch-budget failures are visible per root. Installed

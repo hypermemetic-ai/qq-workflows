@@ -13,7 +13,7 @@ source = Path(__file__).resolve().parent
 home = Path.home()
 subprocess.run(['systemctl','--user','show-environment'],check=True,stdout=subprocess.DEVNULL)
 commit = subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()
-files=('cold-tier.py','native-cache-preflight.py','native-cache-trial.py','native-cache-git-pilot.py','native-cache-startup.py','native-cache-volume.py','system-prepare.py')
+files=('cold-tier.py','artifact-proof.py','process-reference-broker.py','native-cache-preflight.py','native-cache-trial.py','native-cache-git-pilot.py','native-cache-startup.py','native-cache-volume.py','system-prepare.py')
 digest = hashlib.sha256(b''.join((source/name).read_bytes() for name in files)).hexdigest()
 storage = (home/'.local/share/qq-cold-tier').resolve()
 state = (home/'.local/state/qq-cold-tier').resolve()
