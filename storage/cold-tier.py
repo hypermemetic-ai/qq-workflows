@@ -639,12 +639,16 @@ def adopt_defaults(store, cfg):
             existing.add(str(public))
     if cfg.get('automatic_migration', True):
         for root in store.roots():
-            if root['location'] != 'ssd' or excluded_unit(live_path(root),cfg): continue
+            if root['location'] != 'ssd': continue
+            # Already admitted units retain the mover's live safety checks.
+            # Do not resolve every protected path again just to leave their
+            # existing queue record unchanged during each watcher pass.
+            if store.db.execute('SELECT 1 FROM queue WHERE source=?',(root['source'],)).fetchone(): continue
             parent=next((p for p in parents if Path(root['source']).parent==Path(p['source'])),None)
             # Explicit promotions have a separate hot path; preserve them.
             if not parent or live_path(root)!=Path(parent['backing'])/Path(root['source']).name: continue
-            if not store.db.execute('SELECT 1 FROM queue WHERE source=?',(root['source'],)).fetchone():
-                queue_add(store,root['source'])
+            if excluded_unit(live_path(root),cfg): continue
+            queue_add(store,root['source'])
         # Admit idle children of real SSD parents without changing the parent
         # inode. A parent can remain real for application compatibility.
         for raw in cfg.get('intake_parents',[]):
@@ -653,10 +657,10 @@ def adopt_defaults(store, cfg):
             for child in parent.iterdir():
                 if child.is_symlink() or tier_temporary(child) or str(child) in managed_backings:continue
                 try:
+                    if store.db.execute('SELECT 1 FROM queue WHERE source=?',(str(child),)).fetchone():continue
                     valid_source(child,cfg)
                     if time.time()-child.stat().st_mtime<cfg.get('intake_min_age_seconds',3600):continue
                     if child.stat().st_dev==archive.stat().st_dev:continue
-                    if store.db.execute('SELECT 1 FROM queue WHERE source=?',(str(child),)).fetchone():continue
                     if child.is_file() and database_file(child):continue
                     if not (child.is_file() or child.is_dir()):continue
                     queue_add(store,child)

@@ -14,6 +14,36 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 
 class ColdTierTests(unittest.TestCase):
+    def test_repeated_admission_skips_expensive_policy_checks_for_queued_roots(self):
+        source=self.home/'cache';source.mkdir();(source/'data').write_bytes(b'keep')
+        m.bridge_parent(self.store,self.cfg,source);m.adopt_defaults(self.store,self.cfg)
+        before=[dict(r) for r in self.store.db.execute('SELECT * FROM queue')]
+        with patch.object(m,'excluded_unit',side_effect=AssertionError('rechecking queued root')):
+            m.adopt_defaults(self.store,self.cfg)
+        self.assertEqual([dict(r) for r in self.store.db.execute('SELECT * FROM queue')],before)
+        # Skipping repeat admission never bypasses the actual mover's policy.
+        row=self.store.roots()[0];self.cfg['excluded'].append(str(m.live_path(row)))
+        with self.assertRaisesRegex(ValueError,'protected'):m.migrate(self.store,self.cfg,source/'data',demoting=row)
+        self.assertEqual((source/'data').read_bytes(),b'keep')
+
+    def test_intake_still_validates_new_children_while_skipping_queued_children(self):
+        parent=self.home/'incoming';parent.mkdir()
+        known=parent/'known';fresh=parent/'fresh';protected=parent/'protected'
+        for p in (known,fresh,protected):p.write_bytes(b'keep')
+        m.queue_add(self.store,known)
+        self.cfg.update(intake_parents=[str(parent)],intake_min_age_seconds=0)
+        self.cfg['excluded'].append(str(protected));checked=[];validate=m.valid_source
+        def checked_source(path,cfg):checked.append(path);return validate(path,cfg)
+        with tempfile.TemporaryDirectory(dir='/dev/shm') as d:
+            archive=Path(d)
+            if archive.stat().st_dev==parent.stat().st_dev:self.skipTest('separate destination filesystem unavailable')
+            self.cfg['archive']=str(archive)
+            with patch.object(m,'mount_ready',return_value=archive),\
+                 patch.object(m,'valid_source',side_effect=checked_source):m.adopt_defaults(self.store,self.cfg)
+        self.assertNotIn(known,checked);self.assertIn(fresh,checked);self.assertIn(protected,checked)
+        self.assertEqual({r[0] for r in self.store.db.execute('SELECT source FROM queue')},{str(known),str(fresh)})
+        self.assertEqual(protected.read_bytes(),b'keep')
+
     def test_competing_default_admission_reuses_live_root_identity(self):
         source=self.home/'cache';source.mkdir();(source/'old').write_bytes(b'old')
         m.bridge_parent(self.store,self.cfg,source)
