@@ -11,6 +11,11 @@ until the corresponding Orca transfer is verified; migration does not authorize
 new app patches or destructive archive cleanup. Existing maintenance records
 below remain the provenance for retained Paseo artifacts.
 
+[Stock service desktop activation](orca-desktop-service.md) owns the bounded
+local post-start helper and reviewable systemd template. Preserve the stock
+serve supervisor and require isolated cold-start acceptance before activation;
+promotion failure must never stop the existing server.
+
 ## Current ownership
 
 Read the target checkout's `AGENTS.md` and relevant `docs/`. Source checkouts are
