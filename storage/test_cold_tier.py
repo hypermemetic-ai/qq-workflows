@@ -14,6 +14,40 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 
 class ColdTierTests(unittest.TestCase):
+    def test_admission_releases_writer_before_scanning_the_next_atomic_replacement(self):
+        source=self.home/'parent';source.mkdir()
+        for name in ('first','second'):(source/name).mkdir()
+        with patch.object(m,'references',return_value=[]):
+            parent=m.bridge_parent(self.store,self.cfg,source);m.adopt_defaults(self.store,self.cfg)
+        first=Path(parent['hdd'])/'first';first.unlink();first.mkdir();(first/'new').write_bytes(b'authoritative')
+        other=m.Store(self.store.state);other.db.execute('PRAGMA busy_timeout=0')
+        real=Path.resolve;checked=[]
+        def resolve(path,*args,**kwargs):
+            if path==source/'second':
+                other.put('concurrent_heartbeat',123);other.db.commit();checked.append(True)
+            return real(path,*args,**kwargs)
+        try:
+            with patch.object(Path,'resolve',resolve):m.adopt_defaults(self.store,self.cfg)
+            self.assertTrue(checked)
+            self.assertEqual(self.store.root(str(source/'first'))['location'],'hdd')
+            self.assertEqual((source/'first'/'new').read_bytes(),b'authoritative')
+        finally:other.db.close()
+
+    def test_conflicting_former_folder_does_not_leave_the_ledger_writer_locked(self):
+        source=self.home/'parent';source.mkdir();(source/'child').mkdir()
+        (source/'child'/'former').write_bytes(b'preserve')
+        with patch.object(m,'references',return_value=[]):
+            parent=m.bridge_parent(self.store,self.cfg,source);m.adopt_defaults(self.store,self.cfg)
+        proxy=Path(parent['hdd'])/'child';proxy.unlink();proxy.mkdir();(proxy/'new').write_bytes(b'new')
+        m.adopt_defaults(self.store,self.cfg)
+        other=m.Store(self.store.state);other.db.execute('PRAGMA busy_timeout=0')
+        try:
+            other.put('concurrent_heartbeat',123);other.db.commit()
+            self.assertEqual(self.store.get('defaults_conflict')['former_copy'],str(Path(parent['backing'])/'child'))
+            self.assertEqual((Path(parent['backing'])/'child'/'former').read_bytes(),b'preserve')
+            self.assertEqual((source/'child'/'new').read_bytes(),b'new')
+        finally:other.db.close()
+
     def test_partition_recovery_finishes_after_child_admission_was_interrupted(self):
         source=self.home/'mixed';source.mkdir();(source/'keep').write_bytes(b'original')
         identity=(source/'keep').stat().st_ino
