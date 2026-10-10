@@ -121,6 +121,34 @@ class ColdTierTests(unittest.TestCase):
         self.assertEqual(self.store.root(pending['id'])['location'],'hdd')
         self.assertEqual((source/'pending/data').read_text(),'pending')
 
+    def test_bulk_backing_completes_intake_units_without_registering_unrelated_queue(self):
+        source,parent,backing=self.bulk_backing_fixture()
+        fresh=backing/'late';fresh.write_text('late data');m.queue_add(self.store,fresh)
+        outside=self.home/'unrelated';outside.write_text('keep');m.queue_add(self.store,outside)
+        with patch.object(m,'references',return_value=[]),patch.object(m,'broker_references',return_value=set()):
+            m.move_backing(self.store,self.cfg,backing)
+        self.assertEqual(self.store.db.execute('SELECT status FROM queue WHERE source=?',(str(fresh),)).fetchone()[0],'complete')
+        self.assertEqual(self.store.db.execute('SELECT status FROM queue WHERE source=?',(str(outside),)).fetchone()[0],'pending')
+        self.assertEqual(fresh.read_text(),'late data')
+
+    def test_bulk_backing_recovery_uses_recorded_bounded_scan_budget(self):
+        source,parent,backing=self.bulk_backing_fixture();self.cfg['max_scan_entries']=2
+        with patch.object(m,'references',return_value=[]),patch.object(m,'broker_references',return_value=set()),\
+             patch.object(m,'remove_retired',side_effect=PermissionError('interrupted retirement')):
+            with self.assertRaises(PermissionError):m.move_backing(self.store,self.cfg,backing,max_entries=100,max_watches=100)
+        record=m.bounded_json(self.store.state/'operation.json')
+        self.assertEqual(record['bulk_budgets'],{'max_scan_entries':100,'max_watches':100})
+        with patch.object(m,'references',return_value=[]),patch.object(m,'broker_references',return_value=set()):
+            m.recover_published(self.store,self.cfg)
+        self.assertEqual((source/'pending/data').read_text(),'pending')
+        self.assertFalse((self.store.state/'operation.json').exists())
+
+    def test_bulk_backing_rejects_unbounded_scan_and_watch_settings(self):
+        source,parent,backing=self.bulk_backing_fixture()
+        for values in ({'max_entries':1000001},{'max_watches':0},{'max_entries':True}):
+            with self.assertRaisesRegex(ValueError,'budget'):m.move_backing(self.store,self.cfg,backing,**values)
+        self.assertFalse(backing.is_symlink())
+
     def test_bulk_backing_host_coverage_failure_preserves_all_original_inodes(self):
         source,parent,backing=self.bulk_backing_fixture();inode=(backing/'pending/data').stat().st_ino
         with patch.object(m,'references',return_value=[]),patch.object(m,'broker_references',side_effect=ValueError('coverage incomplete')):

@@ -31,6 +31,11 @@ unexplained hard links still defer. `--detach-package-links` permits independent
 verified copies only for shared installed files beneath `node_modules`; outside
 aliases retain their original inodes. This explicit bulk operation does not
 relax the automatic per-child migration policy.
+For a reviewed larger tree, `--max-entries` and `--max-watches` set bounded
+per-operation limits (at most one million each). Recovery retains those limits
+from the journal, so a larger published move can finish after interruption
+without changing the normal policy. Verified bulk copies also complete queued
+intake children that had not yet received their own tracking record.
 Expanding a live mirror proxy records its original backing before publication.
 Admission then tracks untouched SSD children, including after interruption;
 changed original inodes retain the record for review. Alias spellings reuse the
