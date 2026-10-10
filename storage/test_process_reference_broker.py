@@ -41,6 +41,51 @@ class ProcessReferences(unittest.TestCase):
         result=m.collect_directories([str(folder)],keys,self.proc)
         self.assertTrue(result['complete']);self.assertEqual(result['blocked'],[0])
 
+    def test_repeated_mappings_do_not_hide_a_later_descendant(self):
+        folder,child,keys=self.directory_fixture();device=keys[0][0]
+        def mapping(path):
+            return '0000-1000 r--p 0000 '+f'{os.major(device):02x}:{os.minor(device):02x} {path.stat().st_ino} {path}\n'
+        (self.task/'maps').write_text(mapping(self.file)*5000+mapping(child))
+        result=m.collect_directories([str(folder)],keys,self.proc)
+        self.assertTrue(result['complete']);self.assertEqual(result['blocked'],[0])
+
+    def test_mount_parsing_reuse_keeps_each_task_namespace_and_bind_pins(self):
+        folder,child,keys=self.directory_fixture();device=keys[0][0]
+        raw=(self.task/'mountinfo').read_bytes()
+        for pid in ('43','44'):
+            task=self.proc/pid;task.mkdir();(task/'status').write_bytes((self.task/'status').read_bytes())
+            (task/'fd').mkdir();(task/'maps').write_text('');(task/'mountinfo').write_bytes(raw)
+        task=self.proc/'44'
+        (task/'mountinfo').write_text(f'1 0 {os.major(device)}:{os.minor(device)} {folder} /container rw - ext4 /dev/test rw\n')
+        result=m.collect_directories([str(folder)],keys,self.proc)
+        self.assertTrue(result['complete']);self.assertEqual(result['blocked'],[0])
+        # A later query must re-read mountinfo rather than retain the pin.
+        (task/'mountinfo').write_bytes(raw)
+        result=m.collect_directories([str(folder)],keys,self.proc)
+        self.assertTrue(result['complete']);self.assertEqual(result['blocked'],[])
+
+    def test_time_budget_after_mapping_work_cannot_claim_complete(self):
+        folder,_,keys=self.directory_fixture()
+        with patch.object(m.time,'monotonic',side_effect=[0,0,26]):
+            result=m.collect_directories([str(folder)],keys,self.proc)
+        self.assertFalse(result['complete']);self.assertIn('time budget exceeded',result['error'])
+
+    def test_directory_descriptor_access_error_names_the_incomplete_task(self):
+        folder,child,keys=self.directory_fixture();fd=self.task/'fd/9';fd.symlink_to(child)
+        original=Path.stat
+        def denied(path,*args,**kwargs):
+            if path==fd:raise PermissionError('denied')
+            return original(path,*args,**kwargs)
+        with patch.object(Path,'stat',denied):
+            result=m.collect_directories([str(folder)],keys,self.proc)
+        self.assertFalse(result['complete']);self.assertIn('process 42: descriptor access unavailable',result['error'])
+
+    def test_path_containment_does_not_confuse_prefix_siblings(self):
+        self.assertTrue(m.within_path(Path('/candidate/child'),Path('/candidate')))
+        self.assertTrue(m.within_path(Path('/candidate'),Path('/candidate')))
+        self.assertTrue(m.within_path(Path('/candidate'),Path('/')))
+        self.assertFalse(m.within_path(Path('/candidate-old/child'),Path('/candidate')))
+
     def test_directory_subtree_bind_mount_blocks_without_open_descriptors(self):
         folder,child,keys=self.directory_fixture();device=keys[0][0]
         (self.task/'mountinfo').write_text(f'1 0 {os.major(device)}:{os.minor(device)} {child} /container/library rw - ext4 /dev/test rw\n')

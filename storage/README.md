@@ -282,6 +282,12 @@ It emits no process commands, environments or file contents. GC makes one bounde
 check per batch and drains access events before each unlink. Missing coverage,
 changed identities and collector budget failures preserve the files. The collector
 has no write permission to the data and cannot perform deletion or restart apps.
+Directory checks keep the collector's 10% CPU quota and 25-second query budget.
+Every task's mountinfo is read again; byte-identical parsing is reused only within
+that query, with at most eight entries and 1 MiB of mount text. Repeated mapping
+identities are checked once per task, with at most 4096 memo entries. Changed
+namespace text and later distinct references still receive full checks. A scan
+that exhausts its time allowance cannot report complete coverage.
 
 The watcher drains its own directory-walk events during admission and watches
 new/deleted subtrees incrementally. Directory activity does not trigger a scan

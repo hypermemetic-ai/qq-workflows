@@ -54,7 +54,10 @@ def decode_mount_path(raw):
 
 
 def within_path(path,parent):
-    return path==parent or parent in path.parents
+    # These are already normalized Path objects. Avoid allocating every parent
+    # for each mapping against each mount; a separator keeps siblings distinct.
+    path=str(path);parent=str(parent)
+    return path==parent or path.startswith(parent.rstrip('/')+'/')
 
 
 def collect_directories(paths,identities,proc=PROC,seconds=25):
@@ -63,11 +66,13 @@ def collect_directories(paths,identities,proc=PROC,seconds=25):
     devices={key[0] for key in identities}
     blocked=set();complete=True;failure='';deadline=time.monotonic()+seconds
     processes=fds=maps_bytes=mount_bytes=0
+    mount_cache={};mount_cache_bytes=0
     def vanished(error):return isinstance(error,FileNotFoundError) or getattr(error,'errno',None)==errno.ESRCH
     for task in proc.iterdir():
         if not task.name.isdecimal() or int(task.name)==os.getpid():continue
         processes+=1
-        if processes>8192 or time.monotonic()>deadline:complete=False;break
+        if processes>8192 or time.monotonic()>deadline:
+            complete=False;failure='process count or time budget exceeded';break
         try:
             with (task/'status').open('rb') as stream:status=stream.read(32769)
             if len(status)>32768:complete=False;break
@@ -75,26 +80,37 @@ def collect_directories(paths,identities,proc=PROC,seconds=25):
             with (task/'mountinfo').open('rb') as stream:raw=stream.read(262145)
             mount_bytes+=len(raw)
             if len(raw)>262144 or mount_bytes>64*1024**2:complete=False;break
-            mounts=[]
-            for line in raw.splitlines():
-                fields=line.split()
-                if len(fields)<10 or b'-' not in fields[6:]:raise ValueError('invalid mount record')
-                major,minor=fields[2].split(b':');device=os.makedev(int(major),int(minor))
-                # nsfs uses roots such as net:[4026531833], which are valid
-                # mount records but not filesystem paths. Only candidate
-                # devices can contain these SSD trees or their references.
-                if device not in devices:continue
-                root=Path(decode_mount_path(fields[3]));point=Path(decode_mount_path(fields[4]))
-                if not root.is_absolute() or not point.is_absolute():raise ValueError('invalid mount path')
-                mounts.append((point,root,device))
+            mounts=mount_cache.get(raw)
+            if mounts is None:
+                mounts=[]
+                for line in raw.splitlines():
+                    fields=line.split()
+                    if len(fields)<10 or b'-' not in fields[6:]:raise ValueError('invalid mount record')
+                    major,minor=fields[2].split(b':');device=os.makedev(int(major),int(minor))
+                    # nsfs roots are valid but are not filesystem paths.
+                    if device not in devices:continue
+                    root=Path(decode_mount_path(fields[3]));point=Path(decode_mount_path(fields[4]))
+                    if not root.is_absolute() or not point.is_absolute():raise ValueError('invalid mount path')
+                    mounts.append((point,root,device))
+                mounts.sort(key=lambda row:len(row[0].parts),reverse=True)
+                # Re-read every task's mountinfo. Reuse only byte-identical
+                # parsing within this query, with a small bounded cache.
+                if len(mount_cache)>=8 or mount_cache_bytes+len(raw)>1024**2:
+                    mount_cache.clear();mount_cache_bytes=0
+                mount_cache[raw]=mounts;mount_cache_bytes+=len(raw)
+            for point,root,device in mounts:
                 # A bind of a strict subtree pins that tree even with no open FD.
                 for index,(candidate,wanted_device) in enumerate(candidates):
                     if device==wanted_device and within_path(root,candidate):blocked.add(index)
-            mounts.sort(key=lambda row:len(row[0].parts),reverse=True)
+            inspected=set()
             def inspect(raw_path,device,inode):
+                if device not in devices:return
+                key=(raw_path,device,inode)
+                if key in inspected:return
+                if len(inspected)>=4096:inspected.clear()
+                inspected.add(key)
                 for index,key in enumerate(identities):
                     if [device,inode]==key:blocked.add(index)
-                if device not in devices:return
                 if raw_path.endswith(' (deleted)'):raw_path=raw_path[:-10]
                 path=Path(raw_path)
                 if not path.is_absolute():raise ValueError('unresolved relevant reference')
@@ -125,7 +141,8 @@ def collect_directories(paths,identities,proc=PROC,seconds=25):
                 try:
                     link=task/name;info=link.stat();inspect(os.readlink(link),info.st_dev,info.st_ino)
                 except OSError as error:
-                    if not vanished(error):complete=False
+                    if not vanished(error):
+                        complete=False;failure=f'process {task.name}: {name} access unavailable'
             with (task/'maps').open('rb') as stream:raw=stream.read(2*1024**2+1)
             maps_bytes+=len(raw)
             if len(raw)>2*1024**2 or maps_bytes>32*1024**2:complete=False;break
@@ -136,14 +153,19 @@ def collect_directories(paths,identities,proc=PROC,seconds=25):
                 if inode:inspect(fields[5].decode('utf-8','surrogateescape') if len(fields)==6 else '',device,inode)
             for fd in (task/'fd').iterdir():
                 fds+=1
-                if fds>250000 or time.monotonic()>deadline:complete=False;break
+                if fds>250000 or time.monotonic()>deadline:
+                    complete=False;failure='descriptor count or time budget exceeded';break
                 try:
                     info=fd.stat();inspect(os.readlink(fd),info.st_dev,info.st_ino)
                 except OSError as error:
-                    if not vanished(error):complete=False
+                    if not vanished(error):
+                        complete=False;failure=f'process {task.name}: descriptor access unavailable'
+            if time.monotonic()>deadline:
+                complete=False;failure='process-reference time budget exceeded'
             if not complete:break
         except OSError as error:
-            if not vanished(error):complete=False;break
+            if not vanished(error):
+                complete=False;failure=f'process {task.name}: {error.strerror or type(error).__name__}'[:160];break
         except (ValueError,OverflowError) as error:
             complete=False;failure=f'process {task.name}: {error}'[:160];break
     report={'complete':complete,'blocked':sorted(blocked),'identities':identities,
