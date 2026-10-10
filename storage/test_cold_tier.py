@@ -14,6 +14,28 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 
 class ColdTierTests(unittest.TestCase):
+    def test_summary_is_bounded_for_large_queues_and_does_not_scan_payloads(self):
+        self.store.db.executemany('INSERT INTO queue VALUES (?,?,?,?,?)',
+            [(str(self.home/('unit-'+str(n))),'move','pending','',1) for n in range(2000)])
+        self.store.put('heartbeat',time.time()); self.store.db.commit()
+        record = {'source':str(self.home/'bulk'),'phase':'verifying',
+                  'verification_entries':100,'verified_entries':70,
+                  'verification_read_bytes':1024,'unrelated_payload':'x'*100000}
+        m.atomic_json(self.store.state/'operation.json',record)
+        with patch.object(m,'inventory',side_effect=AssertionError('payload scan')),\
+             patch.object(m,'decisions',side_effect=AssertionError('root evaluation')):
+            report=m.status_summary(self.store,self.cfg)
+        self.assertEqual(report['queue'],[dict(action='move',status='pending',count=2000)])
+        self.assertEqual(report['operation']['verified_entries'],70)
+        self.assertLess(len(m.json.dumps(report)),2048)
+        self.assertEqual(m.bounded_json(self.store.state/'operation.json'),record)
+
+    def test_summary_reports_unreadable_operation_without_claiming_idle(self):
+        journal=self.store.state/'operation.json';journal.write_text('{incomplete')
+        report=m.status_summary(self.store,self.cfg)
+        self.assertIn('operation_error',report)
+        self.assertEqual(journal.read_text(),'{incomplete')
+
     def test_bounded_container_command_rejects_excess_output(self):
         with self.assertRaisesRegex(ValueError,'output exceeds bound'):
             m.bounded_command([sys.executable,'-c','print("x"*1024)'],limit=64)

@@ -1668,13 +1668,49 @@ def discover(cfg, bases):
     return sorted(rows, key=lambda r: r.get('allocated_bytes', 0), reverse=True)
 
 
+def status_summary(store, cfg):
+    """Bounded live progress without walking payloads or evaluating every root."""
+    now = time.time()
+    heartbeat = store.get('heartbeat', 0)
+    result = {
+        'timestamp': now,
+        'heartbeat_age_seconds': max(0, now-heartbeat) if heartbeat else None,
+        'watches': store.get('watches', 0),
+        'roots': [dict(r) for r in store.db.execute(
+            'SELECT location,COUNT(*) AS count FROM roots GROUP BY location')],
+        'queue': [dict(r) for r in store.db.execute(
+            'SELECT action,status,COUNT(*) AS count FROM queue GROUP BY action,status')],
+        'last_drain': store.get('last_drain'),
+        'defaults_error': store.get('defaults_error'),
+        'operation': None,
+    }
+    try:
+        record = bounded_json(store.state/'operation.json')
+        fields = ('source','phase','started','verification_entries','verified_entries',
+                  'verification_read_bytes','error','cleanup_error')
+        result['operation'] = {k:record[k] for k in fields if k in record}
+    except FileNotFoundError: pass
+    except (OSError, ValueError, TypeError) as error:
+        result['operation_error'] = str(error)[:300]
+    result['filesystems'] = {}
+    for key,path in (('ssd',Path.home()),('hdd',Path(cfg['hdd_mount']))):
+        try:
+            total,used,free = shutil.disk_usage(path)
+            result['filesystems'][key] = {'path':str(path),'total_bytes':total,
+                                          'used_bytes':used,'free_bytes':free}
+            if key == 'hdd': result['filesystems'][key]['mounted'] = path.is_mount()
+        except OSError as error: result['filesystems'][key] = {'error':str(error)[:300]}
+    return result
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state-dir', default=str(Path.home() / '.local/state/qq-cold-tier'))
     parser.add_argument('--config', default=str(Path.home() / '.config/qq-cold-tier.json'))
     sub = parser.add_subparsers(dest='command', required=True)
-    sub.add_parser('init'); sub.add_parser('watch'); sub.add_parser('status'); sub.add_parser('drain'); sub.add_parser('route-defaults'); sub.add_parser('recover-published');sub.add_parser('abort-unpublished')
+    sub.add_parser('init'); sub.add_parser('watch'); sub.add_parser('drain'); sub.add_parser('route-defaults'); sub.add_parser('recover-published');sub.add_parser('abort-unpublished')
+    p = sub.add_parser('status'); p.add_argument('--summary',action='store_true',help='Bounded queue counts, active verification progress and filesystem space')
     p = sub.add_parser('discover'); p.add_argument('paths', nargs='+')
     p = sub.add_parser('defaults'); p.add_argument('paths', nargs='+')
     p = sub.add_parser('namespace-alias');p.add_argument('public');p.add_argument('backing')
@@ -1703,6 +1739,8 @@ def main():
     if args.command == 'init': mount_ready(cfg); print('Initialized', store.state)
     elif args.command == 'watch': watch(store, cfg)
     elif args.command == 'status':
+        if args.summary:
+            print(json.dumps(status_summary(store,cfg),indent=2)); return
         print(json.dumps({'defaults': store.get('defaults', []), 'defaults_error': store.get('defaults_error'),
                           'roots': decisions(store, cfg), 'queue': [dict(r) for r in store.db.execute('SELECT * FROM queue')],
                           'heartbeat': store.get('heartbeat'), 'watches': store.get('watches'), 'last_gc': store.get('last_gc'),
