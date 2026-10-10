@@ -14,6 +14,62 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 
 class ColdTierTests(unittest.TestCase):
+    def test_automatic_partition_drains_oversized_folder_in_bounded_children(self):
+        source=self.home/'large';source.mkdir()
+        for name in ('left','right'):
+            child=source/name;child.mkdir()
+            for n in range(3):(child/str(n)).write_bytes(name.encode())
+        identity=(source/'left'/'0').stat().st_ino
+        self.cfg.update(automatic_partition=True,max_scan_entries=8)
+        m.queue_add(self.store,source)
+        with patch.object(m,'references',return_value=[]):
+            m.drain(self.store,self.cfg)
+            self.assertTrue(source.is_symlink())
+            self.assertEqual((source/'left'/'0').stat().st_ino,identity)
+            self.assertEqual(len(self.store.roots()),2)
+            m.drain(self.store,self.cfg)
+        self.assertEqual({r['location'] for r in self.store.roots()},{'hdd'})
+        self.assertEqual((source/'left'/'0').read_bytes(),b'left')
+        self.assertEqual((source/'right'/'2').read_bytes(),b'right')
+        self.assertFalse(list(self.store.state.glob('*operation.json')))
+
+    def test_automatic_partition_preserves_busy_database_and_moves_idle_sibling(self):
+        source=self.home/'mixed';source.mkdir()
+        busy=source/'busy';busy.mkdir();(busy/'state.db').write_bytes(b'db');(busy/'state.db-wal').write_bytes(b'wal')
+        (source/'idle').write_bytes(b'idle');identity=(busy/'state.db').stat().st_ino
+        self.store.register(source,self.archive/'later','ssd');m.queue_add(self.store,source)
+        self.cfg['automatic_partition']=True
+        def refs(paths,strict=False):
+            return [42] if any(Path(p)==source or Path(p).name=='busy' for p in paths) else []
+        with patch.object(m,'references',side_effect=refs):
+            m.drain(self.store,self.cfg);m.drain(self.store,self.cfg)
+        self.assertEqual((busy/'state.db').stat().st_ino,identity)
+        self.assertEqual((busy/'state.db-wal').read_bytes(),b'wal')
+        self.assertEqual(self.store.root(str(source/'idle'))['location'],'hdd')
+        self.assertEqual(self.store.root(str(source/'busy'))['location'],'ssd')
+        self.assertFalse(list(self.store.state.glob('*operation.json')))
+
+    def test_automatic_partition_keeps_git_administration_together(self):
+        source=self.home/'.git';source.mkdir()
+        for n in range(3):(source/str(n)).write_bytes(b'git')
+        self.cfg.update(automatic_partition=True,max_scan_entries=2);m.queue_add(self.store,source)
+        with patch.object(m,'references',return_value=[]):m.drain(self.store,self.cfg)
+        self.assertFalse(source.is_symlink());self.assertEqual((source/'0').read_bytes(),b'git')
+        self.assertEqual(self.store.db.execute('SELECT status FROM queue').fetchone()[0],'deferred')
+        self.assertFalse(list(self.store.state.glob('*operation.json')))
+
+    def test_automatic_partition_never_changes_a_folder_with_a_recovery_journal(self):
+        source=self.home/'pending';source.mkdir();(source/'data').write_bytes(b'keep')
+        self.cfg['automatic_partition']=True;m.queue_add(self.store,source)
+        def interrupted(*args,**kwargs):
+            m.atomic_json(self.store.state/'operation.json',{'phase':'published','source':str(source)})
+            raise ValueError('source mutation during migration')
+        with patch.object(m,'migrate',side_effect=interrupted):
+            with self.assertRaisesRegex(ValueError,'recovery journal'):m.drain(self.store,self.cfg)
+        self.assertFalse(source.is_symlink());self.assertEqual((source/'data').read_bytes(),b'keep')
+        self.assertEqual(m.bounded_json(self.store.state/'operation.json')['phase'],'published')
+        self.assertFalse((self.store.state/'partition-operation.json').exists())
+
     def test_repeated_admission_skips_expensive_policy_checks_for_queued_roots(self):
         source=self.home/'cache';source.mkdir();(source/'data').write_bytes(b'keep')
         m.bridge_parent(self.store,self.cfg,source);m.adopt_defaults(self.store,self.cfg)
