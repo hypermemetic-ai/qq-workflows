@@ -218,9 +218,11 @@ Copy it into the audited source checkout's ignored
 `packages/server/src/.dev/native-responsiveness.ts`. Keep its private output/home
 and FIFO separate from production and from another task's fixture.
 
-The verified initial workload has 18 expanded projects, 16 workspaces and 52
+The verified initial workload has 18 projects, 16 workspaces and 52
 stored sessions: 12 idle, 40 closed and 34 archived. Workspace 01 retains seven
 tabs; Session 01.1 starts with 60 synthetic user turns and 120 timeline entries.
+The first two project blocks were verified expanded with native row bounds;
+record full-drawer expansion separately when tested.
 Four main streams and provider bursts are explicit later commands. This differs
 from the earlier 16-project/64-session investigation; label results accordingly.
 
