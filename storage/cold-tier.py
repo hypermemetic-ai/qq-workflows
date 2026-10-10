@@ -1144,11 +1144,14 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
         # A standalone file cannot contain its other hard-link names. Defer
         # before a costly process scan; no publication can be attempted here.
         raise ValueError('hard links extend outside migration unit; keep shared inodes together')
+    # Folder inventories can establish the same hard-link or ownership refusal
+    # without scanning every live process. All live-reference and bind checks
+    # still run before staging, copying or changing any path.
+    before, size = inventory(original, cfg['max_scan_entries'], detached=detached)
     protect_container_mounts(store,cfg,[original,source,*aliases])
     if references([original, source, *aliases]): raise ValueError('live process references; deferred')
     if original.is_file() and database_file(original):
         raise ValueError('database and sidecars must move together as one directory')
-    before, size = inventory(original, cfg['max_scan_entries'], detached=detached)
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if os.path.lexists(destination): raise ValueError('staging destination exists')
     reserve = cfg['ssd_reserve_bytes'] if restoring else 1024**3
