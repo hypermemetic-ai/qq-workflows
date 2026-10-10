@@ -111,6 +111,11 @@ protected. Failed staging cleanup retains the journal and original error.
 The scheduled drain treats an occupied migration lock as a normal retry;
 it leaves queued units intact and reports success while another move is active.
 An unfinished operation or other I/O failure still requires recovery.
+The drain refreshes queued arrivals after each group of at most 32 units.
+Explicit folder priorities follow its public and backing paths into newly
+admitted children, so a large partition need not wait behind the old backlog.
+Each busy unit is attempted once per pass; later passes retry it through the
+same migration guards.
 
 Flatpak private profiles under `~/.var/app` need real bind mounts for reliable
 persistence. Exclude these paths from ordinary symlink migration. See the

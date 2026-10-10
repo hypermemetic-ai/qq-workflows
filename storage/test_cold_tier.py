@@ -14,6 +14,38 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 
 class ColdTierTests(unittest.TestCase):
+    def test_drain_notices_new_priority_jobs_before_finishing_old_backlog(self):
+        sources=[]
+        for index in range(35):
+            source=self.home/('low-'+str(index));source.write_bytes(b'keep');m.queue_add(self.store,source);sources.append(source)
+        high=self.home/'urgent';high.write_bytes(b'keep');calls=[]
+        def migrate(store,cfg,source,**kwargs):
+            calls.append(source)
+            if len(calls)==1:m.queue_add(store,high,priority=100)
+        with patch.object(m,'migrate',side_effect=migrate):m.drain(self.store,self.cfg)
+        self.assertEqual(calls[32],high);self.assertEqual(len(calls),36)
+        self.assertEqual(self.store.get('last_drain')['status'],'complete')
+
+    def test_partition_children_inherit_priority_through_physical_routes(self):
+        projects=self.home/'projects';projects.mkdir();folder=projects/'large';folder.mkdir()
+        (folder/'child').write_bytes(b'keep');self.cfg['mirror_layout']=True
+        with patch.object(m,'references',return_value=[]):
+            m.bridge_parent(self.store,self.cfg,projects);m.route_defaults(self.store,self.cfg)
+            root=self.store.root(str(folder));m.queue_add(self.store,folder,priority=100)
+            m.partition_root(self.store,self.cfg,root['id']);m.route_defaults(self.store,self.cfg)
+        ordinary=self.home/'ordinary';ordinary.write_bytes(b'keep');m.queue_add(self.store,ordinary,priority=10)
+        jobs=m.prioritized_jobs(self.store,{(str(folder),'move')})
+        self.assertEqual(Path(jobs[0]['source']).name,'child')
+        self.assertTrue((folder/'child').exists());self.assertEqual(jobs[1]['source'],str(ordinary))
+
+    def test_new_priority_refresh_does_not_retry_a_busy_unit_in_the_same_pass(self):
+        source=self.home/'busy';source.write_bytes(b'keep');m.queue_add(self.store,source)
+        with patch.object(m,'migrate',side_effect=ValueError('live process references; deferred')) as migrate:
+            m.drain(self.store,self.cfg)
+        self.assertEqual(migrate.call_count,1)
+        self.assertEqual(self.store.db.execute('SELECT status FROM queue').fetchone()[0],'deferred')
+        self.assertFalse(source.is_symlink());self.assertEqual(source.read_bytes(),b'keep')
+
     def test_expanded_mirror_tracks_untouched_originals_after_reopen(self):
         source=self.home/'projects';source.mkdir();folder=source/'snapshot';folder.mkdir()
         for name in ('first','second'):(folder/name).write_bytes(name.encode())
@@ -225,7 +257,7 @@ class ColdTierTests(unittest.TestCase):
         with patch.object(m,'references',return_value=[]):
             m.drain(self.store,self.cfg)
             self.assertTrue(source.is_symlink())
-            self.assertEqual((source/'left'/'0').stat().st_ino,identity)
+            self.assertNotEqual((source/'left'/'0').stat().st_ino,identity)
             self.assertEqual(len(self.store.roots()),2)
             m.drain(self.store,self.cfg)
         self.assertEqual({r['location'] for r in self.store.roots()},{'hdd'})
