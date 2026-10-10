@@ -70,10 +70,34 @@ class ProcessReferences(unittest.TestCase):
         result=m.collect_directories([str(folder)],keys,self.proc)
         self.assertTrue(result['complete']);self.assertEqual(result['blocked'],[0])
 
+    def test_chroot_mapping_matches_reader_file_identity_without_task_mount(self):
+        folder,child,keys=self.directory_fixture();device=keys[0][0]
+        (self.task/'mountinfo').write_text('')
+        for path,blocked in ((self.file,[]),(child,[0])):
+            (self.task/'maps').write_text('0000-1000 r--p 0000 '+f'{os.major(device):02x}:{os.minor(device):02x} {path.stat().st_ino} {path}\n')
+            result=m.collect_directories([str(folder)],keys,self.proc)
+            self.assertTrue(result['complete']);self.assertEqual(result['blocked'],blocked)
+
+    def test_chroot_mapping_cannot_trust_a_reader_path_with_wrong_identity(self):
+        folder,_,keys=self.directory_fixture();device=keys[0][0]
+        (self.task/'mountinfo').write_text('')
+        (self.task/'maps').write_text('0000-1000 r--p 0000 '+f'{os.major(device):02x}:{os.minor(device):02x} {self.file.stat().st_ino+1} {self.file}\n')
+        result=m.collect_directories([str(folder)],keys,self.proc)
+        self.assertFalse(result['complete']);self.assertIn('process 42: relevant mount coverage unavailable',result['error'])
+
     def test_directory_coverage_fails_closed_on_unmapped_references_and_limits(self):
         folder,child,keys=self.directory_fixture()
-        (self.task/'fd/9').symlink_to(child);(self.task/'mountinfo').write_text('')
-        self.assertFalse(m.collect_directories([str(folder)],keys,self.proc)['complete'])
+        (self.task/'fd/9').symlink_to(child)
+        device=keys[0][0]
+        (self.task/'mountinfo').write_text(f'1 0 {os.major(device)}:{os.minor(device)} / /other-root rw - ext4 /dev/test rw\n')
+        # The reader's name is also unavailable, so neither namespace can
+        # establish the held inode's physical location.
+        original=Path.resolve
+        def unavailable(path,*args,**kwargs):
+            if path==child:raise FileNotFoundError('reader path disappeared')
+            return original(path,*args,**kwargs)
+        with patch.object(Path,'resolve',unavailable):
+            self.assertFalse(m.collect_directories([str(folder)],keys,self.proc)['complete'])
         self.assertFalse(m.collect_directories([str(folder)],keys,self.proc,seconds=-1)['complete'])
         (self.task/'mountinfo').write_bytes(b'x'*262145)
         self.assertFalse(m.collect_directories([str(folder)],keys,self.proc)['complete'])

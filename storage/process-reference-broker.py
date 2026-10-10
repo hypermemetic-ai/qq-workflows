@@ -61,7 +61,7 @@ def collect_directories(paths,identities,proc=PROC,seconds=25):
     """Inspect namespace-relative references without reading candidate contents."""
     candidates=[(Path(p),key[0]) for p,key in zip(paths,identities)]
     devices={key[0] for key in identities}
-    blocked=set();complete=True;deadline=time.monotonic()+seconds
+    blocked=set();complete=True;failure='';deadline=time.monotonic()+seconds
     processes=fds=maps_bytes=mount_bytes=0
     def vanished(error):return isinstance(error,FileNotFoundError) or getattr(error,'errno',None)==errno.ESRCH
     for task in proc.iterdir():
@@ -103,7 +103,21 @@ def collect_directories(paths,identities,proc=PROC,seconds=25):
                 for index,(candidate,wanted_device) in enumerate(candidates):
                     if device==wanted_device and within_path(path,candidate):blocked.add(index)
                 mount=next((row for row in mounts if row[2]==device and within_path(path,row[0])),None)
-                if mount is None:raise ValueError('relevant mount coverage unavailable')
+                if mount is None:
+                    # A process can retain an executable or mapping opened
+                    # before chroot. Its proc rendering then names the reader's
+                    # filesystem, even though that device is no longer mounted
+                    # in the inspected task. Accept that interpretation only
+                    # when its actual file identity matches the reference.
+                    try:
+                        physical=path.resolve(strict=True);info=physical.stat()
+                    except OSError as error:
+                        raise ValueError('relevant mount coverage unavailable') from error
+                    if (info.st_dev,info.st_ino)!=(device,inode):
+                        raise ValueError('relevant mount coverage unavailable')
+                    for index,(candidate,wanted_device) in enumerate(candidates):
+                        if device==wanted_device and within_path(physical,candidate):blocked.add(index)
+                    return
                 point,root,_=mount;physical=root/path.relative_to(point)
                 for index,(candidate,wanted_device) in enumerate(candidates):
                     if device==wanted_device and within_path(physical,candidate):blocked.add(index)
@@ -130,9 +144,12 @@ def collect_directories(paths,identities,proc=PROC,seconds=25):
             if not complete:break
         except OSError as error:
             if not vanished(error):complete=False;break
-        except (ValueError,OverflowError):complete=False;break
-    return {'complete':complete,'blocked':sorted(blocked),'identities':identities,
+        except (ValueError,OverflowError) as error:
+            complete=False;failure=f'process {task.name}: {error}'[:160];break
+    report={'complete':complete,'blocked':sorted(blocked),'identities':identities,
             'processes':processes,'fds':fds}
+    if not complete:report['error']=failure or 'process-reference access or resource budget unavailable'
+    return report
 
 
 def collect(identities,proc=PROC,seconds=25):
