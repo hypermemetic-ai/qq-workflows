@@ -159,10 +159,16 @@ class Store:
         self.db.commit(); return key
 
 
+class LockBusy(BlockingIOError):
+    """Another worker owns this specific advisory lock."""
+
+
 @contextlib.contextmanager
 def lock(path):
     with Path(path).open('a') as f:
-        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try: fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise LockBusy(error.errno,'lock already held',str(path)) from error
         yield
 
 
@@ -1479,6 +1485,12 @@ def queue_add(store, source, action='move'):
 
 
 def drain(store, cfg):
+    try: drain_units(store,cfg)
+    except LockBusy:
+        print('Migration already active; queued units will be retried on the next pass',flush=True)
+
+
+def drain_units(store, cfg):
     with lock(store.state / 'move.lock'):
         if store.state.joinpath('operation.json').exists(): raise ValueError('unfinished operation; inspect recovery journal')
         if cfg.get('mirror_layout',False):route_defaults(store,cfg)

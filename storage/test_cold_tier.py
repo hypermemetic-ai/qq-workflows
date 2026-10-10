@@ -14,6 +14,19 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 
 class ColdTierTests(unittest.TestCase):
+    def test_scheduled_drain_retries_busy_lock_without_changing_queue_or_source(self):
+        source=self.home/'queued';source.mkdir();(source/'data').write_bytes(b'keep')
+        m.queue_add(self.store,source)
+        with m.lock(self.store.state/'move.lock'),patch.object(m,'migrate') as move,patch.object(m,'verify_artifacts') as verify:
+            m.drain(self.store,self.cfg)
+        move.assert_not_called();verify.assert_not_called()
+        self.assertEqual(self.store.db.execute('SELECT status FROM queue WHERE source=?',(str(source),)).fetchone()[0],'pending')
+        self.assertFalse(source.is_symlink());self.assertEqual((source/'data').read_bytes(),b'keep')
+
+    def test_drain_does_not_hide_an_unfinished_operation_as_a_busy_lock(self):
+        m.atomic_json(self.store.state/'operation.json',{'phase':'published'})
+        with self.assertRaisesRegex(ValueError,'unfinished operation'):m.drain(self.store,self.cfg)
+
     def test_failed_read_only_copy_cleanup_keeps_original_and_initial_error(self):
         source=self.home/'readonly';folder=source/'generated';folder.mkdir(parents=True)
         data=folder/'package-lock.json';data.write_bytes(b'original');folder.chmod(0o555)

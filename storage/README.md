@@ -58,6 +58,17 @@ interrupted retirement. It checks public and legacy aliases and compares every
 surviving original file with its published copy; changed or active originals
 remain intact. Read-only archive directories are made writable only in the
 retired copy, preserving the published file modes and any external hard links.
+`qq-job -- qq-cold-tier abort-unpublished` can discard journaled staging before
+publication while retaining its authoritative source. Changed public paths,
+registered or active destinations, restores and uncertain publication remain
+protected. Failed staging cleanup retains the journal and original error.
+The scheduled drain treats an occupied migration lock as a normal retry;
+it leaves queued units intact and reports success while another move is active.
+An unfinished operation or other I/O failure still requires recovery.
+
+Flatpak private profiles under `~/.var/app` need real bind mounts for reliable
+persistence. Exclude these paths from ordinary symlink migration. See the
+[Flatpak compatibility guidance](https://github.com/flatpak/flatpak/security/advisories/GHSA-7hgv-f2j8-xw87).
 
 With `mirror_layout: true`, HDD destinations retain the logical absolute folder
 hierarchy under `archive/mirror`. Default parents route to these directories;
