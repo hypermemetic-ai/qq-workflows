@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import pwd
 import stat
 import subprocess
 import time
@@ -117,6 +118,33 @@ def reference_collector():
             'directory_queries':True,'upgraded':upgraded}
 
 
+def reference_smoke(path):
+    """Require an actual complete host scan, not just successful installation."""
+    client='''import json,socket,sys,uuid
+from pathlib import Path
+path=Path(sys.argv[1]);nonce=uuid.uuid4().hex
+identity=[path.stat().st_dev,path.stat().st_ino]
+with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as connection:
+    connection.settimeout(35);connection.connect('/run/qq-cold-tier-refs/socket')
+    connection.sendall(json.dumps(dict(nonce=nonce,paths=[str(path)],kind='ssd_directories')).encode()+b'\\n')
+    raw=connection.makefile('rb').readline(262145)
+if len(raw)>262144:raise SystemExit('reference smoke response budget exceeded')
+report=json.loads(raw)
+if report.get('nonce')!=nonce or report.get('identities')!=[identity]:raise SystemExit('reference smoke identity differs')
+print(json.dumps(report))
+'''
+    result=subprocess.run(['/usr/sbin/runuser','--user',pwd.getpwuid(volume.OWNER).pw_name,'--',
+                           '/usr/bin/python3','-c',client,str(path)],capture_output=True,text=True,timeout=45)
+    if result.returncode:raise RuntimeError('Reference smoke failed: '+(result.stderr or result.stdout)[-1500:])
+    raw=result.stdout
+    if len(raw.encode())>262144:raise ValueError('Reference smoke response budget exceeded')
+    report=json.loads(raw)
+    if report.get('complete') is not True:
+        reason=report.get('error','process reference coverage incomplete')
+        raise ValueError('Reference collector host check failed: '+str(reason)[:160])
+    return {key:report[key] for key in ('complete','processes','fds')}
+
+
 def boot_order():
     unit=volume.UNIT
     info=unit.lstat()
@@ -174,7 +202,9 @@ def main():
                  '/usr/bin/python3',str(Path(__file__).resolve()),'--worker','--output',str(output)]
         return subprocess.run(command,timeout=660).returncode
     os.umask(0o077);base.verified_host_mounts();volume.read_manifest()
-    report={'timestamp':time.time(),'boot_order':boot_order(),'reference_collector':reference_collector(),'ssd_census':census()}
+    report={'timestamp':time.time(),'boot_order':boot_order(),'reference_collector':reference_collector()}
+    report['reference_collector']['host_scan']=reference_smoke(output.parent.resolve())
+    report['ssd_census']=census()
     base.atomic_json(output,report,volume.OWNER,volume.OWNER)
     print('Volume ordered before login. No running applications or volume were restarted.')
     print('Saved SSD census:',output)

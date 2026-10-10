@@ -1438,7 +1438,9 @@ def broker_references(paths,cfg,*,kind='cached_files'):
     report=json.loads(raw)
     if report.get('nonce')!=nonce or not report.get('complete') or report.get('identities')!=[
             [p.stat().st_dev,p.stat().st_ino] for p in paths]:
-        raise ValueError('process-reference coverage incomplete or file identity changed')
+        detail=report.get('error','')
+        if not isinstance(detail,str):detail='invalid diagnostic reason'
+        raise ValueError('process-reference coverage incomplete or file identity changed'+(': '+detail[:160] if detail else ''))
     blocked=report.get('blocked')
     if not isinstance(blocked,list) or any(type(n)!=int or not 0<=n<len(paths) for n in blocked):
         raise ValueError('invalid process reference report')

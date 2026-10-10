@@ -1,5 +1,6 @@
 import importlib.util
 import hashlib
+import json
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -51,6 +52,25 @@ class SystemPreparation(unittest.TestCase):
         result=SimpleNamespace(returncode=0,stdout='x'*262145,stderr='')
         with patch.object(m.subprocess,'run',return_value=result):
             with self.assertRaisesRegex(ValueError,'output bound'):m.census()
+
+    def test_reference_smoke_requires_complete_scan_as_operator(self):
+        report={'complete':True,'processes':700,'fds':8000,'blocked':[0]}
+        with patch.object(m.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=json.dumps(report))) as run:
+            result=m.reference_smoke(self.root)
+        self.assertEqual(result,{'complete':True,'processes':700,'fds':8000})
+        self.assertEqual(run.call_args.args[0][0:2],['/usr/sbin/runuser','--user'])
+        self.assertEqual(run.call_args.kwargs['timeout'],45)
+
+    def test_reference_smoke_reports_incomplete_host_coverage(self):
+        report={'complete':False,'error':'process 1014: relevant mount coverage unavailable'}
+        with patch.object(m.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=json.dumps(report))):
+            with self.assertRaisesRegex(ValueError,'host check failed: process 1014'):
+                m.reference_smoke(self.root)
+
+    def test_reference_smoke_rejects_excess_diagnostics(self):
+        with patch.object(m.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout='x'*262145)):
+            with self.assertRaisesRegex(ValueError,'response budget'):
+                m.reference_smoke(self.root)
 
     def test_collector_install_is_pinned_read_only_and_repeated_safely(self):
         library=self.root/'refs';socket=self.root/'refs.socket';service=self.root/'refs.service'
