@@ -59,6 +59,48 @@ class ColdTierTests(unittest.TestCase):
         m.atomic_json(self.store.state/'operation.json',{'phase':'published'})
         with self.assertRaisesRegex(ValueError,'unfinished operation'):m.drain(self.store,self.cfg)
 
+    def test_scheduled_drain_recovers_published_retirement_and_moves_next_unit(self):
+        source=self.home/'published';source.mkdir();(source/'data').write_bytes(b'keep')
+        next_source=self.home/'next';next_source.write_bytes(b'next')
+        with patch.object(m,'references',return_value=[]),patch.object(m,'remove_retired',side_effect=PermissionError('interrupted')):
+            with self.assertRaises(PermissionError):m.migrate(self.store,self.cfg,source)
+        m.queue_add(self.store,source);m.queue_add(self.store,next_source)
+        with patch.object(m,'references',return_value=[]):m.drain(self.store,self.cfg)
+        self.assertEqual((source/'data').read_bytes(),b'keep');self.assertEqual(next_source.read_bytes(),b'next')
+        self.assertFalse((self.store.state/'operation.json').exists())
+        self.assertEqual({r[0] for r in self.store.db.execute('SELECT status FROM queue')},{'complete'})
+        self.assertEqual(self.store.get('last_drain')['status'],'complete')
+
+    def test_scheduled_recovery_retains_divergent_original_and_reports_blockage(self):
+        source=self.home/'published';source.mkdir();(source/'data').write_bytes(b'keep')
+        with patch.object(m,'references',return_value=[]),patch.object(m,'remove_retired',side_effect=PermissionError('interrupted')):
+            with self.assertRaises(PermissionError):m.migrate(self.store,self.cfg,source)
+        retired=Path(m.bounded_json(self.store.state/'operation.json')['staged'])
+        (retired/'data').write_bytes(b'late work')
+        with patch.object(m,'references',return_value=[]):
+            with self.assertRaisesRegex(ValueError,'diverged'):m.drain(self.store,self.cfg)
+        self.assertEqual((retired/'data').read_bytes(),b'late work');self.assertEqual((source/'data').read_bytes(),b'keep')
+        self.assertTrue((self.store.state/'operation.json').exists())
+        self.assertIn('diverged',self.store.get('last_drain')['error'])
+
+    def test_scheduled_drain_retries_unit_left_running_before_journaling(self):
+        source=self.home/'interrupted';source.write_bytes(b'keep');m.queue_add(self.store,source)
+        self.store.db.execute("UPDATE queue SET status='running'");self.store.db.commit()
+        with patch.object(m,'references',return_value=[]):m.drain(self.store,self.cfg)
+        self.assertTrue(source.is_symlink());self.assertEqual(source.read_bytes(),b'keep')
+        self.assertEqual(self.store.db.execute('SELECT status FROM queue').fetchone()[0],'complete')
+
+    def test_queue_priority_moves_large_selected_units_before_older_small_units(self):
+        small=self.home/'small';small.write_bytes(b'small')
+        bulk=self.home/'bulk';bulk.write_bytes(b'bulk')
+        m.queue_add(self.store,small);m.queue_add(self.store,bulk,priority=100)
+        # Automatic admission preserves an explicitly recorded priority.
+        m.queue_add(self.store,bulk)
+        order=[];real=m.migrate
+        def moved(store,cfg,source,**kwargs):order.append(source);return real(store,cfg,source,**kwargs)
+        with patch.object(m,'references',return_value=[]),patch.object(m,'migrate',side_effect=moved):m.drain(self.store,self.cfg)
+        self.assertEqual(order,[bulk,small]);self.assertEqual(small.read_bytes(),b'small');self.assertEqual(bulk.read_bytes(),b'bulk')
+
     def test_failed_read_only_copy_cleanup_keeps_original_and_initial_error(self):
         source=self.home/'readonly';folder=source/'generated';folder.mkdir(parents=True)
         data=folder/'package-lock.json';data.write_bytes(b'original');folder.chmod(0o555)
