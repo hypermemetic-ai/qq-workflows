@@ -17,6 +17,8 @@ Path lookups reuse parsed route maps while checking the latest metadata on each
 call, including changes committed by another watcher or worker.
 Admission commits each coherent ledger update before continuing filesystem
 scans, keeping long namespace walks from blocking the other ledger writer.
+Decision reports resolve protected paths once per pass and refresh that policy
+on the next pass, keeping bulk reports from repeating every filesystem lookup.
 Stale queue entries for machinery's SSD backing directories are protected;
 their admitted children migrate without re-partitioning the backing namespace.
 
