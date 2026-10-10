@@ -80,6 +80,7 @@ class SystemPreparation(unittest.TestCase):
         content=service.read_text();self.assertIn('ProtectSystem=strict',content)
         self.assertIn('CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE',content)
         self.assertIn('CAP_CHECKPOINT_RESTORE',content)
+        self.assertIn('PrivateTmp=no\nReadOnlyPaths=/tmp',content)
         self.assertNotIn('ExecStop',content)
         self.assertEqual([call.args[:2] for call in run.call_args_list],
                          [('systemctl','daemon-reload'),('systemctl','enable'),('systemctl','is-active')]*2)
@@ -115,9 +116,10 @@ class SystemPreparation(unittest.TestCase):
         library=self.root/'refs';socket=self.root/'refs.socket';service=self.root/'refs.service'
         raw=b'previous collector';old=library/hashlib.sha256(raw).hexdigest()[:16]/'process-reference-broker.py'
         old.parent.mkdir(parents=True);old.write_bytes(raw);old.chmod(0o600)
-        service.write_text(m.broker_service_text(old).replace(' CAP_CHECKPOINT_RESTORE',''));service.chmod(0o600)
+        service.write_text(m.broker_service_text(old).replace('PrivateTmp=no\nReadOnlyPaths=/tmp\n','PrivateTmp=yes\n').replace(' CAP_CHECKPOINT_RESTORE',''));service.chmod(0o600)
         with patch.object(m,'BROKER_LIBRARY',library),patch.object(m,'BROKER_SOCKET',socket),patch.object(m,'BROKER_SERVICE',service),\
              patch.object(m.base,'run',return_value='active'):
             report=m.reference_collector();again=m.reference_collector()
         self.assertTrue(report['upgraded']);self.assertFalse(again['upgraded'])
         self.assertIn('CAP_CHECKPOINT_RESTORE',service.read_text())
+        self.assertIn('PrivateTmp=no\nReadOnlyPaths=/tmp',service.read_text())

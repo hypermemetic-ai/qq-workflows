@@ -328,6 +328,9 @@ links. A deleted pathname alone is insufficient. `CAP_CHECKPOINT_RESTORE`
 permits the latter metadata check when every descriptor has closed; no mapped
 contents are opened. The preparation helper recognizes the intact previous
 collector unit when installing this capability.
+The collector sees the host `/tmp` through a read-only bind instead of a
+private temporary directory, so owned temporary-artifact candidates resolve
+to the same inodes as the operator sees.
 Exited zombie/dead tasks with a kernel-reported thread count of one no longer
 hold file, filesystem or mapping references. Exited leaders with surviving or
 unknown sibling threads remain guarded. An access failure during an
