@@ -36,6 +36,9 @@ per-operation limits (at most one million each). Recovery retains those limits
 from the journal, so a larger published move can finish after interruption
 without changing the normal policy. Verified bulk copies also complete queued
 intake children that had not yet received their own tracking record.
+Explicit bulk copies use the lowest best-effort I/O priority to make progress
+alongside continuous readers; ordinary background moves retain idle priority.
+The transfer and CPU/RAM limits remain enforced.
 Expanding a live mirror proxy records its original backing before publication.
 Admission then tracks untouched SSD children, including after interruption;
 changed original inodes retain the record for review. Alias spellings reuse the

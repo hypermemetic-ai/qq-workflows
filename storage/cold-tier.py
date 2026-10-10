@@ -1354,7 +1354,12 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None, host_reference
             args += [str(original) + '/', str(destination) + '/']
         else: args += [str(original), str(destination)]
         if rehoming and original.is_file():os.link(original,destination,follow_symlinks=False)
-        else:subprocess.run(['ionice', '-c', '3', *args], check=True)
+        else:
+            # An explicitly selected bulk copy must make progress alongside
+            # continuous readers. Keep the lowest best-effort priority; normal
+            # background child moves still wait for idle disk time.
+            schedule = ['ionice', '-c', '2', '-n', '7'] if host_references else ['ionice', '-c', '3']
+            subprocess.run([*schedule, *args], check=True)
         for rel, meta in before.items():
             if stat.S_ISLNK(meta[0]):
                 expected = copied_link(source, rel, meta[4])
