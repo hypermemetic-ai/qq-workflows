@@ -151,7 +151,7 @@ vectors alone. Existing compiler RSS was about 1.43 GiB, before allocator and
 later-pass overhead. The probe itself stayed below the ordinary 4 GiB job cap
 and left no compiler process or partial bytecode. Minification therefore does
 not resolve the optimized compiler's resource boundary. No full compile of that
-input is authorized by these results, and no candidate APK exists yet. A
+input is authorized by these results. A
 read-only capacity check found the existing satellite has less physical RAM
 than that allocation and no established build-job containment; nothing was
 transferred or built there. Supported compiler controls are under investigation
@@ -166,6 +166,27 @@ zero in accepted optimized bytecode. This setting changes runtime code quality
 and is authorized only for diagnostic QA packaging and a separate native
 comparison. It is not an accepted production compiler recipe or performance
 claim. The unchanged optimized build still exceeds the established job cap.
+
+The diagnostic QA APK now exists: SHA-256
+`3453fcf600682673315d7065ac74874b1d73d616fa90fbc21eb5e1aa41f6db62`,
+with HBC SHA-256
+`0c65d85ea183019c25810391eb6320b0927c82f6e4c372c16f55570735b25a37`.
+A bounded incremental Gradle pass stopped at its ten-minute deadline while
+hashing cached inputs; it did not produce a new native build. The subsequent
+QA-only construction reused the accepted APK's native shell after proving all
+32 emitted resource files equivalent: the 31 PNGs have identical decoded pixels
+and dimensions, and the raw keep XML matches exactly. AAPT resource IDs and
+compiled paths were checked rather than inferred from export filenames.
+
+The construction replaced only the audited bytecode, removed the three obsolete
+v1 signature entries, retained all 119 ordinary META-INF entries, aligned and
+signed with the established fork key. All 1,441 remaining payload entries match
+the accepted QA APK byte for byte. Package, ABI, profileability, non-debuggable
+state, disabled updates, certificate and 16 KiB alignment passed audit. The
+packaging job took 9.174 seconds, peaked at about 742 MiB and left no descendants.
+This is audited QA shell reuse, not a fresh Gradle native build. Diagnostic
+installation, runtime comparison and panel chronology remain separate gates;
+neither this artifact nor its compiler setting is accepted for production yet.
 
 The corrected interaction source is committed as
 `bfe5e9a749dc0d7d7ebe66ba65201d87b548f426` in
@@ -216,7 +237,8 @@ outside. No optional runtime delta has been implemented or accepted yet.
 | OpenSpec plan | Validated; implementation authorized |
 | Ordered interaction source | Committed/pushed in draft PR #3; focused source checks pass; native acceptance pending |
 | Profile-only diagnostic source | `dc7ef17b746e4089670a6fcd35ad420e559f82dd`; source checks passed; labels fit the native trace limit |
-| Instrumented baseline and corrected native controls | Pending |
+| Diagnostic QA artifact | Signed/audited; installed-runtime comparison and handoff chronology in progress |
+| Corrected native controls | Pending diagnostic chronology |
 | Covered-chat presentation retention decision | Pending independent comparison |
 | Provider/client/daemon attribution | In progress; broader freezes remain open |
 | Final signed release | Pending |

@@ -214,6 +214,27 @@ limits and record interventions separately from measurements. Reusing audited
 architecture-independent bytecode for another ABI avoids another optimizer pass
 when its inputs are proved equal; changed source requires new bytecode.
 
+For compatible JavaScript-only diagnostic QA, accepted APK shell reuse was also
+verified after Gradle spent its bounded ten-minute window hashing cached inputs.
+Establish unchanged native configuration, dependencies, generated manifest and
+embedded Expo configuration first. Verify disabled OTA updates and absence of
+embedded update manifests or bundle checksums. Compare exported assets with the
+accepted shell using AAPT resource IDs and compiled paths: compiled PNG bytes can
+differ from export PNG bytes, so require identical decoded pixels/dimensions as
+well as matching names/scales/declarations and exact non-image resources.
+
+Construct a fresh ZIP containing the accepted payloads and new audited HBC.
+Remove only the old signing entries (the three v1 entries for this accepted APK),
+preserving ordinary META-INF files; ZIP reserialization drops the old APK signing
+block. Preserve entry compression methods, run the retained SDK's
+`zipalign -P 16 4`, sign normally through private password files, and verify every
+other payload byte plus certificate, package, ABI, manifest, updates policy and
+alignment. Record shell reuse explicitly rather than describing it as a fresh
+native build. This diagnostic construction took 9.174 seconds under the normal
+4 GiB job envelope. Its candidate compiler remains pending runtime acceptance;
+QA shell equivalence does not establish production-shell compatibility. Native,
+configuration or asset changes require the normal native resource/build path.
+
 ## Responsiveness workload
 
 [native-responsiveness.ts](fixtures/native-responsiveness.ts) extends the original
