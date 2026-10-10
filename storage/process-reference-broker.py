@@ -60,6 +60,7 @@ def within_path(path,parent):
 def collect_directories(paths,identities,proc=PROC,seconds=25):
     """Inspect namespace-relative references without reading candidate contents."""
     candidates=[(Path(p),key[0]) for p,key in zip(paths,identities)]
+    devices={key[0] for key in identities}
     blocked=set();complete=True;deadline=time.monotonic()+seconds
     processes=fds=maps_bytes=mount_bytes=0
     def vanished(error):return isinstance(error,FileNotFoundError) or getattr(error,'errno',None)==errno.ESRCH
@@ -79,6 +80,10 @@ def collect_directories(paths,identities,proc=PROC,seconds=25):
                 fields=line.split()
                 if len(fields)<10 or b'-' not in fields[6:]:raise ValueError('invalid mount record')
                 major,minor=fields[2].split(b':');device=os.makedev(int(major),int(minor))
+                # nsfs uses roots such as net:[4026531833], which are valid
+                # mount records but not filesystem paths. Only candidate
+                # devices can contain these SSD trees or their references.
+                if device not in devices:continue
                 root=Path(decode_mount_path(fields[3]));point=Path(decode_mount_path(fields[4]))
                 if not root.is_absolute() or not point.is_absolute():raise ValueError('invalid mount path')
                 mounts.append((point,root,device))
@@ -89,7 +94,7 @@ def collect_directories(paths,identities,proc=PROC,seconds=25):
             def inspect(raw_path,device,inode):
                 for index,key in enumerate(identities):
                     if [device,inode]==key:blocked.add(index)
-                if device not in {key[0] for key in identities}:return
+                if device not in devices:return
                 if raw_path.endswith(' (deleted)'):raw_path=raw_path[:-10]
                 path=Path(raw_path)
                 if not path.is_absolute():raise ValueError('unresolved relevant reference')
