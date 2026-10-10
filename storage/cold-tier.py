@@ -1764,6 +1764,42 @@ def partition_blocked_move(store,cfg,source,error):
     return True
 
 
+
+def prioritized_jobs(store,attempted):
+    """Refresh arrivals between bounded groups, inheriting explicit parent priority."""
+    raw=tuple(store.db.execute('SELECT value FROM meta WHERE key=?',(key,)).fetchone()
+              for key in ('queue_priorities','defaults','namespace_aliases'))
+    version=tuple(row[0] if row else '' for row in raw)
+    cache=getattr(store,'_priority_routes',None)
+    if cache is None or cache[0]!=version:
+        declared=json.loads(version[0]) if version[0] else {};priorities=dict(declared)
+        routes={}
+        for parent in json.loads(version[1]) if version[1] else []:
+            public=logical_source(store,parent['source'])
+            routes.setdefault(public,[]).extend(Path(parent[key]) for key in ('source','backing'))
+        for alias in json.loads(version[2]) if version[2] else []:
+            public=logical_source(store,alias['public'])
+            routes.setdefault(public,[]).extend(Path(alias[key]) for key in ('public','backing'))
+        for source,value in declared.items():
+            canonical=logical_source(store,source)
+            priorities[str(canonical)]=max(priorities.get(str(canonical),0),value)
+            for public in (canonical,*canonical.parents):
+                for backing in routes.get(public,[]):
+                    key=str(backing/canonical.relative_to(public))
+                    priorities[key]=max(priorities.get(key,0),value)
+        store._priority_routes=(version,priorities)
+    else:priorities=cache[1]
+    def priority(job):
+        path=Path(job['source'])
+        return max(priorities.get(str(parent),0) for parent in (path,*path.parents))
+    jobs=[job for job in store.db.execute("SELECT * FROM queue WHERE status IN ('pending','deferred')")
+          if (job['source'],job['action']) not in attempted]
+    jobs.sort(key=lambda job:(0 if job['action']=='default' else 1 if job['action']=='partition' else 2,
+                              len(job['source']) if job['action']=='default' else 0,
+                              -priority(job),job['updated']))
+    return jobs[:32]
+
+
 def drain_units(store, cfg):
     with lock(store.state / 'move.lock'):
         recover_drain(store,cfg)
@@ -1775,81 +1811,80 @@ def drain_units(store, cfg):
             for row in decisions(store, cfg):
                 if row['decision'] == 'promote' and cfg['automatic_promotion']: queue_add(store, row['source'], 'restore')
                 if row['decision'] == 'demote' and cfg['automatic_demotion']: queue_add(store, row['source'], 'demote')
-        jobs=list(store.db.execute("""SELECT * FROM queue WHERE status IN ('pending','deferred')
-          ORDER BY CASE action WHEN 'default' THEN 0 WHEN 'partition' THEN 1 ELSE 2 END,
-          CASE WHEN action='default' THEN length(source) ELSE 0 END, updated"""))
-        priorities=store.get('queue_priorities',{})
-        jobs.sort(key=lambda job:(0 if job['action']=='default' else 1 if job['action']=='partition' else 2,
-                                  len(job['source']) if job['action']=='default' else 0,
-                                  -priorities.get(job['source'],0),job['updated']))
         if cfg.get('automatic_artifact_verification',True):
             verify_artifacts(store,cfg)
-    for job in jobs:
-        # Release between units so newly requested parent cutovers and daily GC
-        # are not blocked for the duration of an entire large rollout.
+    attempted=set()
+    while True:
         with lock(store.state / 'move.lock'):
-            if store.state.joinpath('operation.json').exists(): raise ValueError('unfinished operation; inspect recovery journal')
-            current=store.db.execute('SELECT * FROM queue WHERE source=?',(job['source'],)).fetchone()
-            if not current or current['status'] not in ('pending','deferred') or current['action']!=job['action']: continue
-            source = Path(job['source'])
-            store.db.execute('UPDATE queue SET status=?,updated=? WHERE source=?', ('running', time.time(), str(source))); store.db.commit()
-            try:
-                if job['action'] == 'default':
-                    parent=next((p for p in store.get('defaults',[]) if p['source']==str(source)),None)
-                    if parent:
-                        if source.resolve()!=Path(parent['hdd']): raise ValueError('default path changed; review required')
-                    else:
-                        try:registered=store.root(str(source))
-                        except ValueError as e:
-                            if not str(e).startswith('unknown root:'):raise
-                            registered=None
-                        if registered:
-                            if Path(registered['source']).resolve()!=live_path(registered).resolve():raise ValueError('tracked public path changed; review required')
-                            if registered['location']=='ssd':partition_root(store,cfg,registered['id'])
-                        else:bridge_parent(store,cfg,source)
-                    if cfg.get('mirror_layout',False):route_defaults(store,cfg)
-                    else:adopt_defaults(store,cfg)
-                elif job['action'] == 'partition':
-                    root=store.root(str(source))
-                    if root['location']=='ssd': partition_root(store,cfg,root['id'])
-                    if cfg.get('mirror_layout',False):route_defaults(store,cfg)
-                elif job['action']=='rehome':
-                    root=store.root(str(source))
-                    if root['location']!='hdd' or not cfg.get('mirror_layout',False):raise ValueError('rehome requires a mirrored HDD root')
-                    if live_path(root)!=mirror_path(store,mount_ready(cfg),source):migrate(store,cfg,source,demoting=root)
-                elif job['action'] == 'restore': migrate(store, cfg, source, restoring=store.root(str(source)))
-                elif job['action'] == 'demote':
-                    old = store.root(str(source))
-                    migrate(store, cfg, source, demoting=old)
-                elif job['action'] == 'move':
-                    if any(source==Path(p['backing']) for p in store.get('defaults',[])):
-                        store.db.execute('UPDATE queue SET status=?,error=?,updated=? WHERE source=?',
-                                         ('protected','managed backing directory; migrate its admitted children',time.time(),str(source)))
-                        store.db.commit();continue
-                    registered = store.db.execute('SELECT * FROM roots WHERE source=?', (str(source),)).fetchone()
-                    if registered and registered['location'] == 'ssd': migrate(store, cfg, source, demoting=registered)
-                    elif registered and registered['location'] == 'hdd':
-                        # A completed move can be queued again after publication.
-                        # Reconcile its live mapping without copying an HDD link.
-                        target=live_path(registered)
-                        aliases=[Path(p) for p in json.loads(registered['aliases'])]
-                        if (not target.exists() or source.resolve()!=target or
-                            any(not p.is_symlink() or p.resolve()!=target for p in aliases)):
-                            raise ValueError('HDD path differs from ledger; review required')
-                    else: migrate(store, cfg, source)
-                else: raise ValueError('unknown queue action')
-                status, error = 'complete', ''
-            except (OSError, ValueError, subprocess.SubprocessError) as e:
-                status, error = 'deferred', str(e)[:300]
+            jobs=prioritized_jobs(store,attempted)
+        if not jobs:break
+        for job in jobs:
+            # Release between units so newly requested parent cutovers and daily GC
+            # are not blocked for the duration of an entire large rollout.
+            with lock(store.state / 'move.lock'):
+                if store.state.joinpath('operation.json').exists(): raise ValueError('unfinished operation; inspect recovery journal')
+                current=store.db.execute('SELECT * FROM queue WHERE source=?',(job['source'],)).fetchone()
+                if not current or current['status'] not in ('pending','deferred') or current['action']!=job['action']: continue
+                attempted.add((job['source'],job['action']))
+                source = Path(job['source'])
+                store.db.execute('UPDATE queue SET status=?,updated=? WHERE source=?', ('running', time.time(), str(source))); store.db.commit()
                 try:
-                    if job['action']=='move' and partition_blocked_move(store,cfg,source,e):
-                        status,error='complete','partitioned into guarded child migration units'
-                except (OSError,ValueError,subprocess.SubprocessError) as partition_error:
-                    error=(error+'; child admission deferred: '+str(partition_error))[:300]
-                if status=='deferred':print('DEFER', source, error, flush=True)
-            store.db.execute('UPDATE queue SET status=?,error=?,updated=? WHERE source=?', (status, error, time.time(), str(source))); store.db.commit()
-            if (store.state/'operation.json').exists():
-                raise ValueError('migration halted with recovery journal; subsequent jobs are preserved')
+                    if job['action'] == 'default':
+                        parent=next((p for p in store.get('defaults',[]) if p['source']==str(source)),None)
+                        if parent:
+                            if source.resolve()!=Path(parent['hdd']): raise ValueError('default path changed; review required')
+                        else:
+                            try:registered=store.root(str(source))
+                            except ValueError as e:
+                                if not str(e).startswith('unknown root:'):raise
+                                registered=None
+                            if registered:
+                                if Path(registered['source']).resolve()!=live_path(registered).resolve():raise ValueError('tracked public path changed; review required')
+                                if registered['location']=='ssd':partition_root(store,cfg,registered['id'])
+                            else:bridge_parent(store,cfg,source)
+                        if cfg.get('mirror_layout',False):route_defaults(store,cfg)
+                        else:adopt_defaults(store,cfg)
+                    elif job['action'] == 'partition':
+                        root=store.root(str(source))
+                        if root['location']=='ssd': partition_root(store,cfg,root['id'])
+                        if cfg.get('mirror_layout',False):route_defaults(store,cfg)
+                    elif job['action']=='rehome':
+                        root=store.root(str(source))
+                        if root['location']!='hdd' or not cfg.get('mirror_layout',False):raise ValueError('rehome requires a mirrored HDD root')
+                        if live_path(root)!=mirror_path(store,mount_ready(cfg),source):migrate(store,cfg,source,demoting=root)
+                    elif job['action'] == 'restore': migrate(store, cfg, source, restoring=store.root(str(source)))
+                    elif job['action'] == 'demote':
+                        old = store.root(str(source))
+                        migrate(store, cfg, source, demoting=old)
+                    elif job['action'] == 'move':
+                        if any(source==Path(p['backing']) for p in store.get('defaults',[])):
+                            store.db.execute('UPDATE queue SET status=?,error=?,updated=? WHERE source=?',
+                                             ('protected','managed backing directory; migrate its admitted children',time.time(),str(source)))
+                            store.db.commit();continue
+                        registered = store.db.execute('SELECT * FROM roots WHERE source=?', (str(source),)).fetchone()
+                        if registered and registered['location'] == 'ssd': migrate(store, cfg, source, demoting=registered)
+                        elif registered and registered['location'] == 'hdd':
+                            # A completed move can be queued again after publication.
+                            # Reconcile its live mapping without copying an HDD link.
+                            target=live_path(registered)
+                            aliases=[Path(p) for p in json.loads(registered['aliases'])]
+                            if (not target.exists() or source.resolve()!=target or
+                                any(not p.is_symlink() or p.resolve()!=target for p in aliases)):
+                                raise ValueError('HDD path differs from ledger; review required')
+                        else: migrate(store, cfg, source)
+                    else: raise ValueError('unknown queue action')
+                    status, error = 'complete', ''
+                except (OSError, ValueError, subprocess.SubprocessError) as e:
+                    status, error = 'deferred', str(e)[:300]
+                    try:
+                        if job['action']=='move' and partition_blocked_move(store,cfg,source,e):
+                            status,error='complete','partitioned into guarded child migration units'
+                    except (OSError,ValueError,subprocess.SubprocessError) as partition_error:
+                        error=(error+'; child admission deferred: '+str(partition_error))[:300]
+                    if status=='deferred':print('DEFER', source, error, flush=True)
+                store.db.execute('UPDATE queue SET status=?,error=?,updated=? WHERE source=?', (status, error, time.time(), str(source))); store.db.commit()
+                if (store.state/'operation.json').exists():
+                    raise ValueError('migration halted with recovery journal; subsequent jobs are preserved')
 
 
 def discover(cfg, bases):
