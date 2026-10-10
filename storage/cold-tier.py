@@ -910,6 +910,26 @@ def remove_retired(path, limit):
     else: path.unlink()
 
 
+def link_receipt_path(destination):
+    destination=Path(destination)
+    name='immutable-links-audit.json' if destination.name=='immutable-links.json' else 'immutable-links.json'
+    return destination.parent/name
+
+
+def unpublished_link_receipt(record, destination):
+    """Validate a generated audit sibling before unpublished cleanup touches it."""
+    raw=record.get('detached_immutable_links_receipt')
+    if raw is None:return None
+    expected=link_receipt_path(destination)
+    if raw!=str(expected) or expected.parent.resolve()!=expected.parent:
+        raise ValueError('unrecognized immutable link receipt; preserved')
+    if os.path.lexists(expected):
+        info=expected.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_nlink!=1:
+            raise ValueError('immutable link receipt changed; preserved')
+    return expected
+
+
 def recover_published(store, cfg):
     """Finish only an unambiguous published move; preserve divergent originals."""
     archive = mount_ready(cfg)
@@ -1034,12 +1054,24 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
     if os.path.lexists(staged): raise ValueError('original staging path exists')
     record = {'source': str(source), 'original': str(original), 'destination': str(destination),
               'staged': str(staged), 'restore': bool(restoring), 'phase': 'copying', 'started': time.time()}
-    record['detached_immutable_links'] = [dict(device=dev,inode=ino,inside=count,total=total,paths=names)
-                                         for (dev,ino),(count,total,names) in (detached or {}).items()]
+    links=[dict(device=dev,inode=ino,inside=count,total=total,paths=names)
+           for (dev,ino),(count,total,names) in (detached or {}).items()]
+    record['detached_immutable_link_count']=len(links)
+    link_receipt=None;encoded_bytes=0
+    for chunk in json.JSONEncoder(indent=2).iterencode(links):
+        encoded_bytes+=len(chunk.encode())
+        if encoded_bytes>65536:
+            link_receipt=link_receipt_path(destination)
+            record['detached_immutable_links_receipt']=str(link_receipt)
+            break
+    # Keep recovery bounded. Large audit details are durable once beside staging,
+    # rather than rewritten with every verification progress update.
+    record['detached_immutable_links']=[] if link_receipt else links
     atomic_json(journal, record)
     published = False
     mirror_stage=None
     try:
+        if link_receipt:atomic_json(link_receipt,dict(schema=1,source=str(source),links=links))
         print('COPY', source, flush=True)
         # --bwlimit caps transfer; checksum verification below has its own read budget.
         args = ['rsync', '-aHAXS', '--modify-window=-1', '--bwlimit=' + str(cfg['copy_kib_per_second']), '--']
@@ -1207,7 +1239,10 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
     except BaseException as error:
         # An interrupted publish retains both copies and its journal for recovery.
         if not published:
-            try:remove_retired(destination,cfg['max_scan_entries'])
+            try:
+                receipt=unpublished_link_receipt(record,destination)
+                remove_retired(destination,cfg['max_scan_entries'])
+                if receipt:receipt.unlink(missing_ok=True);flush_directory(receipt.parent)
             except (OSError,ValueError) as cleanup:
                 record.update(phase='aborted-cleanup-needed',error=str(error)[:300],cleanup_error=str(cleanup)[:300])
                 atomic_json(journal,record)
@@ -1231,7 +1266,9 @@ def abort_unpublished(store,cfg):
         raise ValueError('authoritative source changed; staging retained')
     if store.db.execute('SELECT 1 FROM roots WHERE target=?',(str(destination),)).fetchone() or references([destination]):
         raise ValueError('staging is registered or active; retained')
+    receipt=unpublished_link_receipt(record,destination)
     remove_retired(destination,cfg['max_scan_entries'])
+    if receipt:receipt.unlink(missing_ok=True);flush_directory(receipt.parent)
     journal.unlink();flush_directory(store.state)
     print('Discarded unpublished staging; authoritative source preserved',source,flush=True)
 
@@ -1709,6 +1746,7 @@ def status_summary(store, cfg):
     try:
         record = bounded_json(store.state/'operation.json')
         fields = ('source','phase','started','verification_entries','verified_entries',
+                  'detached_immutable_link_count','detached_immutable_links_receipt',
                   'verification_read_bytes','error','cleanup_error')
         result['operation'] = {k:record[k] for k in fields if k in record}
     except FileNotFoundError: pass

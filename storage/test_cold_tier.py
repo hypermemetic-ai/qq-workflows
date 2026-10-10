@@ -773,6 +773,51 @@ m.watch(m.Store(sys.argv[3]),c)
             with self.assertRaisesRegex(ValueError,'source mutation'):m.migrate(self.store,self.cfg,source)
         self.assertFalse(source.is_symlink());self.assertEqual((source/'library').read_text(),'changed outside')
         self.assertFalse((self.store.state/'operation.json').exists())
+
+    def large_shared_artifact(self,name='sdk'):
+        source=self.home/name;source.mkdir();outside=self.home/'outside';outside.mkdir()
+        for n in range(2000):
+            name='library-'+str(n);(source/name).write_bytes(b'immutable')
+            os.link(source/name,outside/name)
+        self.cfg['immutable_hardlink_scopes']=[str(source)]
+        return source,outside
+
+    def test_large_link_receipt_keeps_recovery_journal_bounded_and_recovers_retirement(self):
+        source,outside=self.large_shared_artifact()
+        with patch.object(m,'references',return_value=[]),patch.object(m,'remove_retired',side_effect=PermissionError('interrupted')):
+            with self.assertRaises(PermissionError):m.migrate(self.store,self.cfg,source)
+        journal=self.store.state/'operation.json';record=m.bounded_json(journal)
+        self.assertLess(journal.stat().st_size,262144)
+        self.assertEqual(record['detached_immutable_link_count'],2000)
+        self.assertEqual(record['detached_immutable_links'],[])
+        receipt=Path(record['detached_immutable_links_receipt'])
+        self.assertEqual(len(m.bounded_json(receipt,limit=1024**2)['links']),2000)
+        self.assertEqual(m.status_summary(self.store,self.cfg)['operation']['detached_immutable_link_count'],2000)
+        with patch.object(m,'references',return_value=[]):m.recover_published(self.store,self.cfg)
+        self.assertFalse(journal.exists());self.assertTrue(receipt.exists())
+        self.assertEqual((source/'library-0').read_bytes(),b'immutable')
+        self.assertEqual((outside/'library-0').read_bytes(),b'immutable')
+        self.assertNotEqual((source/'library-0').stat().st_ino,(outside/'library-0').stat().st_ino)
+
+    def test_failed_large_shared_copy_removes_its_audit_receipt_and_keeps_original(self):
+        source,outside=self.large_shared_artifact('immutable-links.json')
+        with patch.object(m,'references',return_value=[]),patch.object(m.ReadBudget,'digest',side_effect=ValueError('verification failed')):
+            with self.assertRaisesRegex(ValueError,'verification failed'):m.migrate(self.store,self.cfg,source)
+        self.assertFalse(source.is_symlink());self.assertEqual((source/'library-0').read_bytes(),b'immutable')
+        self.assertEqual((source/'library-0').stat().st_ino,(outside/'library-0').stat().st_ino)
+        self.assertFalse((self.store.state/'operation.json').exists())
+        self.assertFalse(list((self.archive/'data').glob('*/immutable-links*.json')))
+
+    def test_unpublished_abort_rejects_a_receipt_path_outside_its_transaction(self):
+        source=self.home/'artifact';source.write_bytes(b'original');other=self.home/'keep';other.write_bytes(b'unique')
+        destination=self.archive/'data'/('a'*32)/source.name;destination.parent.mkdir(parents=True);destination.write_bytes(b'copy')
+        record=dict(source=str(source),original=str(source),destination=str(destination),phase='copying',restore=False,
+                    detached_immutable_links_receipt=str(other))
+        m.atomic_json(self.store.state/'operation.json',record)
+        with patch.object(m,'references',return_value=[]):
+            with self.assertRaisesRegex(ValueError,'unrecognized immutable link receipt'):m.abort_unpublished(self.store,self.cfg)
+        self.assertEqual(other.read_bytes(),b'unique');self.assertEqual(destination.read_bytes(),b'copy')
+        self.assertEqual(source.read_bytes(),b'original');self.assertTrue((self.store.state/'operation.json').exists())
     def test_inventory_allocated_size_does_not_count_shared_inodes_twice(self):
         source=self.home/'sdk';source.mkdir();(source/'library').write_bytes(b'x'*8192)
         os.link(source/'library',source/'inside')
