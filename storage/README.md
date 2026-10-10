@@ -133,6 +133,10 @@ inodes. External aliases remain untouched; internal hard links remain shared.
 Receipts identify each detached inode, and direct inode watches detect changes
 through outside aliases during verification and publication. This exception is
 for immutable artifacts, never databases, object stores or unique source data.
+Large shared-link audits are written once to `immutable-links.json` beside the
+staging payload. The recovery journal retains the count and receipt path within
+its read bound, so progress and interrupted retirement stay readable. Failed
+unpublished copies remove their generated receipt through the same guarded cleanup.
 Inherited executable/library search paths alone do not mark a directory busy;
 actual executables, mappings, open descriptors, working directories, command
 arguments and data-directory environment references still defer relocation.
