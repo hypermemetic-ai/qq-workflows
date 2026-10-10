@@ -167,6 +167,26 @@ class ColdTierTests(unittest.TestCase):
         self.assertTrue(source.is_symlink());self.assertEqual(source.read_bytes(),b'keep')
         self.assertEqual(self.store.db.execute('SELECT status FROM queue').fetchone()[0],'complete')
 
+    def test_scheduled_drain_reconciles_requeued_hdd_unit_without_another_copy(self):
+        source=self.home/'published';source.write_bytes(b'keep')
+        with patch.object(m,'references',return_value=[]):m.migrate(self.store,self.cfg,source)
+        target=source.resolve();m.queue_add(self.store,source)
+        with patch.object(m,'migrate',side_effect=AssertionError('duplicate copy')):
+            m.drain(self.store,self.cfg)
+        self.assertEqual(self.store.db.execute('SELECT status FROM queue').fetchone()[0],'complete')
+        self.assertEqual(source.resolve(),target);self.assertEqual(source.read_bytes(),b'keep')
+
+    def test_scheduled_drain_preserves_requeued_hdd_unit_with_changed_mapping(self):
+        source=self.home/'published';source.write_bytes(b'keep')
+        with patch.object(m,'references',return_value=[]):m.migrate(self.store,self.cfg,source)
+        target=source.resolve();other=self.home/'changed';other.write_bytes(b'new')
+        source.unlink();source.symlink_to(other);m.queue_add(self.store,source)
+        with patch.object(m,'migrate',side_effect=AssertionError('changed mapping copied')):
+            m.drain(self.store,self.cfg)
+        queued=self.store.db.execute('SELECT * FROM queue').fetchone()
+        self.assertEqual(queued['status'],'deferred');self.assertIn('differs from ledger',queued['error'])
+        self.assertEqual(source.read_bytes(),b'new');self.assertEqual(target.read_bytes(),b'keep')
+
     def test_queue_priority_moves_large_selected_units_before_older_small_units(self):
         small=self.home/'small';small.write_bytes(b'small')
         bulk=self.home/'bulk';bulk.write_bytes(b'bulk')
