@@ -471,9 +471,10 @@ def valid_source(source, cfg):
     return source
 
 
-def excluded_unit(path,cfg):
+def excluded_unit(path,cfg,*,resolved_excluded=None):
     resolved=Path(path).resolve()
-    return any(within(resolved,absolute(p).resolve()) or within(absolute(p).resolve(),resolved) for p in cfg['excluded'])
+    paths=resolved_excluded if resolved_excluded is not None else [absolute(p).resolve() for p in cfg['excluded']]
+    return any(within(resolved,p) or within(p,resolved) for p in paths)
 
 
 def live_path(root):
@@ -1507,6 +1508,7 @@ def demand(store, root, now):
 
 def decisions(store, cfg, now=None):
     now = now or time.time(); rows = []
+    excluded = [absolute(p).resolve() for p in cfg['excluded']]
     for root in store.roots():
         reads, opens, _ = demand(store, root, now)
         latency = store.db.execute('SELECT * FROM latency WHERE root=?', (root['id'],)).fetchone()
@@ -1520,7 +1522,7 @@ def decisions(store, cfg, now=None):
         if root['location'] == 'hdd' and not cached and reads >= cfg['promotion_reads_per_hour']:
             action = 'promote' if impact else 'measure_task_latency'
         elif root['location'] == 'ssd':
-            if excluded_unit(live_path(root),cfg): action='protected'
+            if excluded_unit(live_path(root),cfg,resolved_excluded=excluded): action='protected'
             else: action = 'demote' if root['coverage'] and root['since'] and now - max(root['since'], last) >= cfg['demotion_idle_days']*DAY else 'ssd'
         rows.append({'id': root['id'], 'source': root['source'], 'location': root['location'],
                      'coverage': bool(root['coverage']), 'coverage_error': root['error'],

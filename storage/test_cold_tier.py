@@ -14,6 +14,16 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 
 class ColdTierTests(unittest.TestCase):
+    def test_decision_policy_refreshes_protected_aliases_on_each_pass(self):
+        first=self.home/'first';second=self.home/'second';first.mkdir();second.mkdir()
+        for p in (first,second):self.store.register(p,self.archive/p.name,'ssd',hot=p)
+        protected=self.home/'protected';protected.symlink_to(first);self.cfg['excluded']=[str(protected)]
+        decisions={r['source']:r['decision'] for r in m.decisions(self.store,self.cfg)}
+        self.assertEqual(decisions[str(first)],'protected');self.assertEqual(decisions[str(second)],'ssd')
+        protected.unlink();protected.symlink_to(second)
+        decisions={r['source']:r['decision'] for r in m.decisions(self.store,self.cfg)}
+        self.assertEqual(decisions[str(first)],'ssd');self.assertEqual(decisions[str(second)],'protected')
+
     def test_routed_parent_tracking_follows_proven_bridge_without_retiring_old_inode(self):
         source=self.home/'cache';source.mkdir();(source/'item').write_bytes(b'keep')
         parent=m.bridge_parent(self.store,self.cfg,source);previous=Path(parent['hdd']);identity=previous.stat().st_ino
