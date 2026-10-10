@@ -859,6 +859,39 @@ def partition_root(store, cfg, key):
     print('PARTITIONED',root['source'],flush=True)
 
 
+def recover_partition(store,cfg):
+    """Finish metadata after a recorded parent cutover, retaining every child."""
+    journal=store.state/'partition-operation.json'
+    if not journal.exists():return
+    if any((store.state/name).exists() for name in ('operation.json','default-operation.json','default-route-operation.json')):
+        raise ValueError('partition recovery requires other transactions to finish; namespaces retained')
+    record=bounded_json(journal);root=store.root(record['root'])
+    original,source=Path(record['original']),Path(record['source'])
+    parents=[p for p in store.get('defaults',[]) if p['source']==str(original)]
+    if len(parents)!=1 or root['source']!=str(source) or json.loads(root['aliases']):
+        raise ValueError('partition recovery ledger differs; namespaces retained')
+    parent=parents[0];backing,hdd=Path(parent['backing']),Path(parent['hdd'])
+    expected=original.with_name('.'+original.name.lstrip('.')+'-qq-ssd')
+    if (backing!=expected or backing.is_symlink() or not backing.is_dir() or
+        backing.stat().st_uid!=os.getuid() or not original.is_symlink() or
+        hdd.resolve(strict=True)!=hdd or not hdd.is_dir() or hdd.stat().st_uid!=os.getuid() or
+        original.resolve(strict=True)!=hdd or source.resolve(strict=True)!=hdd):
+        raise ValueError('partition recovery paths differ; namespaces retained')
+    if ((root['location']=='ssd' and live_path(root)!=original) or
+        (root['location']=='hdd' and live_path(root)!=hdd) or
+        root['location'] not in ('ssd','hdd') or
+        store.db.execute('SELECT 1 FROM scopes WHERE root=?',(root['id'],)).fetchone()):
+        raise ValueError('partition recovery root differs; namespaces retained')
+    mount_ready(cfg)
+    store.db.execute('UPDATE roots SET location=?,target=?,hot=?,since=0,coverage=0,error=? WHERE id=?',
+                     ('hdd',str(hdd),'','partitioned: awaiting watcher',root['id']))
+    store.db.execute("UPDATE queue SET status='complete',error='partitioned into child migration units',updated=? WHERE source=?",
+                     (time.time(),str(source)))
+    store.db.commit();adopt_defaults(store,cfg)
+    journal.unlink();flush_directory(store.state)
+    print('RECOVERED PARTITION',source,flush=True)
+
+
 def mount_ready(cfg):
     mount = absolute(cfg['hdd_mount']); archive = absolute(cfg['archive'])
     if not mount.is_mount(): raise ValueError('HDD mount absent; refusing to write on root disk')
@@ -1669,6 +1702,8 @@ def partition_blocked_move(store,cfg,source,error):
 def drain_units(store, cfg):
     with lock(store.state / 'move.lock'):
         recover_drain(store,cfg)
+        recover_default_route(store)
+        recover_partition(store,cfg)
         if cfg.get('mirror_layout',False):route_defaults(store,cfg)
         # A decision can promote only with both recorded demand and matched task timing.
         if time.time() - store.get('heartbeat', 0) < 60:

@@ -14,6 +14,44 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 
 class ColdTierTests(unittest.TestCase):
+    def test_partition_recovery_finishes_after_child_admission_was_interrupted(self):
+        source=self.home/'mixed';source.mkdir();(source/'keep').write_bytes(b'original')
+        identity=(source/'keep').stat().st_ino
+        key=self.store.register(source,self.archive/'later','ssd',hot=source)
+        m.queue_add(self.store,source)
+        with patch.object(m,'references',return_value=[]),patch.object(m,'adopt_defaults',side_effect=RuntimeError('interrupted')):
+            with self.assertRaisesRegex(RuntimeError,'interrupted'):m.partition_root(self.store,self.cfg,key)
+        self.assertTrue((self.store.state/'partition-operation.json').exists())
+        with patch.object(m,'references',return_value=[]):m.recover_partition(self.store,self.cfg)
+        self.assertFalse((self.store.state/'partition-operation.json').exists())
+        self.assertEqual((source/'keep').stat().st_ino,identity)
+        child=self.store.root(str(source/'keep'))
+        self.assertEqual(child['location'],'ssd')
+        self.assertEqual(self.store.db.execute('SELECT status FROM queue WHERE source=?',(child['source'],)).fetchone()[0],'pending')
+        self.assertEqual((source/'keep').read_bytes(),b'original')
+
+    def test_partition_recovery_retains_changed_public_path_and_journal(self):
+        source=self.home/'mixed';source.mkdir();(source/'keep').write_bytes(b'original')
+        key=self.store.register(source,self.archive/'later','ssd',hot=source)
+        with patch.object(m,'references',return_value=[]),patch.object(m,'adopt_defaults',side_effect=RuntimeError('interrupted')):
+            with self.assertRaises(RuntimeError):m.partition_root(self.store,self.cfg,key)
+        parent=self.store.get('defaults')[0];source.unlink();source.mkdir();(source/'new').write_bytes(b'new')
+        with self.assertRaisesRegex(ValueError,'paths differ'):m.recover_partition(self.store,self.cfg)
+        self.assertTrue((self.store.state/'partition-operation.json').exists())
+        self.assertEqual((Path(parent['backing'])/'keep').read_bytes(),b'original')
+        self.assertEqual((source/'new').read_bytes(),b'new')
+
+    def test_partition_recovery_keeps_marker_if_admission_fails_again(self):
+        source=self.home/'mixed';source.mkdir();(source/'keep').write_bytes(b'original')
+        key=self.store.register(source,self.archive/'later','ssd',hot=source)
+        with patch.object(m,'references',return_value=[]),patch.object(m,'adopt_defaults',side_effect=RuntimeError('interrupted')):
+            with self.assertRaises(RuntimeError):m.partition_root(self.store,self.cfg,key)
+            with self.assertRaises(RuntimeError):m.recover_partition(self.store,self.cfg)
+        self.assertTrue((self.store.state/'partition-operation.json').exists())
+        with patch.object(m,'references',return_value=[]):m.drain(self.store,self.cfg)
+        self.assertFalse((self.store.state/'partition-operation.json').exists())
+        self.assertEqual((source/'keep').read_bytes(),b'original')
+
     def test_logical_routes_reuse_unchanged_metadata_without_reparsing(self):
         backing=self.home/'.projects-qq-ssd';public=self.home/'projects'
         self.store.put('defaults',[dict(source=str(public),backing=str(backing))]);self.store.db.commit()

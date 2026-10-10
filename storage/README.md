@@ -32,6 +32,10 @@ is admitted as guarded child units on a later pass. Existing child inodes stay
 in place during admission; each idle child still needs a verified move. Git
 administration, protected paths, root-level database groups and unfinished
 recovery transactions retain their existing guards.
+If child admission is interrupted after a partition cutover, the next drain
+finishes its metadata only when the recorded parent, backing and public paths
+still agree. It preserves every child inode; changed or ambiguous paths retain
+the recovery marker for review.
 
 Install from the reviewed workflow checkout:
 
