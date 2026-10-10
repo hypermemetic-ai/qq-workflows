@@ -149,6 +149,20 @@ class ColdTierTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'budget'):m.move_backing(self.store,self.cfg,backing,**values)
         self.assertFalse(backing.is_symlink())
 
+    def test_selected_bulk_copy_makes_progress_at_lowest_best_effort_io_priority(self):
+        source,parent,backing=self.bulk_backing_fixture();run=m.subprocess.run;calls=[]
+        def recorded(args,**kwargs):
+            if args[0]=='ionice':calls.append(args)
+            return run(args,**kwargs)
+        with patch.object(m,'references',return_value=[]),patch.object(m,'broker_references',return_value=set()),\
+             patch.object(m.subprocess,'run',side_effect=recorded):m.move_backing(self.store,self.cfg,backing)
+        self.assertEqual(calls[0][:5],['ionice','-c','2','-n','7'])
+        self.assertEqual((source/'pending/data').read_text(),'pending')
+        normal=self.home/'normal';normal.write_text('normal');calls.clear()
+        with patch.object(m,'references',return_value=[]),patch.object(m.subprocess,'run',side_effect=recorded):
+            m.migrate(self.store,self.cfg,normal)
+        self.assertEqual(calls[0][:3],['ionice','-c','3'])
+
     def test_bulk_backing_host_coverage_failure_preserves_all_original_inodes(self):
         source,parent,backing=self.bulk_backing_fixture();inode=(backing/'pending/data').stat().st_ino
         with patch.object(m,'references',return_value=[]),patch.object(m,'broker_references',side_effect=ValueError('coverage incomplete')):
