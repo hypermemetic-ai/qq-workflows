@@ -19,6 +19,59 @@ class ProcessReferences(unittest.TestCase):
         self.file=self.root/'artifact';self.file.write_bytes(b'data');info=self.file.stat()
         self.key=[info.st_dev,info.st_ino]
 
+    def directory_fixture(self):
+        folder=self.root/'snapshot';folder.mkdir();child=folder/'child';child.write_bytes(b'keep')
+        info=folder.stat();device=info.st_dev
+        (self.task/'mountinfo').write_text(f'1 0 {os.major(device)}:{os.minor(device)} / / rw - ext4 /dev/test rw\n')
+        return folder,child,[[device,info.st_ino]]
+
+    def test_directory_descendant_descriptor_blocks_but_sibling_does_not(self):
+        folder,child,keys=self.directory_fixture()
+        (self.task/'fd/9').symlink_to(child)
+        result=m.collect_directories([str(folder)],keys,self.proc)
+        self.assertTrue(result['complete']);self.assertEqual(result['blocked'],[0])
+        (self.task/'fd/9').unlink();(self.task/'fd/9').symlink_to(self.file)
+        result=m.collect_directories([str(folder)],keys,self.proc)
+        self.assertTrue(result['complete']);self.assertEqual(result['blocked'],[])
+
+    def test_directory_reference_translates_container_mount_paths(self):
+        folder,child,keys=self.directory_fixture();device=keys[0][0]
+        (self.task/'mountinfo').write_text(f'1 0 {os.major(device)}:{os.minor(device)} {self.root} /container rw - ext4 /dev/test rw\n')
+        (self.task/'maps').write_text('0000-1000 r--p 0000 '+f'{os.major(device):02x}:{os.minor(device):02x} {child.stat().st_ino} /container/snapshot/child (deleted)\n')
+        result=m.collect_directories([str(folder)],keys,self.proc)
+        self.assertTrue(result['complete']);self.assertEqual(result['blocked'],[0])
+
+    def test_directory_subtree_bind_mount_blocks_without_open_descriptors(self):
+        folder,child,keys=self.directory_fixture();device=keys[0][0]
+        (self.task/'mountinfo').write_text(f'1 0 {os.major(device)}:{os.minor(device)} {child} /container/library rw - ext4 /dev/test rw\n')
+        result=m.collect_directories([str(folder)],keys,self.proc)
+        self.assertTrue(result['complete']);self.assertEqual(result['blocked'],[0])
+
+    def test_reader_root_rendering_is_retained_with_a_different_task_root(self):
+        folder,child,keys=self.directory_fixture();device=keys[0][0]
+        (self.task/'mountinfo').write_text(f'1 0 {os.major(device)}:{os.minor(device)} /container-root / rw - ext4 /dev/test rw\n')
+        (self.task/'fd/9').symlink_to(child)
+        result=m.collect_directories([str(folder)],keys,self.proc)
+        self.assertTrue(result['complete']);self.assertEqual(result['blocked'],[0])
+
+    def test_directory_coverage_fails_closed_on_unmapped_references_and_limits(self):
+        folder,child,keys=self.directory_fixture()
+        (self.task/'fd/9').symlink_to(child);(self.task/'mountinfo').write_text('')
+        self.assertFalse(m.collect_directories([str(folder)],keys,self.proc)['complete'])
+        self.assertFalse(m.collect_directories([str(folder)],keys,self.proc,seconds=-1)['complete'])
+        (self.task/'mountinfo').write_bytes(b'x'*262145)
+        self.assertFalse(m.collect_directories([str(folder)],keys,self.proc)['complete'])
+
+    def test_directory_validation_refuses_alias_root_file_and_foreign_owner(self):
+        folder,_,keys=self.directory_fixture();alias=self.root/'alias';alias.symlink_to(folder)
+        self.assertEqual(m.validate_directories([str(folder)],(self.root,),os.getuid()),keys)
+        for candidate in (self.root,alias,self.file):
+            with self.assertRaises(ValueError):m.validate_directories([str(candidate)],(self.root,),os.getuid())
+        with self.assertRaisesRegex(ValueError,'owned SSD'):m.validate_directories([str(folder)],(self.root,),os.getuid()+1)
+
+    def test_mountinfo_escaped_paths_are_decoded(self):
+        self.assertEqual(m.decode_mount_path(b'/path\\040with\\134slash'),'/path with\\slash')
+
     def test_descriptor_identity_detected_without_namespace_path_match(self):
         alias=self.root/'unrelated-name';os.link(self.file,alias);(self.task/'fd/9').symlink_to(alias)
         result=m.collect([self.key],self.proc)

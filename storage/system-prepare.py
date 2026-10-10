@@ -66,19 +66,55 @@ def owned_file(path,raw,mode):
     with os.fdopen(fd,'wb') as f:f.write(raw);f.flush();os.fsync(f.fileno())
 
 
+def collector_unit(script):
+    """Upgrade only an intact unit pointing at a verified root-pinned release."""
+    raw=broker_service_text(script).encode()
+    if not os.path.lexists(BROKER_SERVICE):
+        owned_file(BROKER_SERVICE,raw,0o644);return False
+    info=BROKER_SERVICE.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_nlink!=1 or info.st_mode&0o022:
+        raise ValueError('Unrecognized reference collector unit; preserved')
+    with BROKER_SERVICE.open('rb') as stream:previous=stream.read(65537)
+    if len(previous)>65536:raise ValueError('Unrecognized reference collector unit; preserved')
+    if previous==raw:return False
+    commands=[line.removeprefix('ExecStart=/usr/bin/python3 ') for line in previous.decode().splitlines()
+              if line.startswith('ExecStart=/usr/bin/python3 ')]
+    if len(commands)!=1:raise ValueError('Unrecognized reference collector unit; preserved')
+    old=Path(commands[0])
+    if (old.parent.parent!=BROKER_LIBRARY or old.name!='process-reference-broker.py' or old.resolve()!=old or
+        previous!=broker_service_text(old).encode()):
+        raise ValueError('Unrecognized reference collector unit; preserved')
+    info=old.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_nlink!=1 or info.st_mode&0o022:
+        raise ValueError('Unrecognized pinned reference collector; preserved')
+    with old.open('rb') as stream:old_raw=stream.read(262145)
+    if len(old_raw)>262144 or hashlib.sha256(old_raw).hexdigest()[:16]!=old.parent.name:
+        raise ValueError('Pinned reference collector digest differs; preserved')
+    temporary=BROKER_SERVICE.with_name('.refs-unit-'+uuid.uuid4().hex)
+    try:
+        owned_file(temporary,raw,0o644);os.replace(temporary,BROKER_SERVICE)
+    finally:temporary.unlink(missing_ok=True)
+    fd=os.open(BROKER_SERVICE.parent,os.O_DIRECTORY)
+    try:os.fsync(fd)
+    finally:os.close(fd)
+    return True
+
+
 def reference_collector():
     raw=Path(__file__).with_name('process-reference-broker.py').read_bytes()
     base.private_directory(BROKER_LIBRARY)
     release=BROKER_LIBRARY/hashlib.sha256(raw).hexdigest()[:16];base.private_directory(release)
     script=release/'process-reference-broker.py';owned_file(script,raw,0o600)
     owned_file(BROKER_SOCKET,SOCKET_TEXT.encode(),0o644)
-    owned_file(BROKER_SERVICE,broker_service_text(script).encode(),0o644)
+    upgraded=collector_unit(script)
     base.run('systemctl','daemon-reload')
     base.run('systemctl','enable','--now',BROKER_SOCKET.name)
+    if upgraded:base.run('systemctl','try-restart',BROKER_SERVICE.name)
     if base.run('systemctl','is-active',BROKER_SOCKET.name).strip()!='active':
         raise ValueError('Read-only reference collector socket did not activate')
     return {'socket':'/run/qq-cold-tier-refs/socket','checks':'open descriptors and mapped file identities across process namespaces',
-            'permissions':'read-only; operator-owned regular files on the mounted cached volume only'}
+            'permissions':'read-only; owned cached regular files or owned SSD user directories; no candidate contents read',
+            'directory_queries':True,'upgraded':upgraded}
 
 
 def boot_order():

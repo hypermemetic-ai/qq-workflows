@@ -1414,14 +1414,14 @@ def verified_files(scope):
     return manifest['files']
 
 
-def broker_references(paths,cfg):
+def broker_references(paths,cfg,*,kind='cached_files'):
     """A root-owned read-only collector resolves inaccessible process references."""
     address=cfg.get('reference_socket','')
     if not address or not os.path.lexists(address):return None
     info=Path(address).lstat()
     if not stat.S_ISSOCK(info.st_mode) or info.st_uid!=0:raise ValueError('untrusted process reference socket')
     nonce=uuid.uuid4().hex
-    request=json.dumps({'nonce':nonce,'paths':[str(p) for p in paths]}).encode()+b'\n'
+    request=json.dumps({'nonce':nonce,'paths':[str(p) for p in paths],'kind':kind}).encode()+b'\n'
     if len(request)>262144:raise ValueError('process reference request budget exceeded')
     with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as client:
         client.settimeout(35);client.connect(address)

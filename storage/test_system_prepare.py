@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -67,3 +68,24 @@ class SystemPreparation(unittest.TestCase):
         with patch.object(m,'BROKER_LIBRARY',self.root/'refs'),patch.object(m,'BROKER_SOCKET',socket),patch.object(m.base,'run') as run:
             with self.assertRaisesRegex(ValueError,'Unrecognized'):m.reference_collector()
         self.assertEqual(socket.read_text(),'operator owned');run.assert_not_called()
+
+    def test_collector_upgrade_requires_intact_root_pinned_previous_release(self):
+        library=self.root/'refs';socket=self.root/'refs.socket';service=self.root/'refs.service'
+        raw=b'previous collector';old=library/hashlib.sha256(raw).hexdigest()[:16]/'process-reference-broker.py'
+        old.parent.mkdir(parents=True);old.write_bytes(raw);old.chmod(0o600)
+        service.write_text(m.broker_service_text(old));service.chmod(0o600)
+        with patch.object(m,'BROKER_LIBRARY',library),patch.object(m,'BROKER_SOCKET',socket),patch.object(m,'BROKER_SERVICE',service),\
+             patch.object(m.base,'run',return_value='active') as run:
+            report=m.reference_collector();again=m.reference_collector()
+        self.assertTrue(report['upgraded']);self.assertFalse(again['upgraded'])
+        self.assertTrue(report['directory_queries'])
+        self.assertEqual(sum(call.args==('systemctl','try-restart','refs.service') for call in run.call_args_list),1)
+        self.assertEqual(old.read_bytes(),raw)
+
+    def test_modified_pinned_collector_cannot_be_upgraded(self):
+        library=self.root/'refs';service=self.root/'refs.service';old=library/('a'*16)/'process-reference-broker.py'
+        old.parent.mkdir(parents=True);old.write_bytes(b'changed');old.chmod(0o600)
+        previous=m.broker_service_text(old);service.write_text(previous);service.chmod(0o600)
+        with patch.object(m,'BROKER_LIBRARY',library),patch.object(m,'BROKER_SERVICE',service):
+            with self.assertRaisesRegex(ValueError,'digest differs'):m.collector_unit(library/'new'/'process-reference-broker.py')
+        self.assertEqual(service.read_text(),previous)
