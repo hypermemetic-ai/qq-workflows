@@ -27,7 +27,7 @@
 
 ## 5. Integration and Android delivery
 
-- [ ] 5.1 Complete scoped app commit/push/review/PR/merge into the established beta fork branch; verify required CI/focused checks and that the integrated commit contains only accepted deltas with source/native evidence.
-- [ ] 5.2 Package and sign the final QA/production release using retained compatible caches and the established signer; verify embedded bundle/assets/package identity, normally generated production runtime-marker disablement with retained native profileability, stage timings and final native controls for the retained source.
+- [x] 5.1 Complete scoped app commit/push/review/PR/merge into the established beta fork branch; verify required CI/focused checks and that the integrated commit contains only accepted deltas with source/native evidence.
+- [x] 5.2 Package and sign the final QA/production release using retained compatible caches and the established signer; verify embedded bundle/assets/package identity, normally generated production runtime-marker disablement with retained native profileability, stage timings and final native controls for the retained source.
 - [ ] 5.3 Complete an in-place Android update and record installed package/signer/bundle/OTA identity and visible preferences plus daemon/session continuity; verify actual device activation independently of source and APK readiness.
-- [ ] 5.4 Integrate specs, reusable QA and sanitized delivery/retirement records through the workflow repository commit/push/PR path, stop task-owned processes and run final Git helpers; verify tracked work is integrated and no unattended task services remain.
+- [x] 5.4 Integrate specs, reusable QA and sanitized delivery/retirement records through the workflow repository commit/push/PR path, stop task-owned processes and run final Git helpers; verify tracked work is integrated and no unattended task services remain.

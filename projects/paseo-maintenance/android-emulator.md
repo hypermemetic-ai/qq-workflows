@@ -236,13 +236,16 @@ the established 12 GiB aggregate even without Gradle heap. The earlier successfu
 ARM compiler peak and cap were not recorded. See the measured
 [compiler boundary](mobile-responsiveness.md#build-preparation) before compiling
 a changed bundle; a smaller raw bundle or warm native cache does not resolve it.
-The supported `-Og` setting is currently a diagnostic experiment, with production
-selection pending an independent native runtime comparison. Keep existing job
+The responsiveness release selects supported `-Og` after its independent
+artifact/native checks. The comparison does not establish optimized-compiler
+equivalence; a possible small visible cost remains unisolated and disclosed in
+the delivery record. Reevaluate ordinary optimization on upstream/schema
+changes rather than making this fallback a universal default. Keep existing job
 limits and record interventions separately from measurements. Reusing audited
 architecture-independent bytecode for another ABI avoids another optimizer pass
 when its inputs are proved equal; changed source requires new bytecode.
 
-For compatible JavaScript-only diagnostic QA, accepted APK shell reuse was also
+For compatible JavaScript-only QA, accepted APK shell reuse was also
 verified after Gradle spent its bounded ten-minute window hashing cached inputs.
 Establish unchanged native configuration, dependencies, generated manifest and
 embedded Expo configuration first. Verify disabled OTA updates and absence of
@@ -259,8 +262,9 @@ block. Preserve entry compression methods, run the retained SDK's
 other payload byte plus certificate, package, ABI, manifest, updates policy and
 alignment. Record shell reuse explicitly rather than describing it as a fresh
 native build. This diagnostic construction took 9.174 seconds under the normal
-4 GiB job envelope. Its candidate compiler remains pending runtime acceptance;
-QA shell equivalence does not establish production-shell compatibility. Native,
+4 GiB job envelope. The later final QA and ARM64 shells were separately audited
+and the selected release passed marker-disabled native controls. QA shell
+equivalence alone does not establish production-shell compatibility. Native,
 configuration or asset changes require the normal native resource/build path.
 
 ## Responsiveness workload

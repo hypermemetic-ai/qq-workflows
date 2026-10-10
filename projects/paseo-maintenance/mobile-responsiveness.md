@@ -163,9 +163,10 @@ profile-only source in 10.30 seconds, peaking at about 2.03 GiB within the norma
 matches the audited input. Maximum frame size is 160 registers, well below the
 pinned runtime limit; the validator instead has 5,515 environment slots versus
 zero in accepted optimized bytecode. This setting changes runtime code quality
-and is authorized only for diagnostic QA packaging and a separate native
-comparison. It is not an accepted production compiler recipe or performance
-claim. The unchanged optimized build still exceeds the established job cap.
+and was initially authorized only for diagnostic QA packaging and a separate
+native comparison. That first experiment was not a production acceptance or
+performance claim. The unchanged optimized build exceeds the established job
+cap; the later bounded release decision is recorded below.
 
 The diagnostic QA APK now exists: SHA-256
 `3453fcf600682673315d7065ac74874b1d73d616fa90fbc21eb5e1aa41f6db62`,
@@ -185,8 +186,8 @@ the accepted QA APK byte for byte. Package, ABI, profileability, non-debuggable
 state, disabled updates, certificate and 16 KiB alignment passed audit. The
 packaging job took 9.174 seconds, peaked at about 742 MiB and left no descendants.
 This is audited QA shell reuse, not a fresh Gradle native build. Diagnostic
-installation, runtime comparison and panel chronology remain separate gates;
-neither this artifact nor its compiler setting is accepted for production yet.
+installation, runtime comparison and panel chronology were separate gates;
+that artifact alone did not accept its compiler setting for production.
 
 The native pipeline comparison completed accepted optimized → diagnostic `-Og`
 → accepted optimized drift windows. Each block used three 20-second samples
@@ -210,28 +211,28 @@ disappeared on returning to the accepted build: retained route/native state
 and shared scheduler pressure confound a compiler effect. This supports further
 correctness testing of the bounded build path, without establishing runtime
 equivalence, a CPU reduction or battery savings. Corrected input and final
-disabled-marker controls remain delivery gates.
+disabled-marker controls were independent delivery gates, completed below.
 
 The selected-chat diagnostic median was about four percentage points above
 the accepted return block. The accepted samples themselves varied widely,
 so a small runtime penalty remains possible and is not isolated by this test.
-The final marker-disabled release requires its own matched visible-stream
-check; this comparison does not establish identical compiler performance.
+The final marker-disabled release completed its own matched visible-stream
+check below; this comparison does not establish identical compiler performance.
 
 Small embedded-config reads confirmed that both accepted shells have
 `extra.profileBuild=true`. The existing marker guard reads that runtime flag
 through Expo Constants; the manifest's profileable attribute is separate.
 Source/plugin audit found no other runtime behavior selected by that flag:
 the runtime uses are diagnostics, while the prebuild plugin only adds the
-manifest profileability entry. Final production will disable markers through
-the pinned normal public-config generator, requiring exact object equivalence
+manifest profileability entry. Final production disables markers through
+the pinned normal public-config generator, with exact object equivalence
 apart from that flag and its omitted serialized profileable plugin entry, plus
 native controls with markers disabled. The reused native
-shell will remain manifest-profileable. The pinned normal generator completed
+shell remains manifest-profileable. The pinned normal generator completed
 in 1.27 seconds at about 59.6 MiB and reproduced the accepted objects exactly
 with profiling enabled. Disabling profiling produced exactly those two expected
 metadata differences for each variant. Final artifact and native acceptance
-remain pending; this does not claim a clean non-profile native build.
+are recorded below; this does not claim a clean non-profile native build.
 
 The installed diagnostic reproduced wrong input routing: a Close tap after a
 matched visible drawer reached Explorer, with Explorer press-in/press markers
@@ -246,12 +247,12 @@ offset over this trace without a suspend discontinuity. The wrong Explorer
 event preceded the React layout-effect policy observation by about six
 milliseconds, subject to the event's integer-millisecond precision. This
 mapping does not prove Fabric hit-test application.
-Corrected native controls are recorded separately below; compiler and final
-release acceptance remain pending.
+Corrected native controls, compiler selection and final release acceptance are
+recorded separately below.
 
 The corrected interaction source is committed as
 `bfe5e9a749dc0d7d7ebe66ba65201d87b548f426` in
-[draft source PR #3](https://github.com/qqp-dev/paseo/pull/3). It passed app
+[source PR #3](https://github.com/qqp-dev/paseo/pull/3). It passed app
 typecheck, scoped lint/format,
 38 panel model/gesture/store tests and four queued-reducer tests in an independently
 copied source tree with the audited physical dependency layout. The tests cover
@@ -374,7 +375,8 @@ transport or producer loop in the three-file patch. The small idle increase
 remains disclosed rather than attributed to a particular render source. The
 parent explicitly retained `7427afe834ab711da42bc798d8f4b8c165f8a634` after the
 repeated covered benefit and restoration checks. Final marker-disabled idle,
-visible-stream and control checks remain separate release gates.
+visible-stream and control checks were separate release gates and subsequently
+passed, as recorded below.
 
 Restoration checks verified current content and the actual draft after covering
 and revealing active chat. A settled background/resume check advanced Working
@@ -439,6 +441,14 @@ transport ownership and type/size evidence before expanding scope.
 ## Final release construction
 
 The final frozen source is `7427afe834ab711da42bc798d8f4b8c165f8a634`.
+[Source PR #3](https://github.com/qqp-dev/paseo/pull/3) merged as
+`5297c75ccf4e4136528772bcc42366fc8211d1e1` into
+`qq/openspec-planning-beta`, preserving all four reviewed commits. Its parents
+are exactly the accepted base and reviewed head; merged tree
+`3e6e8c4374743d2d2861a277be1b49ae37f844a1` equals the audited candidate tree,
+with no additional base change. The repository has no required hosted checks or
+branch rules; focused source checks and independent native evidence govern this
+acceptance.
 Every tracked file matches its Git archive, all twelve native/config/plugin
 inputs match the accepted shells, and a full owned-module byte audit found no
 dependency mutation. QA and production exports are byte-identical to the tested
@@ -473,7 +483,8 @@ QA export. The first complete owned-template byte audit took 148.68 seconds;
 two-package alignment/signing/audit took 45.67 seconds. All ran within the
 normal 4 GiB envelope with zero swap or memory-limit/OOM events and ended with
 empty cgroups. Setup failures are preserved separately. Final native compiler
-acceptance and actual phone activation remain distinct from this artifact proof.
+acceptance is recorded below; actual phone activation remains distinct from this
+artifact proof.
 
 The actual installed final QA APK matches the signed hash. After a fresh
 60-turn/120-row restore, three 15-second idle windows measured 2.06, 2.00 and
@@ -493,25 +504,68 @@ are unavailable. Native visible content and actual SDK stored history/sequence
 progression verify the continuing workload; they are not described as four
 native subscriptions. Immediate input, form and resume acceptance is separate.
 
+The installed marker-disabled release passed all ten final no-retry navigation
+controls: one idle Close and two different-workspace selections, then three
+immediate Close and four alternating selections with the daemon streams running.
+There was no wrong Explorer recipient, unchanged-drawer timeout or retry.
+Observation-inclusive streaming upper bounds were 528–554 ms for Close and
+702–1,067 ms for selection; ADB/capture/rendering remain included and these are
+not isolated phone latency results. Question Submit/Dismiss and plan
+Implement/Dismiss each removed the prompt and were independently confirmed idle
+through the normal SDK. The actual soft keyboard appeared, opening the list
+dismissed it, and Close restored the selected primary. A three-second Home then
+standard VIEW resume retained the selected workspace/session and exact draft.
+All three Android motion settings remain zero.
+
+The parent accepts the supported `-Og` compiler for this bounded release after
+the artifact, data-integrity, quiet-resource and native-control gates passed.
+This decision does not assert optimized-compiler equivalence: the possible
+roughly four-percentage-point visible penalty in the earlier unisolated
+comparison remains disclosed. It avoids the demonstrated out-of-budget stock
+optimizer allocation without changing the compiler, dependencies or job limits.
+On an upstream/schema update, reevaluate ordinary optimized compilation within
+the established budget and runtime behavior before changing this recipe.
+
 ## Delivery status
 
 | Outcome | State |
 | --- | --- |
 | OpenSpec plan | Validated; implementation authorized |
-| Ordered interaction source | Committed/pushed in draft PR #3; focused source checks and core native acceptance pass |
+| Ordered interaction source | PR #3 merged as `5297c75ccf4e4136528772bcc42366fc8211d1e1`; exact audited tree and focused/native checks verified |
 | Profile-only diagnostic source | `dc7ef17b746e4089670a6fcd35ad420e559f82dd`; source checks passed; labels fit the native trace limit |
-| Diagnostic QA artifact | Signed/audited/installed; wrong-recipient chronology reproduced; optimized/diagnostic/optimized comparison complete, final compiler acceptance pending |
+| Diagnostic QA artifact | Signed/audited/installed; wrong-recipient chronology reproduced; optimized/diagnostic/optimized comparison complete with confounds disclosed |
 | Corrected native controls | 40/40 immediate Close/selection outcomes plus supersession, viewport, keyboard, forms and idle resume pass |
-| Covered-chat presentation retention decision | Retain `7427afe834ab711da42bc798d8f4b8c165f8a634`; matched native comparisons and settled restoration pass; final release gates remain |
+| Covered-chat presentation retention decision | Retain `7427afe834ab711da42bc798d8f4b8c165f8a634`; matched native comparisons, settled restoration and final release gates pass; idle cost remains explicit |
 | Provider/client/daemon attribution | Bounded investigation complete; no daemon change justified; broader phone/transport freezes remain open |
-| Final signed release | Both ABI packages signed/audited; final marker-disabled native acceptance pending |
-| Production Android activation | Pending device connection and accepted release |
+| Final signed release | Both ABI packages signed/audited; final marker-disabled native acceptance passes; supported `-Og` accepted with comparison limits |
+| Production Android activation | Pending physical ADB connection; accepted release prepared, no installation performed |
 
-The phone was absent from ADB at this task's start, so this record does not
+The phone remains absent from ADB at the delivery gate, so this record does not
 claim a freshly verified installed APK or active OTA bundle. The accepted
 production activation is owned by the prior static-status record until this
 release is installed and independently verified. Existing phone preferences,
 pairing, signer and zero animation scales must survive the in-place update.
+The bounded reconnect QR expired without pairing and removed its credential
+image. The private activation helper is prepared with locked candidate hashes,
+public installed-APK and app-data-identity checks, one normal cold launch and
+before/after daemon/session metadata continuity. It has not been executed.
+Resume activation only with the explicitly selected physical target; do not
+repeat the completed native investigation or builds merely to reconnect.
+
+Owned native cleanup completed after acceptance: the fixture and emulator
+stopped successfully with zero MainPID and empty cgroups; owned ports
+46013/5580/5581 are closed. The task reverse, FIFO, staged fixture, 36 recorded
+device trace/config names and runtime extension were removed. The source child
+then removed its eight owned dependency links after fixture-stop confirmation,
+preserving the other owner's ignored server link. Build scopes also exited with
+empty cgroups, and the expired QR helper removed its credential image. Retain
+the SDK, AVD, signed APKs, compatible caches and private evidence for reuse;
+the existing ADB server and other owners' processes remain untouched.
+
+The workflow record, durable specs and QA entry points are integrated through
+[workflow PR #208](https://github.com/hypermemetic-ai/qq-workflows/pull/208).
+Task 5.3 intentionally remains unchecked until actual physical activation is
+verified; source merge and native acceptance do not complete that outcome.
 
 ## Acceptance and retirement
 
