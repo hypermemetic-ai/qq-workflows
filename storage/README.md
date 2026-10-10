@@ -24,6 +24,8 @@ their admitted children migrate without re-partitioning the backing namespace.
 For an explicitly selected, inactive backing tree, `qq-job -- qq-cold-tier
 move-backing /absolute/backing/path` copies and verifies the remaining tree as
 one unit. Existing public bridges and already migrated HDD inodes stay in place.
+Completed source/destination manifests are released before later inventories
+and retirement, keeping large cohorts within the declared mover RAM budget.
 The root reference collector must confirm complete host coverage before copying,
 publication and retirement. Child tracking reconciles from the verified parent
 move after interruption. Protected data, active files, special files and
