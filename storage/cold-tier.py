@@ -57,6 +57,7 @@ DEFAULT = {
     'intake_min_age_seconds': 3600,
     'automatic_artifact_verification': True,
     'reference_socket': '',
+    'protect_docker_binds': False,
 }
 
 
@@ -389,6 +390,65 @@ def references(paths, strict=False):
     return found
 
 
+def bounded_command(args,limit=262144,seconds=5):
+    """Capture only bounded diagnostic stdout; always reap temporary children."""
+    with subprocess.Popen(args,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL) as child:
+        data=bytearray();deadline=time.monotonic()+seconds
+        try:
+            while True:
+                remaining=deadline-time.monotonic()
+                if remaining<=0 or not select.select([child.stdout],[],[],remaining)[0]:
+                    raise ValueError('container metadata check timed out; source retained')
+                chunk=os.read(child.stdout.fileno(),min(65536,limit+1-len(data)))
+                if not chunk:break
+                data.extend(chunk)
+                if len(data)>limit:raise ValueError('container metadata output exceeds bound; source retained')
+            if child.wait(timeout=max(.01,deadline-time.monotonic())):
+                raise ValueError('container metadata check failed; source retained')
+            return data.decode('utf-8')
+        finally:
+            if child.poll() is None:child.kill()
+            child.wait(timeout=2)
+
+
+def docker_mount_sources():
+    # Never request container environments, commands or file contents.
+    docker=['docker','--host','unix:///var/run/docker.sock']
+    ids=bounded_command([*docker,'ps','--no-trunc','-q'],limit=33792).split()
+    if len(ids)>512 or any(len(p)!=64 or any(c not in '0123456789abcdef' for c in p) for p in ids):
+        raise ValueError('container identity budget or format invalid; source retained')
+    if not ids:return []
+    raw=bounded_command([*docker,'inspect','--format','{{json .Mounts}}',*ids])
+    lines=raw.splitlines()
+    if len(lines)!=len(ids):raise ValueError('container mount coverage incomplete; source retained')
+    result=[]
+    for line in lines:
+        mounts=json.loads(line)
+        if mounts is None:mounts=[]
+        if not isinstance(mounts,list):raise ValueError('invalid container mount metadata')
+        for mount in mounts:
+            if not isinstance(mount,dict):raise ValueError('invalid container mount record')
+            if mount.get('Type')!='bind':continue
+            source=mount.get('Source')
+            if not isinstance(source,str) or not Path(source).is_absolute():raise ValueError('invalid container bind source')
+            if source!='/':result.append(absolute(source))
+    return result
+
+
+def protect_container_mounts(store,cfg,paths,*,refresh=False):
+    if not cfg.get('protect_docker_binds',False):return
+    if refresh or time.monotonic()-cfg.get('_docker_checked_at',-100)>5:
+        cfg['_docker_sources']=docker_mount_sources();cfg['_docker_checked_at']=time.monotonic()
+    candidates=[]
+    for raw in paths:
+        p=absolute(raw);candidates.extend((p,p.resolve(),logical_source(store,p)))
+    for raw in cfg['_docker_sources']:
+        p=absolute(raw)
+        for mount in (p,p.resolve(),logical_source(store,p)):
+            if any(within(candidate,mount) or within(mount,candidate) for candidate in candidates):
+                raise ValueError('live container bind mount; original inode retained')
+
+
 def valid_source(source, cfg):
     source = absolute(source)
     if source.is_symlink(): raise ValueError('source already linked')
@@ -457,6 +517,7 @@ def exchange(a, b):
 def bridge_parent(store, cfg, raw):
     """New children go to HDD. Existing children keep the same open inodes."""
     source = valid_source(raw, cfg)
+    protect_container_mounts(store,cfg,[source])
     if not source.is_dir(): raise ValueError('default parent must be a directory')
     archive = mount_ready(cfg)
     backup = source.with_name('.' + source.name.lstrip('.') + '-qq-ssd')
@@ -936,6 +997,7 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
         if source.resolve() != original.resolve(): raise ValueError('source path no longer matches ledger')
     for p in (original, source):
         if p.lstat().st_uid != os.getuid(): raise ValueError('migration requires operator-owned paths')
+    protect_container_mounts(store,cfg,[original,source,*aliases])
     if references([original, source, *aliases]): raise ValueError('live process references; deferred')
     if original.is_file() and database_file(original):
         raise ValueError('database and sidecars must move together as one directory')
@@ -1024,6 +1086,7 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
         if any(mask & change_mask
                for _, _, mask in guard.events()): raise ValueError('source mutation during migration')
         if references([original, source, *aliases]): raise ValueError('source became active; original retained')
+        protect_container_mounts(store,cfg,[original,source,*aliases],refresh=True)
         if restoring or demoting:
             if source.resolve() != original.resolve(): raise ValueError('public path changed during migration')
         record['phase'] = 'verified'; atomic_json(journal, record)

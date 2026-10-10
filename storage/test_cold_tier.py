@@ -14,6 +14,38 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 
 class ColdTierTests(unittest.TestCase):
+    def test_bounded_container_command_rejects_excess_output(self):
+        with self.assertRaisesRegex(ValueError,'output exceeds bound'):
+            m.bounded_command([sys.executable,'-c','print("x"*1024)'],limit=64)
+
+    def test_container_sources_ignore_volumes_and_full_root_monitor_views(self):
+        mounts=[{'Type':'bind','Source':'/'},{'Type':'bind','Source':str(self.home/'app')},
+                {'Type':'volume','Source':'/var/lib/docker/volumes/keep'}]
+        with patch.object(m,'bounded_command',side_effect=['a'*64+'\n',m.json.dumps(mounts)+'\n']):
+            self.assertEqual(m.docker_mount_sources(),[self.home/'app'])
+
+    def test_container_parent_mount_protects_children_without_open_file_references(self):
+        parent=self.home/'bound';parent.mkdir();source=parent/'idle';source.mkdir();(source/'data').write_bytes(b'keep')
+        self.cfg['protect_docker_binds']=True
+        with patch.object(m,'docker_mount_sources',return_value=[parent]),patch.object(m,'references',return_value=[]):
+            with self.assertRaisesRegex(ValueError,'container bind'):m.migrate(self.store,self.cfg,source)
+            with self.assertRaisesRegex(ValueError,'container bind'):m.bridge_parent(self.store,self.cfg,parent)
+        self.assertFalse(source.is_symlink());self.assertEqual((source/'data').read_bytes(),b'keep')
+        self.assertFalse((self.store.state/'operation.json').exists())
+
+    def test_container_mount_appearing_during_copy_retains_original(self):
+        source=self.home/'data';source.write_bytes(b'keep');self.cfg['protect_docker_binds']=True
+        with patch.object(m,'docker_mount_sources',side_effect=[[],[source]]),patch.object(m,'references',return_value=[]):
+            with self.assertRaisesRegex(ValueError,'container bind'):m.migrate(self.store,self.cfg,source)
+        self.assertFalse(source.is_symlink());self.assertEqual(source.read_bytes(),b'keep')
+        self.assertFalse((self.store.state/'operation.json').exists())
+
+    def test_container_metadata_failure_prevents_migration(self):
+        source=self.home/'data';source.write_bytes(b'keep');self.cfg['protect_docker_binds']=True
+        with patch.object(m,'docker_mount_sources',side_effect=ValueError('coverage incomplete')):
+            with self.assertRaisesRegex(ValueError,'coverage incomplete'):m.migrate(self.store,self.cfg,source)
+        self.assertEqual(source.read_bytes(),b'keep');self.assertFalse((self.store.state/'operation.json').exists())
+
     def test_scheduled_drain_retries_busy_lock_without_changing_queue_or_source(self):
         source=self.home/'queued';source.mkdir();(source/'data').write_bytes(b'keep')
         m.queue_add(self.store,source)
