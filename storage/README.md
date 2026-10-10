@@ -45,6 +45,13 @@ SHA-256 verification has a separate 8 MiB/s budget shared by both copies. A norm
 are not assumed available. Run manual scans/moves through `qq-job`; the migration
 service does this automatically. Read-only status and queue updates are light.
 
+On Docker hosts, enable `protect_docker_binds` in the policy. Bounded read-only
+mount metadata protects running containers' source folders and their children,
+including bind mounts with no visible open descriptors. The check repeats before
+publishing a verified move. Unavailable or oversized metadata defers the move.
+Whole-root filesystem views used by monitors retain the root inode and do not
+block unrelated child relocation. No environments or container commands are read.
+
 Moves retain hard links, sparse files, symlinks, ACLs and xattrs. Before publishing,
 the tool checks process references, a source mutation watch, manifest metadata and
 file hashes. Paths with visible live references, sockets, foreign ownership,
