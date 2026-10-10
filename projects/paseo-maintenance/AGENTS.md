@@ -4,6 +4,13 @@ Maintain a small, responsive Paseo fork. Source changes belong in its checkout.
 Use stock Codex and OpenSpec, with implementation normally in a child agent.
 Keep instructions here; add no global skill, orchestrator or custom updater.
 
+The operator selected [migration to stock Orca](orca-migration.md) on 2026-10-10.
+That record owns the operational transition of projects and existing native
+Codex threads, with recent UI history. Preserve Paseo's live owners and records
+until the corresponding Orca transfer is verified; migration does not authorize
+new app patches or destructive archive cleanup. Existing maintenance records
+below remain the provenance for retained Paseo artifacts.
+
 ## Current ownership
 
 Read the target checkout's `AGENTS.md` and relevant `docs/`. Source checkouts are
