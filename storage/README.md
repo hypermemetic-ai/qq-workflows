@@ -11,6 +11,8 @@ Existing SSD children and late writes through old directory handles enter the
 hourly migration queue automatically. Each unit still defers while busy or
 unverifiable. Explicit SSD promotions retain their separate hot paths. Set
 `automatic_migration` to false to disable this intake.
+Concurrent watcher and worker admission reuses an existing root identity when
+the live mapping agrees; a conflicting mapping remains intact and defers.
 
 After changing the archive to the native cached volume, run
 `qq-job -- qq-cold-tier route-defaults`. This atomically redirects new children

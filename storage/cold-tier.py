@@ -155,8 +155,18 @@ class Store:
                                     int(bool(mask & OPEN)), int(bool(mask & (MODIFY | ATTRIB)))))
     def register(self, source, target, location='hdd', hot=''):
         key = uuid.uuid4().hex[:12]
-        self.db.execute('INSERT INTO roots (id,source,target,location,verified,created,hot) VALUES (?,?,?,?,1,?,?)',
-                        (key, str(source), str(target), location, time.time(), str(hot)))
+        inserted = self.db.execute('''INSERT INTO roots (id,source,target,location,verified,created,hot)
+          VALUES (?,?,?,?,1,?,?) ON CONFLICT(source) DO NOTHING''',
+          (key, str(source), str(target), location, time.time(), str(hot)))
+        if not inserted.rowcount:
+            # A watcher and the mover can discover the same child from stale
+            # snapshots. Reuse its identity only when its live mapping agrees.
+            row = self.db.execute('SELECT * FROM roots WHERE source=?',(str(source),)).fetchone()
+            same = row and row['location']==location and (
+                row['hot']==str(hot) if location=='ssd' else row['target']==str(target))
+            self.db.commit()
+            if not same: raise ValueError('concurrent registration differs; existing mapping preserved')
+            return row['id']
         self.db.commit(); return key
 
 
