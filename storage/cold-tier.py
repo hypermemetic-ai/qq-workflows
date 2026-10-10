@@ -675,12 +675,23 @@ def tier_temporary(path):
 def logical_source(store, raw):
     """Undo private SSD backing names without resolving the final data inode."""
     path=absolute(raw)
-    parents=[*store.get('defaults',[]),*[dict(source=p['public'],backing=p['backing']) for p in store.get('namespace_aliases',[])]]
-    parents=sorted(parents,key=lambda p:len(Path(p['backing']).parts),reverse=True)
+    # Read both current values on every lookup, including commits from another
+    # watcher/worker. Parse and compile unchanged route maps only once.
+    values=tuple((store.db.execute('SELECT value FROM meta WHERE key=?',(key,)).fetchone() or ('[]',))[0]
+                 for key in ('defaults','namespace_aliases'))
+    cached=getattr(store,'_logical_routes',None)
+    if cached is None or cached[0]!=values:
+        defaults,aliases=(json.loads(value) for value in values)
+        entries=[*defaults,*[dict(source=p['public'],backing=p['backing']) for p in aliases]]
+        parents=sorted([(Path(p['backing']).parts,Path(p['source'])) for p in entries],
+                       key=lambda p:len(p[0]),reverse=True)
+        store._logical_routes=(values,parents)
+    else:parents=cached[1]
     for _ in range(32):
-        match=next((p for p in parents if within(path,Path(p['backing']))),None)
+        parts=path.parts
+        match=next((p for p in parents if parts[:len(p[0])]==p[0]),None)
         if match is None:return path
-        rewritten=Path(match['source'])/path.relative_to(Path(match['backing']))
+        rewritten=match[1].joinpath(*parts[len(match[0]):])
         if rewritten==path:raise ValueError('default backing rewrite cycle')
         path=rewritten
     raise ValueError('default backing rewrite depth exceeded')
