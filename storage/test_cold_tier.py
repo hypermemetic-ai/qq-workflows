@@ -14,6 +14,23 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 
 class ColdTierTests(unittest.TestCase):
+    def test_routed_parent_tracking_follows_proven_bridge_without_retiring_old_inode(self):
+        source=self.home/'cache';source.mkdir();(source/'item').write_bytes(b'keep')
+        parent=m.bridge_parent(self.store,self.cfg,source);previous=Path(parent['hdd']);identity=previous.stat().st_ino
+        root=self.store.register(source,previous,'hdd');self.cfg['mirror_layout']=True
+        with patch.object(m,'references',return_value=[]):m.route_defaults(self.store,self.cfg)
+        row=self.store.root(str(source));self.assertEqual(row['id'],root)
+        self.assertEqual(Path(row['target']),source.resolve())
+        self.assertEqual(previous.stat().st_ino,identity);self.assertEqual((previous/'item').read_bytes(),b'keep')
+        self.assertIn(str(previous),self.store.get('defaults')[0]['previous'])
+
+    def test_unrelated_hdd_root_target_is_not_adopted_as_previous_bridge(self):
+        source=self.home/'cache';source.mkdir();(source/'item').write_bytes(b'keep')
+        parent=m.bridge_parent(self.store,self.cfg,source);other=self.archive/'unrelated';other.mkdir()
+        self.store.register(source,other,'hdd');self.cfg['mirror_layout']=True
+        with patch.object(m,'references',return_value=[]):m.route_defaults(self.store,self.cfg)
+        self.assertEqual(Path(self.store.root(str(source))['target']),other)
+
     def test_stale_backing_queue_cannot_partition_machinery_or_break_public_children(self):
         source=self.home/'projects';source.mkdir();(source/'child').mkdir();(source/'child'/'data').write_bytes(b'keep')
         self.cfg.update(mirror_layout=True,automatic_partition=True)
