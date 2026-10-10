@@ -577,6 +577,37 @@ class ColdTierTests(unittest.TestCase):
         with patch.object(m.json,'loads',side_effect=AssertionError('reparsed unchanged routes')):
             self.assertEqual(m.logical_source(self.store,path),expected)
 
+    def test_logical_routes_reuse_large_map_without_reading_it_again(self):
+        backing=self.home/'.projects-qq-ssd';public=self.home/'projects'
+        self.store.put('defaults',[dict(source=str(public),backing=str(backing))]);self.store.db.commit()
+        path=backing/'app'/'file';m.logical_source(self.store,path)
+        queries=[];self.store.db.set_trace_callback(queries.append)
+        try:
+            for _ in range(100):self.assertEqual(m.logical_source(self.store,path),public/'app'/'file')
+        finally:self.store.db.set_trace_callback(None)
+        self.assertFalse(any('FROM meta' in query for query in queries))
+
+    def test_logical_routes_notice_local_sql_write_and_savepoint_rollback(self):
+        backing=self.home/'.projects-qq-ssd';public=self.home/'projects';temporary=self.home/'temporary'
+        self.store.put('defaults',[dict(source=str(public),backing=str(backing))]);self.store.db.commit()
+        path=backing/'file';self.assertEqual(m.logical_source(self.store,path),public/'file')
+        self.store.db.execute('SAVEPOINT route_change')
+        self.store.db.execute("UPDATE meta SET value=? WHERE key='defaults'",
+                              (m.json.dumps([dict(source=str(temporary),backing=str(backing))]),))
+        self.assertEqual(m.logical_source(self.store,path),temporary/'file')
+        self.store.db.execute('ROLLBACK TO route_change')
+        self.assertEqual(m.logical_source(self.store,path),public/'file')
+        self.store.db.execute('RELEASE route_change')
+        self.assertEqual(m.logical_source(self.store,path),public/'file')
+
+    def test_logical_routes_keep_first_duplicate_prefix_and_cycle_guard(self):
+        backing=self.home/'.projects-qq-ssd';public=self.home/'projects'
+        self.store.put('defaults',[dict(source=str(public),backing=str(backing)),
+                                  dict(source=str(self.home/'other'),backing=str(backing))]);self.store.db.commit()
+        self.assertEqual(m.logical_source(self.store,backing/'file'),public/'file')
+        self.store.put('defaults',[dict(source=str(backing),backing=str(backing))]);self.store.db.commit()
+        with self.assertRaisesRegex(ValueError,'rewrite cycle'):m.logical_source(self.store,backing/'file')
+
     def test_logical_routes_notice_concurrent_default_changes(self):
         backing=self.home/'.projects-qq-ssd';public=self.home/'projects';next_public=self.home/'next'
         self.store.put('defaults',[dict(source=str(public),backing=str(backing))]);self.store.db.commit()

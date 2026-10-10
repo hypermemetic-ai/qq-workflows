@@ -374,6 +374,9 @@ continues to fail closed; no login failure is deliberately added.
 Verified activation is recorded before the optional SSD census. The census has
 a two-minute budget and retains completed rows if it times out. An incomplete
 census does not require repeating successful volume or checker activation.
+The controller caches unchanged route maps using SQLite commit generations and
+matches the longest backing prefix directly. It still observes local writes,
+other workers' commits, and rolled-back transactions before using a mapping.
 
 ## Native block-cache alternative
 
