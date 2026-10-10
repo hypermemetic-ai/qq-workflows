@@ -27,6 +27,11 @@ candidate is `mobile-android-v0.0.52`, source commit
 against the installed host. This does not establish installation or pairing on
 the operator's phone. See the stock [mobile connection guide](https://www.onorca.dev/docs/mobile).
 
+The stock APK was downloaded, hash-verified and delivered over Tailscale. Its
+package is `com.stably.orca.mobile`, version code 19, size 134,329,673 bytes and
+SHA-256 `68bd92eda053236cef4b89fbe3272555da1f88a83976a5a20481383fa2e027c3`.
+Download delivery is separate from phone installation and activation.
+
 Orca's structured-chat import has a 16 MiB gate; ten selected logs exceed it.
 Structured native chat is currently disabled on this host. Use stock terminal
 resume with the original thread ID instead of importing or truncating the native
@@ -54,7 +59,7 @@ activation; inspected source is not a live migration receipt.
 | Project/workspace mapping | Initial inventory complete; registration and placement pending |
 | Existing thread continuity | Source path identified; live ownership transfer pending |
 | Native Android controls | Isolated emulator acceptance pending |
-| Phone activation | Tailscale pairing and installed-client verification pending |
+| Phone activation | Verified stock APK delivered over Tailscale; installation, pairing and installed-client verification pending |
 
 ## Transfer procedure
 
@@ -99,7 +104,8 @@ running work explicitly instead of reporting a whole migration as complete.
 
 If resume fails, preserve the native log and receipt. Confirm the Orca writer has
 stopped before returning the thread to Paseo. No restart, archive, delete or
-history conversion is the default recovery action. Retained Paseo metadata also
-keeps older provider archives readable while their owners remain unresolved.
+history conversion is the default recovery action. Preserve older Paseo records
+and provider logs for separate archive-readability checks; retained files alone
+do not prove UI readability after a provider is removed.
 Session registration, emulator acceptance and phone activation have independent
 receipts; source inspection alone proves none of them.
