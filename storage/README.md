@@ -21,6 +21,16 @@ Decision reports resolve protected paths once per pass and refresh that policy
 on the next pass, keeping bulk reports from repeating every filesystem lookup.
 Stale queue entries for machinery's SSD backing directories are protected;
 their admitted children migrate without re-partitioning the backing namespace.
+For an explicitly selected, inactive backing tree, `qq-job -- qq-cold-tier
+move-backing /absolute/backing/path` copies and verifies the remaining tree as
+one unit. Existing public bridges and already migrated HDD inodes stay in place.
+The root reference collector must confirm complete host coverage before copying,
+publication and retirement. Child tracking reconciles from the verified parent
+move after interruption. Protected data, active files, special files and
+unexplained hard links still defer. `--detach-package-links` permits independent
+verified copies only for shared installed files beneath `node_modules`; outside
+aliases retain their original inodes. This explicit bulk operation does not
+relax the automatic per-child migration policy.
 Expanding a live mirror proxy records its original backing before publication.
 Admission then tracks untouched SSD children, including after interruption;
 changed original inodes retain the record for review. Alias spellings reuse the

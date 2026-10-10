@@ -471,6 +471,68 @@ def valid_source(source, cfg):
     return source
 
 
+def move_references(paths, cfg, *, host=False):
+    """Bulk backing retirement also requires complete privileged host coverage."""
+    found = set(references(paths))
+    if host:
+        candidates = list(dict.fromkeys(Path(p) for p in paths if Path(p).is_dir()
+                                       and not Path(p).is_symlink()))
+        if not candidates: raise ValueError('host directory reference candidates unavailable; preserved')
+        found.update(broker_references(candidates, cfg, kind='ssd_directories'))
+    return found
+
+
+def reconcile_moved_backings(store, cfg, archive):
+    """A verified whole backing move carries its admitted children onto HDD."""
+    if any(store.state.glob('*operation.json')): return
+    backings = []
+    for parent in store.get('defaults', []):
+        backing = Path(parent['backing'])
+        if not backing.is_symlink(): continue
+        row = store.db.execute('SELECT * FROM roots WHERE source=?', (str(backing),)).fetchone()
+        if not row or row['location'] != 'hdd' or not row['verified']: continue
+        target = Path(row['target'])
+        if (target.resolve(strict=True) != target or backing.resolve(strict=True) != target
+                or not within(target, archive/'data') or target.stat().st_dev != archive.stat().st_dev):
+            raise ValueError('bulk backing mapping changed; children preserved')
+        backings.append(backing)
+    if not backings: return
+    updates = []
+    for root in store.roots():
+        original = live_path(root)
+        if root['location'] != 'ssd' or not any(within(original, p) for p in backings): continue
+        target = original.resolve(strict=True)
+        if (target.stat().st_dev != archive.stat().st_dev or not within(target, archive)
+                or Path(root['source']).resolve(strict=True) != target
+                or any(not Path(p).is_symlink() or Path(p).resolve(strict=True) != target
+                       for p in json.loads(root['aliases']))):
+            raise ValueError('bulk child mapping changed; existing tracking preserved')
+        updates.append((root, target))
+    for root, target in updates:
+        store.db.execute('UPDATE roots SET target=?,location=?,hot=?,since=0,coverage=0,error=? WHERE id=?',
+                         (str(target), 'hdd', '', 'bulk backing: awaiting watcher', root['id']))
+        store.db.execute("UPDATE queue SET status='complete',error='verified whole backing move',updated=? "
+                         "WHERE source=? AND action='move'", (time.time(), root['source']))
+    store.db.commit()
+
+
+def move_backing(store, cfg, source, *, detach_packages=False):
+    """Explicit bulk move of a quiescent backing; keep every existing public bridge."""
+    source = absolute(source)
+    if not any(p['backing'] == str(source) for p in store.get('defaults', [])):
+        raise ValueError('bulk move requires a declared SSD backing')
+    if any(store.state.glob('*operation.json')): raise ValueError('unfinished transaction; preserved')
+    if store.db.execute('SELECT 1 FROM roots WHERE source=?',(str(source),)).fetchone():
+        raise ValueError('backing already has independent tracking; review required')
+    valid_source(source, cfg)
+    local = dict(cfg, mirror_layout=False, automatic_partition=False)
+    if detach_packages:
+        local['immutable_hardlink_scopes'] = [str(source)]
+        local['_package_only_detachment'] = True
+    migrate(store, local, source, host_references=True)
+    reconcile_moved_backings(store, cfg, mount_ready(cfg))
+
+
 def excluded_unit(path,cfg,*,resolved_excluded=None):
     resolved=Path(path).resolve()
     paths=resolved_excluded if resolved_excluded is not None else [absolute(p).resolve() for p in cfg['excluded']]
@@ -593,6 +655,7 @@ def adopt_defaults(store, cfg, *, only_sources=None):
     """Admit newly created children and discover legacy SSD children of every size."""
     archive = mount_ready(cfg)
     adopt_mirror_scaffolds(store,cfg,archive)
+    reconcile_moved_backings(store,cfg,archive)
     parents = store.get('defaults', [])
     managed_backings = {str(Path(p['backing'])) for p in parents}
     roots = store.roots()
@@ -704,7 +767,7 @@ def adopt_defaults(store, cfg, *, only_sources=None):
                 real = next((p/child.name for p in backings if (p/child.name).exists()
                              and not (p/child.name).is_symlink() and (p/child.name).resolve() == resolved), None)
                 if real is None or not (real.is_dir() or real.is_file()): continue
-                if real.parent != backing and real.stat().st_dev in hdd_devices: key=store.register(public, real, 'hdd')
+                if real.stat().st_dev in hdd_devices and (real.parent != backing or backing.is_symlink()): key=store.register(public, real.resolve(), 'hdd')
                 else:
                     cold = archive / 'data' / uuid.uuid4().hex / child.name
                     key=store.register(public, cold, 'ssd', hot=real)
@@ -1135,7 +1198,8 @@ def recover_published(store, cfg):
         raise ValueError('unexpected retired path')
     if original != source and os.path.lexists(staged) and (not staged.is_symlink() or staged.resolve() not in (retired,destination)):
         raise ValueError('unexpected public staging entry')
-    if references([retired]): raise ValueError('retired original remains active')
+    if os.path.lexists(retired) and move_references([retired],cfg,host=record.get('host_reference_guard',False)):
+        raise ValueError('retired original remains active')
     guard = Inotify(cfg['max_watches'],mask=MODIFY|ATTRIB|CREATE|DELETE|MOVED_FROM|MOVED_TO|DELETE_SELF|MOVE_SELF)
     try:
         if os.path.lexists(retired):
@@ -1153,7 +1217,7 @@ def recover_published(store, cfg):
                 if stat.S_ISLNK(meta[0]) and copied_link(source,rel,meta[4])!=os.readlink(b):
                     raise ValueError('retired original link diverged from published copy')
             after, _ = inventory(retired,cfg['max_scan_entries'],detached={})
-            if before != after or guard.events() or references([retired]):
+            if before != after or guard.events() or move_references([retired],cfg,host=record.get('host_reference_guard',False)):
                 raise ValueError('retired original changed during recovery')
         _, size = inventory(destination,cfg['max_scan_entries'],detached={})
         if row:
@@ -1181,7 +1245,7 @@ def recover_published(store, cfg):
     finally: guard.close()
 
 
-def migrate(store, cfg, source, *, restoring=None, demoting=None):
+def migrate(store, cfg, source, *, restoring=None, demoting=None, host_references=False):
     """Copy, compare, publish symlink atomically, then retire the verified original."""
     archive = mount_ready(cfg)
     source = absolute(source) if restoring or demoting else valid_source(source, cfg)
@@ -1213,8 +1277,12 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
     # without scanning every live process. All live-reference and bind checks
     # still run before staging, copying or changing any path.
     before, size = inventory(original, cfg['max_scan_entries'], detached=detached)
+    if cfg.get('_package_only_detachment') and any(
+            not any(part == 'node_modules' or part == '.node_modules-qq-ssd' for part in Path(name).parts)
+            for _, _, names in (detached or {}).values() for name in names):
+        raise ValueError('external hard link outside installed packages; preserved')
     protect_container_mounts(store,cfg,[original,source,*aliases])
-    if references([original, source, *aliases]): raise ValueError('live process references; deferred')
+    if move_references([original, source, *aliases],cfg,host=host_references): raise ValueError('live process references; deferred')
     if original.is_file() and database_file(original):
         raise ValueError('database and sidecars must move together as one directory')
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1234,6 +1302,7 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
     if os.path.lexists(staged): raise ValueError('original staging path exists')
     record = {'source': str(source), 'original': str(original), 'destination': str(destination),
               'staged': str(staged), 'restore': bool(restoring), 'phase': 'copying', 'started': time.time()}
+    if host_references: record['host_reference_guard'] = True
     links=[dict(device=dev,inode=ino,inside=count,total=total,paths=names)
            for (dev,ino),(count,total,names) in (detached or {}).items()]
     record['detached_immutable_link_count']=len(links)
@@ -1311,7 +1380,7 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
         change_mask=MODIFY|CREATE|DELETE|MOVED_FROM|MOVED_TO|OVERFLOW|DELETE_SELF|MOVE_SELF|(0 if rehoming else ATTRIB)
         if any(mask & change_mask
                for _, _, mask in guard.events()): raise ValueError('source mutation during migration')
-        if references([original, source, *aliases]): raise ValueError('source became active; original retained')
+        if move_references([original, source, *aliases],cfg,host=host_references): raise ValueError('source became active; original retained')
         protect_container_mounts(store,cfg,[original,source,*aliases],refresh=True)
         if restoring or demoting:
             if source.resolve() != original.resolve(): raise ValueError('public path changed during migration')
@@ -1386,7 +1455,7 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
         # at its retired inode path. Keep both versions if it wrote or remains
         # open, rather than orphaning its work during cleanup.
         if any(mask & (MODIFY|CREATE|DELETE|MOVED_FROM|MOVED_TO|OVERFLOW|(0 if rehoming else ATTRIB))
-               for _, _, mask in guard.events()) or references([retired]):
+               for _, _, mask in guard.events()) or move_references([retired],cfg,host=host_references):
             raise ValueError('retired original became active; both copies and journal retained')
         if restoring:
             cold_target = original
@@ -2087,6 +2156,7 @@ def main():
     p = sub.add_parser('namespace-alias');p.add_argument('public');p.add_argument('backing')
     p = sub.add_parser('queue'); p.add_argument('--priority',type=int,metavar='0..1000',default=None); p.add_argument('--action',choices=('move','default','partition','rehome'),default='move');p.add_argument('paths', nargs='+')
     p = sub.add_parser('move'); p.add_argument('path')
+    p = sub.add_parser('move-backing'); p.add_argument('path'); p.add_argument('--detach-package-links',action='store_true')
     p = sub.add_parser('restore'); p.add_argument('root')
     p = sub.add_parser('split'); p.add_argument('root'); p.add_argument('relative')
     p = sub.add_parser('partition'); p.add_argument('root')
@@ -2106,7 +2176,7 @@ def main():
     for key in ('max_watches', 'max_scan_entries', 'copy_kib_per_second', 'verify_bytes_per_second', 'max_gc_files', 'max_gc_bytes'):
         if not isinstance(cfg[key], int) or cfg[key] <= 0: raise ValueError('invalid budget ' + key)
     store = Store(args.state_dir)
-    if args.command in ('drain','move','restore','discover','route-defaults','recover-published','verify-cargo-cache','abort-unpublished'): contain_job(cfg)
+    if args.command in ('drain','move','move-backing','restore','discover','route-defaults','recover-published','verify-cargo-cache','abort-unpublished'): contain_job(cfg)
     if args.command == 'init': mount_ready(cfg); print('Initialized', store.state)
     elif args.command == 'watch': watch(store, cfg)
     elif args.command == 'status':
@@ -2148,6 +2218,8 @@ def main():
             if cfg.get('mirror_layout',False):route_defaults(store,cfg,adopt_sources=[parent['source']])
     elif args.command == 'move':
         with lock(store.state / 'move.lock'): migrate(store, cfg, args.path)
+    elif args.command == 'move-backing':
+        with lock(store.state / 'move.lock'): move_backing(store,cfg,args.path,detach_packages=args.detach_package_links)
     elif args.command == 'restore':
         with lock(store.state / 'move.lock'): migrate(store, cfg, store.root(args.root)['source'], restoring=store.root(args.root))
     elif args.command == 'split':
