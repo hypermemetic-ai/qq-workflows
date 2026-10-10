@@ -240,6 +240,16 @@ Automatic promotion preserves at least 10 GiB free on SSD.
 `qq-job -- qq-cold-tier verify-cargo-cache` checks a bounded batch of official
 crates.io `.crate` archives against the registry's published SHA256 checksums.
 The hourly drain also revisits up to 100 archives within a 60-second budget.
+
+The root-owned reference collector also accepts an explicit `ssd_directories`
+query for at most 16 real, operator-owned directories on the root SSD below
+`/home/qqp`, `/home/linuxbrew`, or `/tmp`. It reads bounded process metadata,
+translates descriptors and mappings through each process's mount namespace,
+and reports descendant references and subtree bind mounts. Missing coverage
+fails closed. This query reads no candidate contents and changes no data; it
+does not relax ordinary migration or shared-inode guards. An operator rerun of
+`qq-cold-tier-system-prepare` can upgrade an intact root-pinned collector and
+reload that collector alone; unfamiliar units or changed pinned code are preserved.
 Private registries, unpacked source trees, unknown files and modified archives
 remain retained. Individual verified file identities and checksums are sealed
 in a proof outside the prunable cache. A new proof starts that file's full

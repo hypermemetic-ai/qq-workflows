@@ -31,6 +31,105 @@ def validate(paths,mount=MOUNT,owner=OWNER):
     return identities
 
 
+
+def validate_directories(paths,roots=(Path('/home/qqp'),Path('/home/linuxbrew'),Path('/tmp')),owner=OWNER):
+    """Directory queries expose only reference flags for owned root-SSD trees."""
+    if not isinstance(paths,list) or not 1<=len(paths)<=16:raise ValueError('directory candidate budget exceeded')
+    device=Path('/').stat().st_dev;identities=[]
+    for raw in paths:
+        if not isinstance(raw,str) or len(raw)>2048:raise ValueError('invalid candidate path')
+        p=Path(raw)
+        if not p.is_absolute() or p.resolve()!=p or not any(root in p.parents for root in roots):
+            raise ValueError('directory candidate outside real user roots')
+        info=p.lstat()
+        if info.st_uid!=owner or info.st_dev!=device or not stat.S_ISDIR(info.st_mode):
+            raise ValueError('candidate is not an owned SSD directory')
+        identities.append([info.st_dev,info.st_ino])
+    return identities
+
+
+def decode_mount_path(raw):
+    # Linux mountinfo escapes whitespace and backslashes using octal sequences.
+    return re.sub(rb'\\([0-7]{3})',lambda match:bytes([int(match[1],8)]),raw).decode('utf-8','surrogateescape')
+
+
+def within_path(path,parent):
+    return path==parent or parent in path.parents
+
+
+def collect_directories(paths,identities,proc=PROC,seconds=25):
+    """Inspect namespace-relative references without reading candidate contents."""
+    candidates=[(Path(p),key[0]) for p,key in zip(paths,identities)]
+    blocked=set();complete=True;deadline=time.monotonic()+seconds
+    processes=fds=maps_bytes=mount_bytes=0
+    def vanished(error):return isinstance(error,FileNotFoundError) or getattr(error,'errno',None)==errno.ESRCH
+    for task in proc.iterdir():
+        if not task.name.isdecimal() or int(task.name)==os.getpid():continue
+        processes+=1
+        if processes>8192 or time.monotonic()>deadline:complete=False;break
+        try:
+            with (task/'status').open('rb') as stream:status=stream.read(32769)
+            if len(status)>32768:complete=False;break
+            if b'Kthread:\t1' in status:continue
+            with (task/'mountinfo').open('rb') as stream:raw=stream.read(262145)
+            mount_bytes+=len(raw)
+            if len(raw)>262144 or mount_bytes>64*1024**2:complete=False;break
+            mounts=[]
+            for line in raw.splitlines():
+                fields=line.split()
+                if len(fields)<10 or b'-' not in fields[6:]:raise ValueError('invalid mount record')
+                major,minor=fields[2].split(b':');device=os.makedev(int(major),int(minor))
+                root=Path(decode_mount_path(fields[3]));point=Path(decode_mount_path(fields[4]))
+                if not root.is_absolute() or not point.is_absolute():raise ValueError('invalid mount path')
+                mounts.append((point,root,device))
+                # A bind of a strict subtree pins that tree even with no open FD.
+                for index,(candidate,wanted_device) in enumerate(candidates):
+                    if device==wanted_device and within_path(root,candidate):blocked.add(index)
+            mounts.sort(key=lambda row:len(row[0].parts),reverse=True)
+            def inspect(raw_path,device,inode):
+                for index,key in enumerate(identities):
+                    if [device,inode]==key:blocked.add(index)
+                if device not in {key[0] for key in identities}:return
+                if raw_path.endswith(' (deleted)'):raw_path=raw_path[:-10]
+                path=Path(raw_path)
+                if not path.is_absolute():raise ValueError('unresolved relevant reference')
+                # proc renderings can use either the inspected task's root or
+                # the reader's root. Count both interpretations conservatively.
+                for index,(candidate,wanted_device) in enumerate(candidates):
+                    if device==wanted_device and within_path(path,candidate):blocked.add(index)
+                mount=next((row for row in mounts if row[2]==device and within_path(path,row[0])),None)
+                if mount is None:raise ValueError('relevant mount coverage unavailable')
+                point,root,_=mount;physical=root/path.relative_to(point)
+                for index,(candidate,wanted_device) in enumerate(candidates):
+                    if device==wanted_device and within_path(physical,candidate):blocked.add(index)
+            for name in ('cwd','exe'):
+                try:
+                    link=task/name;info=link.stat();inspect(os.readlink(link),info.st_dev,info.st_ino)
+                except OSError as error:
+                    if not vanished(error):complete=False
+            with (task/'maps').open('rb') as stream:raw=stream.read(2*1024**2+1)
+            maps_bytes+=len(raw)
+            if len(raw)>2*1024**2 or maps_bytes>32*1024**2:complete=False;break
+            for line in raw.splitlines():
+                fields=line.split(None,5)
+                if len(fields)<5:raise ValueError('invalid map record')
+                major,minor=fields[3].split(b':');device=os.makedev(int(major,16),int(minor,16));inode=int(fields[4])
+                if inode:inspect(fields[5].decode('utf-8','surrogateescape') if len(fields)==6 else '',device,inode)
+            for fd in (task/'fd').iterdir():
+                fds+=1
+                if fds>250000 or time.monotonic()>deadline:complete=False;break
+                try:
+                    info=fd.stat();inspect(os.readlink(fd),info.st_dev,info.st_ino)
+                except OSError as error:
+                    if not vanished(error):complete=False
+            if not complete:break
+        except OSError as error:
+            if not vanished(error):complete=False;break
+        except (ValueError,OverflowError):complete=False;break
+    return {'complete':complete,'blocked':sorted(blocked),'identities':identities,
+            'processes':processes,'fds':fds}
+
+
 def collect(identities,proc=PROC,seconds=25):
     wanted={tuple(identity) for identity in identities};held=set();complete=True
     deadline=time.monotonic()+seconds;fds=0;maps_bytes=0;processes=0
@@ -82,8 +181,12 @@ def handle(connection):
         if len(raw)>262144 or not raw.endswith(b'\n'):raise ValueError('request budget exceeded')
         request=json.loads(raw);nonce=request.get('nonce','')
         if not isinstance(nonce,str) or not re.fullmatch('[0-9a-f]{32}',nonce):raise ValueError('invalid request nonce')
-        identities=validate(request.get('paths'));report=collect(identities)
-        if validate(request['paths'])!=identities:raise ValueError('candidate changed during inspection')
+        kind=request.get('kind','cached_files')
+        if kind=='cached_files':validator=validate;collector=lambda paths,keys:collect(keys)
+        elif kind=='ssd_directories':validator=validate_directories;collector=collect_directories
+        else:raise ValueError('unrecognized reference query')
+        identities=validator(request.get('paths'));report=collector(request['paths'],identities)
+        if validator(request['paths'])!=identities:raise ValueError('candidate changed during inspection')
         report['nonce']=nonce
     except (OSError,ValueError,TypeError) as error:report={'nonce':nonce,'complete':False,'error':str(error)[:160]}
     connection.sendall(json.dumps(report).encode()+b'\n')
