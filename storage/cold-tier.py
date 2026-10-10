@@ -56,6 +56,7 @@ DEFAULT = {
     'migration_memory_high_mib': 512,
     'intake_min_age_seconds': 3600,
     'automatic_artifact_verification': True,
+    'automatic_partition': False,
     'reference_socket': '',
     'protect_docker_binds': False,
 }
@@ -1633,6 +1634,27 @@ def recover_drain(store,cfg):
     store.db.commit()
 
 
+def partition_blocked_move(store,cfg,source,error):
+    """Opt-in child admission after a guarded directory move cannot proceed."""
+    reasons={'live process references; deferred','manifest entry budget exceeded',
+             'hard links extend outside migration unit; keep shared inodes together',
+             'socket/device/FIFO; migration deferred','source changed during migration',
+             'source mutation during migration','source became active; original retained'}
+    if not cfg.get('automatic_partition',False) or str(error) not in reasons:
+        return False
+    if any(store.state.glob('*operation.json')):return False
+    row=store.db.execute('SELECT * FROM roots WHERE source=?',(str(source),)).fetchone()
+    original=live_path(row) if row else source
+    if original.is_symlink() or not original.is_dir() or '.git' in original.parts:return False
+    if row:
+        if row['location']!='ssd':return False
+        partition_root(store,cfg,row['id'])
+    else:bridge_parent(store,cfg,source)
+    if cfg.get('mirror_layout',False):route_defaults(store,cfg)
+    else:adopt_defaults(store,cfg)
+    return True
+
+
 def drain_units(store, cfg):
     with lock(store.state / 'move.lock'):
         recover_drain(store,cfg)
@@ -1704,7 +1726,12 @@ def drain_units(store, cfg):
                 status, error = 'complete', ''
             except (OSError, ValueError, subprocess.SubprocessError) as e:
                 status, error = 'deferred', str(e)[:300]
-                print('DEFER', source, error, flush=True)
+                try:
+                    if job['action']=='move' and partition_blocked_move(store,cfg,source,e):
+                        status,error='complete','partitioned into guarded child migration units'
+                except (OSError,ValueError,subprocess.SubprocessError) as partition_error:
+                    error=(error+'; child admission deferred: '+str(partition_error))[:300]
+                if status=='deferred':print('DEFER', source, error, flush=True)
             store.db.execute('UPDATE queue SET status=?,error=?,updated=? WHERE source=?', (status, error, time.time(), str(source))); store.db.commit()
             if (store.state/'operation.json').exists():
                 raise ValueError('migration halted with recovery journal; subsequent jobs are preserved')

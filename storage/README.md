@@ -24,6 +24,13 @@ units after required parent cutovers; every unit keeps the same safety guards.
 mixed SSD directory's children separately without copying or retiring its busy
 children. An incomplete partition retains its journal for review.
 
+With the opt-in `automatic_partition` policy, a queued folder that is busy,
+exceeds the manifest budget, contains special files or has external hard links
+is admitted as guarded child units on a later pass. Existing child inodes stay
+in place during admission; each idle child still needs a verified move. Git
+administration, protected paths, root-level database groups and unfinished
+recovery transactions retain their existing guards.
+
 Install from the reviewed workflow checkout:
 
 ```sh
