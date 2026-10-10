@@ -277,9 +277,12 @@ class Inotify:
 
 class ReadBudget:
     """Throttle all checksum reads, including both copies and warm page cache."""
-    def __init__(self, rate): self.rate = rate; self.deadline = time.monotonic()
+    def __init__(self, rate): self.rate = rate; self.deadline = time.monotonic(); self.bytes=0
     def account(self, count):
-        self.deadline = max(self.deadline, time.monotonic()) + count / self.rate
+        # Slow reads already consumed their allotted time. Permit at most 1 MiB
+        # of accumulated credit, rather than adding the same delay after disk I/O.
+        self.bytes+=count
+        self.deadline = max(self.deadline, time.monotonic()-1024**2/self.rate) + count / self.rate
         wait = self.deadline - time.monotonic()
         if wait > 0: time.sleep(wait)
     def digest(self, path):
@@ -866,7 +869,7 @@ def recover_published(store, cfg):
             guard.tree(retired,'recovery')
             before, _ = inventory(retired,cfg['max_scan_entries'],detached={})
             budget = ReadBudget(cfg['verify_bytes_per_second'])
-            for rel, meta in before.items():
+            for rel, meta in sorted(before.items()):
                 a = retired if rel=='.' else retired/rel
                 b = destination if rel=='.' else destination/rel
                 info = b.lstat()
@@ -973,10 +976,25 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
                     link.unlink(); link.symlink_to(expected)
         budget = ReadBudget(cfg['verify_bytes_per_second'])
         print('VERIFY', source, flush=True)
-        for rel, meta in before.items():
+        record.update(phase='verifying',verification_entries=len(before),verified_entries=0,verification_read_bytes=0)
+        atomic_json(journal,record);next_progress=time.monotonic()+5
+        verified_pairs=set()
+        # rsync lays out sibling files in name order. Keep HDD reads nearby and
+        # hash shared file content once, while checking every name's metadata below.
+        for index,(rel, meta) in enumerate(sorted(before.items()),1):
             a = original if rel == '.' else original / rel
             b = destination if rel == '.' else destination / rel
-            if stat.S_ISREG(meta[0]) and not (rehoming and os.path.samefile(a,b)) and budget.digest(a) != budget.digest(b): raise ValueError('checksum mismatch')
+            if stat.S_ISREG(meta[0]) and not (rehoming and os.path.samefile(a,b)):
+                left,right=a.lstat(),b.lstat()
+                pair=(left.st_dev,left.st_ino,right.st_dev,right.st_ino)
+                if pair not in verified_pairs:
+                    if budget.digest(a)!=budget.digest(b):raise ValueError('checksum mismatch')
+                    verified_pairs.add(pair)
+            if time.monotonic()>=next_progress:
+                record.update(verified_entries=index,verification_read_bytes=budget.bytes)
+                atomic_json(journal,record)
+                print('VERIFY_PROGRESS',source,index,'/',len(before),'read_MiB',round(budget.bytes/1024**2),flush=True)
+                next_progress=time.monotonic()+5
         after_links = {} if detached is not None else None
         after, _ = inventory(original, cfg['max_scan_entries'], detached=after_links)
         copied, _ = inventory(destination, cfg['max_scan_entries'],detached={} if rehoming else None)
@@ -993,6 +1011,8 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
         if set(before) != set(copied) or any(not matches(k,v) for k,v in before.items()):
             raise ValueError('copy metadata mismatch')
         print('SYNC', source, flush=True)
+        record.update(phase='syncing',verified_entries=len(before),verification_read_bytes=budget.bytes)
+        atomic_json(journal,record)
         flush_copy(destination)
         change_mask=MODIFY|CREATE|DELETE|MOVED_FROM|MOVED_TO|OVERFLOW|DELETE_SELF|MOVE_SELF|(0 if rehoming else ATTRIB)
         if any(mask & change_mask
@@ -1101,14 +1121,36 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
             f.write(json.dumps(record) + '\n'); f.flush(); os.fsync(f.fileno())
         journal.unlink(); flush_directory(store.state)
         print('MOVED', source, 'SSD_free_GiB', round(shutil.disk_usage(Path.home()).free / 1024**3, 2), flush=True)
-    except BaseException:
+    except BaseException as error:
         # An interrupted publish retains both copies and its journal for recovery.
         if not published:
-            journal.unlink(missing_ok=True)
-            if destination.is_dir(): shutil.rmtree(destination)
-            elif os.path.lexists(destination): destination.unlink()
+            try:remove_retired(destination,cfg['max_scan_entries'])
+            except (OSError,ValueError) as cleanup:
+                record.update(phase='aborted-cleanup-needed',error=str(error)[:300],cleanup_error=str(cleanup)[:300])
+                atomic_json(journal,record)
+                raise ValueError(str(error)+'; unpublished staging cleanup deferred; original and recovery journal retained') from cleanup
+            journal.unlink(missing_ok=True);flush_directory(store.state)
         raise
     finally: guard.close()
+
+
+def abort_unpublished(store,cfg):
+    """Discard only journaled, unpublished staging while keeping the authoritative source."""
+    journal=store.state/'operation.json';record=bounded_json(journal)
+    if record.get('phase') not in ('copying','verifying','syncing','aborted-cleanup-needed') or record.get('restore'):
+        raise ValueError('operation may be published or a restore; both copies retained')
+    source=absolute(record['source']);original=absolute(record['original']);destination=absolute(record['destination'])
+    archive=mount_ready(cfg)
+    if (destination.parent.parent!=archive/'data' or len(destination.parent.name)!=32 or
+            any(c not in '0123456789abcdef' for c in destination.parent.name) or destination.name!=source.name):
+        raise ValueError('unrecognized staging destination; preserved')
+    if source.resolve()!=original or not original.exists() or original.lstat().st_uid!=os.getuid():
+        raise ValueError('authoritative source changed; staging retained')
+    if store.db.execute('SELECT 1 FROM roots WHERE target=?',(str(destination),)).fetchone() or references([destination]):
+        raise ValueError('staging is registered or active; retained')
+    remove_retired(destination,cfg['max_scan_entries'])
+    journal.unlink();flush_directory(store.state)
+    print('Discarded unpublished staging; authoritative source preserved',source,flush=True)
 
 
 def proof_digest(proof):
@@ -1524,7 +1566,7 @@ def main():
     parser.add_argument('--state-dir', default=str(Path.home() / '.local/state/qq-cold-tier'))
     parser.add_argument('--config', default=str(Path.home() / '.config/qq-cold-tier.json'))
     sub = parser.add_subparsers(dest='command', required=True)
-    sub.add_parser('init'); sub.add_parser('watch'); sub.add_parser('status'); sub.add_parser('drain'); sub.add_parser('route-defaults'); sub.add_parser('recover-published')
+    sub.add_parser('init'); sub.add_parser('watch'); sub.add_parser('status'); sub.add_parser('drain'); sub.add_parser('route-defaults'); sub.add_parser('recover-published');sub.add_parser('abort-unpublished')
     p = sub.add_parser('discover'); p.add_argument('paths', nargs='+')
     p = sub.add_parser('defaults'); p.add_argument('paths', nargs='+')
     p = sub.add_parser('namespace-alias');p.add_argument('public');p.add_argument('backing')
@@ -1549,7 +1591,7 @@ def main():
     for key in ('max_watches', 'max_scan_entries', 'copy_kib_per_second', 'verify_bytes_per_second', 'max_gc_files', 'max_gc_bytes'):
         if not isinstance(cfg[key], int) or cfg[key] <= 0: raise ValueError('invalid budget ' + key)
     store = Store(args.state_dir)
-    if args.command in ('drain','move','restore','discover','route-defaults','recover-published','verify-cargo-cache'): contain_job(cfg)
+    if args.command in ('drain','move','restore','discover','route-defaults','recover-published','verify-cargo-cache','abort-unpublished'): contain_job(cfg)
     if args.command == 'init': mount_ready(cfg); print('Initialized', store.state)
     elif args.command == 'watch': watch(store, cfg)
     elif args.command == 'status':
@@ -1578,6 +1620,8 @@ def main():
     elif args.command == 'drain': drain(store, cfg)
     elif args.command == 'recover-published':
         with lock(store.state/'move.lock'): recover_published(store,cfg)
+    elif args.command=='abort-unpublished':
+        with lock(store.state/'move.lock'):abort_unpublished(store,cfg)
     elif args.command == 'route-defaults':
         with lock(store.state / 'move.lock'): route_defaults(store, cfg)
     elif args.command == 'partition':

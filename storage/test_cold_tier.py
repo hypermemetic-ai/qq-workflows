@@ -14,6 +14,69 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 
 class ColdTierTests(unittest.TestCase):
+    def test_failed_read_only_copy_cleanup_keeps_original_and_initial_error(self):
+        source=self.home/'readonly';folder=source/'generated';folder.mkdir(parents=True)
+        data=folder/'package-lock.json';data.write_bytes(b'original');folder.chmod(0o555)
+        real=m.ReadBudget.digest
+        def mismatch(budget,path):return 'mismatch' if self.archive in path.parents else real(budget,path)
+        try:
+            with patch.object(m,'references',return_value=[]),patch.object(m.ReadBudget,'digest',mismatch):
+                with self.assertRaisesRegex(ValueError,'checksum mismatch'):m.migrate(self.store,self.cfg,source)
+            self.assertEqual(data.read_bytes(),b'original');self.assertEqual(folder.stat().st_mode&0o777,0o555)
+            self.assertFalse((self.store.state/'operation.json').exists());self.assertFalse(list((self.archive/'data').glob('*/*')))
+        finally:folder.chmod(0o755)
+
+    def test_unpublished_cleanup_failure_retains_journal_then_recovers_without_source_changes(self):
+        source=self.home/'artifact';source.write_bytes(b'original')
+        with patch.object(m,'references',return_value=[]),patch.object(m.ReadBudget,'digest',side_effect=ValueError('initial failure')),\
+             patch.object(m,'remove_retired',side_effect=PermissionError('cleanup denied')):
+            with self.assertRaisesRegex(ValueError,'initial failure.*journal retained'):m.migrate(self.store,self.cfg,source)
+        record=m.bounded_json(self.store.state/'operation.json')
+        self.assertEqual(record['error'],'initial failure');self.assertEqual(record['phase'],'aborted-cleanup-needed')
+        with patch.object(m,'references',return_value=[]):m.abort_unpublished(self.store,self.cfg)
+        self.assertEqual(source.read_bytes(),b'original');self.assertFalse(Path(record['destination']).exists())
+        self.assertFalse((self.store.state/'operation.json').exists())
+
+    def test_unpublished_abort_refuses_changed_public_source(self):
+        source=self.home/'artifact';source.write_bytes(b'original')
+        destination=self.archive/'data'/('a'*32)/source.name;destination.parent.mkdir(parents=True);destination.write_bytes(b'copy')
+        record={'source':str(source),'original':str(source),'destination':str(destination),'phase':'copying','restore':False}
+        m.atomic_json(self.store.state/'operation.json',record);source.unlink();source.symlink_to(destination)
+        with self.assertRaisesRegex(ValueError,'authoritative source changed'):m.abort_unpublished(self.store,self.cfg)
+        self.assertEqual(destination.read_bytes(),b'copy');self.assertTrue((self.store.state/'operation.json').exists())
+
+    def test_checksum_budget_counts_read_time_and_still_limits_fast_cached_reads(self):
+        clock=[0.0]
+        with patch.object(m.time,'monotonic',side_effect=lambda:clock[0]),patch.object(m.time,'sleep') as sleep:
+            budget=m.ReadBudget(1024**2);clock[0]=2.0
+            budget.account(1024**2);sleep.assert_not_called()
+            budget.account(1024**2);sleep.assert_called_once_with(1.0)
+            self.assertEqual(budget.bytes,2*1024**2)
+
+    def test_internal_hard_links_share_verified_content_without_repeated_reads(self):
+        source=self.home/'linked';source.mkdir();p=source/'one';p.write_bytes(b'artifact'*1024)
+        os.link(p,source/'two');os.link(p,source/'three');read_bytes=[]
+        account=m.ReadBudget.account
+        def measured(budget,count):read_bytes.append(count);account(budget,count)
+        with patch.object(m,'references',return_value=[]),patch.object(m.ReadBudget,'account',measured):m.migrate(self.store,self.cfg,source)
+        target=Path(self.store.root(str(source))['target'])
+        self.assertEqual((target/'three').read_bytes(),b'artifact'*1024)
+        self.assertTrue(os.path.samefile(target/'one',target/'two'))
+        self.assertEqual(sum(read_bytes),2*len(b'artifact'*1024))
+
+    def test_write_through_shared_alias_during_verification_preserves_original(self):
+        source=self.home/'linked';source.mkdir();p=source/'one';p.write_bytes(b'artifact')
+        alias=source/'two';os.link(p,alias);real=m.ReadBudget.digest;changed=False
+        def modifying(budget,path):
+            nonlocal changed
+            digest=real(budget,path)
+            if self.archive in path.parents and not changed:alias.write_bytes(b'new data');changed=True
+            return digest
+        with patch.object(m,'references',return_value=[]),patch.object(m.ReadBudget,'digest',modifying):
+            with self.assertRaisesRegex(ValueError,'source changed'):m.migrate(self.store,self.cfg,source)
+        self.assertFalse(source.is_symlink());self.assertEqual(p.read_bytes(),b'new data')
+        self.assertFalse((self.store.state/'operation.json').exists())
+
     def test_verified_artifact_manifest_retains_new_and_changed_files(self):
         key,_,target,now=self.root();module=m.artifact_module()
         cold=target/'build/cold.bin';hot=target/'build/hot.bin'
