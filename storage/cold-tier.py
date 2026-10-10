@@ -1654,6 +1654,14 @@ def drain_units(store, cfg):
                 elif job['action'] == 'move':
                     registered = store.db.execute('SELECT * FROM roots WHERE source=?', (str(source),)).fetchone()
                     if registered and registered['location'] == 'ssd': migrate(store, cfg, source, demoting=registered)
+                    elif registered and registered['location'] == 'hdd':
+                        # A completed move can be queued again after publication.
+                        # Reconcile its live mapping without copying an HDD link.
+                        target=live_path(registered)
+                        aliases=[Path(p) for p in json.loads(registered['aliases'])]
+                        if (not target.exists() or source.resolve()!=target or
+                            any(not p.is_symlink() or p.resolve()!=target for p in aliases)):
+                            raise ValueError('HDD path differs from ledger; review required')
                     else: migrate(store, cfg, source)
                 else: raise ValueError('unknown queue action')
                 status, error = 'complete', ''
