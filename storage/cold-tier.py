@@ -1138,11 +1138,16 @@ def migrate(store, cfg, source, *, restoring=None, demoting=None):
         if source.resolve() != original.resolve(): raise ValueError('source path no longer matches ledger')
     for p in (original, source):
         if p.lstat().st_uid != os.getuid(): raise ValueError('migration requires operator-owned paths')
+    detached = {} if rehoming or immutable_scope(original,cfg) else None
+    identity=original.lstat()
+    if detached is None and stat.S_ISREG(identity.st_mode) and identity.st_nlink>1:
+        # A standalone file cannot contain its other hard-link names. Defer
+        # before a costly process scan; no publication can be attempted here.
+        raise ValueError('hard links extend outside migration unit; keep shared inodes together')
     protect_container_mounts(store,cfg,[original,source,*aliases])
     if references([original, source, *aliases]): raise ValueError('live process references; deferred')
     if original.is_file() and database_file(original):
         raise ValueError('database and sidecars must move together as one directory')
-    detached = {} if rehoming or immutable_scope(original,cfg) else None
     before, size = inventory(original, cfg['max_scan_entries'], detached=detached)
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if os.path.lexists(destination): raise ValueError('staging destination exists')
@@ -1712,7 +1717,51 @@ def queue_add(store, source, action='move', priority=None):
     store.db.commit()
 
 
-def drain(store, cfg):
+def finish_bulk(store,cfg,config_path=None):
+    """Restore an explicitly recorded temporary rollout policy after its queue drains."""
+    plan=cfg.get('bulk_restore')
+    if plan is None:return
+    if store.db.execute("SELECT 1 FROM queue WHERE status IN ('pending','running') LIMIT 1").fetchone():return
+    if any(store.state.glob('*operation.json')):return
+    fields={'migration_cpu_quota_percent':(1,100),'migration_memory_high_mib':(256,2048)}
+    if (not isinstance(plan,dict) or set(plan)!= {'expected','restore'} or
+        any(not isinstance(plan.get(key),dict) or set(plan[key])!=set(fields) for key in ('expected','restore'))):
+        raise ValueError('invalid bulk restoration plan; policy preserved')
+    for values in plan.values():
+        if any(type(values[key])!=int or not low<=values[key]<=high for key,(low,high) in fields.items()):
+            raise ValueError('invalid bulk restoration budget; policy preserved')
+    path=Path(config_path) if config_path else Path.home()/'.config/qq-cold-tier.json'
+    before=path.lstat()
+    if (path.resolve()!=path or not stat.S_ISREG(before.st_mode) or before.st_uid!=os.getuid() or
+        before.st_nlink!=1 or before.st_mode&0o022):raise ValueError('unrecognized bulk configuration; preserved')
+    latest=bounded_json(path)
+    if latest.get('bulk_restore') is None:return
+    if latest.get('bulk_restore')!=plan or any(latest.get(key)!=value for key,value in plan['expected'].items()):
+        raise ValueError('rollout policy changed; operator settings preserved')
+    timer=Path.home()/'.config/systemd/user/qq-cold-tier-migrate.timer.d/40-bulk-rollout.conf'
+    expected='[Timer]\nOnUnitInactiveSec=\nOnUnitInactiveSec=2min\n'
+    if os.path.lexists(timer):
+        info=timer.lstat()
+        if (timer.resolve()!=timer or not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or
+            info.st_nlink!=1 or info.st_mode&0o022):raise ValueError('unrecognized bulk timer override; preserved')
+        with timer.open('rb') as stream:raw=stream.read(4097)
+        if raw!=expected.encode():raise ValueError('changed bulk timer override; preserved')
+        timer.unlink();flush_directory(timer.parent)
+    subprocess.run(['systemctl','--user','daemon-reload'],check=True)
+    subprocess.run(['systemctl','--user','restart','--no-block','qq-cold-tier-migrate.timer'],check=True)
+    after=path.lstat()
+    if (before.st_dev,before.st_ino,before.st_mtime_ns,before.st_ctime_ns)!=(after.st_dev,after.st_ino,after.st_mtime_ns,after.st_ctime_ns):
+        raise ValueError('rollout configuration changed during restoration; preserved')
+    latest.update(plan['restore']);latest.pop('bulk_restore');atomic_json(path,latest)
+    report={'status':'complete','finished':time.time(),'restored':plan['restore'],
+            'ssd_free_bytes':shutil.disk_usage(Path.home()).free,
+            'remaining':[dict(row) for row in store.db.execute(
+                "SELECT action,status,COUNT(*) AS count FROM queue WHERE status!='complete' GROUP BY action,status")]}
+    store.put('bulk_completion',report);store.db.commit()
+    print('BULK DRAIN COMPLETE; normal budgets and retry schedule restored',flush=True)
+
+
+def drain(store, cfg,*,config_path=None):
     started=time.time()
     try: drain_units(store,cfg)
     except LockBusy:
@@ -1724,6 +1773,11 @@ def drain(store, cfg):
         raise
     store.put('last_drain',{'started':started,'finished':time.time(),'status':'complete','error':''})
     store.db.commit()
+    try:
+        with lock(store.state/'move.lock'):finish_bulk(store,cfg,config_path)
+    except (OSError,ValueError,subprocess.SubprocessError) as error:
+        store.put('bulk_completion',{'status':'deferred','timestamp':time.time(),'error':str(error)[:300]})
+        store.db.commit();print('BULK RESTORATION DEFERRED',str(error)[:300],flush=True)
 
 
 def recover_drain(store,cfg):
@@ -1755,6 +1809,14 @@ def partition_blocked_move(store,cfg,source,error):
     row=store.db.execute('SELECT * FROM roots WHERE source=?',(str(source),)).fetchone()
     original=live_path(row) if row else source
     if original.is_symlink() or not original.is_dir() or '.git' in original.parts:return False
+    if str(error)=='hard links extend outside migration unit; keep shared inodes together':
+        shared={};manifest,_=inventory(original,cfg['max_scan_entries'],detached=shared)
+        external_names={name for _,_,names in shared.values() for name in names}
+        regular_names={name for name,meta in manifest.items() if stat.S_ISREG(meta[0])}
+        if regular_names and regular_names<=external_names:
+            # Splitting an entirely shared package creates thousands of jobs
+            # that cannot move independently. Keep this coupled unit intact.
+            return False
     if row:
         if row['location']!='ssd':return False
         partition_root(store,cfg,row['id'])
@@ -1917,6 +1979,7 @@ def status_summary(store, cfg):
         'queue': [dict(r) for r in store.db.execute(
             'SELECT action,status,COUNT(*) AS count FROM queue GROUP BY action,status')],
         'last_drain': store.get('last_drain'),
+        'bulk_completion': store.get('bulk_completion'),
         'defaults_error': store.get('defaults_error'),
         'operation': None,
     }
@@ -2001,7 +2064,7 @@ def main():
                 queue_add(store,registered['source'] if registered else valid_source(path,cfg),'default',args.priority);continue
             registered = store.db.execute('SELECT * FROM roots WHERE source=?', (str(absolute(path)),)).fetchone()
             queue_add(store, registered['source'] if registered and registered['location']=='ssd' else valid_source(path, cfg),args.action,args.priority)
-    elif args.command == 'drain': drain(store, cfg)
+    elif args.command == 'drain': drain(store,cfg,config_path=absolute(args.config))
     elif args.command == 'recover-published':
         with lock(store.state/'move.lock'): recover_published(store,cfg)
     elif args.command=='abort-unpublished':

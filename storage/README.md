@@ -116,6 +116,20 @@ Explicit folder priorities follow its public and backing paths into newly
 admitted children, so a large partition need not wait behind the old backlog.
 Each busy unit is attempted once per pass; later passes retry it through the
 same migration guards.
+Standalone shared files defer before process scans. A folder whose every regular
+file has links outside the unit remains one deferred unit, avoiding a large queue
+of equally blocked individual files. Mixed folders can still admit independent
+payload. Shared-inode and immutable-artifact policies remain unchanged.
+
+An optional `bulk_restore` object records `expected` and `restore` values for
+`migration_cpu_quota_percent` and `migration_memory_high_mib`. After a successful
+pass leaves no pending/running units or recovery journals, the controller
+restores those two budgets and removes only its exact `40-bulk-rollout.conf`
+two-minute retry override. It reloads the timer alone. New operator settings,
+unknown timer contents and unsafe file identities are preserved. `status
+--summary` exposes the completion receipt or restoration failure. Deferred
+data remains guarded; a completed bulk pass does not mean every busy or protected
+unit has migrated.
 
 Flatpak private profiles under `~/.var/app` need real bind mounts for reliable
 persistence. Exclude these paths from ordinary symlink migration. See the

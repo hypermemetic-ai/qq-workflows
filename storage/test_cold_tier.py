@@ -14,6 +14,72 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 
 class ColdTierTests(unittest.TestCase):
+    def test_shared_standalone_file_defers_before_process_scans_without_changes(self):
+        source=self.home/'shared';source.write_bytes(b'keep');alias=self.home/'alias';os.link(source,alias)
+        with patch.object(m,'references',side_effect=AssertionError('unnecessary process scan')),\
+             patch.object(m,'protect_container_mounts',side_effect=AssertionError('unnecessary container scan')):
+            with self.assertRaisesRegex(ValueError,'hard links extend'):m.migrate(self.store,self.cfg,source)
+        self.assertEqual(source.stat().st_ino,alias.stat().st_ino);self.assertEqual(source.read_bytes(),b'keep')
+        self.assertFalse(list(self.store.state.glob('*operation.json')))
+
+    def test_entirely_shared_folder_stays_one_deferred_unit(self):
+        source=self.home/'package';source.mkdir();outside=self.home/'other';outside.mkdir()
+        for index in range(4):
+            path=source/str(index);path.write_bytes(b'keep');os.link(path,outside/path.name)
+        m.queue_add(self.store,source);self.cfg['automatic_partition']=True
+        with patch.object(m,'references',return_value=[]),patch.object(m,'bridge_parent',side_effect=AssertionError('unproductive partition')):
+            m.drain(self.store,self.cfg)
+        rows=list(self.store.db.execute('SELECT * FROM queue'));self.assertEqual(len(rows),1);self.assertEqual(rows[0]['status'],'deferred')
+        self.assertFalse(source.is_symlink());self.assertEqual((source/'0').stat().st_ino,(outside/'0').stat().st_ino)
+
+    def test_mixed_shared_and_unique_folder_still_moves_independent_payload(self):
+        source=self.home/'mixed';source.mkdir();shared=source/'shared';shared.write_bytes(b'shared')
+        outside=self.home/'outside';os.link(shared,outside);(source/'unique').write_bytes(b'unique')
+        m.queue_add(self.store,source);self.cfg['automatic_partition']=True
+        with patch.object(m,'references',return_value=[]):m.drain(self.store,self.cfg)
+        self.assertTrue(source.is_symlink());self.assertEqual((source/'shared').stat().st_ino,outside.stat().st_ino)
+        self.assertEqual(self.store.root(str(source/'unique'))['location'],'hdd')
+        self.assertEqual((source/'unique').read_bytes(),b'unique')
+
+    def bulk_fixture(self):
+        cfg=dict(self.cfg,migration_cpu_quota_percent=75,migration_memory_high_mib=2048,
+                 bulk_restore={'expected':{'migration_cpu_quota_percent':75,'migration_memory_high_mib':2048},
+                               'restore':{'migration_cpu_quota_percent':25,'migration_memory_high_mib':1024}})
+        config=self.home/'.config/qq-cold-tier.json';config.parent.mkdir();m.atomic_json(config,cfg)
+        timer=self.home/'.config/systemd/user/qq-cold-tier-migrate.timer.d/40-bulk-rollout.conf'
+        timer.parent.mkdir(parents=True);timer.write_text('[Timer]\nOnUnitInactiveSec=\nOnUnitInactiveSec=2min\n')
+        timer.chmod(0o600)
+        return cfg,config,timer
+
+    def test_bulk_completion_restores_only_recorded_policy_and_own_timer(self):
+        cfg,config,timer=self.bulk_fixture();current=m.bounded_json(config);current['intake_parents']=['/new/operator/path'];m.atomic_json(config,current)
+        with patch.object(Path,'home',return_value=self.home),patch.object(m.subprocess,'run') as run:
+            m.finish_bulk(self.store,cfg,config);m.finish_bulk(self.store,cfg,config)
+        saved=m.bounded_json(config)
+        self.assertEqual(saved['migration_cpu_quota_percent'],25);self.assertEqual(saved['migration_memory_high_mib'],1024)
+        self.assertEqual(saved['intake_parents'],['/new/operator/path']);self.assertNotIn('bulk_restore',saved)
+        self.assertFalse(timer.exists());self.assertEqual(run.call_count,2)
+        self.assertEqual(run.call_args_list[1].args[0][-2:],['--no-block','qq-cold-tier-migrate.timer'])
+        self.assertEqual(self.store.get('bulk_completion')['status'],'complete')
+
+    def test_bulk_completion_waits_for_pending_units_and_recovery_journals(self):
+        cfg,config,timer=self.bulk_fixture();source=self.home/'pending';source.write_bytes(b'keep');m.queue_add(self.store,source)
+        before=config.read_bytes()
+        with patch.object(Path,'home',return_value=self.home),patch.object(m.subprocess,'run') as run:
+            m.finish_bulk(self.store,cfg,config)
+            self.store.db.execute("UPDATE queue SET status='complete'");self.store.db.commit()
+            m.atomic_json(self.store.state/'operation.json',{'phase':'copying'});m.finish_bulk(self.store,cfg,config)
+        self.assertEqual(config.read_bytes(),before);self.assertTrue(timer.exists());run.assert_not_called()
+
+    def test_bulk_completion_preserves_operator_budget_changes_and_unknown_timer(self):
+        cfg,config,timer=self.bulk_fixture();current=m.bounded_json(config);current['migration_cpu_quota_percent']=50;m.atomic_json(config,current)
+        with patch.object(Path,'home',return_value=self.home),patch.object(m.subprocess,'run') as run:
+            with self.assertRaisesRegex(ValueError,'operator settings'):m.finish_bulk(self.store,cfg,config)
+            self.assertEqual(m.bounded_json(config)['migration_cpu_quota_percent'],50)
+            m.atomic_json(config,cfg);timer.write_text('operator timer override')
+            with self.assertRaisesRegex(ValueError,'timer override'):m.finish_bulk(self.store,cfg,config)
+        self.assertEqual(timer.read_text(),'operator timer override');self.assertEqual(m.bounded_json(config),cfg);run.assert_not_called()
+
     def test_drain_notices_new_priority_jobs_before_finishing_old_backlog(self):
         sources=[]
         for index in range(35):
