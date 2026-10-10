@@ -20,7 +20,7 @@ These private local resources survive tasks; stop the VM between tasks:
 | AVD | `paseo_qa`, Google APIs API 36, x86_64 image revision 7 |
 | VM | 2 cores, 2048 MB RAM, 720 × 1616 at 280 dpi, SwiftShader with Vulkan disabled |
 | QA app | `sh.paseo.debug`, non-debuggable profileable release, native x86_64 |
-| Workload | Isolated synthetic daemon; never the production daemon on 6767 |
+| Workload | Isolated synthetic daemon; prohibit production ports 6767 and 6769 |
 
 Emulator 37.2.12 and KVM were used for the initial run. Record the actual version,
 image revision, ABI and renderer again on subsequent runs. Preserve unrelated
@@ -55,7 +55,7 @@ taskset -c 4,5 "$ANDROID_SDK_ROOT/emulator/emulator" \
 ```
 
 For work spanning conversation turns, use a named transient `systemd-run --user`
-unit with `CPUQuota=200%`, `MemoryMax=4G` and a private append log. Pass the same
+unit with `CPUQuota=200%`, `MemoryMax=6G` and a private append log. Pass the same
 three environment values with `--setenv` and the command above. Record the unit
 name as its owner and stop it explicitly at task end. The accepted run used
 `paseo-static-status-emulator-gles`; these units are task services, not startup services.
@@ -64,6 +64,12 @@ failed to create a QEMU thread during an APK reinstall; its failed run is exclud
 from acceptance. Keep this VM budget separate from the smaller build/fixture
 task budgets and record task usage alongside memory pressure.
 Keep Gradle at one worker with bounded JVM/native parallelism while the VM runs.
+
+The workspace-stall investigation found the 4 GiB VM budget repeatedly hit its
+reclaim limit with the emulator's automatically enlarged roughly 2.5 GiB guest
+and software-renderer overhead. A single adjustment to 6 GiB allowed stable warm
+controls without OOM. Keep the fixture and build budgets separate; check host
+headroom, cgroup pressure and limit events before changing any budget further.
 
 Wait for `adb -s emulator-5580 shell getprop sys.boot_completed` to return `1`.
 Every install, input, capture and reverse command must name `-s emulator-5580`.
@@ -203,7 +209,74 @@ separate the packaging pass when necessary. Record resource interventions and
 exclude them from measurements. Reusing audited architecture-independent bytecode
 for another ABI avoids another optimizer pass when its inputs are proved equal.
 
-## Synthetic workload
+## Responsiveness workload
+
+[native-responsiveness.ts](fixtures/native-responsiveness.ts) extends the original
+display fixture with bounded directory density, long history, main streams,
+provider-child events and question/plan controls through normal daemon paths.
+Copy it into the audited source checkout's ignored
+`packages/server/src/.dev/native-responsiveness.ts`. Keep its private output/home
+and FIFO separate from production and from another task's fixture.
+
+The verified initial workload has 18 expanded projects, 16 workspaces and 52
+stored sessions: 12 idle, 40 closed and 34 archived. Workspace 01 retains seven
+tabs; Session 01.1 starts with 60 synthetic user turns and 120 timeline entries.
+Four main streams and provider bursts are explicit later commands. This differs
+from the earlier 16-project/64-session investigation; label results accordingly.
+
+The fixture service uses `CPUQuota=100%`, `MemoryMax=1536M`,
+`MemorySwapMax=256M`, `TasksMax=128`, `RuntimeMaxSec=30min` and
+`TimeoutStopSec=15s`. Pass
+`NODE_OPTIONS='--max-old-space-size=512 --max-semi-space-size=8'` to its TSX
+process. The smaller heap and serialized lifecycle flushes avoid the initial
+preparation OOMs without increasing the process-tree cap. Record failures as
+preparation rather than app latency.
+
+Create the output directory with mode 0700 and `control.fifo` with mode 0600.
+The tested service holds that FIFO read/write on fd 3 and runs the staged helper
+from the source root:
+
+```bash
+exec 3<>"$PASEO_NATIVE_FIXTURE_OUTPUT/control.fifo"
+exec node_modules/.bin/tsx packages/server/src/.dev/native-responsiveness.ts <&3
+```
+
+Wait for `fixture-ready-private.json` and its logged `history-check`. A restart
+preserves server/workspace/session identities and Android pairing, but the mock
+provider does not preserve history. The helper automatically reseeds the normal
+mock message path when the restored timeline is empty, then checks it before
+readiness. This restoration was verified with all 60 turns; do not assume that a
+persisted home alone restores an equivalent workload.
+
+The companion [native-responsiveness.py](fixtures/native-responsiveness.py)
+requires an explicit emulator serial and private absolute output. It rejects a
+physical phone and production package. With `PASEO_QA_RUN` naming the evidence
+directory and `PASEO_QA_STATE` the fixture output, preparation was exercised with:
+
+```bash
+/usr/bin/python3 projects/paseo-maintenance/fixtures/native-responsiveness.py \
+  --serial 127.0.0.1:5581 --output "$PASEO_QA_RUN" capture drawer
+/usr/bin/python3 projects/paseo-maintenance/fixtures/native-responsiveness.py \
+  --serial 127.0.0.1:5581 --output "$PASEO_QA_RUN" controls
+/usr/bin/python3 projects/paseo-maintenance/fixtures/native-responsiveness.py \
+  --serial 127.0.0.1:5581 --output "$PASEO_QA_RUN" \
+  --fixture "$PASEO_QA_STATE" launch --index 0
+```
+
+Install an ADB reverse only on that serial for the actual isolated port. Fresh
+reference captures and hierarchy-based control bounds precede timed trials;
+never dump hierarchy or encode/write a PNG between observing the fully visible
+drawer and its immediate tap. The driver waits for the reached destination
+without retrying the tap. Its timings include ADB and screenshot observation
+overhead. Outcome-bearing trial commands and release acceptance belong in the
+[mobile delivery record](mobile-responsiveness.md).
+
+Stop only the recorded fixture/VM units. The repeated fixture stop was verified
+to leave no old descendants. Preserve the home during matched APK windows, then
+remove only owned synthetic state and the staged helper at task end. Keep the
+SDK, AVD and compatible accepted artifacts for the next task.
+
+## Original display workload
 
 Copy [fixtures/native-display.ts](fixtures/native-display.ts) into the target
 source checkout's ignored `packages/server/src/.dev/native-display.ts`; its

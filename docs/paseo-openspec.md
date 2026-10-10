@@ -51,6 +51,11 @@ planning/child integration and preserves upstream features, including Codex Spee
 The later client ring patch has its own
 [delivery record](../projects/paseo-maintenance/display-work.md), followed by the
 approved [static-status presentation change](../projects/paseo-maintenance/status-indicators.md).
+The authorized [mobile responsiveness effort](../projects/paseo-maintenance/mobile-responsiveness.md)
+separately tracks ordered drawer interactions, optional covered-chat presentation,
+reusable native QA and Android delivery. Its source and activation states remain
+independent; follow its owning plan and evidence when carrying accepted deltas
+through later updates.
 These client records are separate from staged daemon/CLI provenance. See
 `patches/paseo/0.11.0-beta.5/README.md` and run
 `node scripts/stage-paseo-beta.mjs --verify` to check the sealed candidate.

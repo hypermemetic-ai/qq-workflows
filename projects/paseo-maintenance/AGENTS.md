@@ -46,7 +46,27 @@ Android activation. Acceptance requires legibility and preserved resource use;
 additional CPU or battery savings are not presumed. This explicit presentation
 decision does not reopen the rejected background-timer patch.
 
-This change's selected delivery outcome includes replacing the existing Android
+## Mobile responsiveness effort
+
+The approved [design](../../openspec/changes/restore-paseo-mobile-responsiveness/design.md)
+and [tasks](../../openspec/changes/restore-paseo-mobile-responsiveness/tasks.md)
+own the measured workspace-list interaction correction, independent covered-chat
+presentation evaluation and remaining-freeze attribution. Its
+[delivery record](mobile-responsiveness.md) separates source, native acceptance
+and Android activation. This is the operator's explicit expansion beyond the
+original two-patch limit for a reproduced defect; retain each added runtime delta
+only with its own acceptance and upstream retirement condition. First-tap Close
+and different-workspace selection must work during streaming. Blocking covered
+controls alone does not satisfy the interaction outcome.
+
+The optional center presentation gate must preserve live ingestion and correct
+content, elapsed-status, draft and ordering restoration. Reject it without useful
+repeated native benefit. Use the reusable native workload for subsequent relevant
+changes; CPU savings do not establish faster interaction or measured battery gain.
+
+## Android delivery
+
+The selected delivery outcome includes replacing the existing Android
 Play Store client under the production package. Record any initial signing
 transition and keep the fork signing key stable for later updates. Verify a
 concrete pairing/settings recovery path before removing the existing app; any
