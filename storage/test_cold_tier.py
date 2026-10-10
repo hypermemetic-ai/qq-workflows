@@ -14,6 +14,23 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 
 class ColdTierTests(unittest.TestCase):
+    def test_nested_mirror_admission_preserves_untouched_sibling_paths(self):
+        projects=self.home/'projects';projects.mkdir();group=projects/'worktrees';group.mkdir()
+        for name in ('moving','sibling'):
+            child=group/name;child.mkdir();(child/'data').write_bytes(name.encode())
+        identity=(group/'sibling'/'data').stat().st_ino
+        self.cfg['mirror_layout']=True
+        with patch.object(m,'references',return_value=[]):
+            parent=m.bridge_parent(self.store,self.cfg,projects);m.adopt_defaults(self.store,self.cfg)
+            m.route_defaults(self.store,self.cfg)
+            physical=Path(parent['backing'])/'worktrees'/'moving'
+            m.migrate(self.store,self.cfg,physical)
+        self.assertEqual((group/'moving'/'data').read_bytes(),b'moving')
+        self.assertEqual((group/'sibling'/'data').read_bytes(),b'sibling')
+        self.assertEqual((group/'sibling'/'data').stat().st_ino,identity)
+        mirror=m.mirror_path(self.store,self.archive,group/'sibling')
+        self.assertEqual(os.readlink(mirror),str(Path(parent['backing'])/'worktrees'/'sibling'))
+
     def test_admission_releases_writer_before_scanning_the_next_atomic_replacement(self):
         source=self.home/'parent';source.mkdir()
         for name in ('first','second'):(source/name).mkdir()

@@ -111,6 +111,8 @@ unmoved siblings continue through proxies to their existing objects. A verified
 copy is exchanged into its final mirror slot before publishing the legacy alias.
 This preserves runtime lookups across sibling folders, including Node module
 resolution, instead of putting each migration unit under an unrelated UUID.
+When admitting another ancestor, untouched child proxies target its resolved
+backing paths, so publication cannot turn them into links to themselves.
 `queue --action rehome ROOT` repairs older HDD units using same-filesystem hard
 links where possible, then retires the old directory namespace after checking
 for writers. Old opaque filenames retain sibling aliases for already loaded
