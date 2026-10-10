@@ -9,6 +9,14 @@ class Refusal extends Error {}
 const refuse = (reason) => { throw new Refusal(reason); };
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function failureReason(error) {
+  const knownCodes = new Set(['ENOENT', 'EACCES', 'EPERM', 'ESRCH', 'EINVAL', 'MODULE_NOT_FOUND', 'ERR_DLOPEN_FAILED']);
+  const cause = error instanceof Refusal ? error.cause : error;
+  const category = knownCodes.has(cause?.code) ? cause.code : cause instanceof SyntaxError ? 'invalid-json' : cause ? 'unknown-error' : null;
+  const reason = error instanceof Refusal ? error.message : 'probe-failed';
+  return category ? `${reason} (${category})` : reason;
+}
+
 function parseOptions(args) {
   const values = {};
   const names = new Set(['profile', 'main-pid', 'port', 'display']);
@@ -117,22 +125,24 @@ async function launchExistingRuntime(snapshot, display, timeoutMs, onChild = () 
 async function promoteDesktop(options, adapters = {}) {
   const now = adapters.now ?? (() => performance.now());
   const sleep = adapters.sleep ?? delay;
-  const probe = adapters.probe ?? createRuntimeProbe(options);
+  let probe = adapters.probe;
   const displayReady = adapters.displayReady ?? ((timeoutMs) => cp.spawnSync('/usr/bin/xdpyinfo', ['-display', options.display], { timeout: timeoutMs, stdio: 'ignore' }).status === 0);
   const launch = adapters.launch ?? ((snapshot, timeoutMs) => launchExistingRuntime(snapshot, options.display, timeoutMs, adapters.onChild));
   const deadline = now() + options.timeoutMs;
   const remaining = () => Math.max(0, deadline - now());
   const reserve = Math.min(15_000, options.timeoutMs / 3);
   let before;
+  let lastStartupError;
   while (remaining() > reserve) {
     try {
+      probe ??= (adapters.createProbe ?? createRuntimeProbe)(options);
       const current = await probe(Math.min(1000, remaining()));
       if (current.status.desktopWindowStatus === 'blocked') refuse('desktop-activation-blocked');
       if (displayReady(Math.min(1000, remaining())) && current.status.graphStatus === 'ready' && ['openable', 'available'].includes(current.status.desktopWindowStatus)) { before = current; break; }
-    } catch (error) { if (error instanceof Refusal) throw error; }
+    } catch (error) { if (error instanceof Refusal) throw error; lastStartupError = error; }
     await sleep(Math.min(500, remaining()));
   }
-  if (!before) refuse('readiness-timeout');
+  if (!before) throw new Refusal('readiness-timeout', { cause: lastStartupError });
   if (before.status.desktopWindowStatus !== 'available') {
     const code = await launch(before, Math.min(5000, remaining()));
     if (code !== 0 && code !== 3) refuse('second-launch-rejected');
@@ -151,8 +161,8 @@ if (require.main === module) {
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { child?.kill('SIGTERM'); process.exit(1); });
   Promise.resolve().then(() => promoteDesktop(parseOptions(process.argv.slice(2)), { onChild: (value) => { child = value; } })).then(
     () => console.log('Orca desktop post-start: same runtime renderer ready.'),
-    (error) => { console.error(`Orca desktop post-start: ${error instanceof Refusal ? error.message : 'probe-failed'}; serve retained.`); process.exitCode = 1; }
+    (error) => { console.error(`Orca desktop post-start: ${failureReason(error)}; serve retained.`); process.exitCode = 1; }
   );
 }
 
-module.exports = { Refusal, parseOptions, createRuntimeProbe, launchEnvironment, promoteDesktop };
+module.exports = { Refusal, parseOptions, createRuntimeProbe, launchEnvironment, promoteDesktop, failureReason };

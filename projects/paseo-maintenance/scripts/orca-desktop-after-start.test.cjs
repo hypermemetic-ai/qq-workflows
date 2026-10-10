@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { parseOptions, createRuntimeProbe, launchEnvironment, promoteDesktop } = require('./orca-desktop-after-start.cjs');
+const { Refusal, parseOptions, createRuntimeProbe, launchEnvironment, promoteDesktop, failureReason } = require('./orca-desktop-after-start.cjs');
 
 function harness(overrides = {}) {
   let elapsed = 0;
@@ -36,6 +36,32 @@ test('an unavailable display never launches and expires', async () => {
   const h = harness({ displayReady: () => false });
   await assert.rejects(promoteDesktop(h.options, h.adapters), /readiness-timeout/);
   assert.equal(h.launches(), 0);
+});
+
+test('an ordinary post-start profile creation race retries without relaxing identity checks', async () => {
+  const h = harness();
+  const probe = h.adapters.probe;
+  delete h.adapters.probe;
+  let attempts = 0;
+  h.adapters.createProbe = () => {
+    if (++attempts === 1) throw Object.assign(new Error('private-profile-path'), { code: 'ENOENT' });
+    return probe;
+  };
+  await promoteDesktop(h.options, h.adapters);
+  assert.equal(attempts, 2);
+  assert.equal(h.launches(), 1);
+  const refused = harness({ createProbe: () => { throw new Refusal('profile-identity-mismatch'); } });
+  delete refused.adapters.probe;
+  await assert.rejects(promoteDesktop(refused.options, refused.adapters), /profile-identity-mismatch/);
+  assert.equal(refused.launches(), 0);
+});
+
+test('failure categories expose supported errno without private messages, paths or unknown codes', () => {
+  const error = Object.assign(new Error('private-path-and-credential'), { code: 'MODULE_NOT_FOUND' });
+  assert.equal(failureReason(error), 'probe-failed (MODULE_NOT_FOUND)');
+  assert.equal(failureReason(new Refusal('readiness-timeout', { cause: error })), 'readiness-timeout (MODULE_NOT_FOUND)');
+  error.code = 'private-credential';
+  assert.equal(failureReason(error), 'probe-failed (unknown-error)');
 });
 
 test('a blocked promotion never launches', async () => {

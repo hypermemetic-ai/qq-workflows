@@ -13,8 +13,10 @@ not an installed service change. Preserve the existing stock `ExecStart`,
 supervisor and restart policy. The leading `-` on `ExecStartPost` is required:
 failed promotion must leave the healthy server running. The helper has a
 60-second budget; the outer timeout allows 65 seconds, then terminates only the
-post-start command group. It logs a fixed reason without credentials or status
-payloads. It never signals the existing server.
+post-start command group. It logs a fixed reason and allowlisted error category
+without credentials, paths or status payloads. It retries ordinary startup
+absence within that budget; identity refusals stop immediately. It never
+signals the existing server.
 
 Supply the established profile, stock supervisor's `$MAINPID`, paired runtime
 port, and owned X display. The template uses the existing host's values. For
