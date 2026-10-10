@@ -16,7 +16,9 @@ After changing the archive to the native cached volume, run
 `qq-job -- qq-cold-tier route-defaults`. This atomically redirects new children
 while retaining earlier HDD directories and their open inodes. Late writes into
 any former parent remain discoverable. A route interrupted during publication is
-reconciled from its durable journal. `qq-cold-tier partition ROOT_ID` admits a
+reconciled from its durable journal. Queue priorities from 0 to 1000 put selected bulk units ahead of older small
+units after required parent cutovers; every unit keeps the same safety guards.
+`qq-cold-tier partition ROOT_ID` admits a
 mixed SSD directory's children separately without copying or retiring its busy
 children. An incomplete partition retains its journal for review.
 
@@ -25,7 +27,7 @@ Install from the reviewed workflow checkout:
 ```sh
 python3 storage/install-local.py
 qq-cold-tier defaults ~/.cache ~/.local/state ~/.local/share ~/projects
-qq-cold-tier queue ~/.cache/Homebrew ~/.local/share/paseo-maintenance
+qq-cold-tier queue --priority 100 ~/.cache/Homebrew ~/.local/share/paseo-maintenance
 systemctl --user start --no-block qq-cold-tier-migrate.service
 qq-cold-tier status
 ```
@@ -63,7 +65,10 @@ recover them before retrying. It never deletes an ambiguous original on startup.
 `qq-job -- qq-cold-tier recover-published` can finish a published HDD move after
 interrupted retirement. It checks public and legacy aliases and compares every
 surviving original file with its published copy; changed or active originals
-remain intact. Read-only archive directories are made writable only in the
+remain intact. The scheduled drain also attempts this same guarded recovery
+before resuming the queue; ambiguous or divergent operations remain blocked and
+`status` reports the last drain error. A unit left running before journal creation
+is retried through the ordinary migration guards. Read-only archive directories are made writable only in the
 retired copy, preserving the published file modes and any external hard links.
 `qq-job -- qq-cold-tier abort-unpublished` can discard journaled staging before
 publication while retaining its authoritative source. Changed public paths,

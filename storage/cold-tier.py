@@ -1542,20 +1542,49 @@ def watch(store, cfg):
             watcher.close()
 
 
-def queue_add(store, source, action='move'):
+def queue_add(store, source, action='move', priority=None):
+    if priority is not None and (type(priority) is not int or not 0<=priority<=1000):raise ValueError('queue priority must be 0 to 1000')
     store.db.execute('INSERT OR REPLACE INTO queue VALUES (?,?,?,\'\',?)', (str(absolute(source)), action, 'pending', time.time()))
+    if priority is not None:
+        priorities=store.get('queue_priorities',{})
+        if priority:priorities[str(absolute(source))]=priority
+        else:priorities.pop(str(absolute(source)),None)
+        store.put('queue_priorities',priorities)
     store.db.commit()
 
 
 def drain(store, cfg):
+    started=time.time()
     try: drain_units(store,cfg)
     except LockBusy:
         print('Migration already active; queued units will be retried on the next pass',flush=True)
+        return
+    except (OSError,ValueError,subprocess.SubprocessError) as error:
+        store.put('last_drain',{'started':started,'finished':time.time(),'status':'blocked','error':str(error)[:500]})
+        store.db.commit()
+        raise
+    store.put('last_drain',{'started':started,'finished':time.time(),'status':'complete','error':''})
+    store.db.commit()
+
+
+def recover_drain(store,cfg):
+    # The move lock excludes every other mover. Only the published recovery
+    # path can retire data, after validating aliases, inactivity and checksums.
+    journal=store.state/'operation.json'
+    if journal.exists():
+        record=bounded_json(journal)
+        if record.get('phase')!='published' or record.get('restore') is not False:
+            raise ValueError('unfinished operation; inspect recovery journal')
+        recover_published(store,cfg)
+    # A process can exit after marking a unit running but before journaling.
+    # Re-admit it through the ordinary guards instead of silently losing it.
+    store.db.execute("UPDATE queue SET status='pending',error='interrupted worker; retry through migration guards',updated=? WHERE status='running'",(time.time(),))
+    store.db.commit()
 
 
 def drain_units(store, cfg):
     with lock(store.state / 'move.lock'):
-        if store.state.joinpath('operation.json').exists(): raise ValueError('unfinished operation; inspect recovery journal')
+        recover_drain(store,cfg)
         if cfg.get('mirror_layout',False):route_defaults(store,cfg)
         # A decision can promote only with both recorded demand and matched task timing.
         if time.time() - store.get('heartbeat', 0) < 60:
@@ -1565,6 +1594,10 @@ def drain_units(store, cfg):
         jobs=list(store.db.execute("""SELECT * FROM queue WHERE status IN ('pending','deferred')
           ORDER BY CASE action WHEN 'default' THEN 0 WHEN 'partition' THEN 1 ELSE 2 END,
           CASE WHEN action='default' THEN length(source) ELSE 0 END, updated"""))
+        priorities=store.get('queue_priorities',{})
+        jobs.sort(key=lambda job:(0 if job['action']=='default' else 1 if job['action']=='partition' else 2,
+                                  len(job['source']) if job['action']=='default' else 0,
+                                  -priorities.get(job['source'],0),job['updated']))
         if cfg.get('automatic_artifact_verification',True):
             verify_artifacts(store,cfg)
     for job in jobs:
@@ -1645,7 +1678,7 @@ def main():
     p = sub.add_parser('discover'); p.add_argument('paths', nargs='+')
     p = sub.add_parser('defaults'); p.add_argument('paths', nargs='+')
     p = sub.add_parser('namespace-alias');p.add_argument('public');p.add_argument('backing')
-    p = sub.add_parser('queue'); p.add_argument('--action',choices=('move','default','partition','rehome'),default='move');p.add_argument('paths', nargs='+')
+    p = sub.add_parser('queue'); p.add_argument('--priority',type=int,metavar='0..1000',default=None); p.add_argument('--action',choices=('move','default','partition','rehome'),default='move');p.add_argument('paths', nargs='+')
     p = sub.add_parser('move'); p.add_argument('path')
     p = sub.add_parser('restore'); p.add_argument('root')
     p = sub.add_parser('split'); p.add_argument('root'); p.add_argument('relative')
@@ -1672,7 +1705,8 @@ def main():
     elif args.command == 'status':
         print(json.dumps({'defaults': store.get('defaults', []), 'defaults_error': store.get('defaults_error'),
                           'roots': decisions(store, cfg), 'queue': [dict(r) for r in store.db.execute('SELECT * FROM queue')],
-                          'heartbeat': store.get('heartbeat'), 'watches': store.get('watches'), 'last_gc': store.get('last_gc')}, indent=2))
+                          'heartbeat': store.get('heartbeat'), 'watches': store.get('watches'), 'last_gc': store.get('last_gc'),
+                          'last_drain': store.get('last_drain')}, indent=2))
     elif args.command == 'register':
         source, target = absolute(args.source), absolute(args.target)
         if not source.is_symlink() or source.resolve() != target or not target.exists(): raise ValueError('existing source link must point exactly to the target')
@@ -1683,15 +1717,15 @@ def main():
     elif args.command == 'queue':
         for path in args.paths:
             if args.action in ('partition','rehome'):
-                queue_add(store,store.root(path)['source'],args.action);continue
+                queue_add(store,store.root(path)['source'],args.action,args.priority);continue
             if args.action=='default':
                 try:registered=store.root(str(absolute(path)))
                 except ValueError as e:
                     if not str(e).startswith('unknown root:'):raise
                     registered=None
-                queue_add(store,registered['source'] if registered else valid_source(path,cfg),'default');continue
+                queue_add(store,registered['source'] if registered else valid_source(path,cfg),'default',args.priority);continue
             registered = store.db.execute('SELECT * FROM roots WHERE source=?', (str(absolute(path)),)).fetchone()
-            queue_add(store, registered['source'] if registered and registered['location']=='ssd' else valid_source(path, cfg),args.action)
+            queue_add(store, registered['source'] if registered and registered['location']=='ssd' else valid_source(path, cfg),args.action,args.priority)
     elif args.command == 'drain': drain(store, cfg)
     elif args.command == 'recover-published':
         with lock(store.state/'move.lock'): recover_published(store,cfg)
