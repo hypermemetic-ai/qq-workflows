@@ -213,6 +213,51 @@ class ColdTierTests(unittest.TestCase):
             self.assertEqual(reopened.root(str(folder/'second'))['location'],'hdd')
         finally:reopened.db.close()
 
+    def test_scoped_admission_keeps_unrelated_payloads_for_the_regular_watch_pass(self):
+        selected=self.home/'selected';other=self.home/'other'
+        for path in (selected,other):path.mkdir();(path/'old').write_bytes(b'old')
+        a=m.bridge_parent(self.store,self.cfg,selected);b=m.bridge_parent(self.store,self.cfg,other)
+        m.adopt_defaults(self.store,self.cfg)
+        (Path(a['backing'])/'late').write_bytes(b'new')
+        (Path(b['backing'])/'late').write_bytes(b'other')
+        original=Path.iterdir
+        def scoped(path):
+            if path in (Path(b['backing']),Path(b['hdd'])):raise AssertionError('unrelated parent scanned')
+            return original(path)
+        with patch.object(Path,'iterdir',scoped):
+            m.adopt_defaults(self.store,self.cfg,only_sources=[a['source']])
+        self.assertEqual((selected/'late').read_bytes(),b'new')
+        self.assertEqual(self.store.root(str(selected/'late'))['location'],'ssd')
+        self.assertIsNotNone(self.store.db.execute('SELECT 1 FROM queue WHERE source=?',(str(selected/'late'),)).fetchone())
+        self.assertIsNone(self.store.db.execute('SELECT 1 FROM roots WHERE source=?',(str(other/'late'),)).fetchone())
+        m.adopt_defaults(self.store,self.cfg)
+        self.assertEqual((other/'late').read_bytes(),b'other')
+        self.assertEqual(self.store.root(str(other/'late'))['location'],'ssd')
+
+    def test_partitioned_package_admits_children_without_scanning_unrelated_defaults(self):
+        other=self.home/'other';other.mkdir();(other/'keep').write_bytes(b'keep')
+        source=self.home/'package';source.mkdir();shared=source/'shared';shared.write_bytes(b'shared')
+        os.link(shared,self.home/'external');unique=source/'unique';unique.write_bytes(b'unique');inode=unique.stat().st_ino
+        self.cfg.update(mirror_layout=True,automatic_partition=True)
+        unrelated=m.bridge_parent(self.store,self.cfg,other);m.route_defaults(self.store,self.cfg)
+        key=self.store.register(source,self.archive/'pending','ssd',hot=source);m.queue_add(self.store,source)
+        original=Path.iterdir
+        def scoped(path):
+            if path in (Path(unrelated['backing']),Path(unrelated['hdd'])):raise AssertionError('unrelated parent scanned')
+            return original(path)
+        with patch.object(Path,'iterdir',scoped),patch.object(m,'references',return_value=[]):
+            self.assertTrue(m.partition_blocked_move(self.store,self.cfg,source,ValueError('hard links extend outside migration unit; keep shared inodes together')))
+        self.assertEqual(self.store.root(key)['location'],'hdd')
+        self.assertEqual(unique.stat().st_ino,inode)
+        self.assertEqual(shared.stat().st_ino,(self.home/'external').stat().st_ino)
+        self.assertEqual(self.store.root(str(unique))['location'],'ssd')
+        self.assertIsNotNone(self.store.db.execute('SELECT 1 FROM queue WHERE source=?',(str(unique),)).fetchone())
+        self.assertFalse((self.store.state/'partition-operation.json').exists())
+
+    def test_scoped_admission_refuses_an_unknown_parent(self):
+        with self.assertRaisesRegex(ValueError,'parent missing from ledger'):
+            m.adopt_defaults(self.store,self.cfg,only_sources=[str(self.home/'unknown')])
+
     def test_missing_migrated_payload_does_not_recreate_a_reciprocal_proxy(self):
         source=self.home/'logs';source.mkdir();file=source/'old.log';file.write_bytes(b'keep')
         self.cfg['mirror_layout']=True

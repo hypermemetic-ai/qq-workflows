@@ -33,6 +33,9 @@ any former parent remain discoverable. A route interrupted during publication is
 reconciled from its durable journal.
 Partitioned parent tracking follows a proved bridge change while former parent
 inodes stay available for late writes.
+After a package is partitioned, its child admission scans the affected default
+parent. Unrelated managed payloads and intake directories retain the regular
+watcher's full reconciliation pass; they are not rescanned for every package.
 Queue priorities from 0 to 1000 put selected bulk units ahead of older small
 units after required parent cutovers; every unit keeps the same safety guards.
 `qq-cold-tier partition ROOT_ID` admits a

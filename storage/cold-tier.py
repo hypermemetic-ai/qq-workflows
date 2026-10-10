@@ -589,12 +589,27 @@ def adopt_mirror_scaffolds(store,cfg,archive):
     store.put('mirror_scaffold_intents',remaining);store.db.commit()
 
 
-def adopt_defaults(store, cfg):
+def adopt_defaults(store, cfg, *, only_sources=None):
     """Admit newly created children and discover legacy SSD children of every size."""
     archive = mount_ready(cfg)
     adopt_mirror_scaffolds(store,cfg,archive)
     parents = store.get('defaults', [])
     managed_backings = {str(Path(p['backing'])) for p in parents}
+    roots = store.roots()
+    if only_sources is not None:
+        selected = {str(p) for p in only_sources}
+        parents = [p for p in parents if p['source'] in selected]
+        if {p['source'] for p in parents} != selected:
+            raise ValueError('scoped default admission parent missing from ledger')
+        scopes = [logical_source(store,p['source']) for p in parents]
+        roots = [r for r in roots if any(within(logical_source(store,r['source']),p) for p in scopes)]
+    selected_ids = {r['id'] for r in roots}
+    def current_roots():
+        if only_sources is None:return store.roots()
+        # Refresh changed rows, including this connection's registrations,
+        # without resolving every unrelated managed payload again.
+        return [row for key in selected_ids
+                if (row := store.db.execute('SELECT * FROM roots WHERE id=?',(key,)).fetchone())]
     routed_bridges = {}
     for parent in parents:
         for previous in parent.get('previous', []):
@@ -603,7 +618,7 @@ def adopt_defaults(store, cfg):
     # Partitioning creates another private backing beneath an existing default
     # parent. It is machinery, not a second data root: duplicate inode watches
     # otherwise steal ownership from the real child roots.
-    for root in store.roots():
+    for root in roots:
         if root['location'] == 'ssd' and root['hot'] in managed_backings and not json.loads(root['aliases']):
             if store.db.execute('SELECT 1 FROM scopes WHERE root=?', (root['id'],)).fetchone():
                 raise ValueError('managed backing has a regeneration scope; review required')
@@ -630,7 +645,8 @@ def adopt_defaults(store, cfg):
                 hdd_devices.add(hdd.stat().st_dev)
                 hdd_devices.update(Path(p).stat().st_dev for p in parent.get('previous', []))
         except FileNotFoundError: pass
-    for root in store.roots():
+    roots = current_roots()
+    for root in roots:
         public = Path(root['source'])
         try:
             resolved = public.resolve(strict=True)
@@ -652,7 +668,7 @@ def adopt_defaults(store, cfg):
                 store.db.commit()
         except FileNotFoundError: pass
     store.db.commit()
-    existing = {str(logical_source(store,r['source'])) for r in store.roots()}
+    existing = {str(logical_source(store,r['source'])) for r in current_roots()}
     for parent in parents:
         source, backing, hdd = (Path(parent[k]) for k in ('source', 'backing', 'hdd'))
         if source.resolve() != hdd: raise ValueError('default parent no longer matches ledger')
@@ -688,15 +704,17 @@ def adopt_defaults(store, cfg):
                 real = next((p/child.name for p in backings if (p/child.name).exists()
                              and not (p/child.name).is_symlink() and (p/child.name).resolve() == resolved), None)
                 if real is None or not (real.is_dir() or real.is_file()): continue
-                if real.parent != backing and real.stat().st_dev in hdd_devices: store.register(public, real, 'hdd')
+                if real.parent != backing and real.stat().st_dev in hdd_devices: key=store.register(public, real, 'hdd')
                 else:
                     cold = archive / 'data' / uuid.uuid4().hex / child.name
-                    store.register(public, cold, 'ssd', hot=real)
+                    key=store.register(public, cold, 'ssd', hot=real)
             elif child.is_dir() or child.is_file():
-                store.register(public, child, 'hdd')
+                key=store.register(public, child, 'hdd')
+            else:continue
+            selected_ids.add(key)
             existing.add(str(logical_source(store,public)))
     if cfg.get('automatic_migration', True):
-        for root in store.roots():
+        for root in current_roots():
             if root['location'] != 'ssd': continue
             # Already admitted units retain the mover's live safety checks.
             # Do not resolve every protected path again just to leave their
@@ -709,7 +727,7 @@ def adopt_defaults(store, cfg):
             queue_add(store,root['source'])
         # Admit idle children of real SSD parents without changing the parent
         # inode. A parent can remain real for application compatibility.
-        for raw in cfg.get('intake_parents',[]):
+        for raw in (cfg.get('intake_parents',[]) if only_sources is None else []):
             parent=absolute(raw)
             if parent.is_symlink() or not parent.is_dir():continue
             for child in parent.iterdir():
@@ -842,7 +860,7 @@ def recover_default_route(store):
     journal.unlink(); flush_directory(store.state)
 
 
-def route_defaults(store, cfg):
+def route_defaults(store, cfg, *, adopt_sources=None):
     """Route new names to the configured HDD without relocating any open inode."""
     archive = mount_ready(cfg); recover_default_route(store)
     for old in sorted(store.get('defaults', []),key=lambda p:len(logical_source(store,p['source']).parts)):
@@ -890,7 +908,7 @@ def route_defaults(store, cfg):
             staged.symlink_to(bridge);exchange(source,staged);flush_directory(source.parent)
         recover_default_route(store)
         print('ROUTED', source, 'to', bridge, flush=True)
-    adopt_defaults(store, cfg)
+    adopt_defaults(store, cfg, only_sources=adopt_sources)
 
 
 def partition_root(store, cfg, key):
@@ -924,8 +942,9 @@ def partition_root(store, cfg, key):
                      ('hdd',parent['hdd'],'','partitioned: awaiting watcher',root['id']))
     store.db.execute("UPDATE queue SET status='complete',error='partitioned into child migration units',updated=? WHERE source=?",
                      (time.time(),root['source']))
-    store.db.commit(); adopt_defaults(store,cfg); journal.unlink(); flush_directory(store.state)
+    store.db.commit(); adopt_defaults(store,cfg,only_sources=[parent['source']]); journal.unlink(); flush_directory(store.state)
     print('PARTITIONED',root['source'],flush=True)
+    return parent
 
 
 def recover_partition(store,cfg):
@@ -956,7 +975,7 @@ def recover_partition(store,cfg):
                      ('hdd',str(hdd),'','partitioned: awaiting watcher',root['id']))
     store.db.execute("UPDATE queue SET status='complete',error='partitioned into child migration units',updated=? WHERE source=?",
                      (time.time(),str(source)))
-    store.db.commit();adopt_defaults(store,cfg)
+    store.db.commit();adopt_defaults(store,cfg,only_sources=[parent['source']])
     journal.unlink();flush_directory(store.state)
     print('RECOVERED PARTITION',source,flush=True)
 
@@ -1870,10 +1889,10 @@ def partition_blocked_move(store,cfg,source,error):
             return False
     if row:
         if row['location']!='ssd':return False
-        partition_root(store,cfg,row['id'])
-    else:bridge_parent(store,cfg,source)
-    if cfg.get('mirror_layout',False):route_defaults(store,cfg)
-    else:adopt_defaults(store,cfg)
+        parent=partition_root(store,cfg,row['id'])
+    else:parent=bridge_parent(store,cfg,source)
+    if cfg.get('mirror_layout',False):route_defaults(store,cfg,adopt_sources=[parent['source']])
+    else:adopt_defaults(store,cfg,only_sources=[parent['source']])
     return True
 
 
@@ -1959,8 +1978,9 @@ def drain_units(store, cfg):
                         else:adopt_defaults(store,cfg)
                     elif job['action'] == 'partition':
                         root=store.root(str(source))
-                        if root['location']=='ssd': partition_root(store,cfg,root['id'])
-                        if cfg.get('mirror_layout',False):route_defaults(store,cfg)
+                        if root['location']=='ssd':
+                            parent=partition_root(store,cfg,root['id'])
+                            if cfg.get('mirror_layout',False):route_defaults(store,cfg,adopt_sources=[parent['source']])
                     elif job['action']=='rehome':
                         root=store.root(str(source))
                         if root['location']!='hdd' or not cfg.get('mirror_layout',False):raise ValueError('rehome requires a mirrored HDD root')
@@ -2124,8 +2144,8 @@ def main():
         with lock(store.state / 'move.lock'): route_defaults(store, cfg)
     elif args.command == 'partition':
         with lock(store.state / 'move.lock'):
-            partition_root(store, cfg, args.root)
-            if cfg.get('mirror_layout',False):route_defaults(store,cfg)
+            parent=partition_root(store, cfg, args.root)
+            if cfg.get('mirror_layout',False):route_defaults(store,cfg,adopt_sources=[parent['source']])
     elif args.command == 'move':
         with lock(store.state / 'move.lock'): migrate(store, cfg, args.path)
     elif args.command == 'restore':
