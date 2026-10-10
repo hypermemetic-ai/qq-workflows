@@ -4,7 +4,7 @@
 
 - [x] 1.1 Record the accepted source/APK/bundle, current daemon/CLI and reachable Android identity separately, plus isolated checkout/service ownership; verify hashes, Git helper output and sanitized provenance in the delivery record.
 - [x] 1.2 Add reusable synthetic directory/history/main-stream/provider-child/question fixtures and an explicit-serial native driver in the maintenance fixture area; verify documented commands run against the isolated daemon and produce action/timing/failure evidence without production data.
-- [ ] 1.3 Reconfirm the accepted baseline's immediate Close failure and measure different-workspace selection with idle controls; verify fresh frame gates, saved results and scheduling/pressure records exclude setup failures.
+- [x] 1.3 Reconfirm the accepted baseline's immediate Close failure and measure different-workspace selection with idle controls; verify fresh frame gates, saved results and scheduling/pressure records exclude setup failures.
 - [x] 1.4 Update the emulator runbook with tested fixture/driver reuse, ownership/cleanup and the understood 6 GiB VM budget; verify a repeated QA window reuses pairing/toolchain and stops only owned services.
 
 ## 2. Ordered panel interaction correction

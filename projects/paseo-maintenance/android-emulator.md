@@ -203,11 +203,16 @@ other APK payload entry to match. Record this
 construction explicitly. Rebuild normally if source, environment, dependencies,
 platform or bundle equivalence cannot be established.
 
-Hermes optimization of this Android bundle can require several GiB while Gradle
-retains compilation heap. Keep the hard job limit; release idle build heap or
-separate the packaging pass when necessary. Record resource interventions and
-exclude them from measurements. Reusing audited architecture-independent bytecode
-for another ABI avoids another optimizer pass when its inputs are proved equal.
+The current beta's generated validator makes optimized Hermes compilation exceed
+the established 12 GiB aggregate even without Gradle heap. The earlier successful
+ARM compiler peak and cap were not recorded. See the measured
+[compiler boundary](mobile-responsiveness.md#build-preparation) before compiling
+a changed bundle; a smaller raw bundle or warm native cache does not resolve it.
+The supported `-Og` setting is currently a diagnostic experiment, with production
+selection pending an independent native runtime comparison. Keep existing job
+limits and record interventions separately from measurements. Reusing audited
+architecture-independent bytecode for another ABI avoids another optimizer pass
+when its inputs are proved equal; changed source requires new bytecode.
 
 ## Responsiveness workload
 

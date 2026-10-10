@@ -81,6 +81,23 @@ subagents. The reusable workload adds different-workspace selection and provider
 traffic. System-wide cold-start I/O failures and an early, unconfirmed
 modal-backdrop hypothesis are excluded from app evidence.
 
+The reusable workload's later accepted-APK baseline completed 24 clean outcome
+trials. Idle immediate Close passed 2/3, delayed Close 3/3 and immediate
+different-workspace selection 4/4. With four main streams, immediate Close
+passed 1/3, delayed Close 3/3, immediate different-workspace selection 3/4 and
+delayed selection 4/4. The failed selection left the drawer unchanged for
+8.218 seconds; no tap was retried. Two failed Close taps reached Explorer.
+
+In the first 500 ms after those failed Close taps, JS ran for 362/368 ms and was
+runnable for the remaining 138/132 ms. The missed selection had JS running
+209 ms and runnable 291 ms initially, but JS later slept for 6.615 seconds of
+the full unchanged-drawer interval. This distinguishes persistent missed input
+from eight seconds of continuous CPU blockage. Raw capture intervals, tap
+uncertainty and shared-host pressure are recorded separately; these remain
+emulator outcomes, not exact phone input latency or proof of a particular
+native touch-property state. The fixture stopped cleanly with pairing/history
+retained and no stream or profiler worker left running.
+
 ## Build preparation
 
 The first immutable snapshot exported successfully, but source-map comparison
@@ -113,11 +130,11 @@ A guarded debugger run, inside the ordinary 4 GiB job envelope, stopped at
 of five dense liveness vectors per basic block. The generated
 `safeParse_WSOutboundMessageSchema` function is about 11.8 million characters;
 the accepted bytecode preserves an 8.1 MB body for it. Pinned Hermes enables its
-bounded fast allocator only when optimization is disabled. A standard minified
-Expo export is being evaluated before the same optimized compiler, without app,
-dependency or runtime configuration changes. Any resulting native comparison
-must rebuild the baseline and candidates with the same pipeline; it cannot be
-presented as a matched comparison against the earlier unminified bytecode.
+bounded fast allocator only when bytecode optimization is disabled. A standard
+minified Expo export was evaluated before the same optimized compiler, without
+app, dependency or runtime configuration changes. Any changed compiler pipeline
+requires matching baseline/candidate builds and a separate comparison against
+the accepted pipeline; it cannot silently replace the performance baseline.
 
 The first minified export completed in 276.8 seconds within
 the ordinary 4 GiB job limit. It produced a 24,018,397-byte raw bundle with the
@@ -139,6 +156,16 @@ read-only capacity check found the existing satellite has less physical RAM
 than that allocation and no established build-job containment; nothing was
 transferred or built there. Supported compiler controls are under investigation
 before selecting a delivery recipe.
+
+The supported `-Og` diagnostic experiment compiled the original unminified
+profile-only source in 10.30 seconds, peaking at about 2.03 GiB within the normal
+4 GiB job envelope, with no swap or pressure events. Its valid HBC96 source hash
+matches the audited input. Maximum frame size is 160 registers, well below the
+pinned runtime limit; the validator instead has 5,515 environment slots versus
+zero in accepted optimized bytecode. This setting changes runtime code quality
+and is authorized only for diagnostic QA packaging and a separate native
+comparison. It is not an accepted production compiler recipe or performance
+claim. The unchanged optimized build still exceeds the established job cap.
 
 The corrected interaction source is committed as
 `bfe5e9a749dc0d7d7ebe66ba65201d87b548f426` in
