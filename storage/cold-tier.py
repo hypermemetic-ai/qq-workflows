@@ -984,7 +984,20 @@ def copied_link(source, rel, raw):
 def flush_copy(destination):
     # Persist data and directory entries on the destination filesystem before
     # publishing its link and retiring the original. Never sync all host disks.
-    subprocess.run(['sync', '-f', '--', str(destination)], check=True, timeout=120)
+    destination = Path(destination)
+    info = destination.lstat()
+    if not stat.S_ISREG(info.st_mode):
+        subprocess.run(['sync', '-f', '--', str(destination)], check=True, timeout=120)
+        return
+    # A standalone file needs its own data/metadata and the directory entries
+    # reaching it, including a newly created opaque staging parent. sync -f
+    # would also wait for unrelated writers on this filesystem for every file.
+    subprocess.run(['sync', '--', str(destination)], check=True, timeout=120)
+    parent = destination.parent
+    while parent.stat().st_dev == info.st_dev:
+        flush_directory(parent)
+        if parent == parent.parent: break
+        parent = parent.parent
 
 
 def flush_directory(path):
