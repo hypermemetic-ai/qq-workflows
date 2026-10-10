@@ -20,7 +20,7 @@ These private local resources survive tasks; stop the VM between tasks:
 | AVD | `paseo_qa`, Google APIs API 36, x86_64 image revision 7 |
 | VM | 2 cores, 2048 MB RAM, 720 × 1616 at 280 dpi, SwiftShader with Vulkan disabled |
 | QA app | `sh.paseo.debug`, non-debuggable profileable release, native x86_64 |
-| Workload | Isolated synthetic daemon; never the production daemon on 6767 |
+| Workload | Isolated synthetic daemon; prohibit production ports 6767 and 6769 |
 
 Emulator 37.2.12 and KVM were used for the initial run. Record the actual version,
 image revision, ABI and renderer again on subsequent runs. Preserve unrelated
@@ -55,7 +55,7 @@ taskset -c 4,5 "$ANDROID_SDK_ROOT/emulator/emulator" \
 ```
 
 For work spanning conversation turns, use a named transient `systemd-run --user`
-unit with `CPUQuota=200%`, `MemoryMax=4G` and a private append log. Pass the same
+unit with `CPUQuota=200%`, `MemoryMax=6G` and a private append log. Pass the same
 three environment values with `--setenv` and the command above. Record the unit
 name as its owner and stop it explicitly at task end. The accepted run used
 `paseo-static-status-emulator-gles`; these units are task services, not startup services.
@@ -64,6 +64,12 @@ failed to create a QEMU thread during an APK reinstall; its failed run is exclud
 from acceptance. Keep this VM budget separate from the smaller build/fixture
 task budgets and record task usage alongside memory pressure.
 Keep Gradle at one worker with bounded JVM/native parallelism while the VM runs.
+
+The workspace-stall investigation found the 4 GiB VM budget repeatedly hit its
+reclaim limit with the emulator's automatically enlarged roughly 2.5 GiB guest
+and software-renderer overhead. A single adjustment to 6 GiB allowed stable warm
+controls without OOM. Keep the fixture and build budgets separate; check host
+headroom, cgroup pressure and limit events before changing any budget further.
 
 Wait for `adb -s emulator-5580 shell getprop sys.boot_completed` to return `1`.
 Every install, input, capture and reverse command must name `-s emulator-5580`.
@@ -126,9 +132,11 @@ For the release stage:
    changes; a small unrelated presentation change does not automatically require
    repeating every prior benchmark and control check. Complete any checks its
    active OpenSpec plan explicitly requires.
-5. Stop the fixture and VM immediately after acceptance, sign/package the final
-   candidate, and install once with the existing signer. Record build, QA and
-   activation timings separately so a slow stage can be identified.
+5. Generate the final runtime config normally with profiling markers disabled,
+   sign/package the compatible final candidate, and complete its relevant native
+   controls. Stop the fixture and VM after acceptance, then install once with
+   the existing signer. Record build, QA and activation timings separately so a
+   slow stage can be identified.
 
 Initial logs show one warm ARM64 comparison release build, including bundling,
 completed in 4m21s. Fully cached x86_64 packaging took 59s–1m02s, but skipped the
@@ -136,6 +144,32 @@ already-audited Hermes bundle. A production pass that rebuilt native outputs too
 12m37s even with bundle reuse. These are individual stage timings, not a measured
 end-to-end estimate for the next fresh tweak. Cold native/toolchain updates can
 still take much longer; routine compatible UI edits should avoid those stages.
+
+The responsiveness evaluation subsequently established a warm compatible
+JavaScript-only path: immutable source preparation and export took 50.07 seconds,
+the pinned supported Hermes `-Og` pass took 11.46 seconds, and audited QA shell
+construction/alignment/signing took 15.19 seconds, about 77 seconds altogether.
+These timings exclude source checks, emulator startup, native acceptance and
+phone connection. This candidate used diagnostic runtime markers; final release
+construction requires its own normal marker-disabled config and export proof.
+Retain the private receipts and regular dependency template rather than copying
+through moving logical aliases. Recheck module/source-map equivalence and
+native/assets/config compatibility for every new source selection; the measured
+warm path does not authorize reusing old bytecode after a source edit.
+Resolve the source/staging child directory itself before forming Metro's cwd,
+project-root and entry-file paths. A moving parent alias can resolve to a cold
+mirror while its regular-layout child still resolves to SSD; mixing those paths
+causes a graph-entry rejection. Preserve failed setup receipts and correct the
+path selection without changing Metro configuration or migration-owned links.
+When a generated Router source-map context embeds the snapshot's absolute root,
+record any difference explicitly. The final responsiveness release normalized
+only 25 established source-root prefixes in that one virtual module, required
+every other source occurrence/content to match, and separately required exact
+raw executable JS and asset equality. Both normally generated marker-disabled
+QA and production inputs matched the tested bytecode; this metadata exception
+does not authorize ignoring other source-map changes or reusing bytecode after
+an executable source edit. The first full owned-template byte audit took
+148.68 seconds; final two-ABI shell construction/signing/audit took 45.67 seconds.
 
 ## Native QA build
 
@@ -197,13 +231,140 @@ other APK payload entry to match. Record this
 construction explicitly. Rebuild normally if source, environment, dependencies,
 platform or bundle equivalence cannot be established.
 
-Hermes optimization of this Android bundle can require several GiB while Gradle
-retains compilation heap. Keep the hard job limit; release idle build heap or
-separate the packaging pass when necessary. Record resource interventions and
-exclude them from measurements. Reusing audited architecture-independent bytecode
-for another ABI avoids another optimizer pass when its inputs are proved equal.
+The current beta's generated validator makes optimized Hermes compilation exceed
+the established 12 GiB aggregate even without Gradle heap. The earlier successful
+ARM compiler peak and cap were not recorded. See the measured
+[compiler boundary](mobile-responsiveness.md#build-preparation) before compiling
+a changed bundle; a smaller raw bundle or warm native cache does not resolve it.
+The responsiveness release selects supported `-Og` after its independent
+artifact/native checks. The comparison does not establish optimized-compiler
+equivalence; a possible small visible cost remains unisolated and disclosed in
+the delivery record. Reevaluate ordinary optimization on upstream/schema
+changes rather than making this fallback a universal default. Keep existing job
+limits and record interventions separately from measurements. Reusing audited
+architecture-independent bytecode for another ABI avoids another optimizer pass
+when its inputs are proved equal; changed source requires new bytecode.
 
-## Synthetic workload
+For compatible JavaScript-only QA, accepted APK shell reuse was also
+verified after Gradle spent its bounded ten-minute window hashing cached inputs.
+Establish unchanged native configuration, dependencies, generated manifest and
+embedded Expo configuration first. Verify disabled OTA updates and absence of
+embedded update manifests or bundle checksums. Compare exported assets with the
+accepted shell using AAPT resource IDs and compiled paths: compiled PNG bytes can
+differ from export PNG bytes, so require identical decoded pixels/dimensions as
+well as matching names/scales/declarations and exact non-image resources.
+
+Construct a fresh ZIP containing the accepted payloads and new audited HBC.
+Remove only the old signing entries (the three v1 entries for this accepted APK),
+preserving ordinary META-INF files; ZIP reserialization drops the old APK signing
+block. Preserve entry compression methods, run the retained SDK's
+`zipalign -P 16 4`, sign normally through private password files, and verify every
+other payload byte plus certificate, package, ABI, manifest, updates policy and
+alignment. Record shell reuse explicitly rather than describing it as a fresh
+native build. This diagnostic construction took 9.174 seconds under the normal
+4 GiB job envelope. The later final QA and ARM64 shells were separately audited
+and the selected release passed marker-disabled native controls. QA shell
+equivalence alone does not establish production-shell compatibility. Native,
+configuration or asset changes require the normal native resource/build path.
+
+## Responsiveness workload
+
+[native-responsiveness.ts](fixtures/native-responsiveness.ts) extends the original
+display fixture with bounded directory density, long history, main streams,
+provider-child events and question/plan controls through normal daemon paths.
+Copy it into the audited source checkout's ignored
+`packages/server/src/.dev/native-responsiveness.ts`. Keep its private output/home
+and FIFO separate from production and from another task's fixture.
+
+The verified initial workload has 18 projects, 16 workspaces and 52
+stored sessions: 12 idle, 40 closed and 34 archived. Workspace 01 retains seven
+tabs; Session 01.1 starts with 60 synthetic user turns and 120 timeline entries.
+The first two project blocks were verified expanded with native row bounds;
+record full-drawer expansion separately when tested.
+Four main streams and provider bursts are explicit later commands. This differs
+from the earlier 16-project/64-session investigation; label results accordingly.
+
+The fixture service uses `CPUQuota=100%`, `MemoryMax=1536M`,
+`MemorySwapMax=256M`, `TasksMax=128`, `RuntimeMaxSec=30min` and
+`TimeoutStopSec=15s`. Pass
+`NODE_OPTIONS='--max-old-space-size=512 --max-semi-space-size=8'` to its TSX
+process. The smaller heap and serialized lifecycle flushes avoid the initial
+preparation OOMs without increasing the process-tree cap. Record failures as
+preparation rather than app latency.
+
+Create the output directory with mode 0700 and `control.fifo` with mode 0600.
+The tested service holds that FIFO read/write on fd 3 and runs the staged helper
+from the source root:
+
+```bash
+exec 3<>"$PASEO_NATIVE_FIXTURE_OUTPUT/control.fifo"
+exec node_modules/.bin/tsx packages/server/src/.dev/native-responsiveness.ts <&3
+```
+
+Wait for `fixture-ready-private.json` and its logged `history-check`. A restart
+preserves server/workspace/session identities and Android pairing, but the mock
+provider does not preserve history. The helper automatically reseeds the normal
+mock message path when the restored timeline is empty, then checks it before
+readiness. This restoration was verified with all 60 turns; do not assume that a
+persisted home alone restores an equivalent workload.
+
+The companion [native-responsiveness.py](fixtures/native-responsiveness.py)
+requires an explicit emulator serial and private absolute output. It rejects a
+physical phone and production package. With `PASEO_QA_RUN` naming the evidence
+directory and `PASEO_QA_STATE` the fixture output, preparation was exercised with:
+
+```bash
+/usr/bin/python3 projects/paseo-maintenance/fixtures/native-responsiveness.py \
+  --serial 127.0.0.1:5581 --output "$PASEO_QA_RUN" capture drawer
+/usr/bin/python3 projects/paseo-maintenance/fixtures/native-responsiveness.py \
+  --serial 127.0.0.1:5581 --output "$PASEO_QA_RUN" controls
+/usr/bin/python3 projects/paseo-maintenance/fixtures/native-responsiveness.py \
+  --serial 127.0.0.1:5581 --output "$PASEO_QA_RUN" \
+  --fixture "$PASEO_QA_STATE" launch --index 0
+```
+
+Install an ADB reverse only on that serial for the actual isolated port. Fresh
+reference captures and hierarchy-based control bounds precede timed trials;
+never dump hierarchy or encode/write a PNG between observing the fully visible
+drawer and its immediate tap. The driver waits for the reached destination
+without retrying the tap. Its timings include ADB and screenshot observation
+overhead. Outcome-bearing trial commands and release acceptance belong in the
+[mobile delivery record](mobile-responsiveness.md).
+
+Inspect the saved outcome JSON for every trial block: require every `success`
+value to be true and the completed trial count to equal the requested count.
+The driver stops at the first failed destination; its process exit status alone
+does not establish that a block passed. Keep preparation/route-guard failures
+separate from timed input outcomes, and never retry a failed tap as a success.
+
+After preparing distinct, verified workspace references, the accepted immediate
+idle blocks used these commands from the workflow checkout:
+
+```bash
+/home/qqp/.local/bin/qq-job -- /usr/bin/python3 \
+  projects/paseo-maintenance/fixtures/native-responsiveness.py \
+  --serial 127.0.0.1:5581 --output "$PASEO_QA_RUN" \
+  --fixture "$PASEO_QA_STATE" --workload core-idle \
+  trials close --repetitions 10
+/home/qqp/.local/bin/qq-job -- /usr/bin/python3 \
+  projects/paseo-maintenance/fixtures/native-responsiveness.py \
+  --serial 127.0.0.1:5581 --output "$PASEO_QA_RUN" \
+  --fixture "$PASEO_QA_STATE" --workload core-idle \
+  trials selection --repetitions 10
+```
+
+The default extra delay is zero. Require ten successful records of each
+operation and genuinely alternating different-workspace origins. Repeat with
+four ordinary fixture `send` operations at indices 0–3, fresh streaming
+references and a separate output directory/workload label. Preserve failed
+preflight evidence when refreshing a stale reference; it is not a timed trial.
+
+Stop only the recorded fixture/VM units. The repeated fixture stop was verified
+to leave no old descendants. Preserve the home during matched APK windows, then
+remove only owned synthetic state and the staged helper at task end. Keep the
+SDK, AVD and compatible accepted artifacts for the next task.
+
+## Original display workload
 
 Copy [fixtures/native-display.ts](fixtures/native-display.ts) into the target
 source checkout's ignored `packages/server/src/.dev/native-display.ts`; its

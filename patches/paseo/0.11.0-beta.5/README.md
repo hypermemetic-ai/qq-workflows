@@ -16,6 +16,11 @@ The later Android ring patch is tracked separately in the
 The installed reduced-motion presentation follow-up and reusable Android emulator
 QA pipeline are owned by the separate
 [status-indicators delivery record](../../../projects/paseo-maintenance/status-indicators.md).
+The later native workspace-input correction and independent covered-chat
+evaluation have their own
+[mobile responsiveness record](../../../projects/paseo-maintenance/mobile-responsiveness.md),
+including source, release and Android activation evidence. These client changes
+do not alter this daemon/CLI artifact.
 
 Published inputs are at `~/.local/state/paseo-beta-20261006/`. Reproduce and verify
 without changing the live daemon or CLI:
