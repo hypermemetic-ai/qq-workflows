@@ -51,7 +51,7 @@ and saved provider context are separate concerns. See
 | --- | --- |
 | Project/workspace mapping | 18 roots/17 locations registered; 12 physical cards/13 original working directories |
 | Original thread/settings continuity | All 18 source/native IDs consistent; real 3.07 MiB pilot verified on original main/provider |
-| Ongoing worker | At 2026-10-10 18:33 UTC: 1 verified, 17 queued, including 4 running; 0 permission waits/blocked; coordinator busy and last |
+| Ongoing worker | Independently active at 2026-10-10 19:03:01 UTC: 7 verified, 0 blocked, 11 waiting; coordinator queued last |
 | Native Android controls | Same-ID 19.2 MiB synthetic Chat/send/switch/background/reconnect accepted on original Codex 0.159.3 |
 | OpenSpec | ON16/OFF2 instruction-driven carryover prepared; explicit-path native child read verified |
 | Phone | Main host authenticated and real pilot phone-accepted; installed APK version not ADB-verified |
@@ -137,17 +137,48 @@ orca terminal create --worktree path:<existing-cwd> --command <verified-resume-c
    after the real pilot passes. Transfer the coordinating conversation last,
    after the other 17 are verified; let busy sessions reach natural idle.
 
-The authorized one-off continuation worker is active after the stored pilot
-receipt. It has seven policy tests and processes idle/closed sessions one at a
-time, bounded to four hours, 256 MiB and 64 tasks. It checks every 30 seconds with
-two idle samples, source/mode guards and immutable one-shot send intents;
-automatic notice retries are disabled. Running turns and pending permissions
+The authorized one-off continuation worker was activated after the stored pilot
+receipt. It has eight policy tests and processes idle/closed sessions one at a
+time, bounded to the original four-hour deadline and 64 tasks. It checks every
+30 seconds with two idle samples, source/mode guards and immutable one-shot send
+intents. Automatic notice retries are disabled. Running turns and pending permissions
 wait naturally. The coordinator transfers only after the other 17 are verified
 and its current turn is idle.
 
-The 2026-10-10 18:33 UTC snapshot was one verified pilot and 17 queued, including
-four running, with zero permission waits or blocked sessions. The coordinator
-was busy and queued last. The private owner/progress receipt is
+The initial 256 MiB worker exhausted its service memory budget before the second
+selection, with no new ownership intent, source closure, provider or notice.
+Only the verified pilot had transferred. Recovery uses a 768 MiB budget for the
+worker and helper Node processes, preserving the original deadline, concurrency
+of one and 64-task limit.
+
+Before rearming, six sessions were verified, including one genuine
+symlink-route transfer without optional resume metadata. All six preserved
+native identity and received exactly one notice and acknowledgment, completed
+Stop, and passed final writer fences. Two existing unnotified panes were
+recovered on their existing owners without relaunch. Independent verification at
+2026-10-10 19:03:01 UTC confirmed the corrected unit active: seven verified, zero
+blocked and eleven waiting, with the coordinator last. The original deadline is
+unchanged; automatic notice retries are zero. The queue continues and the
+remaining sessions are not yet migrated. No uncertain send is replayed.
+
+Ten selected final transcript symlinks target a different filesystem outside the
+original canonical sessions tree, failing stock's regular-file provenance guard.
+No hardlinks or transcript-byte edits were made. A metadata-only trial sent no
+notice because stock PTY startup overwrote both home variables. For the ten
+proven symlink cases only, the accepted stock route prefixes the
+original command with properly quoted explicit original-home assignments to
+both `CODEX_HOME` and `ORCA_CODEX_HOME`, and omits optional
+`resumeProviderSession` metadata. The pinned plan changes only that prefix in
+actual and durable commands for ten mappings; command remainders, stored environment,
+settings, working directories, native threads, version, normal tier and account
+remain unchanged. Genuine Chat and final writer fences verified this route.
+No application, credential or filesystem change is involved. A stopped symlink
+session may need this explicit-home CLI route again; that is an inference from
+the same guard. Cold tab restoration remains unverified and adds no new gate.
+
+The 2026-10-10 18:33 UTC snapshot used the original 256 MiB cap: one verified
+pilot and 17 queued, including four running, with zero permission waits or
+blocked sessions. The coordinator was busy and queued last. The private owner/progress receipt is
 `oneoff-worker-progress-private.json` in the migration state directory. These
 are activation-time counts; worker activation does not mean all 18 are migrated.
 
