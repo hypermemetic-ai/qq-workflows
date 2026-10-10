@@ -828,23 +828,30 @@ def tier_temporary(path):
 def logical_source(store, raw):
     """Undo private SSD backing names without resolving the final data inode."""
     path=absolute(raw)
-    # Read both current values on every lookup, including commits from another
-    # watcher/worker. Parse and compile unchanged route maps only once.
-    values=tuple((store.db.execute('SELECT value FROM meta WHERE key=?',(key,)).fetchone() or ('[]',))[0]
-                 for key in ('defaults','namespace_aliases'))
+    # Check SQLite's commit generation instead of reading a large route map for
+    # every child. Local writes also invalidate it. Uncommitted transactions
+    # always read the map, including changes later rolled back to a savepoint.
+    stamp=(store.db.execute('PRAGMA data_version').fetchone()[0],store.db.total_changes)
     cached=getattr(store,'_logical_routes',None)
-    if cached is None or cached[0]!=values:
-        defaults,aliases=(json.loads(value) for value in values)
-        entries=[*defaults,*[dict(source=p['public'],backing=p['backing']) for p in aliases]]
-        parents=sorted([(Path(p['backing']).parts,Path(p['source'])) for p in entries],
-                       key=lambda p:len(p[0]),reverse=True)
-        store._logical_routes=(values,parents)
-    else:parents=cached[1]
+    if not store.db.in_transaction and cached is not None and getattr(store,'_logical_route_stamp',None)==stamp:
+        parents=cached[1]
+    else:
+        rows=dict(store.db.execute("SELECT key,value FROM meta WHERE key IN ('defaults','namespace_aliases')"))
+        values=tuple(rows.get(key,'[]') for key in ('defaults','namespace_aliases'))
+        if cached is None or cached[0]!=values:
+            defaults,aliases=(json.loads(value) for value in values)
+            entries=[*defaults,*[dict(source=p['public'],backing=p['backing']) for p in aliases]]
+            parents={}
+            for entry in entries:
+                parents.setdefault(Path(entry['backing']).parts,Path(entry['source']))
+            store._logical_routes=(values,parents)
+        else:parents=cached[1]
+        store._logical_route_stamp=None if store.db.in_transaction else stamp
     for _ in range(32):
         parts=path.parts
-        match=next((p for p in parents if parts[:len(p[0])]==p[0]),None)
+        match=next(((n,parents[parts[:n]]) for n in range(len(parts),0,-1) if parts[:n] in parents),None)
         if match is None:return path
-        rewritten=match[1].joinpath(*parts[len(match[0]):])
+        rewritten=match[1].joinpath(*parts[match[0]:])
         if rewritten==path:raise ValueError('default backing rewrite cycle')
         path=rewritten
     raise ValueError('default backing rewrite depth exceeded')
