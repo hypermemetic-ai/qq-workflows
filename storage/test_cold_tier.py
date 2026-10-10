@@ -14,6 +14,34 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 
 class ColdTierTests(unittest.TestCase):
+    def test_logical_routes_reuse_unchanged_metadata_without_reparsing(self):
+        backing=self.home/'.projects-qq-ssd';public=self.home/'projects'
+        self.store.put('defaults',[dict(source=str(public),backing=str(backing))]);self.store.db.commit()
+        path=backing/'app'/'file';expected=public/'app'/'file'
+        self.assertEqual(m.logical_source(self.store,path),expected)
+        with patch.object(m.json,'loads',side_effect=AssertionError('reparsed unchanged routes')):
+            self.assertEqual(m.logical_source(self.store,path),expected)
+
+    def test_logical_routes_notice_concurrent_default_changes(self):
+        backing=self.home/'.projects-qq-ssd';public=self.home/'projects';next_public=self.home/'next'
+        self.store.put('defaults',[dict(source=str(public),backing=str(backing))]);self.store.db.commit()
+        path=backing/'file';self.assertEqual(m.logical_source(self.store,path),public/'file')
+        other=m.Store(self.store.state)
+        try:
+            other.put('defaults',[dict(source=str(next_public),backing=str(backing))]);other.db.commit()
+            self.assertEqual(m.logical_source(self.store,path),next_public/'file')
+        finally:other.db.close()
+
+    def test_logical_routes_notice_concurrent_nested_namespace_alias(self):
+        backing=self.home/'.projects-qq-ssd';public=self.home/'projects'
+        self.store.put('defaults',[dict(source=str(public),backing=str(backing))]);self.store.db.commit()
+        path=backing/'app'/'file';self.assertEqual(m.logical_source(self.store,path),public/'app'/'file')
+        other=m.Store(self.store.state)
+        try:
+            other.put('namespace_aliases',[dict(public=str(public/'renamed'),backing=str(backing/'app'))]);other.db.commit()
+            self.assertEqual(m.logical_source(self.store,path),public/'renamed'/'file')
+        finally:other.db.close()
+
     def test_automatic_partition_drains_oversized_folder_in_bounded_children(self):
         source=self.home/'large';source.mkdir()
         for name in ('left','right'):
