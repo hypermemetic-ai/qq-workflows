@@ -32,6 +32,12 @@ systemctl --user start --no-block qq-cold-tier-migrate.service
 qq-cold-tier status
 ```
 
+Use `qq-cold-tier status --summary` for a compact live report: queue counts,
+the current copy or checksum-verification progress, watcher heartbeat age,
+SSD/HDD free space and any last drain failure. It reads the operation journal
+without scanning payloads. An empty active operation does not imply that the
+pending or deferred queue has finished.
+
 Core OS storage remains outside the configured user roots. Control state and the
 machinery's own checkout are excluded. Do not admit paid contract work or another
 operator's data. There are no blanket SSD exemptions for databases, application
