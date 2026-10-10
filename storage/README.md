@@ -371,6 +371,9 @@ read-only SSD census, including directories inaccessible to the user account,
 at the physical SSD control path `system-prepare.json`. It does not delete data,
 change partitions or operate the excluded NVMe. A failed or missing data mount
 continues to fail closed; no login failure is deliberately added.
+Verified activation is recorded before the optional SSD census. The census has
+a two-minute budget and retains completed rows if it times out. An incomplete
+census does not require repeating successful volume or checker activation.
 
 ## Native block-cache alternative
 

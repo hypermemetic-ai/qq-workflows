@@ -47,11 +47,42 @@ class SystemPreparation(unittest.TestCase):
         result=SimpleNamespace(returncode=1,stdout='8192\t/home\n',stderr='permission denied')
         with patch.object(m.subprocess,'run',return_value=result) as run:report=m.census()
         self.assertFalse(report['complete']);self.assertEqual(report['rows'][0]['bytes'],8192)
-        self.assertEqual(run.call_args.kwargs['timeout'],600)
+        self.assertEqual(run.call_args.kwargs['timeout'],120)
+        self.assertEqual(run.call_args.args[0][:5],['ionice','-c','2','-n','7'])
     def test_census_excess_output_is_rejected(self):
         result=SimpleNamespace(returncode=0,stdout='x'*262145,stderr='')
         with patch.object(m.subprocess,'run',return_value=result):
             with self.assertRaisesRegex(ValueError,'output bound'):m.census()
+
+    def test_census_timeout_retains_only_completed_rows(self):
+        error=m.subprocess.TimeoutExpired(['du'],120,output=b'8192\t/home\n4096\t/tmp/truncated',stderr=b'scan diagnostic')
+        with patch.object(m.subprocess,'run',side_effect=error):report=m.census()
+        self.assertFalse(report['complete']);self.assertEqual(report['rows'],[{'bytes':8192,'path':'/home'}])
+        self.assertIn('scan diagnostic',report['errors']);self.assertIn('120 second budget',report['errors'])
+
+    def test_census_timeout_still_enforces_output_bound(self):
+        error=m.subprocess.TimeoutExpired(['du'],120,output=b'x'*262145)
+        with patch.object(m.subprocess,'run',side_effect=error):
+            with self.assertRaisesRegex(ValueError,'output bound'):m.census()
+
+    def test_worker_records_verified_activation_before_optional_census(self):
+        saved=[]
+        def save(path,report,*_):saved.append(json.loads(json.dumps(report)))
+        def census():
+            self.assertEqual(len(saved),1)
+            self.assertTrue(saved[0]['reference_collector']['host_scan']['complete'])
+            self.assertFalse(saved[0]['ssd_census']['complete'])
+            return {'complete':False,'rows':[],'errors':'scan reached time budget'}
+        with patch('sys.argv',['system-prepare','--worker','--output',str(self.root/'report.json')]),\
+             patch.object(m.os,'geteuid',return_value=0),patch.object(m.os,'umask'),\
+             patch.object(m.base,'output_path',return_value=self.root/'report.json'),\
+             patch.object(m.base,'verified_host_mounts'),patch.object(m.volume,'read_manifest'),\
+             patch.object(m,'boot_order',return_value={}),patch.object(m,'reference_collector',return_value={}),\
+             patch.object(m,'reference_smoke',return_value={'complete':True,'processes':700,'fds':8000}),\
+             patch.object(m,'census',side_effect=census),patch.object(m.base,'atomic_json',side_effect=save),patch('builtins.print') as out:
+            self.assertEqual(m.main(),0)
+        self.assertEqual(len(saved),2);self.assertEqual(saved[-1]['ssd_census']['errors'],'scan reached time budget')
+        self.assertTrue(any('No activation rerun needed' in str(c) for c in out.call_args_list))
 
     def test_reference_smoke_requires_complete_scan_as_operator(self):
         report={'complete':True,'processes':700,'fds':8000,'blocked':[0]}
