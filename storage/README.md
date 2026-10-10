@@ -21,6 +21,10 @@ Decision reports resolve protected paths once per pass and refresh that policy
 on the next pass, keeping bulk reports from repeating every filesystem lookup.
 Stale queue entries for machinery's SSD backing directories are protected;
 their admitted children migrate without re-partitioning the backing namespace.
+Expanding a live mirror proxy records its original backing before publication.
+Admission then tracks untouched SSD children, including after interruption;
+changed original inodes retain the record for review. Alias spellings reuse the
+same admitted child rather than introducing another tracked copy.
 
 After changing the archive to the native cached volume, run
 `qq-job -- qq-cold-tier route-defaults`. This atomically redirects new children

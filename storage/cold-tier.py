@@ -565,9 +565,34 @@ def bridge_parent(store, cfg, raw):
     return parents[-1]
 
 
+def adopt_mirror_scaffolds(store,cfg,archive):
+    """Track SSD originals preserved by expansion of a live HDD proxy."""
+    pending=store.get('mirror_scaffold_intents',[]);remaining=[];parents=store.get('defaults',[])
+    for record in pending:
+        source,backing,hdd=(Path(record[k]) for k in ('source','backing','hdd'))
+        try:published=source.resolve(strict=True)==hdd
+        except FileNotFoundError:published=False
+        if not published:remaining.append(record);continue
+        if (hdd!=mirror_path(store,archive,source) or not hdd.is_dir() or hdd.is_symlink()
+                or hdd.stat().st_uid!=os.getuid() or backing.is_symlink() or not backing.is_dir()
+                or backing.resolve()!=backing or backing.stat().st_uid!=os.getuid()
+                or not any(within(backing,absolute(p)) for p in cfg['source_roots'])
+                or [backing.stat().st_dev,backing.stat().st_ino]!=record['identity']):
+            raise ValueError('mirror scaffold original changed; preserved for review')
+        matches=[p for p in parents if p['hdd']==str(hdd)]
+        if matches:
+            if len(matches)!=1 or matches[0]['backing']!=str(backing):
+                raise ValueError('mirror scaffold ledger differs; preserved for review')
+        else:
+            parents.append({k:str(v) for k,v in zip(('source','backing','hdd'),(source,backing,hdd))})
+            store.put('defaults',parents);store.db.commit()
+    store.put('mirror_scaffold_intents',remaining);store.db.commit()
+
+
 def adopt_defaults(store, cfg):
     """Admit newly created children and discover legacy SSD children of every size."""
     archive = mount_ready(cfg)
+    adopt_mirror_scaffolds(store,cfg,archive)
     parents = store.get('defaults', [])
     managed_backings = {str(Path(p['backing'])) for p in parents}
     routed_bridges = {}
@@ -582,7 +607,13 @@ def adopt_defaults(store, cfg):
         if root['location'] == 'ssd' and root['hot'] in managed_backings and not json.loads(root['aliases']):
             if store.db.execute('SELECT 1 FROM scopes WHERE root=?', (root['id'],)).fetchone():
                 raise ValueError('managed backing has a regeneration scope; review required')
-            if Path(root['source']).resolve() != Path(root['hot']):
+            resolved=Path(root['source']).resolve()
+            routed=next((p for p in parents if p['backing']==root['hot'] and Path(p['hdd'])==resolved),None)
+            if routed:
+                store.db.execute('UPDATE roots SET location=?,target=?,hot=?,since=0,coverage=0,error=? WHERE id=?',
+                                 ('hdd',str(resolved),'','expanded mirror: awaiting watcher',root['id']))
+                store.db.commit();continue
+            if resolved != Path(root['hot']):
                 raise ValueError('managed backing tracking changed; review required')
             for table,column in (('activity','root'),('latency','root'),('roots','id')):
                 store.db.execute(f'DELETE FROM {table} WHERE {column}=?',(root['id'],))
@@ -621,7 +652,7 @@ def adopt_defaults(store, cfg):
                 store.db.commit()
         except FileNotFoundError: pass
     store.db.commit()
-    existing = {r['source'] for r in store.roots()}
+    existing = {str(logical_source(store,r['source'])) for r in store.roots()}
     for parent in parents:
         source, backing, hdd = (Path(parent[k]) for k in ('source', 'backing', 'hdd'))
         if source.resolve() != hdd: raise ValueError('default parent no longer matches ledger')
@@ -641,7 +672,7 @@ def adopt_defaults(store, cfg):
         for child in hdd.iterdir():
             if tier_temporary(child): continue
             public = source / child.name
-            if str(public) in existing: continue
+            if str(logical_source(store,public)) in existing: continue
             resolved = child.resolve()
             if str(resolved) in managed_backings: continue
             if any(within(resolved, p) for p in excluded): continue
@@ -656,7 +687,7 @@ def adopt_defaults(store, cfg):
                     store.register(public, cold, 'ssd', hot=real)
             elif child.is_dir() or child.is_file():
                 store.register(public, child, 'hdd')
-            existing.add(str(public))
+            existing.add(str(logical_source(store,public)))
     if cfg.get('automatic_migration', True):
         for root in store.roots():
             if root['location'] != 'ssd': continue
@@ -664,7 +695,7 @@ def adopt_defaults(store, cfg):
             # Do not resolve every protected path again just to leave their
             # existing queue record unchanged during each watcher pass.
             if store.db.execute('SELECT 1 FROM queue WHERE source=?',(root['source'],)).fetchone(): continue
-            parent=next((p for p in parents if Path(root['source']).parent==Path(p['source'])),None)
+            parent=next((p for p in parents if logical_source(store,Path(root['source']).parent)==logical_source(store,p['source'])),None)
             # Explicit promotions have a separate hot path; preserve them.
             if not parent or live_path(root)!=Path(parent['backing'])/Path(root['source']).name: continue
             if excluded_unit(live_path(root),cfg): continue
@@ -752,9 +783,18 @@ def ensure_mirror_parent(store,cfg,raw):
             # Publishing this ancestor changes where its logical spelling
             # resolves. Point untouched children at the stable backing inode,
             # otherwise their new proxies point back into their own namespace.
-            entries=list(original.resolve(strict=True).iterdir())
+            backing=original.resolve(strict=True)
+            entries=list(backing.iterdir())
             if len(entries)>cfg['max_scan_entries']:raise ValueError('mirror ancestor entry budget exceeded')
             for child in entries:(stage/child.name).symlink_to(child)
+            if (original.parent.resolve()==directory.parent and original.is_symlink()
+                    and any(within(backing,absolute(p)) for p in cfg['source_roots'])):
+                identity=backing.stat()
+                intent=dict(source=str(original),backing=str(backing),hdd=str(directory),
+                            identity=[identity.st_dev,identity.st_ino])
+                pending=store.get('mirror_scaffold_intents',[])
+                if intent not in pending:
+                    pending.append(intent);store.put('mirror_scaffold_intents',pending);store.db.commit()
             if os.path.lexists(directory):exchange(stage,directory);stage.unlink()
             else:stage.rename(directory)
             flush_directory(directory.parent)
