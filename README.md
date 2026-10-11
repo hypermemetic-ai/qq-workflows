@@ -1,5 +1,10 @@
 # qq-workflows
 
+For the stock Codex workflow in T3 Code, see [OpenSpec Architect](docs/t3-openspec.md):
+interactive architecture planning, native delegation and worktrees, and reviewed
+OpenSpec deltas merged into maintained specifications. The Pi/Paseo machinery
+documented below is retained for its existing consumers.
+
 Ticket-driven planning, in-session teaching, and deliberate delegation. One
 Architect, one worker runtime.
 

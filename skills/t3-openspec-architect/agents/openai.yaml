@@ -1,0 +1,5 @@
+interface:
+  display_name: "OpenSpec Architect"
+  short_description: "Interactive architecture, delta specs and delegated builds"
+  default_prompt: "Use $t3-openspec-architect to plan this change with me, then capture the agreed architecture in OpenSpec."
+
