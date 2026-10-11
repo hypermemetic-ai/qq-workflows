@@ -66,4 +66,3 @@ verification. Check every ADDED/MODIFIED/REMOVED/RENAMED delta against the main
 specs after sync. Keep the archive and specification update on the branch being
 delivered; they become maintained documentation when that branch lands. Do not
 label an unmerged branch as the shipped specification.
-

@@ -31,4 +31,3 @@ Live activation requires the landed permanent checkout. Keep this setup change
 active for the initial installation PR; after activation, sync and archive it in
 a final documentation PR. This installation dependency does not change the
 future workflow's ordinary single-branch code/spec/archive delivery contract.
-

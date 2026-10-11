@@ -28,4 +28,3 @@ sources, active changes and worktree ownership. Keep behavioral change specs
 distinct from the maintained specification until verified implementation is
 ready to land. Never claim that a successful delta sync proves the Git branch
 merged or the product deployed.
-

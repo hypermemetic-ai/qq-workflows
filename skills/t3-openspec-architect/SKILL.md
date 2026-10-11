@@ -119,4 +119,3 @@ archived on its delivery branch before that branch lands; describe it as pending
 delivery until Git merge and any required activation are confirmed. Preserve
 unrelated main-spec requirements during semantic sync.
 Remove only owned, clean, merged worktrees and stop task-only background processes.
-

@@ -76,4 +76,3 @@ authorized Git and activation path.
 #### Scenario: Specification sync succeeds before Git delivery
 - **WHEN** a delta has synced but its branch has not landed
 - **THEN** the architect reports that Git delivery remains pending rather than claiming the change shipped
-
