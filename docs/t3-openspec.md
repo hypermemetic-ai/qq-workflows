@@ -1,23 +1,41 @@
 # OpenSpec Architect in T3 Code
 
-T3 uses stock Codex with a dedicated profile at `~/.t3/codex`. The planning
-adapter follows Matt Pocock's grilling approach: investigate the code, work
-through consequential decisions with the engineer, and make grounded
-recommendations. The pinned MIT reference is in the adapter's `references/`.
-OpenSpec remains the artifact authority; no parallel framework plan is created.
+T3 uses stock Codex with a dedicated profile at `~/.t3/codex`. Architecture
+planning follows the byte-original, pinned Matt Pocock grilling instructions:
+whole-frontier rounds, recommended answers, delegated fact-finding and engineer
+confirmation. OpenSpec supplies the change artifacts and maintained specifications.
+
+All custom integration is in [the phase/role router](../skills/t3-openspec-architect/SKILL.md).
+The short profile instruction points to it. The router selects the original
+controller for each phase; it does not rewrite its interview or confirmation rules.
+
+| Phase | Original source | Owner |
+| --- | --- | --- |
+| Architecture interview | `references/grilling.md` (pinned upstream) | Parent architect; research agents return factual evidence |
+| Capture/revise | Stock `openspec-propose` / `openspec-update-change` | Parent architect |
+| Apply | Stock `openspec-apply-change` | Parent architect; implementation agents return commits and checks |
+| Sync/archive | Stock `openspec-sync-specs` / `openspec-archive-change` | Parent architect |
+
+`openspec-explore` remains available for standalone use, but is excluded from
+this grilling round. Some projects advertise their own OpenSpec skill copies;
+phase routing applies regardless of discovery location. Neither the global core
+collection nor project-local source files are patched.
 
 Start a fresh **OpenSpec Architect** conversation in the selected T3 project:
 
 > Use $t3-openspec-architect to plan [change]. Discuss the architecture with me
 > and produce the OpenSpec proposal, delta specs, design and tasks.
 
-Planning stops at a validated change contract. When ready:
+Follow grilling's completion confirmation and the stock capture skill's handoff.
+After the proposal is presented, request implementation when ready:
 
 > Implement and deliver this change. Delegate the work and review the results.
 
-The parent stays the architect. Native Codex workers receive bounded ownership,
-separate worktrees for independent tasks, and permission to edit, test and fix
-their assignments. The architect reviews actual diffs and acceptance evidence,
+The parent runs the OpenSpec workflows and stays the architect. Research agents
+return evidence without project edits. Implementation agents receive task IDs,
+context, ownership and acceptance criteria, with separate worktrees for independent
+tasks and permission to edit, test, fix and commit their assignments. The architect
+reviews actual diffs and acceptance evidence,
 integrates accepted commits, syncs the deltas into maintained specs, and archives
 the change. Implementation, updated specs and archive land through the project's
 normal Git/PR path together. An archived change on an unmerged branch is still
@@ -82,6 +100,6 @@ openspec validate --all --strict
 
 Installer tests exercise isolation, idempotence, provider preservation, private
 backups, ownership conflicts and relocated agent configuration dependencies.
-An independent disposable workflow exercise additionally covers planning-only
-behavior, isolated implementation, diff review, requirement-preserving spec
-sync, archive and native Git integration.
+Independent review checks the router against the source handoffs and evaluates
+planning and delegated roles. Source hashes verify the original grilling content;
+native discovery and installation checks verify activation.
