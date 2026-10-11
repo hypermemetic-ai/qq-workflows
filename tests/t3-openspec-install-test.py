@@ -178,6 +178,29 @@ config_file = "./worker.toml"
         self.assertEqual((manifest.parent / filename).read_bytes(), old)
         self.assertEqual(tomllib.loads((self.profile / "config.toml").read_text())["model"], "updated-model")
 
+    def test_server_normalized_runtime_default_and_formatting_remain_idempotent(self):
+        self.assertEqual(self.invoke()[0], 0)
+        settings_path = self.t3 / "userdata/settings.json"
+        normalized = self.settings()
+        normalized.pop("defaultRuntimeMode")
+        # Mimic T3's omission of defaults and its independent JSON formatting.
+        settings_path.write_text(json.dumps(normalized, sort_keys=True, separators=(",", ":")))
+        before = self.snapshot(self.root)
+        mtime = settings_path.stat().st_mtime_ns
+        self.assertEqual(self.invoke("--check")[0], 0)
+        self.assertEqual(self.invoke()[0], 0)
+        self.assertEqual(self.snapshot(self.root), before)
+        self.assertEqual(settings_path.stat().st_mtime_ns, mtime)
+
+        normalized["defaultRuntimeMode"] = "approval-required"
+        settings_path.write_text(json.dumps(normalized))
+        wrong_mode = settings_path.read_bytes()
+        self.assertEqual(self.invoke("--check")[0], 1)
+        self.assertEqual(settings_path.read_bytes(), wrong_mode)
+        self.assertEqual(self.invoke()[0], 0)
+        self.assertEqual(self.settings()["defaultRuntimeMode"], "full-access")
+        self.assertEqual(self.invoke("--check")[0], 0)
+
     def test_refuses_conflicting_links_and_skill_directories_without_mutation(self):
         for kind in ("symlink", "directory", "file"):
             with self.subTest(kind=kind):

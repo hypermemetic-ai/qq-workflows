@@ -12,13 +12,13 @@
 
 ## 3. Integration and delivery
 
-- [ ] 3.1 Verify the existing login, actual Codex skill discovery, T3 provider selection, worktree/full-access settings and server health; report the observed integration evidence.
-- [ ] 3.2 Resolve independent review findings and validate the change; sync the new capability into main specs, archive it, and verify the resulting maintained specification.
-- [ ] 3.3 Commit, push and land through qq-workflows' PR path; activate the landed sources and verify final Git and T3 state.
+- [x] 3.1 Verify the existing login, actual Codex skill discovery, T3 provider selection, worktree/full-access settings and server health; report the observed integration evidence.
+- [x] 3.2 Resolve independent review findings and validate the change; sync the new capability into main specs, archive it, and verify the resulting maintained specification.
+- [x] 3.3 Commit, push and land through qq-workflows' PR path; activate the landed sources and verify final Git and T3 state.
 
 ## Validation evidence
 
-The 13 installer fixture tests and skill metadata validation pass. Native Codex
+The 14 installer fixture tests and skill metadata validation pass. Native Codex
 app-server discovers the adapter and six core skills from the isolated profile,
 reports the existing ChatGPT login, full access and native delegation. No model
 turn was started. An independent disposable Git/OpenSpec exercise verified the
@@ -31,3 +31,17 @@ Live activation requires the landed permanent checkout. Keep this setup change
 active for the initial installation PR; after activation, sync and archive it in
 a final documentation PR. This installation dependency does not change the
 future workflow's ordinary single-branch code/spec/archive delivery contract.
+
+Installation PR #246 is merged and the permanent checkout activated. Native
+Codex authenticated and discovered all seven skills for all 26 registered
+projects. The authenticated live T3 `server.getSettings` API confirmed
+`OpenSpec Architect`, the dedicated home, full access and worktree defaults.
+The service stayed active; no model turn or user thread was created. The
+task-only verification bearer session was revoked and the fixture removed.
+
+Live T3 normalization omits its default full-access field on some settings
+writes. A final regression ensures semantically equivalent settings pass drift
+checks without formatting changes; an explicitly wrong runtime mode is repaired.
+The maintained specification's five requirements match the delta and all three
+main specifications pass strict validation. The final documentation PR carries
+the synced spec, archive and this compatibility fix.

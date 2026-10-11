@@ -265,6 +265,10 @@ def install(args):
             if existing.exists():
                 raise InstallError(f"refusing unowned profile file: {existing}")
     settings = json_object(settings_path)
+    current_settings = copy.deepcopy(settings)
+    # T3 omits values equal to server defaults when persisting settings. Its
+    # runtime default is full-access, so the omitted key is already configured.
+    current_settings.setdefault("defaultRuntimeMode", "full-access")
     settings.update(defaultRuntimeMode="full-access", defaultThreadEnvMode="worktree")
     overrides = {"homePath": str(home), "setupMode": "existing", "binaryPath": str(binary)}
     object_field(object_field(settings, "providers"), "codex").update(overrides)
@@ -273,10 +277,13 @@ def install(args):
     object_field(instance, "config").update(overrides)
     marker = {"owner": OWNER, "version": 1, "sourceCheckout": str(checkout),
               "sourceCodexHome": str(source_home), "codexHome": str(home)}
+    settings_bytes = (settings_path.read_bytes()
+                      if settings_path.exists() and current_settings == settings
+                      else (json.dumps(settings, indent=2, ensure_ascii=False) + "\n").encode())
     writes = {
         home / "config.toml": config,
         home / "AGENTS.md": agents,
-        settings_path: (json.dumps(settings, indent=2, ensure_ascii=False) + "\n").encode(),
+        settings_path: settings_bytes,
         marker_path: (json.dumps(marker, indent=2) + "\n").encode(),
     }
     changed = {path: data for path, data in writes.items() if not path.exists() or path.read_bytes() != data}
