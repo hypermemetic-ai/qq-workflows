@@ -1,11 +1,6 @@
-# t3-openspec-architecture Specification
+# Spec Delta
 
-## Purpose
-
-Let an engineer plan, delegate and deliver T3-hosted changes whose OpenSpec delta
-specifications become accurate maintained documentation after reviewed implementation.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Evidence-grounded engineering conversation
 The architect SHALL follow the original grilling instructions for the architecture
@@ -51,20 +46,6 @@ SHALL be the sole interview controller for the architecture round.
 - **WHEN** the architect presents artifacts through the stock propose workflow
 - **THEN** implementation follows that workflow's subsequent-request handoff
 
-### Requirement: T3-specific activation
-The installation SHALL make the architect adapter and unchanged OpenSpec core
-skills discoverable to T3's Codex provider through an independent home, retaining
-the existing login and unrelated configuration while preserving other agent homes.
-
-#### Scenario: Installation activates the dedicated profile
-- **WHEN** the installer completes successfully
-- **THEN** T3's Codex provider uses the dedicated home and discovers the adapter and all six core skills
-- **AND** the original Codex configuration and unrelated T3 providers remain unchanged
-
-#### Scenario: Installation is repeated
-- **WHEN** the installer runs against its existing installation
-- **THEN** the settings remain valid and skill registrations do not duplicate
-
 ### Requirement: Autonomous workers with architect review
 The architect SHALL assign research agents factual prerequisites and implementation
 agents bounded code tasks, review their evidence or changes, and own OpenSpec
@@ -88,18 +69,3 @@ commits SHALL be integrated sequentially.
 #### Scenario: An implementation task is delegated
 - **WHEN** the architect dispatches a task from the stock apply workflow
 - **THEN** the worker implements the assignment and returns results without running parent OpenSpec workflows or updating shared task progress
-
-### Requirement: Durable specification delivery
-The workflow SHALL sync verified implemented deltas into main specifications,
-verify the resulting requirements, archive the change only after sync finishes,
-and deliver the implementation, updated specs and archive through the project's
-authorized Git and activation path.
-
-#### Scenario: Reviewed implementation is ready to land
-- **WHEN** implementation and acceptance checks are complete
-- **THEN** the resulting main specs describe the implemented behavior and preserve unrelated requirements
-- **AND** the archive and specification update are committed on the delivered branch
-
-#### Scenario: Specification sync succeeds before Git delivery
-- **WHEN** a delta has synced but its branch has not landed
-- **THEN** the architect reports that Git delivery remains pending rather than claiming the change shipped
