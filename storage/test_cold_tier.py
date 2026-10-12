@@ -84,6 +84,62 @@ class CopyDurabilityTests(unittest.TestCase):
 
 
 class ColdTierTests(unittest.TestCase):
+    def test_protected_runtime_loop_is_protected_before_resolution(self):
+        runtime=self.home/'runtime';runtime.mkdir()
+        first=runtime/'first';second=runtime/'second'
+        first.symlink_to(second);second.symlink_to(first)
+        self.cfg['excluded'].append(str(runtime))
+        self.assertTrue(m.excluded_unit(first,self.cfg))
+        key=self.store.register(first,self.archive/'unmoved','ssd',hot=first)
+        row=next(r for r in m.decisions(self.store,self.cfg) if r['id']==key)
+        self.assertEqual(row['decision'],'protected')
+        self.assertTrue(first.is_symlink());self.assertTrue(second.is_symlink())
+
+    def test_backing_cannot_be_partitioned_into_a_second_default_namespace(self):
+        source=self.home/'runtime';source.mkdir();(source/'data').write_bytes(b'keep')
+        with patch.object(m,'references',return_value=[]):
+            parent=m.bridge_parent(self.store,self.cfg,source)
+        backing=Path(parent['backing']);identity=backing.stat().st_ino
+        with self.assertRaisesRegex(ValueError,'managed backing'):
+            m.bridge_parent(self.store,self.cfg,backing)
+        self.assertEqual(backing.stat().st_ino,identity)
+        self.assertEqual((source/'data').read_bytes(),b'keep')
+        self.assertEqual(len(self.store.get('defaults')),1)
+
+    def test_monitor_only_watch_preserves_namespace_and_recovery_journal(self):
+        source=self.home/'runtime';source.mkdir();(source/'data').write_bytes(b'keep')
+        identity=source.stat().st_ino
+        journal=self.store.state/'default-route-operation.json';journal.write_text('{"pending":true}')
+        self.cfg.update(automatic_adoption=False,automatic_gc=False)
+        with patch.object(m,'Inotify') as inotify, \
+             patch.object(m,'adopt_defaults') as adopt, \
+             patch.object(m,'recover_default_route') as recover, \
+             patch.object(m.select,'select',side_effect=InterruptedError('test finished')):
+            inotify.return_value.paths={};inotify.return_value.rebuild_roots=set()
+            with self.assertRaisesRegex(InterruptedError,'test finished'):
+                m.watch(self.store,self.cfg)
+            adopt.assert_not_called();recover.assert_not_called()
+            inotify.return_value.close.assert_called_once()
+        self.assertEqual(source.stat().st_ino,identity)
+        self.assertEqual((source/'data').read_bytes(),b'keep')
+        self.assertEqual(journal.read_text(),'{"pending":true}')
+
+    def test_monitor_only_drain_keeps_queued_data_and_recovery_untouched(self):
+        source=self.home/'queued';source.mkdir();(source/'data').write_bytes(b'keep')
+        m.queue_add(self.store,source)
+        journal=self.store.state/'operation.json';journal.write_text('{"pending":true}')
+        self.cfg['automatic_adoption']=False
+        with patch.object(m,'drain_units',side_effect=AssertionError('namespace mutation')), \
+             patch.object(m,'finish_bulk',side_effect=AssertionError('timer reactivation')):
+            m.drain(self.store,self.cfg)
+        self.assertEqual((source/'data').read_bytes(),b'keep')
+        self.assertEqual(journal.read_text(),'{"pending":true}')
+        row=self.store.db.execute('SELECT status FROM queue WHERE source=?',(str(source),)).fetchone()
+        self.assertEqual(row['status'],'pending')
+        summary=m.status_summary(self.store,self.cfg)
+        self.assertEqual(summary['namespace_mode'],'monitor_only')
+        self.assertEqual(summary['last_drain']['status'],'disabled')
+
     def test_migration_releases_recheck_before_destination_and_manifests_before_retirement(self):
         source=self.home/'memory-bounded';source.mkdir()
         (source/'data').write_bytes(b'preserved')

@@ -58,5 +58,9 @@ subprocess.run(['systemctl','--user','daemon-reload'],check=True)
 subprocess.run(['systemctl','--user','enable','--now','qq-cold-tier.service'],check=True)
 timer=['systemctl','--user','enable']
 if not args.defer_migration:timer.append('--now')
-subprocess.run([*timer,'qq-cold-tier-migrate.timer'],check=True)
+policy=json.loads((home/'.config/qq-cold-tier.json').read_text())
+if policy.get('automatic_adoption',True):
+    subprocess.run([*timer,'qq-cold-tier-migrate.timer'],check=True)
+else:
+    subprocess.run(['systemctl','--user','disable','--now','qq-cold-tier-migrate.timer'],check=True)
 print('Installed cold-tier release', release.name)
