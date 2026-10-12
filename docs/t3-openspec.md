@@ -93,6 +93,15 @@ can remain unused. Do not delete the original Codex home or login.
 
 ## Validation
 
+T3's service task limit includes threads in Codex, MCP servers, Git, and its own
+Node processes. `spawn ... EAGAIN` together with an increasing cgroup
+`pids.events` maximum counter indicates exhausted task capacity, independently
+of provider authentication or storage paths. On qq-box, the 256-task limit was
+exhausted by three Codex processes and their MCP children. A bounded 512-task
+limit supplies launch headroom while retaining the existing 4 GiB memory limit.
+Apply a service property change without restarting active conversations, and
+verify a new native app-server probe using the verifier below.
+
 ```bash
 /home/qqp/.local/bin/qq-job -- python3 tests/t3-openspec-install-test.py
 openspec validate --all --strict

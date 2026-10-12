@@ -1,5 +1,26 @@
 # User-data HDD tier
 
+Native SSD block caching and directory relocation are separate mechanisms.
+The native cache accelerates the mounted HDD without changing application
+paths. Set `automatic_adoption`, `automatic_migration`, `automatic_partition`,
+`automatic_promotion`, `automatic_demotion`, and `automatic_gc` to false to keep
+existing namespaces stable while retaining that block cache. The watcher can
+continue recording evidence; disabling adoption also disables its directory
+reconciliation and automatic recovery writes. Explicit commands still require
+their ordinary safety checks.
+Monitor-only policy also prevents `drain` from applying queued operations. The
+installer disables its migration timer under this policy, including at boot.
+`status --summary` reports `namespace_mode: monitor_only`. Queued work and
+recovery journals remain intact for a deliberate later recovery.
+
+Keep live execution homes and temporary namespaces, including `~/.codex`,
+`~/.t3`, and `/tmp`, in `excluded`. Check these paths before following aliases:
+a circular runtime link must remain protected rather than crash status reports.
+A declared SSD backing or namespace-alias backing cannot become a second
+default parent. Use the explicit, verified `move-backing` operation for a
+reviewed inactive backing instead. Do not repair missing unique data by creating
+empty replacement files or deleting its ledger record.
+
 This is an operator-enabled storage tier. It changes existing directory paths
 with filesystem links, so applications and agents keep writing to their familiar
 paths. Newly created children of a default directory land on the HDD. Existing

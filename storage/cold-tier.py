@@ -48,6 +48,7 @@ DEFAULT = {
     'block_cached_mounts': [],
     'immutable_hardlink_scopes': [],
     'automatic_migration': True,
+    'automatic_adoption': True,
     'watch_original_ssd': True,
     'mirror_layout': False,
     'cached_retention_watches_only': False,
@@ -549,6 +550,10 @@ def move_backing(store, cfg, source, *, detach_packages=False, max_entries=None,
 
 
 def excluded_unit(path,cfg,*,resolved_excluded=None):
+    # Check the operator's spelling before following aliases. A protected
+    # runtime can already contain a loop; protection must still take effect.
+    raw=absolute(path)
+    if any(within(raw,absolute(p)) or within(absolute(p),raw) for p in cfg['excluded']):return True
     resolved=Path(path).resolve()
     paths=resolved_excluded if resolved_excluded is not None else [absolute(p).resolve() for p in cfg['excluded']]
     return any(within(resolved,p) or within(p,resolved) for p in paths)
@@ -606,6 +611,11 @@ def exchange(a, b):
 def bridge_parent(store, cfg, raw):
     """New children go to HDD. Existing children keep the same open inodes."""
     source = valid_source(raw, cfg)
+    backings={absolute(p['backing']) for p in store.get('defaults',[])}
+    backings.update(absolute(p) for entry in store.get('defaults',[]) for p in entry.get('previous',[]))
+    backings.update(absolute(p['backing']) for p in store.get('namespace_aliases',[]))
+    if source in backings:
+        raise ValueError('managed backing cannot become another default parent; use explicit move-backing')
     protect_container_mounts(store,cfg,[source])
     if not source.is_dir(): raise ValueError('default parent must be a directory')
     archive = mount_ready(cfg)
@@ -1803,7 +1813,7 @@ def watch(store, cfg):
         store.db.execute('UPDATE roots SET coverage=0,since=0,error=?', ('watcher restarted: quiet clock reset',)); store.db.commit()
         try:
             while True:
-                if time.time() >= next_adopt:
+                if cfg.get('automatic_adoption',True) and time.time() >= next_adopt:
                     try:
                         if (store.state/'default-route-operation.json').exists():
                             try:
@@ -1812,7 +1822,7 @@ def watch(store, cfg):
                         # Copies may take hours; late parent-FD writes must stay
                         # discoverable during them. Internal staging is excluded.
                         adopt_defaults(store, cfg); store.put('defaults_error',None);store.db.commit()
-                    except (OSError, ValueError) as e: store.put('defaults_error', str(e)[:200]); store.db.commit()
+                    except (OSError, ValueError, RuntimeError) as e: store.put('defaults_error', str(e)[:200]); store.db.commit()
                     next_adopt = time.time() + 60
                 # HDD roots can be retained/pruned; prioritize their complete
                 # coverage over SSD roots which are ineligible for retention.
@@ -1849,7 +1859,7 @@ def watch(store, cfg):
                                 store.db.execute('UPDATE roots SET coverage=1,since=CASE WHEN since=0 THEN ? ELSE since END,error=? WHERE id=?',
                                                  (time.time(), '', root['id']))
                                 break
-                            except (OSError, ValueError) as e:
+                            except (OSError, ValueError, RuntimeError) as e:
                                 # Partial admission provides no retention evidence.
                                 watcher.remove_root(key)
                                 if attempt == 0 and root['location']=='hdd' and str(e)=='watch budget exceeded':
@@ -1943,6 +1953,12 @@ def finish_bulk(store,cfg,config_path=None):
 
 def drain(store, cfg,*,config_path=None):
     started=time.time()
+    if not cfg.get('automatic_adoption',True):
+        store.put('last_drain',{'started':started,'finished':time.time(),'status':'disabled',
+                               'error':'monitor-only policy: queued namespace operations preserved'})
+        store.db.commit()
+        print('Monitor-only policy; queued namespace operations preserved',flush=True)
+        return
     try: drain_units(store,cfg)
     except LockBusy:
         print('Migration already active; queued units will be retried on the next pass',flush=True)
@@ -2153,6 +2169,7 @@ def status_summary(store, cfg):
     heartbeat = store.get('heartbeat', 0)
     result = {
         'timestamp': now,
+        'namespace_mode': 'automatic' if cfg.get('automatic_adoption',True) else 'monitor_only',
         'heartbeat_age_seconds': max(0, now-heartbeat) if heartbeat else None,
         'watches': store.get('watches', 0),
         'roots': [dict(r) for r in store.db.execute(
@@ -2211,6 +2228,7 @@ def main():
     if args.command == 'init' and not config_path.exists():
         config_path.parent.mkdir(parents=True, exist_ok=True); atomic_json(config_path, DEFAULT)
     cfg = dict(DEFAULT); cfg.update(bounded_json(config_path))
+    if type(cfg['automatic_adoption']) is not bool:raise ValueError('automatic_adoption must be a boolean')
     if cfg['schema'] != 1 or cfg['retention_days'] < 30: raise ValueError('unsupported policy or retention shorter than 30 days')
     if not isinstance(cfg['block_cached_mounts'], list) or any(not isinstance(p, str) or
             not Path(p).is_absolute() or Path(p) == Path('/') for p in cfg['block_cached_mounts']):
