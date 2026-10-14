@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Installer behavior tests use private fixtures and never touch live homes."""
 import contextlib
-import copy
 import importlib.util
 import io
 import json
@@ -9,8 +8,8 @@ import os
 from pathlib import Path
 import stat
 import tempfile
-import tomllib
 import unittest
+from unittest import mock
 
 
 SPEC = importlib.util.spec_from_file_location(
@@ -24,20 +23,18 @@ class InstallerTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="t3-openspec-test-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        self.home = self.root / "home"
+        (self.home / ".claude").mkdir(parents=True)
+        (self.home / ".claude/.credentials.json").write_text('{"fixture":"credential-never-read"}\n')
+        environment = mock.patch.dict(os.environ, {"HOME": str(self.home)})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.checkout = self.root / "checkout with spaces"
-        self.source = self.root / "source-codex"
         self.t3 = self.root / "t3"
-        self.profile = self.t3 / "codex"
-        self.binary = self.root / "codex"
+        self.profile = self.t3 / "claude-architect"
+        self.binary = self.root / "claude"
         self.binary.write_text("#!/bin/sh\nexit 0\n")
         self.binary.chmod(0o700)
-        self.source.mkdir()
-        (self.source / "auth.json").write_text('{"fixture":"credential-never-printed"}\n')
-        (self.source / "AGENTS.md").write_text("# User instructions\nKeep local agreements.\n")
-        (self.source / "worker.toml").write_text('model = "existing-worker-model"\n')
-        (self.source / "skills/.system").mkdir(parents=True)
-        (self.source / "sessions").mkdir()
-        (self.source / "sessions/untouched").write_text("session")
         for skill in installer.SKILLS:
             directory = self.checkout / "vendor/openspec/skills" / skill
             directory.mkdir(parents=True)
@@ -46,41 +43,11 @@ class InstallerTests(unittest.TestCase):
         custom.mkdir(parents=True)
         (custom / "SKILL.md").write_text("# Architect\n")
         (self.checkout / "docs").mkdir()
-        (self.checkout / "docs/t3-codex-instructions.md").write_text("# T3\nParent plans; assigned workers implement.\n")
-        self.config = '''# Preserve this top-level comment.
-model = "existing-model"
-approval_policy = "on-request"
-sandbox_mode = "workspace-write"
-model_reasoning_effort = "high"
-note = """a multiline value
-[not-a-table]
-approval_policy = 'keep inside string'"""
-
-[features]
-multi_agent = false
-other_feature = true
-
-[mcp_servers.existing]
-command = "keep-me"
-args = [
-  "one", # keep this comment too
-  "two",
-]
-env = { KEEP = "unchanged" }
-
-[agents]
-enabled = false
-max_concurrent_threads_per_session = 2
-other = "preserved"
-[agents.worker]
-description = "keep this worker"
-config_file = "./worker.toml"
-'''
-        (self.source / "config.toml").write_text(self.config)
+        (self.checkout / "docs/t3-architect-instructions.md").write_text("# T3\nParent plans; assigned workers implement.\n")
 
     def argv(self):
-        return ["--source-checkout", str(self.checkout), "--source-codex-home", str(self.source),
-                "--t3-home", str(self.t3), "--codex-binary", str(self.binary)]
+        return ["--source-checkout", str(self.checkout), "--t3-home", str(self.t3),
+                "--claude-binary", str(self.binary)]
 
     def invoke(self, *extra):
         with contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()) as errors:
@@ -94,65 +61,130 @@ config_file = "./worker.toml"
                 else ("file", path.read_bytes()) if path.is_file() else ("directory", None)
                 for path in root.rglob("*")}
 
-    def settings(self):
-        return json.loads((self.t3 / "userdata/settings.json").read_text())
+    def settings_path(self):
+        return self.t3 / "userdata/settings.json"
 
-    def test_isolated_profile_preserves_sources_and_unrelated_configuration(self):
-        source_before = self.snapshot(self.source)
+    def settings(self):
+        return json.loads(self.settings_path().read_text())
+
+    def write_settings(self, value):
+        self.settings_path().parent.mkdir(parents=True, exist_ok=True)
+        self.settings_path().write_text(json.dumps(value))
+
+    def owned_args(self):
+        return f"--add-dir {self.profile} --append-system-prompt-file {self.profile / 'instructions.md'}"
+
+    def install_legacy_codex(self):
+        """Reproduce the state left by the retired Codex profile installer."""
+        codex = self.t3 / "codex"
+        (codex / "skills").mkdir(parents=True)
+        (codex / "AGENTS.md").write_text("# kept Codex history\n")
+        (codex / ".t3-openspec-architect.json").write_text(json.dumps(
+            {"owner": installer.OWNER, "version": 1, "codexHome": str(codex)}))
+        owned = {"homePath": str(codex), "setupMode": "existing", "binaryPath": "/bin/codex"}
+        self.write_settings({
+            "defaultThreadEnvMode": "worktree",
+            "providers": {"codex": dict(owned)},
+            "providerInstances": {"codex": {"driver": "codex", "displayName": "OpenSpec Architect",
+                                            "enabled": True, "config": dict(owned)}}})
+        return codex
+
+    def test_fresh_install_configures_opus_profile_and_disables_codex(self):
+        home_before = self.snapshot(self.home)
         checkout_before = self.snapshot(self.checkout)
         code, output, error = self.invoke()
         self.assertEqual((code, error), (0, ""))
-        self.assertNotIn("credential-never-printed", output)
-        desired = tomllib.loads(self.config)
-        desired.update(approval_policy="never", sandbox_mode="danger-full-access")
-        desired["features"]["multi_agent"] = True
-        desired["agents"].update(enabled=True, max_concurrent_threads_per_session=5)
-        desired["agents"]["worker"]["config_file"] = str(self.source / "worker.toml")
-        self.assertEqual(tomllib.loads((self.profile / "config.toml").read_text()), desired)
-        self.assertIn("# Preserve this top-level comment.", (self.profile / "config.toml").read_text())
-        self.assertIn('"two",', (self.profile / "config.toml").read_text())
-        self.assertEqual(self.snapshot(self.source), source_before)
+        self.assertNotIn("credential-never-read", output)
+        self.assertEqual(self.snapshot(self.home), home_before)
         self.assertEqual(self.snapshot(self.checkout), checkout_before)
-        self.assertFalse((self.profile / "sessions").exists())
-        self.assertEqual(os.readlink(self.profile / "auth.json"), str(self.source / "auth.json"))
         for skill in installer.SKILLS:
-            self.assertEqual((self.profile / "skills" / skill).resolve(),
+            self.assertEqual((self.profile / ".claude/skills" / skill).resolve(),
                              (self.checkout / "vendor/openspec/skills" / skill).resolve())
-        self.assertTrue((self.profile / "skills/.system").is_symlink())
-        agents = (self.profile / "AGENTS.md").read_text()
-        self.assertIn("Keep local agreements.", agents)
-        self.assertIn("Parent plans; assigned workers implement.", agents)
+        self.assertEqual((self.profile / ".claude/skills" / installer.CUSTOM_SKILL).resolve(),
+                         (self.checkout / "skills" / installer.CUSTOM_SKILL).resolve())
+        self.assertEqual(os.readlink(self.profile / "instructions.md"),
+                         str(self.checkout / "docs/t3-architect-instructions.md"))
+        self.assertIn("Parent plans; assigned workers implement.", (self.profile / "instructions.md").read_text())
+        self.assertFalse((self.t3 / "codex").exists())
         settings = self.settings()
         self.assertEqual(settings["defaultRuntimeMode"], "full-access")
         self.assertEqual(settings["defaultThreadEnvMode"], "worktree")
-        self.assertEqual(settings["providers"]["codex"]["homePath"], str(self.profile))
-        self.assertEqual(settings["providerInstances"]["codex"]["config"]["homePath"], str(self.profile))
-        self.assertEqual(settings["providerInstances"]["codex"]["displayName"], "OpenSpec Architect")
+        self.assertEqual(settings["defaultModelSelection"], {"instanceId": "claudeAgent", "model": "claude-opus-5-5"})
+        self.assertEqual(settings["textGenerationModelSelection"],
+                         {"instanceId": "claudeAgent", "model": "claude-haiku-5-5",
+                          "options": [{"id": "effort", "value": "low"}]})
+        claude = settings["providerInstances"]["claudeAgent"]
+        self.assertEqual((claude["driver"], claude["enabled"], claude["displayName"]),
+                         ("claudeAgent", True, "OpenSpec Architect"))
+        self.assertEqual(claude["config"], {"binaryPath": str(self.binary), "autoCompactWindow": "300000",
+                                            "launchArgs": self.owned_args()})
+        self.assertNotIn("homePath", claude["config"])
+        self.assertEqual(settings["providerInstances"]["codex"], {"driver": "codex", "enabled": False})
+        self.assertNotIn("providers", settings)
+        self.assertEqual(settings["storageCleanup"], {"worktreeOnMerge": True})
 
-    def test_preserves_settings_providers_projects_environment_and_existing_config(self):
-        (self.t3 / "userdata").mkdir(parents=True)
+    def test_migrates_codex_install_removing_only_owned_codex_settings(self):
+        codex = self.install_legacy_codex()
+        settings = self.settings()
+        settings["providerInstances"]["codex"]["config"]["launchArgs"] = "--keep-me"
+        settings["providers"]["codex"]["env"] = {"KEEP": "yes"}
+        self.write_settings(settings)
+        legacy_before = self.snapshot(codex)
+        self.assertEqual(self.invoke()[0], 0)
+        after = self.settings()
+        self.assertEqual(after["providerInstances"]["codex"],
+                         {"driver": "codex", "enabled": False, "config": {"launchArgs": "--keep-me"}})
+        self.assertEqual(after["providers"], {"codex": {"env": {"KEEP": "yes"}}})
+        self.assertEqual(after["providerInstances"]["claudeAgent"]["displayName"], "OpenSpec Architect")
+        # Old Codex conversations stay on disk; only T3's use of them ends.
+        self.assertEqual(self.snapshot(codex), legacy_before)
+
+    def test_migration_drops_empty_legacy_codex_settings(self):
+        self.install_legacy_codex()
+        self.assertEqual(self.invoke()[0], 0)
+        after = self.settings()
+        self.assertNotIn("providers", after)
+        self.assertEqual(after["providerInstances"]["codex"], {"driver": "codex", "enabled": False})
+
+    def test_preserves_unrelated_settings_and_codex_configuration_outside_the_legacy_home(self):
         existing = {"theme": "dark", "projects": [{"path": "/keep/project"}],
-                    "providers": {"codex": {"launchArgs": ["--existing-flag"], "env": {"KEY": "keep"}},
-                                  "claude": {"homePath": "/claude"}},
-                    "providerInstances": {"codex": {"config": {"launchArgs": ["--also-keep"], "env": {"KEEP": "yes"}}},
-                                          "other": {"driver": "claude", "enabled": True, "config": {"custom": 2}}}}
-        path = self.t3 / "userdata/settings.json"
-        path.write_text(json.dumps(existing))
+                    "providers": {"codex": {"homePath": "/user/codex"}, "cursor": {"x": 1}},
+                    "providerInstances": {"codex": {"driver": "codex", "config": {"homePath": "/user/codex"}},
+                                          "other": {"driver": "cursor", "enabled": True, "config": {"custom": 2}}}}
+        self.write_settings(existing)
         self.assertEqual(self.invoke()[0], 0)
         after = self.settings()
         self.assertEqual(after["projects"], existing["projects"])
         self.assertEqual(after["theme"], "dark")
-        self.assertEqual(after["providers"]["claude"], existing["providers"]["claude"])
+        self.assertEqual(after["providers"], existing["providers"])
         self.assertEqual(after["providerInstances"]["other"], existing["providerInstances"]["other"])
-        self.assertEqual(after["providers"]["codex"]["launchArgs"], ["--existing-flag"])
-        self.assertEqual(after["providerInstances"]["codex"]["config"]["env"], {"KEEP": "yes"})
+        self.assertEqual(after["providerInstances"]["codex"],
+                         {"driver": "codex", "enabled": False, "config": {"homePath": "/user/codex"}})
         manifests = list((self.t3 / "backups").glob("*/manifest.json"))
         self.assertEqual(len(manifests), 1)
         mapping = json.loads(manifests[0].read_text())
-        backup_name = next(name for name, original in mapping.items() if original == str(path))
+        backup_name = next(name for name, original in mapping.items() if original == str(self.settings_path()))
         self.assertEqual(json.loads((manifests[0].parent / backup_name).read_text()), existing)
         self.assertEqual(stat.S_IMODE(manifests[0].parent.stat().st_mode), 0o700)
         self.assertEqual(stat.S_IMODE((manifests[0].parent / backup_name).stat().st_mode), 0o600)
+
+    def test_launch_arguments_keep_unrelated_flags_and_refuse_conflicts(self):
+        self.write_settings({"providerInstances": {"claudeAgent": {"driver": "claudeAgent", "config": {
+            "launchArgs": "--chrome --autocompact 300000", "homePath": "/custom/claude"}}}})
+        self.assertEqual(self.invoke()[0], 0)
+        config = self.settings()["providerInstances"]["claudeAgent"]["config"]
+        self.assertEqual(config["launchArgs"], "--chrome --autocompact 300000 " + self.owned_args())
+        self.assertEqual(config["homePath"], "/custom/claude")
+        self.assertEqual(self.invoke("--check")[0], 0)
+
+        settings = self.settings()
+        settings["providerInstances"]["claudeAgent"]["config"]["launchArgs"] = "--add-dir /elsewhere"
+        self.write_settings(settings)
+        before = self.snapshot(self.root)
+        code, _, errors = self.invoke()
+        self.assertEqual(code, 2)
+        self.assertIn("conflicting Claude launch argument --add-dir", errors)
+        self.assertEqual(self.snapshot(self.root), before)
 
     def test_idempotent_install_and_read_only_check(self):
         before = self.snapshot(self.root)
@@ -166,45 +198,63 @@ config_file = "./worker.toml"
         self.assertEqual(self.snapshot(self.root), installed)
         self.assertEqual({str(path): path.lstat().st_mtime_ns for path in self.t3.rglob("*")}, times)
 
-    def test_updates_owned_profile_and_backs_up_old_files(self):
+    def test_linked_instructions_follow_source_edits_without_reinstalling(self):
         self.assertEqual(self.invoke()[0], 0)
-        old = (self.profile / "config.toml").read_bytes()
-        (self.source / "config.toml").write_text(self.config.replace('"existing-model"', '"updated-model"'))
+        (self.checkout / "docs/t3-architect-instructions.md").write_text("# T3\nRevised routing.\n")
+        self.assertEqual(self.invoke("--check")[0], 0)
+        self.assertIn("Revised routing.", (self.profile / "instructions.md").read_text())
+
+    def test_replaces_owned_copied_instructions_with_link_and_backs_up_copy(self):
+        self.assertEqual(self.invoke()[0], 0)
+        instructions = self.profile / "instructions.md"
+        instructions.unlink()
+        instructions.write_text("# copied by an earlier install\n")
         self.assertEqual(self.invoke("--check")[0], 1)
         self.assertEqual(self.invoke()[0], 0)
+        self.assertTrue(instructions.is_symlink())
         manifest = next((self.t3 / "backups").glob("*/manifest.json"))
         mapping = json.loads(manifest.read_text())
-        filename = next(key for key, value in mapping.items() if value == str(self.profile / "config.toml"))
-        self.assertEqual((manifest.parent / filename).read_bytes(), old)
-        self.assertEqual(tomllib.loads((self.profile / "config.toml").read_text())["model"], "updated-model")
+        filename = next(key for key, value in mapping.items() if value == str(instructions))
+        self.assertEqual((manifest.parent / filename).read_text(), "# copied by an earlier install\n")
+        self.assertEqual(self.invoke("--check")[0], 0)
+
+    def test_refuses_conflicting_instructions_link_without_mutation(self):
+        self.assertEqual(self.invoke()[0], 0)
+        instructions = self.profile / "instructions.md"
+        instructions.unlink()
+        instructions.symlink_to(self.root / "elsewhere.md")
+        before = self.snapshot(self.root)
+        code, _, errors = self.invoke()
+        self.assertEqual(code, 2)
+        self.assertIn("refusing conflicting link", errors)
+        self.assertEqual(self.snapshot(self.root), before)
 
     def test_server_normalized_runtime_default_and_formatting_remain_idempotent(self):
         self.assertEqual(self.invoke()[0], 0)
-        settings_path = self.t3 / "userdata/settings.json"
         normalized = self.settings()
         normalized.pop("defaultRuntimeMode")
         # Mimic T3's omission of defaults and its independent JSON formatting.
-        settings_path.write_text(json.dumps(normalized, sort_keys=True, separators=(",", ":")))
+        self.settings_path().write_text(json.dumps(normalized, sort_keys=True, separators=(",", ":")))
         before = self.snapshot(self.root)
-        mtime = settings_path.stat().st_mtime_ns
+        mtime = self.settings_path().stat().st_mtime_ns
         self.assertEqual(self.invoke("--check")[0], 0)
         self.assertEqual(self.invoke()[0], 0)
         self.assertEqual(self.snapshot(self.root), before)
-        self.assertEqual(settings_path.stat().st_mtime_ns, mtime)
+        self.assertEqual(self.settings_path().stat().st_mtime_ns, mtime)
 
-        normalized["defaultRuntimeMode"] = "approval-required"
-        settings_path.write_text(json.dumps(normalized))
-        wrong_mode = settings_path.read_bytes()
+        normalized["textGenerationModelSelection"]["instanceId"] = "codex"
+        self.settings_path().write_text(json.dumps(normalized))
+        reverted = self.settings_path().read_bytes()
         self.assertEqual(self.invoke("--check")[0], 1)
-        self.assertEqual(settings_path.read_bytes(), wrong_mode)
+        self.assertEqual(self.settings_path().read_bytes(), reverted)
         self.assertEqual(self.invoke()[0], 0)
-        self.assertEqual(self.settings()["defaultRuntimeMode"], "full-access")
+        self.assertEqual(self.settings()["textGenerationModelSelection"]["instanceId"], "claudeAgent")
         self.assertEqual(self.invoke("--check")[0], 0)
 
     def test_refuses_conflicting_links_and_skill_directories_without_mutation(self):
         for kind in ("symlink", "directory", "file"):
             with self.subTest(kind=kind):
-                destination = self.profile / "skills" / installer.SKILLS[0]
+                destination = self.profile / ".claude/skills" / installer.SKILLS[0]
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 if kind == "symlink":
                     destination.symlink_to(self.root / "missing")
@@ -234,116 +284,56 @@ config_file = "./worker.toml"
         self.assertEqual(self.invoke()[0], 2)
         self.assertEqual(self.snapshot(self.root), before)
 
-    def test_refuses_source_home_overlap_and_checkout_backups(self):
+    def test_refuses_unsafe_profile_locations(self):
         before = self.snapshot(self.root)
-        self.assertEqual(self.invoke("--codex-home", str(self.source))[0], 2)
-        self.assertEqual(self.invoke("--codex-home", str(self.source / "child"))[0], 2)
         self.assertEqual(self.invoke("--t3-home", str(self.checkout / "state"))[0], 2)
-        self.assertEqual(self.invoke("--codex-home", str(self.checkout / "profile"))[0], 2)
-        self.assertEqual(self.invoke("--t3-home", str(self.source), "--codex-home", str(self.root / "profile"))[0], 2)
+        self.assertEqual(self.invoke("--profile", str(self.checkout / "profile"))[0], 2)
+        self.assertEqual(self.invoke("--profile", str(self.home / ".claude/architect"))[0], 2)
+        self.assertEqual(self.invoke("--profile", str(self.root / "profile with space"))[0], 2)
         self.assertEqual(self.snapshot(self.root), before)
 
-    def test_handles_absent_config_agents_and_system_skills(self):
-        (self.source / "config.toml").unlink()
-        (self.source / "AGENTS.md").unlink()
-        (self.source / "skills/.system").rmdir()
-        self.assertEqual(self.invoke()[0], 0)
-        self.assertFalse((self.profile / "skills/.system").exists())
-        self.assertEqual(tomllib.loads((self.profile / "config.toml").read_text())["agents"]["enabled"], True)
-
-    def test_missing_auth_fails_without_disclosing_credentials_or_writing(self):
-        (self.source / "auth.json").unlink()
+    def test_refuses_unowned_profile_files_and_markers_without_mutation(self):
+        self.profile.mkdir(parents=True)
+        (self.profile / "instructions.md").write_text("unknown user-owned file\n")
         before = self.snapshot(self.root)
-        code, output, errors = self.invoke()
-        self.assertEqual(code, 2)
-        self.assertIn("sign in", errors)
-        self.assertEqual(self.snapshot(self.root), before)
-
-    def test_custom_agent_role_uses_original_resolved_configuration(self):
-        before = self.snapshot(self.source)
-        self.assertEqual(self.invoke()[0], 0)
-        copied = tomllib.loads((self.profile / "config.toml").read_text())
-        dependency = Path(copied["agents"]["worker"]["config_file"])
-        self.assertTrue(dependency.is_absolute())
-        self.assertEqual(dependency.resolve(), (self.source / "worker.toml").resolve())
-        self.assertEqual(tomllib.loads(dependency.read_text())["model"], "existing-worker-model")
-        self.assertFalse((self.profile / "worker.toml").exists())
-        self.assertEqual(self.snapshot(self.source), before)
-        (self.source / "worker.toml").unlink()
-        installed = self.snapshot(self.root)
         code, _, errors = self.invoke()
         self.assertEqual(code, 2)
-        self.assertIn("missing agent configuration dependency", errors)
-        self.assertEqual(self.snapshot(self.root), installed)
+        self.assertIn("refusing unowned profile file", errors)
+        self.assertEqual(self.snapshot(self.root), before)
+        (self.profile / ".t3-openspec-architect.json").write_text('{"owner": "someone-else"}')
+        before = self.snapshot(self.root)
+        code, _, errors = self.invoke()
+        self.assertEqual(code, 2)
+        self.assertIn("refusing unknown ownership marker", errors)
+        self.assertEqual(self.snapshot(self.root), before)
 
-    def test_refuses_unowned_existing_profile_files_without_mutation(self):
-        self.profile.mkdir(parents=True)
-        for filename in ("config.toml", "AGENTS.md"):
-            with self.subTest(filename=filename):
-                path = self.profile / filename
-                path.write_text("unknown user-owned file\n")
-                before = self.snapshot(self.root)
-                code, _, errors = self.invoke()
-                self.assertEqual(code, 2)
-                self.assertIn("refusing unowned profile file", errors)
-                self.assertEqual(self.snapshot(self.root), before)
-                path.unlink()
+    def test_missing_claude_binary_fails_without_writing(self):
+        self.binary.unlink()
+        before = self.snapshot(self.root)
+        code, _, errors = self.invoke()
+        self.assertEqual(code, 2)
+        self.assertIn("Claude Code executable missing", errors)
+        self.assertEqual(self.snapshot(self.root), before)
 
 
-class TomlUpdateTests(unittest.TestCase):
-    def test_inline_dotted_quoted_nested_arrays_and_multiline_values(self):
-        temporary = tempfile.TemporaryDirectory(prefix="t3-openspec-role-")
-        self.addCleanup(temporary.cleanup)
-        source_home = Path(temporary.name)
-        (source_home / "worker.toml").write_text('model = "existing"\n')
-        examples = [
-            '''"features" = { multi_agent = false, custom = { nested = [1, 2] } }
-agents = { enabled = false, worker = { config_file = "worker.toml" } }
-[model_providers.test]
-name = "keep"
-''',
-            '''features.multi_agent = false
-features.other = true
-agents.enabled = false
-agents.max_concurrent_threads_per_session = 7
-model = "keep"
-''',
-            '''[features.nested]
-value = ["a", "b"]
-[[agents.roles]]
-name = "one"
-[[agents.roles]]
-name = "two"
-[other]
-date = 1979-05-27T07:32:00Z
-''',
-            '''approval_policy = ''' + "'''on-request'''" + '''
-sandbox_mode = """workspace-write"""
-note = """kept quote: """"
-["features"]
-"multi_agent" = false
-other = ''' + "'''multi\nline'''" + '''
-[agents]
-enabled = false
-''',
-        ]
-        for source in examples:
-            with self.subTest(source=source[:60]):
-                original = tomllib.loads(source)
-                expected = copy.deepcopy(original)
-                expected.update(approval_policy="never", sandbox_mode="danger-full-access")
-                expected.setdefault("features", {})["multi_agent"] = True
-                expected.setdefault("agents", {}).update(enabled=True,
-                    max_concurrent_threads_per_session=max(5, original.get("agents", {}).get("max_concurrent_threads_per_session", 5)))
-                if "worker" in expected["agents"]:
-                    expected["agents"]["worker"]["config_file"] = str(source_home / "worker.toml")
-                self.assertEqual(tomllib.loads(installer.profile_config(source, source_home)), expected)
+class LaunchArgsTests(unittest.TestCase):
+    owned = {"add-dir": "/p", "append-system-prompt-file": "/p/instructions.md"}
+    result = "--add-dir /p --append-system-prompt-file /p/instructions.md"
 
-    def test_rejects_invalid_source_toml_and_non_table_features(self):
-        for source in ('model = "one"\nmodel = "two"\n', 'features = false\n', 'agents = "bad"\n'):
-            with self.subTest(source=source):
-                with self.assertRaises((ValueError, installer.InstallError)):
-                    installer.profile_config(source)
+    def test_appends_owned_flags_and_accepts_existing_owned_values(self):
+        for existing in ("", self.result, "--add-dir=/p", "--append-system-prompt-file /p/instructions.md --add-dir /p"):
+            with self.subTest(existing=existing):
+                self.assertEqual(installer.launch_args(existing, self.owned), self.result)
+
+    def test_preserves_quoted_unrelated_arguments(self):
+        self.assertEqual(installer.launch_args("--name 'two words' --chrome", self.owned),
+                         "--name 'two words' --chrome " + self.result)
+
+    def test_refuses_conflicting_or_valueless_owned_flags(self):
+        for existing in ("--add-dir /other", "--append-system-prompt-file=/x.md", "--add-dir --chrome"):
+            with self.subTest(existing=existing):
+                with self.assertRaises(installer.InstallError):
+                    installer.launch_args(existing, self.owned)
 
 
 if __name__ == "__main__":
