@@ -44,6 +44,16 @@ request is merged and it has no uncommitted changes. T3 does not delete the
 branch, so the router has the architect delete the merged local branch and
 remove each delegate's worktree and branch after integrating or rejecting it.
 
+## Delegate worktree base
+
+Claude's agent worktree isolation branches from `origin/<default-branch>` by
+default, without the change's unpushed artifacts or integrated tasks. The user
+setting `worktree.baseRef: "head"` branches from the architect's committed HEAD.
+T3 already passes its own `--settings`, so a T3-only value is unavailable; the
+user setting is documented rather than written by the installer. Assignments
+also name the base commit: delegates confirm or reset to it, and review diffs
+from it, so a missing setting degrades to one reset rather than a wrong base.
+
 ## Verification
 
 The verifier checks T3's settings, then starts Claude Code per workspace with the

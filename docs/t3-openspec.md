@@ -87,6 +87,31 @@ it has uncommitted changes. T3 does not delete the branch, so the architect
 deletes the local branch after the merge, and removes each delegate's worktree
 and branch once that delegate's commits are integrated or rejected.
 
+Implementation delegates run with Claude's worktree isolation, which creates
+their worktrees under the repository's `.claude/worktrees`. Claude starts those
+from a fresh `origin/<default-branch>` unless `worktree.baseRef` is `head`, which
+would hide the change's unpushed artifacts and integrated tasks. Set it in your
+Claude user settings, since T3 sessions read no other user-editable settings
+file; it also applies to your own `--worktree`, EnterWorktree and agent worktrees:
+
+```json
+{ "worktree": { "baseRef": "head" } }
+```
+
+The architect commits what a task builds on, names that commit as the task's
+base, and reviews the delegate's diff from it. A delegate whose worktree does
+not start at the named base resets to it before working.
+
+Isolation leaves a delegate's worktree and its `worktree-agent-*` branch in
+place even when nothing changed, so the architect removes both after
+integrating or rejecting the work. While they exist they would show as untracked
+nested repositories; ignore them for every repository in your global Git ignore
+file (`~/.config/git/ignore`):
+
+```gitignore
+.claude/worktrees/
+```
+
 ## Install and verify
 
 Install from the permanent, landed qq-workflows checkout. Skill links depend on

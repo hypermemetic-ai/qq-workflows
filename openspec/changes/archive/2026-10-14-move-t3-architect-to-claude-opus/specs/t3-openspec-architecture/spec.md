@@ -48,6 +48,11 @@ commits SHALL be integrated sequentially.
 - **WHEN** the architect dispatches a task from the stock apply workflow
 - **THEN** the worker implements the assignment and returns results without running parent OpenSpec workflows or updating shared task progress
 
+#### Scenario: An implementation agent starts
+- **WHEN** the architect dispatches an implementation task
+- **THEN** the agent works in its own isolated worktree and branch, starting at the committed base named in its assignment
+- **AND** the architect reviews its changes as the diff from that base
+
 #### Scenario: A delegate's work is integrated or rejected
 - **WHEN** the architect has integrated or rejected a delegate's commits
 - **THEN** that delegate's worktree and branch are removed
