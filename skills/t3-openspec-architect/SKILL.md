@@ -50,14 +50,13 @@ or OpenSpec workflows.
   architect review. The parent owns shared task progress, spec updates,
   sync/archive and delivery.
 
-Delegates are T3 child tasks started with `delegate_task`, never Claude's
-native Agent tool, so each shows as a subagent pill in the parent chat.
-Implementation delegates use `isolation: "worktree"`, each in its own worktree
-started from the parent's current local commit. Before dispatching, commit the
-artifacts and integrated work the task builds on, and name that commit as its
-base. Review each delegate's changes as the diff from its base. Overlapping work
-runs sequentially; accepted commits are integrated sequentially by the
-architect, by cherry-picking or merging their commits. After integrating or
-rejecting a delegate's work, the architect removes that delegate's worktree
-(`git worktree remove`) and branch (`git branch -D`). Before delivery,
-`git worktree list` shows no delegate leftovers.
+Implementation agents run with worktree isolation, each in its own worktree and
+branch. Before dispatching, commit the artifacts and integrated work the task
+builds on, and name that commit as its base. Review each delegate's changes as
+the diff from its base. Overlapping work runs sequentially; accepted commits are
+integrated sequentially by the architect, by cherry-picking or merging their
+commits; delegate worktrees under `.claude/worktrees` are never staged. After
+integrating or rejecting a delegate's work, the architect removes that
+delegate's worktree (`git worktree remove`) and branch (`git branch -D`);
+isolation does not remove them. Before delivery, `git worktree list` and
+`git branch --list 'worktree-agent-*'` show no delegate leftovers.

@@ -70,9 +70,7 @@ launch arguments add it to every session:
 Claude Code discovers skills under an added directory's `.claude/skills` with
 their original names, and appends the instructions file after T3's own runtime
 instructions. T3's `full-access` runtime mode maps to Claude's
-`bypassPermissions`. Subagents run as T3 child tasks through the t3-code
-`delegate_task` tool, which T3 shows as subagent pills in the parent chat;
-the instructions forbid Claude's native Agent tool, whose subagents T3 cannot show.
+`bypassPermissions`; native delegation (the Agent tool) needs no configuration.
 
 T3 settings select `claude-opus-5-5` as the default thread model. T3's own
 text generation (commit messages, pull request text, branch names and thread
@@ -89,12 +87,30 @@ it has uncommitted changes. T3 does not delete the branch, so the architect
 deletes the local branch after the merge, and removes each delegate's worktree
 and branch once that delegate's commits are integrated or rejected.
 
-Implementation delegates use `delegate_task` with `isolation: "worktree"`, which
-starts each delegate's checkout from the parent's current local commit and runs
-project setup; uncommitted edits are not copied. The architect commits what a
-task builds on, names that commit as the task's base, and reviews the
-delegate's diff from it. A delegate whose worktree does not start at the named
-base resets to it before working.
+Implementation delegates run with Claude's worktree isolation, which creates
+their worktrees under the repository's `.claude/worktrees`. Claude starts those
+from a fresh `origin/<default-branch>` unless `worktree.baseRef` is `head`, which
+would hide the change's unpushed artifacts and integrated tasks. Set it in your
+Claude user settings, since T3 sessions read no other user-editable settings
+file; it also applies to your own `--worktree`, EnterWorktree and agent worktrees:
+
+```json
+{ "worktree": { "baseRef": "head" } }
+```
+
+The architect commits what a task builds on, names that commit as the task's
+base, and reviews the delegate's diff from it. A delegate whose worktree does
+not start at the named base resets to it before working.
+
+Isolation leaves a delegate's worktree and its `worktree-agent-*` branch in
+place even when nothing changed, so the architect removes both after
+integrating or rejecting the work. While they exist they would show as untracked
+nested repositories; ignore them for every repository in your global Git ignore
+file (`~/.config/git/ignore`):
+
+```gitignore
+.claude/worktrees/
+```
 
 ## Install and verify
 

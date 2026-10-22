@@ -119,6 +119,14 @@ try {
     }
     console.log(`Verified seven workflow skills, ${MODEL} and full access: ${workspace}`);
   }
+  try {
+    const user = JSON.parse(readFileSync(resolve(homedir(), '.claude/settings.json'), 'utf8'));
+    if (user.worktree?.baseRef !== 'head') {
+      console.warn('Warning: worktree.baseRef is not "head"; delegates will reset to their named base.');
+    }
+  } catch {
+    console.warn('Warning: could not read Claude user settings to check worktree.baseRef.');
+  }
   console.log('No model turn was started.');
 } catch (error) {
   console.error(error.message);
