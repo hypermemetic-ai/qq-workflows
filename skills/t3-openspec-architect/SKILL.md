@@ -34,6 +34,26 @@ The stock skills are discovered alongside this one, from the T3 architect
 profile's `.claude/skills/openspec-*/SKILL.md`. These sources and the grilling
 reference are unchanged.
 
+## Choosing a delegate's model
+
+Delegate to DeepSeek by default: the `synthetic` provider's DeepSeek model,
+found with `orchestrator_capabilities` (search "deepseek"), since model IDs
+change between releases.
+
+Delegate to Opus instead (the architect's own provider and model, high effort)
+when either of these holds:
+
+- **The task depends on parsing the user's intent.** DeepSeek is weak at
+  this, and an architect who paraphrases requirements turns delegation into a
+  game of telephone. Pass the user's requirements to the delegate as close to
+  their own words as possible.
+- **The task centers on graphical output:** rendering, UI, images, or
+  anything that has to be checked by looking at it. Opus's vision is much
+  better.
+
+The architect reviews every delegate's output before integrating it, whatever
+the model.
+
 ## Delegated agents
 
 An assignment names its phase, question or task, context and checkout.

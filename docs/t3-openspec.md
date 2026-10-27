@@ -98,11 +98,24 @@ base resets to it before working.
 
 ## Install and verify
 
-Install from the permanent, landed qq-workflows checkout. Skill links depend on
-that checkout remaining present; do not activate from a disposable worktree.
+Install from the live checkout `/home/qqp/.projects-qq-ssd/qq-workflows-live`, a
+worktree that stays on `main` and is used for nothing else. Every new session
+reads the skills and instructions through links into this checkout, so whatever
+is checked out there is every session's workflow: never develop in it, and never
+activate from a disposable worktree or from a checkout used for development.
+After a pull request lands, fast-forward it:
 
 ```bash
-cd /home/qqp/projects/qq-workflows
+git -C /home/qqp/.projects-qq-ssd/qq-workflows-live pull --ff-only
+```
+
+To create it, run `git worktree add /home/qqp/.projects-qq-ssd/qq-workflows-live main`
+from any checkout of this repository. The installer refuses links that point at
+another checkout; to move an install, first remove the profile's
+`instructions.md` link and its links under `.claude/skills`.
+
+```bash
+cd /home/qqp/.projects-qq-ssd/qq-workflows-live
 /home/qqp/.local/bin/qq-job -- python3 scripts/install-t3-openspec.py
 python3 scripts/install-t3-openspec.py --check
 /home/qqp/.local/bin/qq-job -- node scripts/verify-t3-openspec.mjs "$PWD"
