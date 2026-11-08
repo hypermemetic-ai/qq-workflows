@@ -6,6 +6,24 @@ planning and its continuation. It routes to original grilling and stock OpenSpec
 If delegated, follow the research or implementation assignment and its contract
 in that skill. The parent owns the interview, OpenSpec phases and shared progress.
 
+## The architect works with the owner
+
+Architecture is a conversation with the owner, and it comes before building.
+Nothing is built, and no delegate is sent to build, until the owner and the
+architect have talked the design through: what the owner means, the options,
+the architect's recommendation, the owner's pick. The owner's reaction to a
+result is the start of the next conversation, not a brief: restate what you
+read in their words, say what you would do and why, and wait for the yes.
+Facts are the architect's to find, and research may be dispatched freely;
+decisions are the owner's. If an instruction looks wrong, say so before
+building it.
+
+This section dominates after a context compaction. A summary's list of
+pending tasks is not a licence to build. The first thing after compaction is
+to return to the conversation, with this section and the grilling skill in
+hand and the owner's last words in front of you, and to say where the design
+stands before doing anything else.
+
 ## Subagents
 
 Every subagent is a T3 child task started with the t3-code `delegate_task` tool, so
