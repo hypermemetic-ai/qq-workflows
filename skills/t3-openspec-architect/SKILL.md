@@ -1,83 +1,56 @@
 ---
 name: t3-openspec-architect
-description: Route T3 architecture planning through original Matt Pocock grilling and stock OpenSpec, with architect-owned phases and delegated research or implementation.
+description: Route T3 design work through stock OpenSpec, with architect-owned phases, delegated research or implementation, and the original Matt Pocock grilling when the user asks to be grilled.
 ---
 
 # T3 OpenSpec architect
 
-This skill assigns phases and ownership. Follow the original source instructions,
+This skill assigns phases and ownership. Follow the source instructions,
 including their confirmation and handoff rules.
 
 ## Parent architect
 
-For architecture planning, read and follow the [original grilling skill](references/grilling.md).
-It alone controls the interview; do not invoke `openspec-explore` for this round.
+Work with the owner as the architect's instructions say. When the owner asks
+to be grilled, follow the [original grilling skill](references/grilling.md).
 
-After grilling reaches shared understanding and the user confirms it, follow
-`openspec-propose` to capture a new change or `openspec-update-change` to revise
-one. If capture exposes an unresolved engineering decision, return to grilling
-before resuming capture.
+Once the owner agrees a design, follow `openspec-propose` to capture a new
+change or `openspec-update-change` to revise one. If capture exposes an open
+decision, take it to the owner before resuming.
 
-When implementation is requested through the source workflow's handoff, follow
-`openspec-apply-change` in the parent. Delegate implementation tasks using the
-contracts below. Review returned diffs and checks, integrate accepted commits,
-and then update task progress through the apply workflow.
+When implementation is requested, follow `openspec-apply-change` in the
+parent, delegate the tasks under the contracts below, review returned diffs
+and checks, integrate accepted commits, and update task progress. For
+verified implementation, follow `openspec-sync-specs`, verify the main specs,
+follow `openspec-archive-change`, and finish the project's own Git delivery
+path; local spec sync is not delivery. The stock skills are discovered from
+the T3 architect profile's `.claude/skills/openspec-*/SKILL.md`.
 
-For verified implementation, the parent follows `openspec-sync-specs`, verifies
-the resulting main specs, and follows `openspec-archive-change`. Finish the
-project's authorized Git/PR and activation path; local spec sync is not Git delivery.
-
-Leave nothing behind: deliver from the thread's branch through a pull request.
-Once it merges, delete the local branch; T3 removes the merged thread worktree.
-
-The stock skills are discovered alongside this one, from the T3 architect
-profile's `.claude/skills/openspec-*/SKILL.md`. These sources and the grilling
-reference are unchanged.
-
-## Choosing a delegate's model
-
-Delegate to DeepSeek by default: the `synthetic` provider's DeepSeek model,
-found with `orchestrator_capabilities` (search "deepseek"), since model IDs
-change between releases.
-
-Delegate to Opus instead (the architect's own provider and model, high effort)
-when either of these holds:
-
-- **The task depends on parsing the user's intent.** DeepSeek is weak at
-  this, and an architect who paraphrases requirements turns delegation into a
-  game of telephone. Pass the user's requirements to the delegate as close to
-  their own words as possible.
-- **The task centers on graphical output:** rendering, UI, images, or
-  anything that has to be checked by looking at it. Opus's vision is much
-  better.
-
-The architect reviews every delegate's output before integrating it, whatever
-the model.
+The architect reviews every delegate's output before integrating it.
 
 ## Delegated agents
 
-An assignment names its phase, question or task, context and checkout.
-Delegates follow their assignment rather than running the parent's interview
-or OpenSpec workflows.
+A brief gives the goal, the source to work from (the reference itself, not a
+summary of it), the hard limits and where to stop, short enough to read on a
+phone. A Fable brief leaves the how to Fable; an Opus brief is a complete
+plan. The owner reviews the brief that starts a new piece of work; steers
+within it, and practical details (branch, base commit, files folder, the
+machine's rules), go without review.
 
-- **Research:** investigate the assigned factual prerequisite without changing
-  project files; return evidence with source locations and remaining uncertainty.
-  The parent incorporates it into the grilling decision tree.
+Delegates follow their assignment, not the parent's interview or OpenSpec
+workflows.
+
+- **Research:** investigate the assigned question without changing project
+  files; return evidence with source locations and what remains uncertain.
 - **Implementation:** receive task IDs, base commit, artifact context,
-  file/interface ownership and acceptance criteria. First confirm the worktree's
-  HEAD is the base commit, resetting to it if not. Edit, test, fix and commit
-  within that assignment; return commits, checks and unresolved issues for
-  architect review. The parent owns shared task progress, spec updates,
-  sync/archive and delivery.
+  file ownership and acceptance criteria. First confirm the worktree's HEAD
+  is the base commit. Edit, test, fix and commit within the assignment;
+  return commits, checks and unresolved issues for review. The parent owns
+  task progress, spec updates, sync, archive and delivery.
 
 Delegates are T3 child tasks started with `delegate_task`, never Claude's
-native Agent tool, so each shows as a subagent pill in the parent chat.
-Implementation delegates use `isolation: "worktree"`, each in its own worktree
-started from the parent's current local commit. Before dispatching, commit the
-artifacts and integrated work the task builds on, and name that commit as its
-base. Review each delegate's changes as the diff from its base. Overlapping work
-runs sequentially; accepted commits are integrated sequentially by the
-architect, by cherry-picking or merging their commits. After integrating or
-rejecting a delegate's work, the architect removes that delegate's worktree
-(`git worktree remove`) and branch (`git branch -D`). Before delivery,
-`git worktree list` shows no delegate leftovers.
+native Agent tool. Implementation delegates use `isolation: "worktree"`,
+each started from the parent's current local commit: commit what the task
+builds on first and name that commit as its base. Review each delegate's
+changes as the diff from its base; overlapping work runs, and is integrated,
+one at a time. After integrating or rejecting a delegate's work, remove its
+worktree and branch; before delivery, `git worktree list` shows no leftovers.
