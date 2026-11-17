@@ -1,10 +1,11 @@
 # OpenSpec Architect in T3 Code
 
 T3 runs the architect on Claude Code with Claude Opus 5.5 (`claude-opus-5-5`).
-Architecture planning follows the byte-original, pinned Matt Pocock grilling
-instructions: whole-frontier rounds, recommended answers, delegated fact-finding
-and engineer confirmation. OpenSpec supplies the change artifacts and maintained
-specifications. T3's Codex provider is disabled.
+The architect works with the engineer as [the profile instruction](t3-architect-instructions.md)
+says. When the engineer asks to be grilled, it follows the byte-original, pinned
+Matt Pocock grilling instructions: whole-frontier rounds, recommended answers,
+delegated fact-finding and engineer confirmation. OpenSpec supplies the change
+artifacts and maintained specifications. T3's Codex provider is disabled.
 
 All custom integration is in [the phase/role router](../skills/t3-openspec-architect/SKILL.md).
 The short profile instruction points to it. The router selects the original
@@ -12,13 +13,13 @@ controller for each phase; it does not rewrite its interview or confirmation rul
 
 | Phase | Original source | Owner |
 | --- | --- | --- |
-| Architecture interview | `references/grilling.md` (pinned upstream) | Parent architect; research agents return factual evidence |
+| Design conversation | `t3-architect-instructions.md`; `references/grilling.md` (pinned upstream) when the engineer asks to be grilled | Parent architect; research agents return factual evidence |
 | Capture/revise | Stock `openspec-propose` / `openspec-update-change` | Parent architect |
 | Apply | Stock `openspec-apply-change` | Parent architect; implementation agents return commits and checks |
 | Sync/archive | Stock `openspec-sync-specs` / `openspec-archive-change` | Parent architect |
 
 `openspec-explore` remains available for standalone use, but is excluded from
-this grilling round. Some projects advertise their own OpenSpec skill copies;
+a grilling round. Some projects advertise their own OpenSpec skill copies;
 phase routing applies regardless of discovery location. Neither the global core
 collection nor project-local source files are patched.
 
@@ -27,7 +28,7 @@ Start a fresh **OpenSpec Architect** conversation in the selected T3 project:
 > Use /t3-openspec-architect to plan [change]. Discuss the architecture with me
 > and produce the OpenSpec proposal, delta specs, design and tasks.
 
-Follow grilling's completion confirmation and the stock capture skill's handoff.
+Follow the stock capture skill's handoff.
 After the proposal is presented, request implementation when ready:
 
 > Implement and deliver this change. Delegate the work and review the results.

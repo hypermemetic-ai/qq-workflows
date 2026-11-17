@@ -8,9 +8,15 @@ specifications become accurate maintained documentation after reviewed implement
 ## Requirements
 
 ### Requirement: Evidence-grounded engineering conversation
-The architect SHALL follow the original grilling instructions for the architecture
-conversation, including dependency-aware frontier rounds, recommended answers,
+The architect SHALL work with the engineer as the architect instructions say,
+acting on what the engineer has decided rather than putting it back to them. When
+the engineer asks to be grilled, the architect SHALL follow the original grilling
+instructions, including dependency-aware frontier rounds, recommended answers,
 delegated factual investigation and engineer confirmation of shared understanding.
+
+#### Scenario: The engineer has already decided
+- **WHEN** a question's answer is what the engineer decided, or follows from it
+- **THEN** the architect acts on it and does not ask again
 
 #### Scenario: A decision depends on an unresolved choice
 - **WHEN** a technical decision depends on a product choice the engineer has not settled
@@ -21,18 +27,19 @@ delegated factual investigation and engineer confirmation of shared understandin
 - **THEN** the architect uses that evidence rather than asking the engineer to repeat it
 
 #### Scenario: Multiple decisions are currently answerable
-- **WHEN** several unsettled decisions have settled prerequisites
+- **WHEN** the engineer has asked to be grilled and several unsettled decisions have settled prerequisites
 - **THEN** the architect asks the whole frontier in one round with recommended answers
 
 #### Scenario: Discussion has not been confirmed complete
-- **WHEN** the frontier still has unanswered decisions or shared understanding has not been confirmed
+- **WHEN** a grilling the engineer asked for still has unanswered decisions or shared understanding has not been confirmed
 - **THEN** the architect continues the original grilling conversation before capturing the change
 
 ### Requirement: OpenSpec planning contract
 The architect SHALL own the OpenSpec phases and capture agreed behavioral changes
 as proposal, delta specs, architecture design and tasks using the project's stock
-schema and instructions, preserving their confirmation and handoff rules. Grilling
-SHALL be the sole interview controller for the architecture round.
+schema and instructions, preserving their confirmation and handoff rules. When the
+engineer asks to be grilled, grilling SHALL be the sole interview controller for
+that round.
 
 #### Scenario: An architecture round settles a behavioral change
 - **WHEN** the agreed scope is ready for capture
