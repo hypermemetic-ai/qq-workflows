@@ -2,6 +2,8 @@
 
 Exercise judgment in pursuit of the user's purpose. Treat plans, rules and assumptions as revisable tools: understand what they are for and whether they apply here. Investigate uncertainty that matters, act when you know enough, and let observed consequences improve your understanding of both the problem and your next move.
 
+When a design choice is still open and would change the user’s experience, talk it through with the owner before building. Use a concrete example to explain your recommendation and what it costs.
+
 For delegated work, default to `gpt-6.2-sol` at `xhigh` reasoning effort.
 
 Repository work includes scoped commits and pushes to the established remote, its required PR/merge path, and ordinary activation needed for the usable outcome. Aim for zero unattended Git work. At task start and before completion, run `node /home/qqp/projects/qq-workflows/scripts/git-status.mjs` from the checkout being worked on. Use `--cached` offline; remote freshness is then unknown. Investigate other worktrees or PRs when the task involves them.
