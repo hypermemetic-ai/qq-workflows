@@ -33,5 +33,18 @@
   },
   "state_dir": "~/.local/state/qq-job",
   "monitor_state_dir": "~/.local/state/qq-host-monitor",
-  "max_job_records": 200
+  "max_job_records": 200,
+  "slot_routing": {
+    "slot": "/home/qqp/.local/bin/slot",
+    "path_prefixes": [
+      "/home/qqp/.t3/worktrees/fgx/",
+      "/home/qqp/.t3/worktrees/t3-1e496f5b/",
+      "/home/qqp/projects/fgx",
+      "/home/qqp/projects/3sen",
+      "/home/qqp/tmp/",
+      "/scratch/",
+      "/home/qqp/.local/share/three-sen-",
+      "/home/qqp/.local/share/fgx-"
+    ]
+  }
 }

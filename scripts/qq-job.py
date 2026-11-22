@@ -4,6 +4,11 @@
 Scopes attach our newly forked gate; the user manager never executes the command.
 PIDs=[0] identifies the bus sender in the manager's PID namespace (systemd v255,
 src/core/dbus-scope.c). Never replace this with the caller's namespace-local PID.
+
+3SEN work (a working directory under the policy's slot_routing.path_prefixes)
+is handed to slot instead (/home/qqp/.local/bin/slot): one queue, pinned cores,
+the GPU grant and one memory total without swap for every 3SEN job. The
+profile's memory_max becomes slot's per-job cap (SLOT_MEM).
 """
 from __future__ import annotations
 
@@ -29,6 +34,24 @@ FAILURE = 125
 UNIT_RE = re.compile(r"qq-job-[0-9a-f]{32}\.scope\Z")
 PROFILE_RE = re.compile(r"[a-z][a-z0-9-]{0,39}\Z")
 BOOT_RE = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
+# slot names each job's scope slot-<lane><n>-<slot's pid>-<random>.scope.
+SLOT_SCOPE_RE = re.compile(r"slot-(?:slot|light)[0-9]{1,3}-([0-9]{1,10})-[0-9]{1,10}\.scope\Z")
+# Jobs whose resolved working directory starts with one of these strings run
+# through slot. An entry ending in "/" is a directory; any other entry is also
+# a name prefix (".../fgx-" covers fgx-play, fgx-motion and so on).
+DEFAULT_SLOT_ROUTING = {
+    "slot": "/home/qqp/.local/bin/slot",
+    "path_prefixes": [
+        "/home/qqp/.t3/worktrees/fgx/",
+        "/home/qqp/.t3/worktrees/t3-1e496f5b/",
+        "/home/qqp/projects/fgx",
+        "/home/qqp/projects/3sen",
+        "/home/qqp/tmp/",
+        "/scratch/",
+        "/home/qqp/.local/share/three-sen-",
+        "/home/qqp/.local/share/fgx-",
+    ],
+}
 DEFAULT_POLICY = {
     "schema": 1,
     "slice": "qqjobs.slice",
@@ -49,6 +72,7 @@ DEFAULT_POLICY = {
     "state_dir": "~/.local/state/qq-job",
     "monitor_state_dir": "~/.local/state/qq-host-monitor",
     "max_job_records": 200,
+    "slot_routing": DEFAULT_SLOT_ROUTING,
 }
 
 
@@ -108,6 +132,19 @@ def validate_policy(policy):
     for key in ["state_dir", "monitor_state_dir"]:
         if not isinstance(policy.get(key), str) or not policy[key]:
             raise ContainmentError(f"invalid {key}")
+    # A policy written before slot routing existed gets the default routing.
+    routing = policy.setdefault("slot_routing", json.loads(json.dumps(DEFAULT_SLOT_ROUTING)))
+    if not isinstance(routing, dict) or set(routing) - {"slot", "path_prefixes"}:
+        raise ContainmentError("invalid slot_routing")
+    routing.setdefault("slot", DEFAULT_SLOT_ROUTING["slot"])
+    routing.setdefault("path_prefixes", list(DEFAULT_SLOT_ROUTING["path_prefixes"]))
+    if not isinstance(routing["slot"], str) or not os.path.isabs(routing["slot"]):
+        raise ContainmentError("slot_routing.slot must be an absolute path")
+    prefixes = routing["path_prefixes"]
+    if not isinstance(prefixes, list) or len(prefixes) > 64 or not all(
+            isinstance(prefix, str) and os.path.isabs(prefix) and prefix.strip("/")
+            and "\0" not in prefix and len(prefix) < 4096 for prefix in prefixes):
+        raise ContainmentError("slot_routing.path_prefixes must be absolute paths other than /")
     return policy
 
 
@@ -622,6 +659,231 @@ def launch(command, policy, profile_name=None, popen=subprocess.Popen):
             signal.signal(number, handler)
 
 
+def prefix_forms(prefix):
+    """The resolved forms of one routing prefix, each matched against cwd + "/"."""
+    if prefix.endswith("/"):
+        return {os.path.realpath(prefix).rstrip("/") + "/"}
+    forms = {os.path.join(os.path.realpath(os.path.dirname(prefix)), os.path.basename(prefix))}
+    if os.path.isdir(prefix):
+        forms.add(os.path.realpath(prefix).rstrip("/") + "/")
+    return forms
+
+
+def routes_to_slot(policy, cwd):
+    where = os.path.realpath(cwd).rstrip("/") + "/"
+    return any(where.startswith(form) for prefix in policy["slot_routing"]["path_prefixes"]
+               for form in prefix_forms(prefix))
+
+
+def slot_memory(value):
+    """A systemd size for SLOT_MEM (G and M are powers of 1024 there)."""
+    if value % GIB == 0:
+        return f"{value // GIB}G"
+    if value % MIB == 0:
+        return f"{value // MIB}M"
+    return str(value)
+
+
+def check_slot_scope(run=subprocess.run):
+    """slot runs a job without any memory cap when it cannot start a systemd
+    scope (as in the default Codex sandbox, which denies the bus socket). Run
+    slot's own probe first and refuse instead, as an unrouted job is refused."""
+    systemd_run = shutil.which("systemd-run")
+    if not systemd_run:
+        raise ContainmentError("systemd-run is missing, so slot could not cap the job's memory")
+    environment = dict(os.environ)
+    if os.geteuid() == 0:
+        argv = [systemd_run, "--scope", "-q", "true"]
+    else:
+        environment["XDG_RUNTIME_DIR"] = environment.get("XDG_RUNTIME_DIR") or f"/run/user/{os.geteuid()}"
+        argv = [systemd_run, "--user", "--scope", "-q", "true"]
+    try:
+        result = run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.PIPE, text=True, timeout=10, env=environment)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ContainmentError("cannot probe for a systemd scope, so slot could not cap the job's memory") from error
+    if result.returncode:
+        reason = (result.stderr or "").strip()[:200] or f"exit {result.returncode}"
+        raise ContainmentError(f"cannot start a systemd scope, so slot would run the job without a memory cap: {reason}")
+
+
+def child_pids(pid, proc=Path("/proc")):
+    result = []
+    for path in (proc / str(pid) / "task").glob("*/children"):
+        try:
+            result.extend(int(value) for value in path.read_text().split())
+        except (OSError, ValueError):
+            pass
+    return result
+
+
+def descendants(pid, proc=Path("/proc")):
+    found, stack = [], [pid]
+    while stack and len(found) < 4096:
+        for child in child_pids(stack.pop(), proc):
+            if child not in found:
+                found.append(child)
+                stack.append(child)
+    return found
+
+
+def slot_scope(slot_pid, mount=Path("/sys/fs/cgroup"), uid=None):
+    """The cgroup slot made for this job: slot names its scope after its own
+    pid, in the user's app slices (or system.slice when run as root). None
+    while slot queues, or when it runs the job nested in another slot job."""
+    uid = os.getuid() if uid is None else uid
+    pattern = f"slot-*-{slot_pid}-*.scope"
+    for parent, glob in [(mount / f"user.slice/user-{uid}.slice/user@{uid}.service/app.slice", "*/" + pattern),
+                         (mount / "system.slice", pattern)]:
+        for path in parent.glob(glob):
+            match = SLOT_SCOPE_RE.fullmatch(path.name)
+            if match and match.group(1) == str(slot_pid) and path.is_dir():
+                return path
+    return None
+
+
+def populated(path):
+    try:
+        events = dict(line.split() for line in (path / "cgroup.events").read_text().splitlines())
+    except (OSError, ValueError):
+        return False
+    return events.get("populated") == "1"
+
+
+def signal_slot_job(slot_pid, number, scope, proc=Path("/proc"), kill=os.kill):
+    """Signal the job as an unrouted job is signalled: every process in its
+    scope. slot itself is left out then, so it returns the job's own status
+    (its TERM and HUP traps would end it by the signal even after a clean
+    exit). Before the scope exists slot is queueing or waiting for the card:
+    signal slot and its children (flock, sleep), so a queued job never runs."""
+    if scope is not None and populated(scope):
+        try:
+            targets = [int(value) for value in (scope / "cgroup.procs").read_text().split()]
+        except (OSError, ValueError):
+            targets = []
+    else:
+        targets = [slot_pid, *descendants(slot_pid, proc)]
+    for target in targets:
+        try:
+            kill(target, number)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+def stop_slot_leftovers(scope, slot_pid, run=subprocess.run, monotonic=time.monotonic):
+    """Stop what the job left in its slot scope, as qq-job stops its own scope."""
+    match = SLOT_SCOPE_RE.fullmatch(scope.name)
+    if not match or match.group(1) != str(slot_pid):
+        raise ContainmentError("refusing to stop a scope this job did not start")
+    if not populated(scope):
+        return False
+    user = [] if "/system.slice/" in str(scope) else ["--user"]
+
+    def systemctl(*arguments):
+        try:
+            return run(["/usr/bin/systemctl", *user, *arguments, scope.name], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise ContainmentError("cannot stop what the job left running") from error
+
+    systemctl("stop")
+    deadline = monotonic() + 3
+    while populated(scope):
+        if monotonic() >= deadline:
+            systemctl("kill", "--kill-whom=all", "--signal=SIGKILL")
+            break
+        time.sleep(0.02)
+    return True
+
+
+def launch_routed(command, policy, profile_name=None, popen=subprocess.Popen,
+                  check_scope=check_slot_scope, find_scope=slot_scope, signal_job=signal_slot_job,
+                  stop_leftovers=stop_slot_leftovers):
+    """Run the command as "slot COMMAND..." in the caller's process group, with
+    its stdio, cwd and environment. Never runs it any other way."""
+    name, profile = profile_for(policy, profile_name)
+    slot = policy["slot_routing"]["slot"]
+    if not os.path.isfile(slot) or not os.access(slot, os.X_OK):
+        raise ContainmentError(f"slot is missing or not executable at {slot}; not running the job")
+    environment = dict(os.environ)
+    # Already inside a slot job, slot runs the command in that job's slot and
+    # scope; its memory cap stays the outer job's.
+    nested = bool(os.environ.get("SLOT") or os.environ.get("FGX_SLOT"))
+    memory = None
+    if not nested:
+        check_scope()
+        memory = slot_memory(profile["memory_max_bytes"])
+        environment["SLOT_MEM"] = memory
+    unit = "qq-job-" + uuid.uuid4().hex + ".scope"  # this record's identifier; slot owns the scope
+    record = {"schema": 1, "unit": unit, "profile": name, "status": "running",
+              "routed": "slot", "note": "routed to slot", "nested_in_slot": nested,
+              "slot_memory_max": memory, "started_at": time.time(), "boot_id": boot_id(),
+              "cwd": os.getcwd(), "executable": shutil.which(command[0]) or command[0],
+              "limits": profile}
+    record_path = create_job_record(policy, unit, record)
+    child = None
+    scope = None
+    sample = {}
+    handlers = {}
+    interrupted = []
+
+    def current_scope():
+        nonlocal scope
+        if scope is None and child is not None and not nested:
+            scope = find_scope(child.pid)
+        return scope
+
+    def forward(number, _frame):
+        interrupted.append(number)
+        if child is not None and child.poll() is None:
+            signal_job(child.pid, number, current_scope())
+
+    try:
+        for number in [signal.SIGINT, signal.SIGTERM, signal.SIGHUP]:
+            handlers[number] = signal.signal(number, forward)
+        try:
+            # No new session or process group: a caller that kills its own
+            # group reaches slot and the job, as it reached the job before.
+            child = popen([slot, *command], env=environment, close_fds=False)
+        except OSError as error:
+            record.update(status="refused", finished_at=time.time(), exit_status=FAILURE,
+                          refusal_reason=f"cannot start slot: {error}"[:300])
+            atomic_json(record_path, record)
+            raise ContainmentError(f"cannot start slot: {error}") from error
+        if interrupted:
+            signal_job(child.pid, interrupted[-1], current_scope())
+        while child.poll() is None:
+            path = current_scope()
+            if path is not None:
+                sample = merge_sample(sample, sample_cgroup(path))
+            time.sleep(0.05)
+        # A job that ends within one poll leaves its scope unseen until now;
+        # slot is not reaped yet, so its pid still names only this job's scope.
+        current_scope()
+        status = child.wait()
+        status = status if status >= 0 else 128 - status
+        left = False
+        if scope is not None:
+            sample = merge_sample(sample, sample_cgroup(scope))
+            try:
+                left = stop_leftovers(scope, child.pid)
+            except (OSError, ContainmentError) as error:
+                record["cleanup_error"] = str(error)[:300]
+                print(f"qq-job: {error}", file=sys.stderr)
+        try:
+            record_oom(policy, record, sample, None)
+        except (OSError, ValueError, ContainmentError) as error:
+            record["telemetry_error"] = str(error)[:300]
+            print(f"qq-job: could not record OOM telemetry: {error}", file=sys.stderr)
+        record.update(status="finished", finished_at=time.time(), exit_status=status, memory=sample,
+                      cgroup=str(scope) if scope is not None else None, stopped_leftovers=left)
+        atomic_json(record_path, record)
+        return status
+    finally:
+        for number, handler in handlers.items():
+            signal.signal(number, handler)
+
+
 def status_report(policy):
     directory = Path(policy["state_dir"]).expanduser() / "jobs"
     records = []
@@ -668,6 +930,17 @@ def main(argv=None):
         if args._child:
             child_gate(args._child, name, command, policy)
             return 0
+        # slot can't apply a runtime limit, so such a profile (oom-proof) keeps its own scope.
+        routed = "runtime_seconds" not in profile and routes_to_slot(policy, os.getcwd())
+        if args.dry_run and routed:
+            print(json.dumps({"schema": 1, "mode": "routed-to-slot", "profile": name,
+                              "slot": policy["slot_routing"]["slot"],
+                              "slot_memory_max": slot_memory(profile["memory_max_bytes"]),
+                              "nested_in_slot": bool(os.environ.get("SLOT") or os.environ.get("FGX_SLOT")),
+                              "cwd": os.getcwd(), "executable": shutil.which(command[0]) or command[0]}))
+            return 0
+        if routed:
+            return launch_routed(command, policy, name)
         if args.dry_run:
             print(json.dumps({"schema": 1, "mode": "sandbox-preserving-scope", "profile": name,
                               "slice": policy["slice"], "limits": profile, "aggregate_budget": policy["aggregate"],
