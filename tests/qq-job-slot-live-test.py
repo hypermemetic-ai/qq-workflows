@@ -218,6 +218,8 @@ class LiveSlotRoutingTest(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)["mode"], "sandbox-preserving-scope", result.stderr)
         self.assertEqual(self.log(), [])
 
+    # A real kernel OOM kill, logged by qq-mem-watch (/var/log/qq-mem): run it only on request.
+    @unittest.skipUnless(os.environ.get("QQ_JOB_LIVE_OOM") == "1", "set QQ_JOB_LIVE_OOM=1 to make a real OOM kill")
     def test_a_job_over_its_inherited_slot_mem_gets_137(self):
         environment = dict(self.env, SLOT_MEM="64M")
         status, out, err = self.run_job("--", sys.executable, "-c", "x = bytearray(400 << 20); x[::4096] = b'y' * len(x[::4096])",
