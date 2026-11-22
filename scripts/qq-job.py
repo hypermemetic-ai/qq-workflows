@@ -7,8 +7,9 @@ src/core/dbus-scope.c). Never replace this with the caller's namespace-local PID
 
 3SEN work (a working directory under the policy's slot_routing.path_prefixes)
 is handed to slot instead (/home/qqp/.local/bin/slot): one queue, pinned cores,
-the GPU grant and one memory total without swap for every 3SEN job. The
-profile's memory_max becomes slot's per-job cap (SLOT_MEM).
+the GPU grant and one memory total without swap for every 3SEN job. slot's
+own per-job cap applies (7G, 9G on slot 1), or the profile's memory_max as
+SLOT_MEM when it is above 7G (large), or the caller's own SLOT_MEM.
 """
 from __future__ import annotations
 
@@ -36,6 +37,10 @@ PROFILE_RE = re.compile(r"[a-z][a-z0-9-]{0,39}\Z")
 BOOT_RE = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
 # slot names each job's scope slot-<lane><n>-<slot's pid>-<random>.scope.
 SLOT_SCOPE_RE = re.compile(r"slot-(?:slot|light)[0-9]{1,3}-([0-9]{1,10})-[0-9]{1,10}\.scope\Z")
+# slot's own cap for a heavy job when SLOT_MEM is unset (9G on slot 1). A
+# routed job sets SLOT_MEM only for a profile above it (large, 8G); others get
+# slot's default, under slot's 20G total with no swap.
+SLOT_HEAVY_DEFAULT_BYTES = 7 * 1024 ** 3
 # Jobs whose resolved working directory starts with one of these strings run
 # through slot. An entry ending in "/" is a directory; any other entry is also
 # a name prefix (".../fgx-" covers fgx-play, fgx-motion and so on).
@@ -684,6 +689,41 @@ def slot_memory(value):
     return str(value)
 
 
+def inherited_slot_memory(environment=None):
+    """A caller's own SLOT_MEM (or FGX_SLOT_MEM), which slot reads as it would
+    for a direct call."""
+    environment = os.environ if environment is None else environment
+    return environment.get("SLOT_MEM") or environment.get("FGX_SLOT_MEM") or None
+
+
+def routed_slot_memory(profile, environment=None):
+    """(SLOT_MEM to set or None, where the cap comes from) for a routed job."""
+    inherited = inherited_slot_memory(environment)
+    if inherited:
+        return None, "caller's SLOT_MEM"
+    if profile["memory_max_bytes"] > SLOT_HEAVY_DEFAULT_BYTES:
+        return slot_memory(profile["memory_max_bytes"]), "profile"
+    return None, "slot default"
+
+
+def slot_nesting_claimed(environment=None):
+    environment = os.environ if environment is None else environment
+    return bool(environment.get("SLOT") or environment.get("FGX_SLOT"))
+
+
+def in_capped_job_scope(get_cgroup=None):
+    """Whether this process is in a slot or qq-job scope with a memory cap.
+    slot runs a command in place when SLOT is set, so SLOT alone (a stray
+    export, or a slot job that got no scope) must not be taken for a cap."""
+    try:
+        path = (get_cgroup or cgroup_path)()
+        if not (SLOT_SCOPE_RE.fullmatch(path.name) or UNIT_RE.fullmatch(path.name)):
+            return False
+        return (path / "memory.max").read_text().strip().isdecimal()
+    except (OSError, ContainmentError):
+        return False
+
+
 def check_slot_scope(run=subprocess.run):
     """slot runs a job without any memory cap when it cannot start a systemd
     scope (as in the default Codex sandbox, which denies the bus socket). Run
@@ -796,9 +836,17 @@ def stop_slot_leftovers(scope, slot_pid, run=subprocess.run, monotonic=time.mono
     return True
 
 
+def scope_memory_max(path):
+    try:
+        raw = (path / "memory.max").read_text().strip()
+    except OSError:
+        return None
+    return slot_memory(int(raw)) if raw.isdecimal() else raw
+
+
 def launch_routed(command, policy, profile_name=None, popen=subprocess.Popen,
                   check_scope=check_slot_scope, find_scope=slot_scope, signal_job=signal_slot_job,
-                  stop_leftovers=stop_slot_leftovers):
+                  stop_leftovers=stop_slot_leftovers, capped_scope=in_capped_job_scope):
     """Run the command as "slot COMMAND..." in the caller's process group, with
     its stdio, cwd and environment. Never runs it any other way."""
     name, profile = profile_for(policy, profile_name)
@@ -808,16 +856,23 @@ def launch_routed(command, policy, profile_name=None, popen=subprocess.Popen,
     environment = dict(os.environ)
     # Already inside a slot job, slot runs the command in that job's slot and
     # scope; its memory cap stays the outer job's.
-    nested = bool(os.environ.get("SLOT") or os.environ.get("FGX_SLOT"))
-    memory = None
+    nested = slot_nesting_claimed()
+    if nested and not capped_scope():
+        raise ContainmentError("SLOT is set but this process is not in a capped slot or qq-job scope; "
+                               "slot would run the job in place without a memory cap")
+    memory, source = None, "outer slot job"
     if not nested:
         check_scope()
-        memory = slot_memory(profile["memory_max_bytes"])
-        environment["SLOT_MEM"] = memory
+        memory, source = routed_slot_memory(profile)
+        if memory:
+            environment["SLOT_MEM"] = memory
     unit = "qq-job-" + uuid.uuid4().hex + ".scope"  # this record's identifier; slot owns the scope
+    # slot_memory_max is the cap the kernel shows for the job's scope once it
+    # is seen; until then, what slot was told (None: slot's own default).
     record = {"schema": 1, "unit": unit, "profile": name, "status": "running",
               "routed": "slot", "note": "routed to slot", "nested_in_slot": nested,
-              "slot_memory_max": memory, "started_at": time.time(), "boot_id": boot_id(),
+              "slot_memory_max": memory or (inherited_slot_memory() if source == "caller's SLOT_MEM" else None),
+              "slot_memory_source": source, "started_at": time.time(), "boot_id": boot_id(),
               "cwd": os.getcwd(), "executable": shutil.which(command[0]) or command[0],
               "limits": profile}
     record_path = create_job_record(policy, unit, record)
@@ -831,6 +886,9 @@ def launch_routed(command, policy, profile_name=None, popen=subprocess.Popen,
         nonlocal scope
         if scope is None and child is not None and not nested:
             scope = find_scope(child.pid)
+            if scope is not None:
+                # Read at once: the scope goes when the job ends.
+                record["slot_memory_max"] = scope_memory_max(scope) or record["slot_memory_max"]
         return scope
 
     def forward(number, _frame):
@@ -931,12 +989,17 @@ def main(argv=None):
             child_gate(args._child, name, command, policy)
             return 0
         # slot can't apply a runtime limit, so such a profile (oom-proof) keeps its own scope.
-        routed = "runtime_seconds" not in profile and routes_to_slot(policy, os.getcwd())
+        # SLOT set outside a capped scope would make slot run the job in place
+        # uncapped; such a job keeps its own qqjobs scope, as before routing.
+        nested = slot_nesting_claimed()
+        routed = ("runtime_seconds" not in profile and routes_to_slot(policy, os.getcwd())
+                  and (not nested or in_capped_job_scope()))
         if args.dry_run and routed:
+            memory, source = (None, "outer slot job") if nested else routed_slot_memory(profile)
             print(json.dumps({"schema": 1, "mode": "routed-to-slot", "profile": name,
                               "slot": policy["slot_routing"]["slot"],
-                              "slot_memory_max": slot_memory(profile["memory_max_bytes"]),
-                              "nested_in_slot": bool(os.environ.get("SLOT") or os.environ.get("FGX_SLOT")),
+                              "slot_memory_max": memory or (inherited_slot_memory() if not nested else None),
+                              "slot_memory_source": source, "nested_in_slot": nested,
                               "cwd": os.getcwd(), "executable": shutil.which(command[0]) or command[0]}))
             return 0
         if routed:

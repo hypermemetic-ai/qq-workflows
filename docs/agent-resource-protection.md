@@ -59,14 +59,15 @@ scope. `slot_routing.path_prefixes` in the operator policy lists those places
 (the 3SEN worktrees, `~/projects/fgx`, `~/tmp/`, `/scratch/` and others; an
 empty list turns routing off). All 3SEN jobs then share one queue, pinned
 cores, the GPU grant and one 20 GiB total with no swap (`app-slot.slice`), so
-a job may wait in the queue. The profile's memory maximum becomes slot's
-per-job cap (`SLOT_MEM`: 4 GiB default, 8 GiB `large`). slot sets no task or
-runtime limit, so `oom-proof` keeps its own qqjobs scope.
+a job may wait in the queue. Each job gets slot's own cap (7 GiB, 9 GiB on
+slot 1); `large` sets `SLOT_MEM=8G`, and a caller's own `SLOT_MEM` wins. slot
+sets no task or runtime limit, so `oom-proof` keeps its own qqjobs scope.
 
 Exit status, signals, streams, working directory and environment stay the
 job's, plus what slot exports (`SLOT`, `CARGO_BUILD_JOBS` and so on). slot's
 own exits pass through: 75 means no GPU grant in time, retry later. A command
-already inside a slot job runs in that job's slot. When slot is missing, or
+already inside a capped slot job runs in that job's slot (with `SLOT` set
+anywhere else it keeps its qqjobs scope). When slot is missing, or
 no systemd scope can be made (the default Codex sandbox), qq-job refuses with
 125 and runs nothing, as before. Processes the job leaves in its scope are
 stopped when it ends. `tests/qq-job-slot-live-test.py` checks this against the

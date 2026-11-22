@@ -7,6 +7,7 @@ are never taken (SLOT_KINDS keeps slot's history private too); the jobs still
 get real scopes in app-slot.slice. Run as the desktop user with
 XDG_RUNTIME_DIR set. Skipped without slot or a user scope.
 """
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -105,9 +106,10 @@ class LiveSlotRoutingTest(unittest.TestCase):
         self.wait_for(started)
         return release
 
-    def test_job_runs_in_its_own_slot_scope_with_the_profile_cap_and_no_swap(self):
+    def test_job_runs_in_its_own_slot_scope_with_slots_cap_or_large_and_no_swap(self):
         probe = "p=$(cut -d: -f3 /proc/self/cgroup); echo $p; cat /sys/fs/cgroup$p/memory.max /sys/fs/cgroup$p/memory.swap.max"
-        for profile, cap in [("default", "4294967296"), ("large", "8589934592")]:
+        # The private queue has one slot, slot 1, whose own cap is 9G; large sets 8G.
+        for profile, cap in [("default", str(9 << 30)), ("large", str(8 << 30))]:
             status, out, err = self.run_job("--profile", profile, "--shell-command", probe)
             self.assertEqual(status, 0, err)
             cgroup, memory_max, swap_max = out.split()
@@ -116,6 +118,14 @@ class LiveSlotRoutingTest(unittest.TestCase):
         lines = self.log()
         self.assertEqual(len(lines), 2)
         self.assertIn(f"slot=1 cwd={self.work} cmd=/bin/bash -lc p=", lines[0])
+        # A record shows the kernel's cap once it saw the scope (a short job may end unseen).
+        expected = {"default": ("9G", "slot default"), "large": ("8G", "profile")}
+        for path in (self.directory / "state/jobs").glob("*.json"):
+            row = json.loads(path.read_text())
+            # None only when the scope was gone before qq-job could read it.
+            if row.get("cgroup") and row["slot_memory_max"] is not None:
+                self.assertEqual((row["slot_memory_max"], row["slot_memory_source"]), expected[row["profile"]])
+            self.assertEqual(row["slot_memory_source"], expected[row["profile"]][1])
 
     def test_exit_status_and_streams_are_the_jobs(self):
         status, out, err = self.run_job("--", "/bin/sh", "-c", "echo out; echo err >&2; exit 7")
@@ -172,25 +182,71 @@ class LiveSlotRoutingTest(unittest.TestCase):
     def test_leftovers_are_stopped_when_the_job_ends(self):
         status, out, err = self.run_job("--shell-command", "setsid sleep 61.5 < /dev/null > /dev/null 2>&1 & echo ok")
         self.assertEqual((status, out), (0, "ok" + chr(10)), err)
-        self.assertIn("left=sleep", self.log()[-1])
+        # slot names what it finds (bash, setsid or sleep, as far as the fork got).
+        self.assertIn("left=", self.log()[-1])
         time.sleep(0.2)
         self.assertEqual(subprocess.run(["pgrep", "-f", "sleep 61.5"], capture_output=True).returncode, 1)
 
     def test_nested_in_a_slot_job_runs_in_place(self):
-        own = Path("/proc/self/cgroup").read_text().split(":")[-1].strip()
+        # qq-job started by a real slot job: the command stays in that job's scope and cap.
+        probe = "p=$(cut -d: -f3 /proc/self/cgroup); echo $p; cat /sys/fs/cgroup$p/memory.max; echo $SLOT_MEM"
+        process = subprocess.Popen([SLOT, sys.executable, str(self.runner), str(ROOT / "scripts/qq-job.py"),
+                                    str(self.policy_path), "--profile", "large", "--shell-command", probe],
+                                   cwd=self.work, env=self.env, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        out, err = process.communicate(timeout=60)
+        self.assertEqual(process.returncode, 0, err)
+        cgroup, memory_max, slot_mem = out.split()
+        self.assertIn("/app-slot.slice/slot-slot1-", cgroup)
+        self.assertEqual((memory_max, slot_mem), (str(9 << 30), "9G"))
+        self.assertEqual(len(self.log()), 1)
+        row = next((self.directory / "state/jobs").glob("*.json"))
+        self.assertTrue(json.loads(row.read_text())["nested_in_slot"])
+
+    def test_slot_set_outside_a_slot_scope_keeps_the_qqjobs_path(self):
+        # A stray SLOT would make slot run the job in place, uncapped.
         environment = dict(self.env, SLOT="1")
-        status, out, err = self.run_job("--shell-command", "cut -d: -f3 /proc/self/cgroup; echo ${SLOT_MEM:-unset}",
-                                        env=environment)
-        self.assertEqual(status, 0, err)
-        self.assertEqual(out.split(), [own, "unset"])
+        outside = ["systemd-run", "--user", "--scope", "-q", "--", sys.executable, str(self.runner),
+                   str(ROOT / "scripts/qq-job.py"), str(self.policy_path)]
+        result = subprocess.run([*outside, "--dry-run", "--", "/bin/true"], cwd=self.work, env=environment,
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(json.loads(result.stdout)["mode"], "sandbox-preserving-scope", result.stderr)
+        # (The qqjobs path itself is unchanged; its gate reads the operator policy,
+        # so this test stops at the routing decision.)
+        result = subprocess.run([*outside, "--dry-run", "--", "/bin/true"], cwd=self.work,
+                                env=dict(environment, SLOT="", FGX_SLOT="1"), capture_output=True, text=True, timeout=60)
+        self.assertEqual(json.loads(result.stdout)["mode"], "sandbox-preserving-scope", result.stderr)
         self.assertEqual(self.log(), [])
+
+    def test_a_job_over_its_inherited_slot_mem_gets_137(self):
+        environment = dict(self.env, SLOT_MEM="64M")
+        status, out, err = self.run_job("--", sys.executable, "-c", "x = bytearray(400 << 20); x[::4096] = b'y' * len(x[::4096])",
+                                        env=environment)
+        self.assertEqual(status, 137, err)
+        self.assertEqual(len(self.log()), 1)
+
+    def test_no_gpu_grant_in_time_passes_75_through_without_running(self):
+        # A private card whose gate this test holds closed, as an alone job would.
+        registry = self.directory / "gpus"
+        registry.write_text("FAKE tokens=1 classes=share,alone" + chr(10))
+        gate = self.slot_dir / "gpu" / "FAKE" / "gate"
+        gate.parent.mkdir(parents=True)
+        ran = self.directory / "ran"
+        with gate.open("w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            environment = dict(self.env, SLOT_GPU_REGISTRY=str(registry), SLOT_GPU="share",
+                               SLOT_GPU_SHARE_WAIT_MAX="1")
+            status, out, err = self.run_job("--", "/usr/bin/touch", str(ran), env=environment)
+        self.assertEqual(status, 75, err)
+        self.assertIn("no grant for the card FAKE", err)
+        self.assertFalse(ran.exists())
 
     def test_a_command_that_already_calls_slot_takes_one_slot(self):
         status, out, err = self.run_job("--", SLOT, "sh", "-c", "cut -d: -f3 /proc/self/cgroup; echo $SLOT_MEM")
         self.assertEqual(status, 0, err)
         cgroup, memory = out.split()
         self.assertIn("/app-slot.slice/slot-slot1-", cgroup)
-        self.assertEqual(memory, "4G")
+        self.assertEqual(memory, "9G")
         self.assertEqual(len(self.log()), 1)
 
     def test_no_user_scope_refuses_and_never_runs_the_job(self):

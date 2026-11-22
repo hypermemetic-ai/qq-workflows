@@ -442,6 +442,7 @@ class SlotRoutingTest(unittest.TestCase):
     def run_routed(self, command, profile=None, **kwargs):
         kwargs.setdefault("check_scope", lambda: None)
         kwargs.setdefault("find_scope", lambda pid: None)
+        kwargs.setdefault("capped_scope", lambda: False)
         return JOB.launch_routed(command, self.policy, profile, **kwargs)
 
     def test_routing_follows_the_resolved_working_directory(self):
@@ -509,17 +510,28 @@ class SlotRoutingTest(unittest.TestCase):
         self.assertEqual(example["slot_routing"], JOB.DEFAULT_SLOT_ROUTING)
         JOB.validate_policy(example)
 
-    def test_profile_memory_max_becomes_slot_mem(self):
+    def test_slot_mem_is_set_only_for_a_profile_above_slots_default(self):
         self.assertEqual(JOB.slot_memory(4 * JOB.GIB), "4G")
         self.assertEqual(JOB.slot_memory(64 * JOB.MIB), "64M")
         self.assertEqual(JOB.slot_memory(4 * JOB.GIB + 1), str(4 * JOB.GIB + 1))
+        # default (4G) is under slot's 7G: slot's own cap applies.
         self.assertEqual(self.run_routed(["/bin/true"]), 0)
-        self.assertEqual(self.out.read_text().split(), ["4G", "1", "/bin/true"])
+        self.assertEqual(self.out.read_text().split(), ["unset", "1", "/bin/true"])
         self.assertEqual(self.run_routed(["/bin/true"], "large"), 0)
         self.assertEqual(self.out.read_text().split()[0], "8G")
-        os.environ["SLOT_MEM"] = "30G"
-        self.assertEqual(self.run_routed(["/bin/true"]), 0)
-        self.assertEqual(self.out.read_text().split()[0], "4G")
+        exactly = {"memory_max_bytes": 7 * JOB.GIB}
+        self.assertEqual(JOB.routed_slot_memory(exactly, {}), (None, "slot default"))
+        self.assertEqual(JOB.routed_slot_memory({"memory_max_bytes": 7 * JOB.GIB + JOB.MIB}, {})[0], "7169M")
+        # A caller's own SLOT_MEM (or FGX_SLOT_MEM) reaches slot as for a direct call, for any profile.
+        for name in ["SLOT_MEM", "FGX_SLOT_MEM"]:
+            with mock.patch.dict(os.environ, {name: "2G"}):
+                for profile in [None, "large"]:
+                    self.assertEqual(self.run_routed(["/bin/true"], profile), 0)
+                    seen = self.out.read_text().split()[0]
+                    self.assertEqual(seen, "2G" if name == "SLOT_MEM" else "unset", (name, profile))
+        rows = JOB.status_report(self.policy)["jobs"]
+        self.assertEqual(rows[0]["slot_memory_source"], "caller's SLOT_MEM")
+        self.assertEqual(rows[0]["slot_memory_max"], "2G")
 
     def test_exit_status_passes_through_including_slot_refusals(self):
         self.assertEqual(self.run_routed(["/bin/sh", "-c", "exit 23"]), 23)
@@ -536,16 +548,56 @@ class SlotRoutingTest(unittest.TestCase):
         row = rows[0]
         self.assertEqual((row["status"], row["exit_status"], row["routed"], row["note"]),
                          ("finished", 0, "slot", "routed to slot"))
-        self.assertEqual(row["slot_memory_max"], "4G")
+        self.assertEqual((row["slot_memory_max"], row["slot_memory_source"]), (None, "slot default"))
         self.assertNotIn("SECRET_ARGUMENT", json.dumps(row))
+
+    def test_record_shows_the_cap_the_kernel_applied(self):
+        scope = self.directory / "slot-slot1-10-5.scope"
+        scope.mkdir()
+        (scope / "memory.max").write_text(str(9 * JOB.GIB))
+        (scope / "cgroup.events").write_text("populated 0")
+        self.assertEqual(self.run_routed(["/bin/true"], find_scope=lambda pid: scope,
+                                         stop_leftovers=lambda path, pid: False), 0)
+        row = JOB.status_report(self.policy)["jobs"][0]
+        self.assertEqual((row["slot_memory_max"], row["slot_memory_source"]), ("9G", "slot default"))
 
     def test_nested_job_keeps_the_outer_slot_memory_and_skips_the_probe(self):
         os.environ["SLOT"] = "2"
         probes = []
-        self.assertEqual(self.run_routed(["/bin/true"], check_scope=lambda: probes.append(1)), 0)
+        self.assertEqual(self.run_routed(["/bin/true"], "large", check_scope=lambda: probes.append(1),
+                                         capped_scope=lambda: True), 0)
         self.assertEqual(probes, [])
         self.assertEqual(self.out.read_text().split()[0], "unset")
-        self.assertTrue(JOB.status_report(self.policy)["jobs"][0]["nested_in_slot"])
+        row = JOB.status_report(self.policy)["jobs"][0]
+        self.assertTrue(row["nested_in_slot"])
+        self.assertEqual(row["slot_memory_source"], "outer slot job")
+
+    def test_slot_set_outside_a_capped_scope_is_never_run_in_place(self):
+        marker = self.directory / "ran"
+        os.environ["SLOT"] = "1"
+        with self.assertRaisesRegex(JOB.ContainmentError, "not in a capped slot or qq-job scope"):
+            self.run_routed(["/usr/bin/touch", str(marker)], capped_scope=lambda: False)
+        self.assertFalse(marker.exists())
+        self.assertFalse(self.out.exists())
+        # main keeps such a job on the qqjobs path, as before routing.
+        work = self.directory / "work"
+        work.mkdir()
+        calls = []
+        for capped, expected in [(False, "scope"), (True, "routed")]:
+            with mock.patch.object(JOB, "load_policy", return_value=self.policy),                  mock.patch.object(JOB.os, "getcwd", return_value=str(work)),                  mock.patch.object(JOB, "in_capped_job_scope", return_value=capped),                  mock.patch.object(JOB, "launch_routed", side_effect=lambda c, p, n: calls.append("routed") or 0),                  mock.patch.object(JOB, "launch", side_effect=lambda c, p, n: calls.append("scope") or 0):
+                self.assertEqual(JOB.main(["--", "/bin/true"]), 0)
+            self.assertEqual(calls[-1], expected)
+
+    def test_capped_scope_needs_a_slot_or_qq_job_scope_with_a_memory_max(self):
+        for name, memory, expected in [("slot-slot2-55-7.scope", "7516192768", True),
+                                       ("slot-light1-55-7.scope", "3221225472", True),
+                                       (UNIT, "4294967296", True), ("slot-slot2-55-7.scope", "max", False),
+                                       ("session-3.scope", "4294967296", False), ("app-t3code-x.scope", "max", False)]:
+            path = self.directory / name
+            path.mkdir(exist_ok=True)
+            (path / "memory.max").write_text(memory + chr(10))
+            self.assertEqual(JOB.in_capped_job_scope(lambda: path), expected, (name, memory))
+        self.assertFalse(JOB.in_capped_job_scope(lambda: self.directory / "slot-slot1-1-1.scope"))
 
     def test_missing_slot_fails_visibly_and_never_runs_the_command(self):
         marker = self.directory / "ran"
@@ -614,6 +666,11 @@ class SlotRoutingTest(unittest.TestCase):
         self.assertNotIn("SECRET_ARGUMENT", out.getvalue())
         row = json.loads(out.getvalue())
         self.assertEqual((row["mode"], row["slot_memory_max"]), ("routed-to-slot", "8G"))
+        out = io.StringIO()
+        with mock.patch.object(JOB, "load_policy", return_value=self.policy),              mock.patch.object(JOB.os, "getcwd", return_value=str(work)), contextlib.redirect_stdout(out):
+            self.assertEqual(JOB.main(["--dry-run", "--", "/bin/true"]), 0)
+        row = json.loads(out.getvalue())
+        self.assertEqual((row["slot_memory_max"], row["slot_memory_source"]), (None, "slot default"))
 
     def test_signals_go_to_the_scope_once_it_exists_and_to_slot_before(self):
         proc = self.directory / "proc"
