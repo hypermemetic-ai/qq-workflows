@@ -3,8 +3,9 @@
 
 Each test starts a few tiny jobs (true, cut, sleep) through slot with a private
 queue (SLOT_DIR in a temporary directory, SLOT_COUNT=1), so the shared slots
-are never taken; the jobs still get real scopes in app-slot.slice. Run as the
-desktop user with XDG_RUNTIME_DIR set. Skipped without slot or a user scope.
+are never taken (SLOT_KINDS keeps slot's history private too); the jobs still
+get real scopes in app-slot.slice. Run as the desktop user with
+XDG_RUNTIME_DIR set. Skipped without slot or a user scope.
 """
 import json
 import os
@@ -57,7 +58,8 @@ class LiveSlotRoutingTest(unittest.TestCase):
         self.env = {key: value for key, value in os.environ.items()
                     if key not in ("SLOT", "FGX_SLOT", "SLOT_LANE", "FGX_SLOT_LANE", "SLOT_MEM", "FGX_SLOT_MEM",
                                    "SLOT_GPU", "SLOT_GPU_HELD", "SLOT_GPU_GRANT")}
-        self.env.update(SLOT_DIR=str(self.slot_dir), SLOT_COUNT="1",
+        # A private history too: slot rebuilds its table from the log it is given.
+        self.env.update(SLOT_DIR=str(self.slot_dir), SLOT_COUNT="1", SLOT_KINDS=str(self.directory / "kinds"),
                         XDG_RUNTIME_DIR=os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
 
     def start(self, *argv, env=None, cwd=None):
