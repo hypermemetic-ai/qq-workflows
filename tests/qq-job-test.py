@@ -413,5 +413,338 @@ class JobTest(unittest.TestCase):
         self.assertEqual(json.loads(out.getvalue())["mode"], "sandbox-preserving-scope")
 
 
+class SlotRoutingTest(unittest.TestCase):
+    """Routing to slot with a fixture slot script. No systemd units are started."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.directory = Path(self.temporary.name)
+        self.policy = copy.deepcopy(JOB.DEFAULT_POLICY)
+        self.policy["state_dir"] = str(self.directory / "state")
+        self.policy["monitor_state_dir"] = str(self.directory / "monitor")
+        self.out = self.directory / "seen"
+        self.slot = self.directory / "fake-slot"
+        self.policy["slot_routing"] = {"slot": str(self.slot), "path_prefixes": [str(self.directory / "work") + "/"]}
+        self.fake_slot('exec "$@"')
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in ("SLOT", "FGX_SLOT", "SLOT_MEM", "FGX_SLOT_MEM")}
+        patcher = mock.patch.dict(os.environ, environment, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def fake_slot(self, body):
+        # Records what slot was given (SLOT_MEM, argument count, first argument), then runs body.
+        lines = ["#!/bin/sh", 'printf "%s %s %s" "${SLOT_MEM:-unset}" "$#" "$1" > ' + str(self.out), body]
+        self.slot.write_text(chr(10).join(lines) + chr(10))
+        self.slot.chmod(0o755)
+
+    def run_routed(self, command, profile=None, **kwargs):
+        kwargs.setdefault("check_scope", lambda: None)
+        kwargs.setdefault("find_scope", lambda pid: None)
+        kwargs.setdefault("capped_scope", lambda: False)
+        return JOB.launch_routed(command, self.policy, profile, **kwargs)
+
+    def test_routing_follows_the_resolved_working_directory(self):
+        work = self.directory / "work"
+        (work / "deep").mkdir(parents=True)
+        other = self.directory / "music"
+        other.mkdir()
+        link = self.directory / "alias"
+        link.symlink_to(work)
+        outside_link = work / "to-music"
+        outside_link.symlink_to(other)
+        self.assertTrue(JOB.routes_to_slot(self.policy, str(work)))
+        self.assertTrue(JOB.routes_to_slot(self.policy, str(work / "deep")))
+        self.assertTrue(JOB.routes_to_slot(self.policy, str(link)))
+        self.assertFalse(JOB.routes_to_slot(self.policy, str(outside_link)))
+        self.assertFalse(JOB.routes_to_slot(self.policy, str(other)))
+        self.assertFalse(JOB.routes_to_slot(self.policy, str(self.directory / "workshop")))
+
+    def test_name_prefixes_and_symlinked_prefixes(self):
+        share = self.directory / "share"
+        (share / "fgx-play").mkdir(parents=True)
+        (share / "fgxother").mkdir()
+        target = self.directory / "worktree"
+        target.mkdir()
+        (self.directory / "3sen").symlink_to(target)
+        self.policy["slot_routing"]["path_prefixes"] = [str(share / "fgx-"), str(self.directory / "3sen")]
+        self.assertTrue(JOB.routes_to_slot(self.policy, str(share / "fgx-play")))
+        self.assertFalse(JOB.routes_to_slot(self.policy, str(share / "fgxother")))
+        self.assertTrue(JOB.routes_to_slot(self.policy, str(target)))
+
+    def test_default_prefixes_cover_3sen_and_leave_other_projects_alone(self):
+        policy = JOB.validate_policy(copy.deepcopy(JOB.DEFAULT_POLICY))
+        with mock.patch.object(JOB.os.path, "realpath", side_effect=os.path.normpath), \
+             mock.patch.object(JOB.os.path, "isdir", return_value=False):
+            for cwd in ["/home/qqp/.t3/worktrees/fgx/t3-1e496f5b", "/home/qqp/.t3/worktrees/fgx/guard/x",
+                        "/home/qqp/.t3/worktrees/t3-1e496f5b/hit-entry-2", "/home/qqp/projects/fgx",
+                        "/home/qqp/projects/3sen/crates", "/home/qqp/tmp/studies/a", "/home/qqp/tmp",
+                        "/scratch/three-sen-interop.x/baseline", "/home/qqp/.local/share/three-sen-play",
+                        "/home/qqp/.local/share/fgx-play"]:
+                self.assertTrue(JOB.routes_to_slot(policy, cwd), cwd)
+            for cwd in ["/home/qqp/.t3/worktrees/iso-notation/a", "/home/qqp/.t3/worktrees/score-viewer/b",
+                        "/home/qqp/.t3/worktrees/learning-app/c", "/home/qqp/projects/qq-workflows",
+                        "/home/qqp/projects/media-box", "/home/qqp", "/home/qqp/tmpfoo", "/scratchy",
+                        "/home/qqp/.local/share/qq-job"]:
+                self.assertFalse(JOB.routes_to_slot(policy, cwd), cwd)
+
+    def test_policy_without_routing_gets_the_default_and_bad_routing_is_refused(self):
+        policy = copy.deepcopy(JOB.DEFAULT_POLICY)
+        del policy["slot_routing"]
+        self.assertEqual(JOB.validate_policy(policy)["slot_routing"], JOB.DEFAULT_SLOT_ROUTING)
+        policy = copy.deepcopy(JOB.DEFAULT_POLICY)
+        policy["slot_routing"] = {"path_prefixes": []}
+        routing = JOB.validate_policy(policy)["slot_routing"]
+        self.assertEqual(routing, {"path_prefixes": [], "slot": JOB.DEFAULT_SLOT_ROUTING["slot"]})
+        self.assertFalse(JOB.routes_to_slot(policy, "/home/qqp/tmp"))
+        for bad in [{"path_prefixes": ["/"]}, {"path_prefixes": ["relative/"]}, {"slot": "slot"},
+                    {"path_prefixes": "/home/"}, {"other": 1}, []]:
+            policy = copy.deepcopy(JOB.DEFAULT_POLICY)
+            policy["slot_routing"] = bad
+            with self.assertRaises(JOB.ContainmentError, msg=bad):
+                JOB.validate_policy(policy)
+
+    def test_example_policy_matches_the_default_routing(self):
+        example = json.loads((Path(__file__).resolve().parents[1] / "config/qq-job/policy.example.json").read_text())
+        self.assertEqual(example["slot_routing"], JOB.DEFAULT_SLOT_ROUTING)
+        JOB.validate_policy(example)
+
+    def test_slot_mem_is_set_only_for_a_profile_above_slots_default(self):
+        self.assertEqual(JOB.slot_memory(4 * JOB.GIB), "4G")
+        self.assertEqual(JOB.slot_memory(64 * JOB.MIB), "64M")
+        self.assertEqual(JOB.slot_memory(4 * JOB.GIB + 1), str(4 * JOB.GIB + 1))
+        # default (4G) is under slot's 7G: slot's own cap applies.
+        self.assertEqual(self.run_routed(["/bin/true"]), 0)
+        self.assertEqual(self.out.read_text().split(), ["unset", "1", "/bin/true"])
+        self.assertEqual(self.run_routed(["/bin/true"], "large"), 0)
+        self.assertEqual(self.out.read_text().split()[0], "8G")
+        exactly = {"memory_max_bytes": 7 * JOB.GIB}
+        self.assertEqual(JOB.routed_slot_memory(exactly, {}), (None, "slot default"))
+        self.assertEqual(JOB.routed_slot_memory({"memory_max_bytes": 7 * JOB.GIB + JOB.MIB}, {})[0], "7169M")
+        # A caller's own SLOT_MEM (or FGX_SLOT_MEM) reaches slot as for a direct call, for any profile.
+        for name in ["SLOT_MEM", "FGX_SLOT_MEM"]:
+            with mock.patch.dict(os.environ, {name: "2G"}):
+                for profile in [None, "large"]:
+                    self.assertEqual(self.run_routed(["/bin/true"], profile), 0)
+                    seen = self.out.read_text().split()[0]
+                    self.assertEqual(seen, "2G" if name == "SLOT_MEM" else "unset", (name, profile))
+        rows = JOB.status_report(self.policy)["jobs"]
+        self.assertEqual(rows[0]["slot_memory_source"], "caller's SLOT_MEM")
+        self.assertEqual(rows[0]["slot_memory_max"], "2G")
+
+    def test_exit_status_passes_through_including_slot_refusals(self):
+        self.assertEqual(self.run_routed(["/bin/sh", "-c", "exit 23"]), 23)
+        for code in [75, 73, 2, 125]:
+            self.fake_slot(f"exit {code}")
+            self.assertEqual(self.run_routed(["/bin/true"]), code)
+        self.fake_slot("kill -TERM $$")
+        self.assertEqual(self.run_routed(["/bin/true"]), 128 + signal.SIGTERM)
+
+    def test_routed_record_says_so_and_holds_no_command_line(self):
+        self.assertEqual(self.run_routed(["/bin/true", "SECRET_ARGUMENT"]), 0)
+        rows = JOB.status_report(self.policy)["jobs"]
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual((row["status"], row["exit_status"], row["routed"], row["note"]),
+                         ("finished", 0, "slot", "routed to slot"))
+        self.assertEqual((row["slot_memory_max"], row["slot_memory_source"]), (None, "slot default"))
+        self.assertNotIn("SECRET_ARGUMENT", json.dumps(row))
+
+    def test_record_shows_the_cap_the_kernel_applied(self):
+        scope = self.directory / "slot-slot1-10-5.scope"
+        scope.mkdir()
+        (scope / "memory.max").write_text(str(9 * JOB.GIB))
+        (scope / "cgroup.events").write_text("populated 0")
+        self.assertEqual(self.run_routed(["/bin/true"], find_scope=lambda pid: scope,
+                                         stop_leftovers=lambda path, pid: False), 0)
+        row = JOB.status_report(self.policy)["jobs"][0]
+        self.assertEqual((row["slot_memory_max"], row["slot_memory_source"]), ("9G", "slot default"))
+
+    def test_nested_job_keeps_the_outer_slot_memory_and_skips_the_probe(self):
+        os.environ["SLOT"] = "2"
+        probes = []
+        self.assertEqual(self.run_routed(["/bin/true"], "large", check_scope=lambda: probes.append(1),
+                                         capped_scope=lambda: True), 0)
+        self.assertEqual(probes, [])
+        self.assertEqual(self.out.read_text().split()[0], "unset")
+        row = JOB.status_report(self.policy)["jobs"][0]
+        self.assertTrue(row["nested_in_slot"])
+        self.assertEqual(row["slot_memory_source"], "outer slot job")
+
+    def test_slot_set_outside_a_capped_scope_is_never_run_in_place(self):
+        marker = self.directory / "ran"
+        os.environ["SLOT"] = "1"
+        with self.assertRaisesRegex(JOB.ContainmentError, "not in a capped slot or qq-job scope"):
+            self.run_routed(["/usr/bin/touch", str(marker)], capped_scope=lambda: False)
+        self.assertFalse(marker.exists())
+        self.assertFalse(self.out.exists())
+        # main keeps such a job on the qqjobs path, as before routing.
+        work = self.directory / "work"
+        work.mkdir()
+        calls = []
+        for capped, expected in [(False, "scope"), (True, "routed")]:
+            with mock.patch.object(JOB, "load_policy", return_value=self.policy),                  mock.patch.object(JOB.os, "getcwd", return_value=str(work)),                  mock.patch.object(JOB, "in_capped_job_scope", return_value=capped),                  mock.patch.object(JOB, "launch_routed", side_effect=lambda c, p, n: calls.append("routed") or 0),                  mock.patch.object(JOB, "launch", side_effect=lambda c, p, n: calls.append("scope") or 0):
+                self.assertEqual(JOB.main(["--", "/bin/true"]), 0)
+            self.assertEqual(calls[-1], expected)
+
+    def test_capped_scope_needs_a_slot_or_qq_job_scope_with_a_memory_max(self):
+        for name, memory, expected in [("slot-slot2-55-7.scope", "7516192768", True),
+                                       ("slot-light1-55-7.scope", "3221225472", True),
+                                       (UNIT, "4294967296", True), ("slot-slot2-55-7.scope", "max", False),
+                                       ("session-3.scope", "4294967296", False), ("app-t3code-x.scope", "max", False)]:
+            path = self.directory / name
+            path.mkdir(exist_ok=True)
+            (path / "memory.max").write_text(memory + chr(10))
+            self.assertEqual(JOB.in_capped_job_scope(lambda: path), expected, (name, memory))
+        self.assertFalse(JOB.in_capped_job_scope(lambda: self.directory / "slot-slot1-1-1.scope"))
+
+    def test_missing_slot_fails_visibly_and_never_runs_the_command(self):
+        marker = self.directory / "ran"
+        self.policy["slot_routing"]["slot"] = str(self.directory / "no-slot")
+        work = self.directory / "work"
+        work.mkdir()
+        error = io.StringIO()
+        with mock.patch.object(JOB, "load_policy", return_value=self.policy), \
+             mock.patch.object(JOB.os, "getcwd", return_value=str(work)), contextlib.redirect_stderr(error):
+            self.assertEqual(JOB.main(["--", "/usr/bin/touch", str(marker)]), JOB.FAILURE)
+        self.assertIn("slot is missing", error.getvalue())
+        self.assertFalse(marker.exists())
+        self.slot.chmod(0o644)
+        self.policy["slot_routing"]["slot"] = str(self.slot)
+        with self.assertRaisesRegex(JOB.ContainmentError, "not executable"):
+            self.run_routed(["/usr/bin/touch", str(marker)])
+        self.assertFalse(marker.exists())
+
+    def test_no_systemd_scope_refuses_instead_of_running_uncapped(self):
+        marker = self.directory / "ran"
+        denied = lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1, "", "Failed to connect to bus: Permission denied")
+        with self.assertRaisesRegex(JOB.ContainmentError, "without a memory cap: Failed to connect"):
+            self.run_routed(["/usr/bin/touch", str(marker)], check_scope=lambda: JOB.check_slot_scope(denied))
+        self.assertFalse(marker.exists())
+        self.assertFalse(self.out.exists())
+        seen = []
+        JOB.check_slot_scope(lambda argv, **kwargs: seen.append((argv, kwargs["env"])) or subprocess.CompletedProcess(argv, 0))
+        if os.geteuid():
+            self.assertEqual(seen[0][0][1:], ["--user", "--scope", "-q", "true"])
+            self.assertTrue(seen[0][1]["XDG_RUNTIME_DIR"])
+
+    def test_main_routes_commands_and_shell_strings_by_working_directory(self):
+        work = self.directory / "work"
+        work.mkdir()
+        calls = []
+        for cwd, expected in [(work, "routed"), (self.directory, "scope")]:
+            for argv, command in [(["--", "/bin/echo", "x y"], ["/bin/echo", "x y"]),
+                                  (["--shell-command", "echo 'x'; exit 3"], ["/bin/bash", "-lc", "echo 'x'; exit 3"]),
+                                  (["--profile", "large", "--", "/bin/true"], ["/bin/true"])]:
+                with mock.patch.object(JOB, "load_policy", return_value=self.policy), \
+                     mock.patch.object(JOB.os, "getcwd", return_value=str(cwd)), \
+                     mock.patch.object(JOB, "launch_routed", side_effect=lambda c, p, n: calls.append(("routed", c, n)) or 0), \
+                     mock.patch.object(JOB, "launch", side_effect=lambda c, p, n: calls.append(("scope", c, n)) or 0):
+                    self.assertEqual(JOB.main(argv), 0)
+                self.assertEqual(calls[-1][:2], (expected, command))
+        self.assertEqual([call[2] for call in calls], ["default", "default", "large"] * 2)
+
+    def test_oom_proof_profile_keeps_its_own_scope(self):
+        work = self.directory / "work"
+        work.mkdir()
+        out = io.StringIO()
+        with mock.patch.object(JOB, "load_policy", return_value=self.policy), \
+             mock.patch.object(JOB.os, "getcwd", return_value=str(work)), contextlib.redirect_stdout(out):
+            self.assertEqual(JOB.main(["--dry-run", "--profile", "oom-proof", "--", "/bin/true"]), 0)
+        self.assertEqual(json.loads(out.getvalue())["mode"], "sandbox-preserving-scope")
+
+    def test_routed_dry_run_never_spawns_and_does_not_disclose_arguments(self):
+        work = self.directory / "work"
+        work.mkdir()
+        out = io.StringIO()
+        with mock.patch.object(JOB, "load_policy", return_value=self.policy), \
+             mock.patch.object(JOB.os, "getcwd", return_value=str(work)), \
+             mock.patch.object(JOB, "launch_routed") as launch, contextlib.redirect_stdout(out):
+            self.assertEqual(JOB.main(["--dry-run", "--profile", "large", "--", "/bin/echo", "SECRET_ARGUMENT"]), 0)
+        launch.assert_not_called()
+        self.assertNotIn("SECRET_ARGUMENT", out.getvalue())
+        row = json.loads(out.getvalue())
+        self.assertEqual((row["mode"], row["slot_memory_max"]), ("routed-to-slot", "8G"))
+        out = io.StringIO()
+        with mock.patch.object(JOB, "load_policy", return_value=self.policy),              mock.patch.object(JOB.os, "getcwd", return_value=str(work)), contextlib.redirect_stdout(out):
+            self.assertEqual(JOB.main(["--dry-run", "--", "/bin/true"]), 0)
+        row = json.loads(out.getvalue())
+        self.assertEqual((row["slot_memory_max"], row["slot_memory_source"]), (None, "slot default"))
+
+    def test_signals_go_to_the_scope_once_it_exists_and_to_slot_before(self):
+        proc = self.directory / "proc"
+        for pid, children in [(10, "11"), (11, "12 13"), (12, ""), (13, "")]:
+            (proc / str(pid) / "task" / str(pid)).mkdir(parents=True)
+            (proc / str(pid) / "task" / str(pid) / "children").write_text(children)
+        scope = self.directory / "cgroup" / "slot-slot1-10-99.scope"
+        scope.mkdir(parents=True)
+        (scope / "cgroup.procs").write_text("21 22")
+        (scope / "cgroup.events").write_text("populated 1")
+        sent = []
+        kill = lambda pid, number: sent.append((pid, number))
+        JOB.signal_slot_job(10, signal.SIGTERM, scope, proc, kill)
+        self.assertEqual(sent, [(21, signal.SIGTERM), (22, signal.SIGTERM)])
+        sent.clear()
+        JOB.signal_slot_job(10, signal.SIGINT, None, proc, kill)
+        self.assertEqual(sorted(sent), [(pid, signal.SIGINT) for pid in [10, 11, 12, 13]])
+        sent.clear()
+        (scope / "cgroup.events").write_text("populated 0")
+        JOB.signal_slot_job(10, signal.SIGHUP, scope, proc, kill)
+        self.assertIn((10, signal.SIGHUP), sent)
+
+    def test_scope_is_found_by_slot_pid_and_never_an_outer_one(self):
+        mount = self.directory / "cgroup"
+        apps = mount / "user.slice/user-1000.slice/user@1000.service/app.slice"
+        (apps / "app-slot.slice" / "slot-slot3-77-5.scope").mkdir(parents=True)
+        (apps / "app-slot.slice" / "slot-slot3-177-5.scope").mkdir()
+        self.assertIsNone(JOB.slot_scope(77 + 1, mount, 1000))
+        self.assertIsNone(JOB.slot_scope(7, mount, 1000))
+        self.assertEqual(JOB.slot_scope(77, mount, 1000).name, "slot-slot3-77-5.scope")
+        (apps / "other.slice" / "slot-light2-10-5.scope").mkdir(parents=True)
+        self.assertEqual(JOB.slot_scope(10, mount, 1000).parent.name, "other.slice")
+        (mount / "system.slice" / "slot-slot1-12-5.scope").mkdir(parents=True)
+        self.assertEqual(JOB.slot_scope(12, mount, 1000).parent.name, "system.slice")
+        with self.assertRaisesRegex(JOB.ContainmentError, "did not start"):
+            JOB.stop_slot_leftovers(mount / "slot-slot1-77-5.scope", 10)
+        with self.assertRaisesRegex(JOB.ContainmentError, "did not start"):
+            JOB.stop_slot_leftovers(mount / UNIT, 10)
+
+    def test_leftovers_in_the_job_scope_are_stopped_after_slot_exits(self):
+        scope = self.directory / "slot-slot1-10-5.scope"
+        scope.mkdir()
+        (scope / "cgroup.events").write_text("populated 1")
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append(argv[1:])
+            (scope / "cgroup.events").write_text("populated 0")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        self.assertTrue(JOB.stop_slot_leftovers(scope, 10, run))
+        self.assertEqual(calls, [["--user", "stop", "slot-slot1-10-5.scope"]])
+        self.assertFalse(JOB.stop_slot_leftovers(scope, 10, run))
+
+    def test_signal_before_slot_starts_is_forwarded_once_it_does(self):
+        sent = []
+
+        class Child:
+            pid = 4242
+
+            def __init__(self, argv, **kwargs):
+                signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+
+            def poll(self):
+                return -signal.SIGTERM if sent else None
+
+            def wait(self):
+                return -signal.SIGTERM
+
+        result = self.run_routed(["/bin/true"], popen=Child,
+                                 signal_job=lambda pid, number, scope: sent.append((pid, number)))
+        self.assertEqual(result, 128 + signal.SIGTERM)
+        self.assertEqual(sent, [(4242, signal.SIGTERM)])
+
+
 if __name__ == "__main__":
     unittest.main()
