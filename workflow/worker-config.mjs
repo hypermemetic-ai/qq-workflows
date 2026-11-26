@@ -359,8 +359,7 @@ export function workerCompactionBudget({ contextWindow, reserveTokens } = {}) {
   };
 }
 
-// Validate the operator's harness selector. Absence means `codex`, so existing
-// configuration and the rollback path keep launching Codex unchanged.
+// An omitted selector uses WORKER_HARNESS. Both legacy harnesses are opt-in.
 function normalizeWorkerHarness(value) {
   if (value === undefined || value === null) return WORKER_HARNESS;
   if (typeof value !== "string" || !value.trim()) {
@@ -706,11 +705,7 @@ export function stripFrontmatter(text) {
   return after === -1 ? "" : text.slice(after + 1).trim();
 }
 
-// Build the full worker invocation for the centrally selected harness.
-// `codex` (the default and the rollback path) emits the Codex argv exactly as
-// before; `deepseek-minimal` emits the pinned-harness adapter argv. `mcpEnv` is
-// injected into the Codex worker's MCP server (runner only), which is how
-// complete_task receives the authoritative result transport path.
+// The legacy Codex runner passes its result transport to complete_task via mcpEnv.
 export function buildWorkerLaunch({
   seat,
   cwd,
