@@ -23,6 +23,8 @@ There is no second Architect launcher and no blocking wait tool: the Architect
 dispatches, yields the turn, and is woken by the durable completion
 notification. `check_runner` / `check_execution` are point-in-time reads.
 
+For reference-led character art, start with the [character modeling workflow](docs/modeling/README.md).
+
 ## Repository map
 
 | Area | Where |
