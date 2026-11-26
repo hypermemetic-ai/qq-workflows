@@ -1,8 +1,6 @@
 # Worker migration: one Pi runtime, config-only model selection
 
-Status: **code landed, runtime activation pending operator-owned credentials and a
-bounded live smoke test.** Nothing in this document has been applied to the live
-operator configuration by the implementation.
+This guide covers the worker runtime used by the older Paseo Architect. Its installer and worker selection are separate. To find out what an installation runs, check its configured release and worker configuration.
 
 ## What changed
 
@@ -19,6 +17,12 @@ Retained deliberately: the shared MCP server (`complete_task`, ticket tools,
 (`prototype/deepseek-minimal/gateway/zvec-grep-tool.mjs`), durability/report
 modules, and the legacy `deepseek-minimal`/`codex` harnesses reachable only
 through the same central `harness` field for rollback.
+
+## Install or refresh an existing Pi/Paseo Architect
+
+From the repository root, run `npm run install:architect` to register the Paseo provider, install the Pi extension and apply the daemon configuration. Existing Architect sessions reload when idle. The installer waits up to five minutes for busy sessions and can be run again to resume. With `--background`, or when invoked from an Architect turn, follow the per-session journal in `~/.local/state/qq-workflows/architect-activation/`. A fresh session-bound receipt confirms that the extension loaded.
+
+The installer leaves worker selection to `~/.config/qq-workflows/worker-config.json` (or `QQ_WORKER_CONFIG_FILE`). See the [example configuration](../config/worker-config.muse.template.json) and activation steps below. For installer behavior and rollback, see [the installer](../scripts/install-architect.mjs). `--dry-run` and `--skip-plugin` skip the live refresh.
 
 ## Activation (operator-owned, in order)
 
@@ -69,12 +73,7 @@ through the same central `harness` field for rollback.
    }
    ```
 
-   `meta-api-key` is the operator-owned standalone Model API key file on this
-   host (mode 0600, verified by an authenticated `GET /v1/models`); the key value
-   is never read into this repository. The generic template keeps the neutral
-   `model-api-key` name that the default resolution expects. Keep a copy of the
-   previous file as the rollback point; the legacy harness keeps working while its
-   selection is in place.
+   Set `api_key_file` to the private credential file for this installation. Save the previous configuration before switching.
 4. **Bounded smoke test** (one paid worker turn, operator-authorized): run one
    `runner` seat on a throwaway task and confirm streaming output, a tool call
    (the shared `zvec_grep_search`), the authoritative result landing in the
@@ -88,11 +87,7 @@ through the same central `harness` field for rollback.
    failure should therefore be read as provider/credential/registry evidence
    (`message_error` carrying the provider's own error text), not as an untested
    adapter path.
-5. **Then retire the legacy runtime**: once every seat has run on Pi, delete the
-   `deepseek-minimal`/`codex` branches from `workflow/worker-config.mjs`, the
-   `prototype/deepseek-minimal/adapter` runtime and its tests, and the
-   `harness` field itself. That deletion is intentionally NOT part of this
-   change because the live configuration still selects the legacy harness.
+   To revert the selection, restore the worker configuration saved in step 3. Setup and verification for an explicitly selected legacy worker are in the [DeepSeek harness guide](../prototype/deepseek-minimal/README.md).
 
 ## Context policy: what is and is not claimed
 
@@ -219,51 +214,16 @@ as before. The allocation lives inside the adapter (`workflow/pi-worker/adapter.
   provider traffic). A missing installed runtime is reported as SKIPPED, never as a
   pass.
 
-## Release materialization, activation, and pre-switch verification
+## Checking a release before a switch
 
-There is no release-materialization script in this repository. The mechanism recorded for
-the currently deployed release (PR111 dispatch record) is a read-only materialization of
-a **landed commit**:
+If the installation runs from an unpacked Git release, compare the adapter in that release with the commit selected for deployment. Set `REV` to that commit and `REL` to the release directory. Run from the source checkout:
 
-```bash
-REL="$HOME/.local/share/qq-workflows/releases/<new-full-commit-sha>"
-git archive <landed-sha> | tar -x -C "$REL" && chmod 700 "$REL"
-```
-
-Activation is the Paseo daemon config (`~/.paseo/config.json`) pointing its absolute
-release paths — the plugin directory (`plugins.qq-architect.path`) and the architect
-extension (`agents.providers.qq-architect.command` →
-`pi-extension/qq-architect.mjs`) — at the new release, plus the parent restart that
-re-resolves those paths. The MCP server is NOT named by a separately verified
-daemon-config path: the live config carries no `configuredServer` entry, and the
-worker's MCP server is resolved transitively from the release modules
-(`WORKER_MCP_SERVER` in `workflow/worker-config.mjs` resolving `bin/mcp-server.mjs`
-next to the release's own modules). The worker adapter path is likewise computed
-from the parent's own source (`WORKER_PI_ADAPTER` in `workflow/worker-config.mjs`) and
-a fresh adapter process is spawned per launch, so a running parent keeps serving its
-current release until the switch.
-
-Before switching to a newly materialized release, verify the recording repair is in the
-built tree (never assume it from the commit id):
-
-```bash
-sha256sum "$REL/workflow/pi-worker/adapter.mjs"
-# must equal the landed source adapter hash (for this integration:
-# 5c5d10e5b8a9354258585f625a1abda0316735f63f2e4c31101c360ce3c182c7)
+```sh
+git show "${REV:?}:workflow/pi-worker/adapter.mjs" | cmp - "${REL:?}/workflow/pi-worker/adapter.mjs"
 node --check "$REL/workflow/pi-worker/adapter.mjs"
-grep -n "resolveNativeSessionPath\|native_session_dir_invalid" "$REL/workflow/pi-worker/adapter.mjs"
 ```
 
-and run one bounded recording smoke against the built tree (the
-`tests/pi-worker-session-recording.mjs` fixture shape: temporary `XDG_STATE_HOME`, dummy
-key, localhost mock provider) before the switch. After the switch, one production worker
-turn must produce a session file plus sidecar under
-`$XDG_STATE_HOME/qq-workflows/worker-sessions` and the bounded stderr trace line.
-
-The currently deployed ce0b35a release carries this exact repair as a local hotfix (same
-bytes as the integrated source); landing the source does not itself activate a new
-release, and the historical patch artifact must never be re-applied over the integrated
-source.
+Run `node tests/pi-worker-session-recording.mjs` from the release to exercise the installed Pi runtime against a localhost provider. The test reports a skip if Pi is unavailable. After an installer refresh, its activation journal identifies which release each session loaded.
 
 ## Verification available today (offline)
 

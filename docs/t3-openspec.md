@@ -1,11 +1,11 @@
 # OpenSpec Architect in T3 Code
 
-T3 runs the architect on Claude Code with Claude Opus 5.5 (`claude-opus-5-5`).
+This profile runs the architect on Claude Code with Claude Opus 5.5 (`claude-opus-5-5`).
 The architect works with the engineer as [the profile instruction](t3-architect-instructions.md)
 says. When the engineer asks to be grilled, it follows the byte-original, pinned
 Matt Pocock grilling instructions: whole-frontier rounds, recommended answers,
 delegated fact-finding and engineer confirmation. OpenSpec supplies the change
-artifacts and maintained specifications. T3's Codex provider is disabled.
+artifacts and maintained specifications. Installing this profile disables T3’s Codex provider.
 
 All custom integration is in [the phase/role router](../skills/t3-openspec-architect/SKILL.md).
 The short profile instruction points to it. The router selects the original
@@ -43,7 +43,7 @@ the change. Implementation, updated specs and archive land through the project's
 normal Git/PR path together. An archived change on an unmerged branch is still
 pending delivery.
 
-New T3 threads default to Opus, worktrees and full implementation access. Those
+The installer sets Opus, worktrees and full implementation access as defaults for new T3 threads. Those
 access settings do not authorize coding during a planning-only request. Use the
 normal write-capable interaction mode for planning artifacts; Claude plan mode is
 read-only. Existing threads need a fresh conversation to load the profile.

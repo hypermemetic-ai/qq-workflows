@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Ticket-driven planning, in-session teaching, and multi-provider subagent delegation.",
+  "description": "Shared art workflows, development tools and workstation operations.",
   "scripts": {
     "test": "node tests/run.mjs",
     "install:architect": "node scripts/install-architect.mjs"

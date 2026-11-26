@@ -1,117 +1,19 @@
-# DeepSeek Harness Minimal + `read_image` + seat-scoped search — configured worker harness
+# DeepSeek Minimal worker
 
-Status: **promoted and verified in this worktree; not installed.** The operator
-config still selects the default harness (`codex`), so nothing changes for a
-running system until `harness: "deepseek-minimal"` is set. See
-[`PROMOTION.md`](./PROMOTION.md) for operator configuration, install steps,
-rollback, the runtime-root layout, and the live deployment-gate receipt.
+Existing Architect installations can select this harness with `"harness": "deepseek-minimal"` in `~/.config/qq-workflows/worker-config.json`. The [worker selector](../../workflow/worker-config.mjs) defaults to Pi when the harness is omitted. To switch back, restore the previous worker configuration. A legacy Codex installation selects `"harness": "codex"` explicitly.
 
-This directory is the prototype that was reviewed and landed at `3751433`, now
-extended into the production path: `workflow/worker-config.mjs` validates a
-central `harness` selector and `buildWorkerLaunch` emits this adapter's launch
-spec. The prototype's own runtime, model loop, and pins are unchanged.
+The [pin](PIN.json) records the source revision, model and provider. This harness uses `deepseek-flash`, the `DEEPSEEK_API_KEY` credential reference and the official DeepSeek Messages endpoint. For a different Messages endpoint, set `messages_base_url` explicitly. `max_output_tokens` is optional.
 
-## What it demonstrates
+## Setup and verification
 
-An opt-in worker runtime built from the **audited pinned** DeepSeek Harness
-(`deepseek-ai/deepseek-harness` @ `ddefc45fbc7f8e46dd73185e68295696d1297887`,
-version `0.1.6-alpha.2`), driven over the SDK JSON‑RPC stdio protocol with the
-`sdk-minimal` profile plus overlays, whose model-facing tool surface is
-**baseline minimal (`bash`) + `read_image`**, plus - for the implementer and
-reviewer seats only - **one named semantic-search tool**,
-`mcp__zvec_grep__zvec_grep_search`, served by a small root-bound MCP gateway in
-front of the operator's `zg` (zvec-grep) daemon. The final answer is translated
-into the event contract `bin/mcp-server.mjs` already consumes.
+Run these commands from the repository root. Setup builds the pinned runtime under `$XDG_STATE_HOME/qq-workflows/deepseek-minimal-runtime` (by default, `~/.local/state/qq-workflows/deepseek-minimal-runtime`). Set `QQ_DEEPSEEK_RUNTIME_ROOT` to use a different directory. The setup script installs the search gateway and writes the runtime's `provenance.json`.
 
-Verified at runtime (not by source inspection):
-
-| Claim | Evidence |
-| --- | --- |
-| Real pinned harness boots isolated `sdk-minimal` | `tests/t1`; runtime receipt `<runtime-root>/provenance.json` |
-| Persistent bash: cwd + exported env survive calls; disposable file written | `tests/t1` |
-| Runner-seat tools = `bash` + `read_image` (no read/write/edit/search/complete_task) | `tests/t2`, `.architect/artifacts/deepseek-minimal/evidence/tool-surface.json` |
-| Seat-scoped search: implementer/reviewer expose exactly `bash` + `read_image` + `mcp__zvec_grep__zvec_grep_search`; runner is unchanged | `tests/t2`, `tests/t7`, `tests/t11` |
-| Gateway binds the seat's own worktree root (never the runtime cwd, never the main repo) and injects `freshness: wait_for_fresh` + `autoUpdate: true`; those three fields are absent from the model schema and override attempts are refused | `tests/t10`, `tests/t11`, `.architect/artifacts/deepseek-minimal/evidence/search-gateway.json` |
-| A missing worktree index is created once (`zg index <root>`, no rebuild/drop/ignore) on the FIRST search, deduplicated, and reused; no search means no indexing | `tests/t10`, `tests/t11` |
-| Unavailable/timeout/cancellation/failed-index are explicit errors; only "No matches." means no matching content; stale results are reconciled or labelled, never passed off as current | `tests/t10` |
-| A root that cannot mount the gateway fails a search seat closed instead of silently losing the tool | `tests/t8`, `tests/deepseek-minimal.mjs` |
-| `read_image` produces a real image on the next outbound request | `tests/t3`, `tests/t7`, `.architect/artifacts/deepseek-minimal/evidence/read-image-receipts.json` |
-| Files-reference path backed by a mock upload whose bytes decode | `tests/t3` (upload sha256 = fixture sha256, PNG 3×2 decodes) |
-| Inline base64 fallback when the Files endpoint fails | `tests/t3` (base64 decodes to the same sha256) |
-| Model `deepseek-flash`, literal effort `max` (`output_config.effort`), provider route `deepseek-official` | `tests/t2`, `tests/t3`, `tests/t7` |
-| Success bridges through the existing `completeTask` + validator + backstop | `tests/t4`, `tests/t7` |
-| Over-cap answer / `max-tokens` / provider error deliver **no** result | `tests/t4`, `tests/t7` |
-| Foreign-session events ignored | `tests/t4` (unit level on `SessionTranslator`) |
-| `data_points` is an explicit `[]` | `tests/t4` |
-| Reviewer PASS/FAIL parsing sees only the final answer | `tests/t5`, `tests/t7` |
-| Cancellation tears down harness + shell descendants, graceful and forced | `tests/t6`, `tests/t7` |
-| A bounded wait over a quiet harness does not crash the adapter; a >30 s shell call completes | `tests/t9` |
-| All seats launch through `buildWorkerLaunch`; runner missing identity/transport fails closed | `tests/t7`, `tests/deepseek-minimal.mjs` |
-| Production uses the configured credential; never the mock dummy | `tests/t7`, live receipt |
-| Runtime materializes at a fresh private destination, plugin deps relinked | `tests/t8` |
-| Official base maps to `https://api.deepseek.com/anthropic` with no double `/v1` | `tests/deepseek-minimal.mjs` |
-| Live gate: real harness + production adapter vs official endpoint, 2 requests | `PROMOTION.md` → live deployment gate |
-
-## Layout
-
-```
-prototype/deepseek-minimal/
-  PIN.json                       pinned commit/version/provider route/model/effort
-  profile/read-image-only.patch.yml   overlay applied AFTER the sdk-minimal bundle
-  profile/zvec-grep-gateway.patch.yml seat-scoped search overlay (implementer/reviewer only)
-  gateway/                       root-bound zvec-grep search gateway (MCP stdio, one tool)
-  plugin/dsh-tool-read-image-only/    Cordis wrapper registering ONLY upstream read_image
-  scripts/setup-runtime.mjs      clone+install+build+link+provenance (idempotent, relocatable)
-  scripts/live-smoke.mjs         budgeted live gate through the production entrypoint
-  mock/mock-provider.mjs         scripted Messages + Files provider with a wire journal
-  mock/png.mjs                   dependency-free PNG encode/decode (proves decodability)
-  adapter/runtime.mjs            modes, runtime resolution/provenance, endpoint guard, env scrub
-  adapter/harness-client.mjs     JSON-RPC stdio client + bounded escalating teardown
-  adapter/translate.mjs          session events -> parent contract, terminal gate
-  adapter/worker.mjs             one seat turn; runner completion bridge; exit codes
-  tests/                         t1..t11 + run.mjs
-  PROMOTION.md                   promotion record: config, runtime, install, rollback, live gate
-```
-
-Generated artifacts (gitignored): runtime at `$XDG_STATE_HOME/qq-workflows/
-deepseek-minimal-runtime` (or `QQ_DEEPSEEK_RUNTIME_ROOT`), receipts under
-`.architect/artifacts/deepseek-minimal/`.
-
-## Reproduce
-
-```bash
-# 1. Materialize the pinned runtime outside every checkout:
-#    clone ddefc45, pnpm install, build host libs + native addon, prepare the
-#    Harness home, copy both overlays + the wrapper plugin + the search gateway
-#    and link their dependencies, write provenance.json. Idempotent; honors
-#    --runtime-root / QQ_DEEPSEEK_RUNTIME_ROOT. Re-run it after pulling this
-#    change: a root that predates the gateway deliberately fails search seats
-#    closed until it is re-materialized.
+```sh
 node prototype/deepseek-minimal/scripts/setup-runtime.mjs
-
-# 2. Runtime tests (real harness, local scripted provider)
-node prototype/deepseek-minimal/tests/run.mjs          # or npm run test:prototype
-
-# 3. Repository regression suite (unmodified, runtime-independent)
-npm test
+node prototype/deepseek-minimal/tests/run.mjs
 ```
 
-Drive one seat by hand against the mock (mock mode is the default and is
-loopback-only):
-
-```bash
-node -e "import('./prototype/deepseek-minimal/mock/mock-provider.mjs').then(async m => {
-  const mock = await m.startMockProvider({ scenario: { turns: [{ blocks: [{ type: 'text', text: 'FINAL: hello' }], stopReason: 'end_turn' }] } });
-  console.log(mock.url); await new Promise(() => {});
-})" &
-node prototype/deepseek-minimal/adapter/worker.mjs \
-  --seat implementer --cwd /tmp/scratch --prompt 'say hello' --base-url http://127.0.0.1:<port>
-```
-
-Production mode is the *explicit* other path (`--production`), reachable only
-through `buildWorkerLaunch` when the operator config selects this harness; it
-resolves the credential through the existing operator mechanism and exits `2`
-(`provider_credential_required`) rather than falling back to the dummy.
+The runtime tests use a localhost provider. To check the selector and adapter without building the pinned runtime, run `node tests/deepseek-minimal.mjs`.
 
 ## Pinned inputs (no substitution)
 
@@ -313,12 +215,3 @@ signalled.
   handshake reaches the native system addon, so the native build is part of the
   documented setup. `tests/t8` shares an already-built pinned upstream to
   exercise destination materialization without a second multi-GB build.
-* No benchmark or latency comparison was run (out of scope by operator decree).
-
-## Adoption status
-
-Promoted; see [`PROMOTION.md`](./PROMOTION.md) for the exact operator
-configuration, runtime setup/provenance, install and rollback steps, the
-verification matrix, and the passed live deployment gate plus its remaining
-request budget. Rollback is config-only: set `"harness": "codex"` or delete the
-field.

@@ -65,13 +65,15 @@ for (const path of SURFACES) {
   assert.doesNotMatch(text, /await_execution/, `${path} must not reference await_execution`);
 }
 
-// Documentation is allowed to name the removed tools - it must simply be the
-// documentation of their removal, not an instruction to call them.
+// The current workflow index and the Pi install guide must not send readers
+// to a removed command. The supported installer belongs in its own guide.
 const readme = readFileSync(join(repoRoot, "README.md"), "utf8");
-assert.match(readme, /There is no second Architect launcher and no blocking wait tool/);
-assert.match(readme, /there is no `await_runner` \/ `await_execution`/);
-assert.doesNotMatch(readme, /call `await_execution\(/, "the README must not instruct a wait call");
-assert.doesNotMatch(readme, /npm run install:agents/, "the retired installer is not documented as a step");
+const piGuide = readFileSync(join(repoRoot, "docs", "pi-worker-migration.md"), "utf8");
+assert.match(piGuide, /npm run install:architect/);
+for (const guide of [readme, piGuide]) {
+  assert.doesNotMatch(guide, /call `await_(?:runner|execution)\(/);
+  assert.doesNotMatch(guide, /npm run install:agents/);
+}
 
 // 6. The shared MCP surface a worker still needs survives: the runner's
 //    authoritative completion transport and the read-only ticket tools.
